@@ -1,0 +1,20 @@
+{
+  "name": "llm-wiki-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A+C 路线个人 Wiki 桌面应用（Windows 优先）",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace web run dev",
+    "build:web": "npm --workspace web run build",
+    "typecheck:web": "npm --workspace web run typecheck",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli-win32-x64-msvc": "^2.10.1"
+  }
+}
