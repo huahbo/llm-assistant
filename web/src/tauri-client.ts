@@ -8,6 +8,9 @@ import type {
   ModeChangeResult,
   QueryAnswerResult,
   QueryAskOptions,
+  QuerySettings,
+  SaveQueryAnswerInput,
+  SaveQueryAnswerResult,
   VaultInitResult,
 } from "./types";
 
@@ -39,6 +42,20 @@ export const createQueryAskWithOptionsArgs = (
         top_k: options.top_k,
       }
     : undefined,
+});
+
+export const createSetQueryTopKArgs = (topK: number) => ({
+  topK,
+  top_k: topK,
+});
+
+export const createSaveQueryAnswerArgs = (input: SaveQueryAnswerInput) => ({
+  input: {
+    question: input.question,
+    answer: input.answer,
+    citations: input.citations,
+    title: input.title,
+  },
 });
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs = 15000): Promise<T> => {
@@ -81,6 +98,20 @@ export async function fetchRecentLogs(): Promise<LogEntry[]> {
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<LogEntry[]>("get_recent_logs");
+}
+
+export async function fetchQuerySettings(): Promise<QuerySettings | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await invoke<QuerySettings>("get_query_settings");
+  } catch {
+    return null;
+  }
 }
 
 export async function setBackendMode(mode: BackendAppMode): Promise<ModeChangeResult | null> {
@@ -159,5 +190,43 @@ export async function queryAskWithOptions(
   } catch {
     // 兼容旧后端：当新命令不可用时回退到 query_ask。
     return queryAsk(question);
+  }
+}
+
+export async function setQueryTopK(topK: number): Promise<QuerySettings | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await withTimeout(
+      invoke<QuerySettings>("set_query_top_k", {
+        ...createSetQueryTopKArgs(topK),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function saveQueryAnswer(
+  input: SaveQueryAnswerInput,
+): Promise<SaveQueryAnswerResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await withTimeout(
+      invoke<SaveQueryAnswerResult>("save_query_answer", {
+        ...createSaveQueryAnswerArgs(input),
+      }),
+    );
+  } catch {
+    return null;
   }
 }

@@ -71,6 +71,25 @@ export interface QueryAskOptions {
   top_k?: number;
 }
 
+export interface QuerySettings {
+  top_k: number;
+  min_top_k: number;
+  max_top_k: number;
+}
+
+export interface SaveQueryAnswerInput {
+  question: string;
+  answer: string;
+  citations: QueryCitation[];
+  title?: string;
+}
+
+export interface SaveQueryAnswerResult {
+  wiki_path: string;
+  page_title: string;
+  message: string;
+}
+
 export interface LintIssue {
   code: string;
   severity: string;

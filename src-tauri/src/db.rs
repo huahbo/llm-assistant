@@ -30,6 +30,27 @@ pub struct PendingTaskRecord {
     pub updated_at: String,
 }
 
+/// 已存在的导入结果（用于内容去重）。
+#[derive(Debug, Clone)]
+pub struct ExistingIngestRecord {
+    pub raw_path: String,
+    pub wiki_path: String,
+}
+
+/// 引用写入输入。
+pub struct CitationInput<'a> {
+    pub cited_page_path: &'a str,
+    pub score: usize,
+    pub excerpt: &'a str,
+}
+
+/// lint 用的引用记录。
+#[derive(Debug, Clone)]
+pub struct CitationRecord {
+    pub page_path: String,
+    pub cited_page_path: String,
+}
+
 /// 确保元数据库与表结构存在。
 pub fn ensure_meta_db(db_path: &Path) -> Result<(), String> {
     let conn = open_connection(db_path)?;
@@ -84,6 +105,62 @@ pub fn list_pending_tasks(db_path: &Path) -> Result<Vec<PendingTaskRecord>, Stri
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("读取 tasks 失败: {}", err))
+}
+
+/// 按内容哈希查找已存在的导入结果。
+pub fn find_existing_ingest_by_hash(
+    db_path: &Path,
+    content_hash: &str,
+) -> Result<Option<ExistingIngestRecord>, String> {
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT sources.raw_path, wiki_pages.path
+            FROM sources
+            JOIN wiki_pages ON wiki_pages.source_id = sources.id
+            WHERE sources.content_hash = ?1
+            ORDER BY wiki_pages.updated_at DESC, wiki_pages.id DESC
+            LIMIT 1
+            "#,
+        )
+        .map_err(|err| format!("准备查询重复导入记录失败: {}", err))?;
+
+    match stmt.query_row(params![content_hash], |row| {
+        Ok(ExistingIngestRecord {
+            raw_path: row.get(0)?,
+            wiki_path: row.get(1)?,
+        })
+    }) {
+        Ok(record) => Ok(Some(record)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(format!("查询重复导入记录失败: {}", err)),
+    }
+}
+
+/// 读取所有引用关系。
+pub fn list_citations(db_path: &Path) -> Result<Vec<CitationRecord>, String> {
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT page_path, cited_page_path
+            FROM citations
+            ORDER BY id ASC
+            "#,
+        )
+        .map_err(|err| format!("准备查询 citations 失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(CitationRecord {
+                page_path: row.get(0)?,
+                cited_page_path: row.get(1)?,
+            })
+        })
+        .map_err(|err| format!("读取 citations 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 citations 失败: {}", err))
 }
 
 /// 创建导入任务的源记录与任务记录。
@@ -254,6 +331,122 @@ pub fn record_wiki_page(
     Ok(())
 }
 
+/// 写入或更新 AI 生成页面记录。
+pub fn upsert_generated_wiki_page(
+    db_path: &Path,
+    title: &str,
+    wiki_path: &Path,
+    summary: &str,
+    content_hash: &str,
+    timestamp_ms: &str,
+) -> Result<(), String> {
+    let mut conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开启数据库事务失败: {}", err))?;
+
+    let source_uri = format!("query://generated/{}", content_hash);
+    tx.execute(
+        r#"
+        INSERT OR IGNORE INTO sources (
+            content_hash,
+            source_path,
+            raw_path,
+            created_at
+        ) VALUES (?1, ?2, ?3, ?4)
+        "#,
+        params![
+            content_hash,
+            source_uri,
+            wiki_path.to_string_lossy(),
+            timestamp_ms
+        ],
+    )
+    .map_err(|err| format!("写入 sources 失败: {}", err))?;
+
+    let source_id: i64 = tx
+        .query_row(
+            "SELECT id FROM sources WHERE content_hash = ?1",
+            params![content_hash],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("读取 sources 失败: {}", err))?;
+
+    tx.execute(
+        r#"
+        INSERT INTO wiki_pages (
+            source_id,
+            title,
+            path,
+            summary,
+            created_at,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+        ON CONFLICT(path) DO UPDATE SET
+            source_id = excluded.source_id,
+            title = excluded.title,
+            summary = excluded.summary,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            source_id,
+            title,
+            wiki_path.to_string_lossy(),
+            summary,
+            timestamp_ms
+        ],
+    )
+    .map_err(|err| format!("写入 wiki_pages 失败: {}", err))?;
+
+    tx.commit()
+        .map_err(|err| format!("提交生成页面记录失败: {}", err))
+}
+
+/// 用最新结果替换指定页面的引用记录。
+pub fn replace_citations_for_page(
+    db_path: &Path,
+    page_path: &Path,
+    citations: &[CitationInput<'_>],
+    timestamp_ms: &str,
+) -> Result<(), String> {
+    let mut conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开启数据库事务失败: {}", err))?;
+
+    tx.execute(
+        "DELETE FROM citations WHERE page_path = ?1",
+        params![page_path.to_string_lossy()],
+    )
+    .map_err(|err| format!("清理旧引用失败: {}", err))?;
+
+    for citation in citations {
+        tx.execute(
+            r#"
+            INSERT INTO citations (
+                page_path,
+                cited_page_path,
+                score,
+                excerpt,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                page_path.to_string_lossy(),
+                citation.cited_page_path,
+                citation.score as i64,
+                citation.excerpt,
+                timestamp_ms
+            ],
+        )
+        .map_err(|err| format!("写入 citations 失败: {}", err))?;
+    }
+
+    tx.commit().map_err(|err| format!("提交引用记录失败: {}", err))
+}
+
 /// 将页面内容写入 FTS 索引。
 pub fn upsert_fts_page(
     db_path: &Path,
@@ -368,6 +561,18 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             updated_at TEXT NOT NULL,
             FOREIGN KEY(source_id) REFERENCES sources(id)
         );
+
+        CREATE TABLE IF NOT EXISTS citations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page_path TEXT NOT NULL,
+            cited_page_path TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            excerpt TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_citations_page_path
+            ON citations(page_path);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -444,5 +649,77 @@ mod tests {
         assert!(results
             .iter()
             .any(|path| path == &wiki_path.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn replace_citations_for_page_replaces_rows() {
+        let dir = make_temp_dir("llm-wiki-db-citations");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let page_path = dir.join("wiki").join("query.md");
+
+        replace_citations_for_page(
+            &db_path,
+            &page_path,
+            &[CitationInput {
+                cited_page_path: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+                score: 3,
+                excerpt: "excerpt-1",
+            }],
+            "1",
+        )
+        .expect("第一次写入引用失败");
+        replace_citations_for_page(
+            &db_path,
+            &page_path,
+            &[CitationInput {
+                cited_page_path: "E:\\llm-wiki\\vault\\wiki\\ingest-2.md",
+                score: 2,
+                excerpt: "excerpt-2",
+            }],
+            "2",
+        )
+        .expect("第二次写入引用失败");
+
+        let citations = list_citations(&db_path).expect("读取引用失败");
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].page_path, page_path.to_string_lossy());
+        assert_eq!(
+            citations[0].cited_page_path,
+            "E:\\llm-wiki\\vault\\wiki\\ingest-2.md"
+        );
+    }
+
+    #[test]
+    fn find_existing_ingest_by_hash_returns_latest_page() {
+        let dir = make_temp_dir("llm-wiki-db-dedup");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-1", "source-1", "raw-1.md", "1"],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "t1", "wiki-a.md", "s1", "1", "1"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "t2", "wiki-b.md", "s2", "2", "2"],
+        )
+        .expect("写入 wiki_pages 失败");
+
+        let existing = find_existing_ingest_by_hash(&db_path, "hash-1")
+            .expect("查询重复导入失败")
+            .expect("应返回结果");
+        assert_eq!(existing.raw_path, "raw-1.md");
+        assert_eq!(existing.wiki_path, "wiki-b.md");
     }
 }

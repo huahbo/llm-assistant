@@ -11,12 +11,15 @@ use crate::{
     models::{
         AppConfig, AppMode, AppOverview, DefaultPaths, IngestResult, LintIssue, LintReport,
         LogEntry, LogLevel, ModeChangeResult, QueryAnswerResult, QueryAskOptions, QueryCitation,
-        VaultInitResult,
+        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
     },
     vault,
 };
 
 const STALE_PENDING_TASK_THRESHOLD_MS: u128 = 24 * 60 * 60 * 1000;
+const QUERY_TOP_K_MIN: usize = 1;
+const QUERY_TOP_K_MAX: usize = 8;
+const QUERY_TOP_K_DEFAULT: usize = 3;
 
 /// 进程内状态。
 #[derive(Debug)]
@@ -30,6 +33,7 @@ pub struct AppState {
 struct AppStateData {
     mode: AppMode,
     vault_path: Option<PathBuf>,
+    query_top_k: usize,
     logs: Vec<LogEntry>,
     next_log_id: u64,
     config_snapshot: Option<String>,
@@ -44,8 +48,9 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let config_path = Self::default_config_path();
-        let (mode, vault_path, config_snapshot) = Self::load_config(&config_path);
-        let serialized = Self::serialize_config(mode, vault_path.as_deref());
+        let (mode, vault_path, query_top_k, config_snapshot) = Self::load_config(&config_path);
+        let query_top_k = normalize_top_k(query_top_k);
+        let serialized = Self::serialize_config(mode, vault_path.as_deref(), query_top_k);
         let mut runtime_snapshot = config_snapshot.clone();
 
         if runtime_snapshot.is_none() {
@@ -75,6 +80,7 @@ impl AppState {
             inner: Mutex::new(AppStateData {
                 mode,
                 vault_path,
+                query_top_k,
                 next_log_id: 3,
                 logs,
                 config_snapshot: runtime_snapshot,
@@ -88,8 +94,14 @@ impl AppState {
         let previous_mode = guard.mode;
         let expected_snapshot = guard.config_snapshot.clone();
         let vault_path = guard.vault_path.clone();
+        let query_top_k = guard.query_top_k;
 
-        match self.persist_config(mode, vault_path.as_deref(), expected_snapshot.as_deref()) {
+        match self.persist_config(
+            mode,
+            vault_path.as_deref(),
+            query_top_k,
+            expected_snapshot.as_deref(),
+        ) {
             Ok(serialized) => {
                 guard.mode = mode;
                 guard.config_snapshot = Some(serialized);
@@ -220,6 +232,15 @@ impl AppState {
         }
     }
 
+    pub fn query_settings(&self) -> QuerySettings {
+        let guard = self.inner.lock().expect("状态锁已被污染");
+        QuerySettings {
+            top_k: guard.query_top_k,
+            min_top_k: QUERY_TOP_K_MIN,
+            max_top_k: QUERY_TOP_K_MAX,
+        }
+    }
+
     pub fn recent_logs(&self, limit: usize) -> Vec<LogEntry> {
         let guard = self.inner.lock().expect("状态锁已被污染");
         guard.logs.iter().rev().take(limit).cloned().collect()
@@ -289,6 +310,17 @@ impl AppState {
         }
 
         let db_path = vault_path.join(".app").join("meta.db");
+        if db_path.exists() {
+            if let Err(err) = db::ensure_meta_db(&db_path) {
+                issues.push(LintIssue {
+                    code: "DB_SCHEMA_UPGRADE_FAILED".to_string(),
+                    severity: "warning".to_string(),
+                    message: format!("数据库结构校验失败: {}", err),
+                    path: Some(db_path.to_string_lossy().to_string()),
+                    suggestion: "检查数据库文件权限并重试".to_string(),
+                });
+            }
+        }
         let db_paths = if db_path.exists() {
             match db::list_wiki_page_paths(&db_path) {
                 Ok(paths) => Some(paths.into_iter().collect::<BTreeSet<_>>()),
@@ -313,6 +345,49 @@ impl AppState {
             });
             None
         };
+
+        if db_path.exists() {
+            match db::list_citations(&db_path) {
+                Ok(citations) => {
+                    for citation in citations {
+                        if !Path::new(&citation.page_path).exists() {
+                            issues.push(LintIssue {
+                                code: "BROKEN_CITING_PAGE".to_string(),
+                                severity: "warning".to_string(),
+                                message: format!(
+                                    "引用记录所属页面不存在: {}",
+                                    citation.page_path
+                                ),
+                                path: Some(citation.page_path.clone()),
+                                suggestion: "移除失效引用记录或恢复对应页面".to_string(),
+                            });
+                        }
+
+                        if !Path::new(&citation.cited_page_path).exists() {
+                            issues.push(LintIssue {
+                                code: "BROKEN_CITATION".to_string(),
+                                severity: "warning".to_string(),
+                                message: format!(
+                                    "引用目标页面不存在: {}",
+                                    citation.cited_page_path
+                                ),
+                                path: Some(citation.cited_page_path.clone()),
+                                suggestion: "修复引用路径或补回被引用页面".to_string(),
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    issues.push(LintIssue {
+                        code: "CITATION_QUERY_FAILED".to_string(),
+                        severity: "warning".to_string(),
+                        message: format!("读取 citations 失败: {}", err),
+                        path: Some(db_path.to_string_lossy().to_string()),
+                        suggestion: "检查 SQLite 数据库结构是否完整".to_string(),
+                    });
+                }
+            }
+        }
 
         let wiki_dir = vault_path.join("wiki");
         let wiki_page_paths = collect_wiki_page_paths(&wiki_dir);
@@ -416,16 +491,16 @@ impl AppState {
             return Err("问题不能为空".to_string());
         }
 
-        let (mode, vault_path) = {
+        let (mode, vault_path, default_top_k) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
-            (guard.mode, guard.vault_path.clone())
+            (guard.mode, guard.vault_path.clone(), guard.query_top_k)
         };
 
         let vault_path = vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
         let wiki_dir = vault_path.join("wiki");
         let db_path = vault_path.join(".app").join("meta.db");
         let tokens = tokenize_query(&normalized_question);
-        let top_k = normalize_top_k(options.top_k);
+        let top_k = normalize_top_k(options.top_k.or(Some(default_top_k)));
         let (matches, search_strategy, fts_error) =
             search_wiki_matches_with_fts(&db_path, &wiki_dir, &tokens, &normalized_question, top_k)?;
 
@@ -471,10 +546,72 @@ impl AppState {
         })
     }
 
-    fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
-        let (mode, expected_snapshot) = {
+    pub fn set_query_top_k(&self, top_k: usize) -> Result<QuerySettings, String> {
+        let normalized_top_k = normalize_top_k(Some(top_k));
+        let (mode, vault_path, expected_snapshot) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
-            (guard.mode, guard.config_snapshot.clone())
+            (guard.mode, guard.vault_path.clone(), guard.config_snapshot.clone())
+        };
+
+        match self.persist_config(
+            mode,
+            vault_path.as_deref(),
+            normalized_top_k,
+            expected_snapshot.as_deref(),
+        ) {
+            Ok(serialized) => {
+                let mut guard = self.inner.lock().expect("状态锁已被污染");
+                guard.query_top_k = normalized_top_k;
+                guard.config_snapshot = Some(serialized);
+                guard.push_log(
+                    LogLevel::Info,
+                    format!("Query TopK 已更新为 {}", normalized_top_k),
+                    current_timestamp_ms(),
+                );
+                Ok(QuerySettings {
+                    top_k: normalized_top_k,
+                    min_top_k: QUERY_TOP_K_MIN,
+                    max_top_k: QUERY_TOP_K_MAX,
+                })
+            }
+            Err(err) => {
+                self.push_log(LogLevel::Warn, format!("Query TopK 持久化失败: {}", err));
+                Err(err)
+            }
+        }
+    }
+
+    pub fn save_query_answer(
+        &self,
+        input: SaveQueryAnswerInput,
+    ) -> Result<SaveQueryAnswerResult, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+
+        match vault::save_query_answer(&vault_path, &input) {
+            Ok(result) => {
+                self.push_log(
+                    LogLevel::Info,
+                    format!("Query 结果已保存: {}", result.wiki_path),
+                );
+                Ok(result)
+            }
+            Err(err) => {
+                self.push_log(LogLevel::Warn, format!("保存 Query 结果失败: {}", err));
+                Err(err)
+            }
+        }
+    }
+
+    fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
+        let (mode, query_top_k, expected_snapshot) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (guard.mode, guard.query_top_k, guard.config_snapshot.clone())
         };
 
         {
@@ -482,7 +619,12 @@ impl AppState {
             guard.vault_path = Some(vault_path.clone());
         }
 
-        match self.persist_config(mode, Some(vault_path.as_path()), expected_snapshot.as_deref()) {
+        match self.persist_config(
+            mode,
+            Some(vault_path.as_path()),
+            query_top_k,
+            expected_snapshot.as_deref(),
+        ) {
             Ok(serialized) => {
                 let mut guard = self.inner.lock().expect("状态锁已被污染");
                 guard.config_snapshot = Some(serialized);
@@ -508,25 +650,29 @@ impl AppState {
         root.join(".runtime").join("app-config.json")
     }
 
-    fn load_config(config_path: &Path) -> (AppMode, Option<PathBuf>, Option<String>) {
+    fn load_config(config_path: &Path) -> (AppMode, Option<PathBuf>, Option<usize>, Option<String>) {
         match fs::read_to_string(config_path) {
             Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
                 Ok(config) => (
                     config.mode,
                     config.vault_path.map(PathBuf::from),
+                    config.query_top_k,
                     Some(raw),
                 ),
-                Err(_) => (AppMode::default(), None, Some(raw)),
+                Err(_) => (AppMode::default(), None, None, Some(raw)),
             },
-            Err(err) if err.kind() == io::ErrorKind::NotFound => (AppMode::default(), None, None),
-            Err(_) => (AppMode::default(), None, None),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                (AppMode::default(), None, None, None)
+            }
+            Err(_) => (AppMode::default(), None, None, None),
         }
     }
 
-    fn serialize_config(mode: AppMode, vault_path: Option<&Path>) -> String {
+    fn serialize_config(mode: AppMode, vault_path: Option<&Path>, query_top_k: usize) -> String {
         serde_json::to_string_pretty(&AppConfig {
             mode,
             vault_path: vault_path.map(|path| path.to_string_lossy().to_string()),
+            query_top_k: Some(query_top_k),
         })
         .expect("配置序列化失败")
     }
@@ -535,9 +681,10 @@ impl AppState {
         &self,
         mode: AppMode,
         vault_path: Option<&Path>,
+        query_top_k: usize,
         expected_snapshot: Option<&str>,
     ) -> Result<String, String> {
-        let serialized = Self::serialize_config(mode, vault_path);
+        let serialized = Self::serialize_config(mode, vault_path, query_top_k);
 
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)
@@ -819,7 +966,9 @@ fn is_stopword(token: &str) -> bool {
 }
 
 fn normalize_top_k(top_k: Option<usize>) -> usize {
-    top_k.unwrap_or(3).clamp(1, 8)
+    top_k
+        .unwrap_or(QUERY_TOP_K_DEFAULT)
+        .clamp(QUERY_TOP_K_MIN, QUERY_TOP_K_MAX)
 }
 
 fn search_wiki_matches(
@@ -1209,7 +1358,113 @@ mod tests {
                 QueryAskOptions { top_k: Some(99) },
             )
             .expect("query_ask_with_options 应返回成功");
-        assert!(result.matched_pages.len() <= 8);
+        assert!(result.matched_pages.len() <= QUERY_TOP_K_MAX);
+    }
+
+    #[test]
+    fn set_query_top_k_persists_to_runtime_config() {
+        let vault_dir = make_temp_dir("llm-wiki-query-settings");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let settings = state.set_query_top_k(6).expect("设置 top_k 失败");
+        assert_eq!(settings.top_k, 6);
+
+        let config_raw = fs::read_to_string(vault_dir.join(".runtime").join("app-config.json"))
+            .expect("读取运行时配置失败");
+        let config: AppConfig = serde_json::from_str(&config_raw).expect("解析运行时配置失败");
+        assert_eq!(config.query_top_k, Some(6));
+    }
+
+    #[test]
+    fn query_ask_with_options_uses_persisted_default_top_k() {
+        let vault_dir = make_temp_dir("llm-wiki-query-default-topk");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+        state.set_query_top_k(2).expect("设置 top_k 失败");
+
+        for idx in 0..4 {
+            let page_path = vault_dir.join("wiki").join(format!("topk-default-{}.md", idx));
+            fs::write(&page_path, format!("# 页面{}\nquery default topk 测试。\n", idx))
+                .expect("写入测试页面失败");
+            let db_path = vault_dir.join(".app").join("meta.db");
+            db::upsert_fts_page(
+                &db_path,
+                &page_path,
+                &format!("topk-default-{}", idx),
+                "query default topk 测试。",
+            )
+            .expect("写入 fts 索引失败");
+        }
+
+        let result = state
+            .query_ask_with_options(
+                "query default topk".to_string(),
+                QueryAskOptions::default(),
+            )
+            .expect("query_ask_with_options 应返回成功");
+        assert_eq!(result.matched_pages.len(), 2);
+    }
+
+    #[test]
+    fn save_query_answer_requires_initialized_vault() {
+        let vault_dir = make_temp_dir("llm-wiki-save-query-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let input = SaveQueryAnswerInput {
+            question: "q".to_string(),
+            answer: "a".to_string(),
+            citations: Vec::new(),
+            title: None,
+        };
+
+        let result = state.save_query_answer(input);
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("请先调用 init_vault 初始化 Vault".to_string())
+        );
+    }
+
+    #[test]
+    fn save_query_answer_writes_wiki_file_and_updates_db() {
+        let vault_dir = make_temp_dir("llm-wiki-save-query");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let input = SaveQueryAnswerInput {
+            question: "这个项目的核心目标是什么？".to_string(),
+            answer: "目标是构建 Windows 优先的个人 Wiki 桌面应用。".to_string(),
+            citations: vec![QueryCitation {
+                page_path: vault_dir
+                    .join("wiki")
+                    .join("ingest-1.md")
+                    .to_string_lossy()
+                    .to_string(),
+                score: 3,
+                excerpt: "本项目用于实现一个 Windows 优先的个人 Wiki 桌面应用".to_string(),
+            }],
+            title: Some("问答-核心目标".to_string()),
+        };
+        let result = state.save_query_answer(input).expect("保存 Query 结果失败");
+
+        assert!(PathBuf::from(&result.wiki_path).exists());
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        assert!(index_content.contains("问答-核心目标"));
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let page_paths = db::list_wiki_page_paths(&db_path).expect("读取 wiki_pages 失败");
+        assert!(page_paths.iter().any(|path| path == &result.wiki_path));
     }
 
     #[test]
@@ -1291,6 +1546,17 @@ mod tests {
             ],
         )
         .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                present_path.to_string_lossy().to_string(),
+                vault_dir.join("wiki").join("missing-cited.md").to_string_lossy().to_string(),
+                3_i64,
+                "missing citation",
+                "1"
+            ],
+        )
+        .expect("写入 citations 失败");
 
         let report = state.lint_report();
         let codes: BTreeSet<_> = report.issues.iter().map(|issue| issue.code.as_str()).collect();
@@ -1298,6 +1564,7 @@ mod tests {
         assert!(codes.contains("MISSING_INDEX_ENTRY"));
         assert!(codes.contains("ORPHAN_WIKI_PAGE"));
         assert!(codes.contains("DB_MISSING_PAGE_RECORD"));
+        assert!(codes.contains("BROKEN_CITATION"));
         assert!(!codes.contains("VAULT_NOT_INITIALIZED"));
     }
 
@@ -1367,6 +1634,7 @@ mod tests {
             inner: Mutex::new(AppStateData {
                 mode: AppMode::Hybrid,
                 vault_path: None,
+                query_top_k: QUERY_TOP_K_DEFAULT,
                 logs: Vec::new(),
                 next_log_id: 1,
                 config_snapshot: None,

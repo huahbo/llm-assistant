@@ -27,6 +27,8 @@ pub struct AppConfig {
     pub mode: AppMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vault_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_top_k: Option<usize>,
 }
 
 /// 应用总览。
@@ -124,4 +126,31 @@ pub struct QueryAnswerResult {
 pub struct QueryAskOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<usize>,
+}
+
+/// Query 参数配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySettings {
+    pub top_k: usize,
+    pub min_top_k: usize,
+    pub max_top_k: usize,
+}
+
+/// Query 结果保存请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveQueryAnswerInput {
+    pub question: String,
+    pub answer: String,
+    #[serde(default)]
+    pub citations: Vec<QueryCitation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// Query 结果保存结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveQueryAnswerResult {
+    pub wiki_path: String,
+    pub page_title: String,
+    pub message: String,
 }

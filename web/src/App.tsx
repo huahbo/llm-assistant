@@ -2,13 +2,16 @@ import { useEffect, useState } from "react";
 import {
   fetchAppOverview,
   fetchDefaultPaths,
+  fetchQuerySettings,
   fetchRecentLogs,
   initVault,
   ingestMarkdown,
   isTauriRuntime,
   queryAskWithOptions,
   runLint,
+  saveQueryAnswer,
   setBackendMode,
+  setQueryTopK as persistQueryTopK,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import { formatLintCheckedAt, normalizeLintSeverity } from "./lint-utils";
@@ -25,6 +28,9 @@ import type {
 
 const defaultVaultPath = "vault";
 const defaultIngestSourcePath = "README.md";
+const defaultQueryTopKMin = 1;
+const defaultQueryTopKMax = 8;
+const defaultQueryTopK = 3;
 
 const modes: ModeOption[] = [
   {
@@ -86,13 +92,21 @@ export default function App() {
   const [vaultPath, setVaultPath] = useState(defaultVaultPath);
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
-  const [queryTopK, setQueryTopK] = useState(3);
+  const [queryTopK, setQueryTopK] = useState(defaultQueryTopK);
+  const [queryTopKMin, setQueryTopKMin] = useState(defaultQueryTopKMin);
+  const [queryTopKMax, setQueryTopKMax] = useState(defaultQueryTopKMax);
+  const [querySettingsSaving, setQuerySettingsSaving] = useState(false);
+  const [queryResultSaving, setQueryResultSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
-      const [data, defaultPaths] = await Promise.all([loadAppData(), fetchDefaultPaths()]);
+      const [data, defaultPaths, querySettings] = await Promise.all([
+        loadAppData(),
+        fetchDefaultPaths(),
+        fetchQuerySettings(),
+      ]);
 
       if (!cancelled) {
         setOverview(data.overview);
@@ -100,6 +114,11 @@ export default function App() {
         if (defaultPaths) {
           setVaultPath(defaultPaths.vault_path);
           setIngestSourcePath(defaultPaths.ingest_source_path);
+        }
+        if (querySettings) {
+          setQueryTopK(querySettings.top_k);
+          setQueryTopKMin(querySettings.min_top_k);
+          setQueryTopKMax(querySettings.max_top_k);
         }
       }
     };
@@ -248,7 +267,11 @@ export default function App() {
       setStatusMessage("请输入问题后再查询。");
       return;
     }
-    const nextTopK = Math.min(8, Math.max(1, Math.trunc(queryTopK || 3)));
+    const nextTopK = Math.min(
+      queryTopKMax,
+      Math.max(queryTopKMin, Math.trunc(queryTopK || defaultQueryTopK)),
+    );
+    setQueryTopK(nextTopK);
 
     setQueryRunning(true);
     setStatusMessage("");
@@ -270,6 +293,76 @@ export default function App() {
       setStatusMessage(`Query 失败：${message}`);
     } finally {
       setQueryRunning(false);
+    }
+  };
+
+  const handleSaveQuerySettings = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法保存 Query 参数。");
+      return;
+    }
+
+    const nextTopK = Math.min(
+      queryTopKMax,
+      Math.max(queryTopKMin, Math.trunc(queryTopK || defaultQueryTopK)),
+    );
+
+    setQuerySettingsSaving(true);
+    setStatusMessage("");
+
+    try {
+      const settings = await persistQueryTopK(nextTopK);
+      if (!settings) {
+        setStatusMessage("当前环境不支持保存 Query 参数。");
+        return;
+      }
+
+      setQueryTopK(settings.top_k);
+      setQueryTopKMin(settings.min_top_k);
+      setQueryTopKMax(settings.max_top_k);
+      await refreshAppData();
+      setStatusMessage(`Query 参数已保存：TopK=${settings.top_k}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`保存 Query 参数失败：${message}`);
+    } finally {
+      setQuerySettingsSaving(false);
+    }
+  };
+
+  const handleSaveQueryResult = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法保存 Query 结果。");
+      return;
+    }
+    if (!queryResult) {
+      setStatusMessage("请先执行 Query，再保存结果。");
+      return;
+    }
+
+    setQueryResultSaving(true);
+    setStatusMessage("");
+
+    try {
+      const result = await saveQueryAnswer({
+        question: queryResult.question,
+        answer: queryResult.answer,
+        citations: queryResult.citations,
+      });
+      if (!result) {
+        setStatusMessage("当前环境不支持保存 Query 结果。");
+        return;
+      }
+
+      await refreshAppData();
+      setStatusMessage(`${result.message}：${result.wiki_path}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`保存 Query 结果失败：${message}`);
+    } finally {
+      setQueryResultSaving(false);
     }
   };
 
@@ -413,14 +506,14 @@ export default function App() {
           />
           <div className="ask-panel__options">
             <label className="dev-panel__label" htmlFor="ask-top-k">
-              TopK（1-8）
+              TopK（{queryTopKMin}-{queryTopKMax}）
             </label>
             <input
               id="ask-top-k"
               className="dev-panel__input ask-panel__topk"
               type="number"
-              min={1}
-              max={8}
+              min={queryTopKMin}
+              max={queryTopKMax}
               step={1}
               value={queryTopK}
               onChange={(event) => setQueryTopK(Number(event.target.value))}
@@ -429,11 +522,27 @@ export default function App() {
           <div className="ask-panel__actions">
             <button
               type="button"
+              className="dev-panel__button"
+              onClick={() => void handleSaveQuerySettings()}
+              disabled={!isTauriRuntime() || querySettingsSaving}
+            >
+              {querySettingsSaving ? "保存中..." : "保存参数"}
+            </button>
+            <button
+              type="button"
               className="dev-panel__button dev-panel__button--accent"
               onClick={() => void handleQueryAsk()}
               disabled={!isTauriRuntime() || queryRunning}
             >
               {queryRunning ? "检索中..." : "执行 Query"}
+            </button>
+            <button
+              type="button"
+              className="dev-panel__button"
+              onClick={() => void handleSaveQueryResult()}
+              disabled={!isTauriRuntime() || queryResultSaving || !queryResult}
+            >
+              {queryResultSaving ? "保存中..." : "保存回答到 Wiki"}
             </button>
           </div>
         </div>

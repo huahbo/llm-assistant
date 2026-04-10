@@ -2,7 +2,8 @@ use tauri::State;
 
 use crate::models::{
     AppMode, AppOverview, DefaultPaths, IngestResult, LintReport, LogEntry, ModeChangeResult,
-    QueryAnswerResult, QueryAskOptions, VaultInitResult,
+    QueryAnswerResult, QueryAskOptions, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
+    VaultInitResult,
 };
 use crate::state::AppState;
 
@@ -18,6 +19,12 @@ pub fn get_app_overview(state: State<'_, AppState>) -> AppOverview {
 #[tauri::command]
 pub fn get_default_paths(state: State<'_, AppState>) -> DefaultPaths {
     state.default_paths()
+}
+
+/// 返回 Query 参数配置。
+#[tauri::command]
+pub fn get_query_settings(state: State<'_, AppState>) -> QuerySettings {
+    state.query_settings()
 }
 
 /// 切换运行模式。
@@ -77,4 +84,24 @@ pub fn query_ask_with_options(
 ) -> Result<QueryAnswerResult, String> {
     eprintln!("[query_ask_with_options] called with question={}", question);
     state.query_ask_with_options(question, options.unwrap_or_default())
+}
+
+/// 保存 Query TopK 配置。
+#[tauri::command]
+pub fn set_query_top_k(
+    top_k: usize,
+    state: State<'_, AppState>,
+) -> Result<QuerySettings, String> {
+    eprintln!("[set_query_top_k] called with top_k={}", top_k);
+    state.set_query_top_k(top_k)
+}
+
+/// 保存 Query 结果到 Wiki。
+#[tauri::command]
+pub fn save_query_answer(
+    input: SaveQueryAnswerInput,
+    state: State<'_, AppState>,
+) -> Result<SaveQueryAnswerResult, String> {
+    eprintln!("[save_query_answer] called");
+    state.save_query_answer(input)
 }

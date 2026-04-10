@@ -1,13 +1,16 @@
 use std::{
     fs,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     db::{self, IngestTaskInput},
-    models::{AppConfig, AppMode, IngestResult, VaultInitResult},
+    models::{
+        AppConfig, AppMode, IngestResult, QueryCitation, SaveQueryAnswerInput,
+        SaveQueryAnswerResult, VaultInitResult,
+    },
 };
 
 const INDEX_SEED: &str = "# Index\n\n## Imported Pages\n";
@@ -38,6 +41,7 @@ pub fn initialize_vault(vault_path: &Path, mode: AppMode) -> Result<VaultInitRes
     let config_content = serde_json::to_string_pretty(&AppConfig {
         mode,
         vault_path: Some(vault_path.to_string_lossy().to_string()),
+        query_top_k: Some(3),
     })
     .map_err(|err| format!("序列化 Vault 配置失败: {}", err))?;
     create_file_if_missing(&config_path, &config_content, &mut created_paths)?;
@@ -88,6 +92,17 @@ pub fn ingest_markdown(vault_path: &Path, source_path: &Path) -> Result<IngestRe
 
     let db_path = vault_path.join(".app").join("meta.db");
     db::ensure_meta_db(&db_path)?;
+    if let Some(existing) = db::find_existing_ingest_by_hash(&db_path, &content_hash)? {
+        let existing_wiki_path = PathBuf::from(&existing.wiki_path);
+        if existing_wiki_path.exists() {
+            return Ok(IngestResult {
+                source_path: source_path.to_string_lossy().to_string(),
+                raw_path: existing.raw_path,
+                wiki_path: existing.wiki_path,
+                message: "检测到重复内容，已复用既有 Wiki 页面".to_string(),
+            });
+        }
+    }
     let task_input = IngestTaskInput {
         source_path,
         raw_path: &raw_path,
@@ -208,6 +223,82 @@ pub fn ingest_markdown(vault_path: &Path, source_path: &Path) -> Result<IngestRe
     })
 }
 
+/// 将 Query 结果保存为 wiki 页面，并同步 index/log/SQLite。
+pub fn save_query_answer(
+    vault_path: &Path,
+    input: &SaveQueryAnswerInput,
+) -> Result<SaveQueryAnswerResult, String> {
+    if !vault_path.exists() {
+        return Err("Vault 不存在，请先执行 init_vault".to_string());
+    }
+
+    let question = input.question.trim();
+    if question.is_empty() {
+        return Err("问题不能为空".to_string());
+    }
+
+    let answer = input.answer.trim();
+    if answer.is_empty() {
+        return Err("回答不能为空".to_string());
+    }
+
+    let timestamp_ms = current_timestamp_ms();
+    let timestamp_ns = current_timestamp_ns();
+    let page_title = build_query_page_title(input.title.as_deref(), question);
+    let wiki_file_name = format!("query-{}.md", timestamp_ns);
+    let wiki_path = vault_path.join("wiki").join(&wiki_file_name);
+    let body = build_query_wiki_body(&page_title, question, answer, &timestamp_ms, &input.citations);
+    write_or_verify_same(&wiki_path, &body)?;
+
+    let index_path = vault_path.join("index.md");
+    let index_entry = format!(
+        "- [[wiki/{}|{}]]\n  - Source file: `query://{}`\n  - Summary: {}\n",
+        wiki_file_name,
+        page_title,
+        timestamp_ms,
+        summarize_text(answer, 80)
+    );
+    append_markdown_entry(&index_path, INDEX_SEED, &index_entry)?;
+
+    let log_path = vault_path.join("log.md");
+    let log_entry = format!(
+        "## {}\n- Event: Query answer saved\n- Question: `{}`\n- Wiki: `{}`\n- Status: Success\n",
+        timestamp_ms,
+        question,
+        wiki_path.to_string_lossy()
+    );
+    append_markdown_entry(&log_path, LOG_SEED, &log_entry)?;
+
+    let db_path = vault_path.join(".app").join("meta.db");
+    db::ensure_meta_db(&db_path)?;
+    let content_hash = stable_hash_hex(body.as_bytes());
+    db::upsert_generated_wiki_page(
+        &db_path,
+        &page_title,
+        &wiki_path,
+        &summarize_text(answer, 200),
+        &content_hash,
+        &timestamp_ms,
+    )?;
+    let citation_inputs = input
+        .citations
+        .iter()
+        .map(|citation| db::CitationInput {
+            cited_page_path: citation.page_path.as_str(),
+            score: citation.score,
+            excerpt: citation.excerpt.as_str(),
+        })
+        .collect::<Vec<_>>();
+    db::replace_citations_for_page(&db_path, &wiki_path, &citation_inputs, &timestamp_ms)?;
+    db::upsert_fts_page(&db_path, &wiki_path, &page_title, &body)?;
+
+    Ok(SaveQueryAnswerResult {
+        wiki_path: wiki_path.to_string_lossy().to_string(),
+        page_title,
+        message: "Query 结果已保存到 Wiki".to_string(),
+    })
+}
+
 fn finalize_failed_task(db_path: &Path, task_id: i64, timestamp_ms: &str, error: &str) {
     let _ = db::append_task_event(db_path, task_id, "failed", error, timestamp_ms);
     let _ = db::update_task_status(db_path, task_id, "failed", Some(error), timestamp_ms);
@@ -228,6 +319,60 @@ fn build_wiki_summary(
         timestamp_ms,
         summary
     )
+}
+
+fn build_query_page_title(input_title: Option<&str>, question: &str) -> String {
+    if let Some(value) = input_title {
+        let title = value.trim();
+        if !title.is_empty() {
+            return title.to_string();
+        }
+    }
+
+    let mut title = String::from("问答-");
+    title.push_str(&summarize_text(question, 24));
+    title
+}
+
+fn build_query_wiki_body(
+    page_title: &str,
+    question: &str,
+    answer: &str,
+    timestamp_ms: &str,
+    citations: &[QueryCitation],
+) -> String {
+    let mut body = String::new();
+    body.push_str("# ");
+    body.push_str(page_title);
+    body.push_str("\n\n");
+    body.push_str("- Question: ");
+    body.push_str(question);
+    body.push('\n');
+    body.push_str("- Saved at: ");
+    body.push_str(timestamp_ms);
+    body.push_str("\n\n## Answer\n\n");
+    body.push_str(answer);
+    body.push_str("\n\n## Citations\n\n");
+
+    if citations.is_empty() {
+        body.push_str("- (none)\n");
+        return body;
+    }
+
+    for citation in citations {
+        body.push_str("- `");
+        body.push_str(&citation.page_path);
+        body.push_str("` (score: ");
+        body.push_str(&citation.score.to_string());
+        body.push_str(")\n");
+        if !citation.excerpt.trim().is_empty() {
+            body.push_str("  - ");
+            body.push_str(&trim_excerpt(citation.excerpt.trim(), 160));
+            body.push('\n');
+        }
+    }
+
+    body
 }
 
 fn normalize_raw_filename(source_stem: &str, content_hash: &str) -> String {
@@ -252,6 +397,17 @@ fn normalize_raw_filename(source_stem: &str, content_hash: &str) -> String {
 
 fn summarize_text(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
+}
+
+fn trim_excerpt(input: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for ch in input.chars().take(max_chars) {
+        output.push(ch);
+    }
+    if input.chars().count() > max_chars {
+        output.push('…');
+    }
+    output
 }
 
 fn stable_hash_hex(bytes: &[u8]) -> String {
@@ -478,5 +634,78 @@ mod tests {
         assert_eq!(wiki_count, 1);
         assert_eq!(status, "applied");
         assert!(task_event_count >= 4);
+    }
+
+    #[test]
+    fn ingest_markdown_deduplicates_same_content_by_hash() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-dedup");
+        let _guard = TempDirGuard(vault_dir.clone());
+        initialize_vault(&vault_dir, AppMode::Hybrid).expect("初始化 Vault 失败");
+
+        let source_path = vault_dir.join("source.md");
+        let source_content = "# Source Title\n\nDuplicate note content.";
+        fs::write(&source_path, source_content).expect("写入源文件失败");
+
+        let first = ingest_markdown(&vault_dir, &source_path).expect("第一次导入失败");
+        let second = ingest_markdown(&vault_dir, &source_path).expect("第二次导入失败");
+
+        assert_eq!(first.wiki_path, second.wiki_path);
+        assert_eq!(first.raw_path, second.raw_path);
+        assert!(second.message.contains("重复内容"));
+
+        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        let link_count = index_content.matches(&format!("[[wiki/{}|", Path::new(&first.wiki_path).file_name().and_then(|x| x.to_str()).unwrap_or_default())).count();
+        assert_eq!(link_count, 1);
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        let task_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .expect("查询 tasks 失败");
+        let wiki_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wiki_pages", [], |row| row.get(0))
+            .expect("查询 wiki_pages 失败");
+        assert_eq!(task_count, 1);
+        assert_eq!(wiki_count, 1);
+    }
+
+    #[test]
+    fn save_query_answer_writes_wiki_index_log_and_db_records() {
+        let vault_dir = make_temp_dir("llm-wiki-save-query");
+        let _guard = TempDirGuard(vault_dir.clone());
+        initialize_vault(&vault_dir, AppMode::Hybrid).expect("初始化 Vault 失败");
+
+        let input = SaveQueryAnswerInput {
+            question: "这个项目的核心目标是什么？".to_string(),
+            answer: "目标是构建 Windows 优先的个人 Wiki 桌面应用。".to_string(),
+            citations: vec![QueryCitation {
+                page_path: vault_dir
+                    .join("wiki")
+                    .join("ingest-1.md")
+                    .to_string_lossy()
+                    .to_string(),
+                score: 3,
+                excerpt: "本项目用于实现一个 Windows 优先的个人 Wiki 桌面应用。".to_string(),
+            }],
+            title: Some("问答-核心目标".to_string()),
+        };
+
+        let result = save_query_answer(&vault_dir, &input).expect("保存 Query 结果失败");
+
+        assert!(Path::new(&result.wiki_path).is_file());
+        let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
+        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        let log_content = fs::read_to_string(vault_dir.join("log.md")).expect("读取 log.md 失败");
+        assert!(wiki_content.contains("## Answer"));
+        assert!(wiki_content.contains("## Citations"));
+        assert!(index_content.contains("问答-核心目标"));
+        assert!(log_content.contains("Event: Query answer saved"));
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let page_paths = db::list_wiki_page_paths(&db_path).expect("读取 wiki_pages 失败");
+        assert!(page_paths.iter().any(|path| path == &result.wiki_path));
+        let citations = db::list_citations(&db_path).expect("读取 citations 失败");
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].page_path, result.wiki_path);
     }
 }

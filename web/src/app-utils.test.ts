@@ -4,6 +4,8 @@ import {
   createIngestMarkdownArgs,
   createQueryAskArgs,
   createQueryAskWithOptionsArgs,
+  createSaveQueryAnswerArgs,
+  createSetQueryTopKArgs,
   createVaultInitArgs,
   isTauriRuntime,
 } from "./tauri-client";
@@ -62,6 +64,38 @@ describe("Tauri 运行时与参数映射", () => {
       options: {
         topK: 5,
         top_k: 5,
+      },
+    });
+
+    expect(createSetQueryTopKArgs(6)).toEqual({
+      topK: 6,
+      top_k: 6,
+    });
+
+    expect(
+      createSaveQueryAnswerArgs({
+        question: "什么是 Query v1",
+        answer: "这是一个本地检索问答流程。",
+        citations: [
+          {
+            page_path: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+            score: 3,
+            excerpt: "本项目用于实现一个 Windows 优先的个人 Wiki 桌面应用。",
+          },
+        ],
+      }),
+    ).toEqual({
+      input: {
+        question: "什么是 Query v1",
+        answer: "这是一个本地检索问答流程。",
+        citations: [
+          {
+            page_path: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+            score: 3,
+            excerpt: "本项目用于实现一个 Windows 优先的个人 Wiki 桌面应用。",
+          },
+        ],
+        title: undefined,
       },
     });
   });
