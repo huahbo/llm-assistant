@@ -69,6 +69,18 @@ pub struct LintIssue {
     pub suggestion: String,
 }
 
+/// Lint 严重级别统计。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct LintSeverityStats {
+    pub error: usize,
+    pub warning: usize,
+    pub info: usize,
+}
+
+fn default_lint_severity_stats() -> LintSeverityStats {
+    LintSeverityStats::default()
+}
+
 /// Lint 报告。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LintReport {
@@ -76,6 +88,8 @@ pub struct LintReport {
     pub checked_at: String,
     pub summary: String,
     pub issues: Vec<LintIssue>,
+    #[serde(default = "default_lint_severity_stats")]
+    pub severity_stats: LintSeverityStats,
 }
 
 /// Vault 初始化结果。
@@ -106,6 +120,8 @@ pub struct DefaultPaths {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryCitation {
     pub page_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_path: Option<String>,
     pub score: usize,
     pub excerpt: String,
 }
@@ -119,6 +135,18 @@ pub struct QueryAnswerResult {
     pub matched_pages: Vec<String>,
     pub mode: AppMode,
     pub checked_at: String,
+    #[serde(default = "default_query_search_strategy")]
+    pub search_strategy: String,
+    #[serde(default = "default_query_answer_strategy")]
+    pub answer_strategy: String,
+}
+
+fn default_query_search_strategy() -> String {
+    "empty".to_string()
+}
+
+fn default_query_answer_strategy() -> String {
+    "rule".to_string()
 }
 
 /// Query 运行参数。
@@ -153,4 +181,47 @@ pub struct SaveQueryAnswerResult {
     pub wiki_path: String,
     pub page_title: String,
     pub message: String,
+}
+
+/// LLM 状态。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmStatus {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub healthy: bool,
+    pub message: String,
+    pub mode: AppMode,
+}
+
+/// Wiki 页面摘要项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageItem {
+    pub title: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_path: Option<String>,
+    pub summary: String,
+    pub updated_at: String,
+}
+
+/// Wiki 页面详情。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageDetail {
+    pub title: String,
+    pub path: String,
+    pub display_path: String,
+    pub content: String,
+    pub updated_at: String,
+}
+
+/// Wiki 页面引用项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageCitationItem {
+    pub cited_page_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cited_page_display_path: Option<String>,
+    pub score: usize,
+    pub excerpt: String,
+    pub target_exists: bool,
 }

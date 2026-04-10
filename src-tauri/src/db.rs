@@ -49,6 +49,17 @@ pub struct CitationInput<'a> {
 pub struct CitationRecord {
     pub page_path: String,
     pub cited_page_path: String,
+    pub score: usize,
+    pub excerpt: String,
+}
+
+/// wiki_pages 查询记录。
+#[derive(Debug, Clone)]
+pub struct WikiPageRecord {
+    pub title: String,
+    pub path: String,
+    pub summary: String,
+    pub updated_at: String,
 }
 
 /// 确保元数据库与表结构存在。
@@ -144,7 +155,7 @@ pub fn list_citations(db_path: &Path) -> Result<Vec<CitationRecord>, String> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT page_path, cited_page_path
+            SELECT page_path, cited_page_path, score, excerpt
             FROM citations
             ORDER BY id ASC
             "#,
@@ -152,15 +163,126 @@ pub fn list_citations(db_path: &Path) -> Result<Vec<CitationRecord>, String> {
         .map_err(|err| format!("准备查询 citations 失败: {}", err))?;
     let rows = stmt
         .query_map([], |row| {
+            let score = row.get::<_, i64>(2)?;
             Ok(CitationRecord {
                 page_path: row.get(0)?,
                 cited_page_path: row.get(1)?,
+                score: usize::try_from(score).unwrap_or_default(),
+                excerpt: row.get(3)?,
             })
         })
         .map_err(|err| format!("读取 citations 失败: {}", err))?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("读取 citations 失败: {}", err))
+}
+
+/// 读取指定页面的引用关系。
+pub fn list_citations_for_page(
+    db_path: &Path,
+    page_path: &str,
+) -> Result<Vec<CitationRecord>, String> {
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT page_path, cited_page_path, score, excerpt
+            FROM citations
+            WHERE page_path = ?1
+            ORDER BY id ASC
+            "#,
+        )
+        .map_err(|err| format!("准备查询 citations 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![page_path], |row| {
+            let score = row.get::<_, i64>(2)?;
+            Ok(CitationRecord {
+                page_path: row.get(0)?,
+                cited_page_path: row.get(1)?,
+                score: usize::try_from(score).unwrap_or_default(),
+                excerpt: row.get(3)?,
+            })
+        })
+        .map_err(|err| format!("读取 citations 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 citations 失败: {}", err))
+}
+
+/// 读取最近更新的 wiki 页面。
+pub fn list_recent_wiki_pages(db_path: &Path, limit: usize) -> Result<Vec<WikiPageRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT title, path, summary, updated_at
+            FROM wiki_pages
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 wiki_pages 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(WikiPageRecord {
+                title: row.get(0)?,
+                path: row.get(1)?,
+                summary: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .map_err(|err| format!("读取 wiki_pages 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 wiki_pages 失败: {}", err))
+}
+
+/// 按关键字搜索 wiki 页面（标题/摘要/路径）。
+pub fn search_wiki_pages(
+    db_path: &Path,
+    keyword: &str,
+    limit: usize,
+) -> Result<Vec<WikiPageRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let normalized = keyword.trim();
+    if normalized.is_empty() {
+        return list_recent_wiki_pages(db_path, limit);
+    }
+
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT title, path, summary, updated_at
+            FROM wiki_pages
+            WHERE instr(lower(title), lower(?1)) > 0
+               OR instr(lower(summary), lower(?1)) > 0
+               OR instr(lower(path), lower(?1)) > 0
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备搜索 wiki_pages 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![normalized, limit as i64], |row| {
+            Ok(WikiPageRecord {
+                title: row.get(0)?,
+                path: row.get(1)?,
+                summary: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .map_err(|err| format!("搜索 wiki_pages 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取搜索结果失败: {}", err))
 }
 
 /// 创建导入任务的源记录与任务记录。
@@ -689,6 +811,8 @@ mod tests {
             citations[0].cited_page_path,
             "E:\\llm-wiki\\vault\\wiki\\ingest-2.md"
         );
+        assert_eq!(citations[0].score, 2);
+        assert_eq!(citations[0].excerpt, "excerpt-2");
     }
 
     #[test]
@@ -721,5 +845,70 @@ mod tests {
             .expect("应返回结果");
         assert_eq!(existing.raw_path, "raw-1.md");
         assert_eq!(existing.wiki_path, "wiki-b.md");
+    }
+
+    #[test]
+    fn list_citations_for_page_returns_page_rows() {
+        let dir = make_temp_dir("llm-wiki-db-citations-for-page");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["wiki/a.md", "wiki/b.md", 3_i64, "excerpt-a", "1"],
+        )
+        .expect("写入 citations 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["wiki/a.md", "wiki/c.md", 2_i64, "excerpt-b", "2"],
+        )
+        .expect("写入 citations 失败");
+
+        let rows = list_citations_for_page(&db_path, "wiki/a.md").expect("读取 citations 失败");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].cited_page_path, "wiki/b.md");
+        assert_eq!(rows[1].cited_page_path, "wiki/c.md");
+    }
+
+    #[test]
+    fn search_wiki_pages_matches_keyword_and_orders_by_updated_at() {
+        let dir = make_temp_dir("llm-wiki-db-search-pages");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-s", "source-s", "raw-s.md", "1"],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Rust 页面", "wiki/rust-a.md", "rust summary a", "1", "2"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Tauri 页面", "wiki/tauri.md", "desktop app", "1", "3"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Rust 进阶", "wiki/rust-b.md", "rust summary b", "1", "4"],
+        )
+        .expect("写入 wiki_pages 失败");
+
+        let matches = search_wiki_pages(&db_path, "rust", 10).expect("搜索 wiki 页面失败");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].title, "Rust 进阶");
+        assert_eq!(matches[1].title, "Rust 页面");
+
+        let all = search_wiki_pages(&db_path, "   ", 10).expect("读取最近页面失败");
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].title, "Rust 进阶");
     }
 }

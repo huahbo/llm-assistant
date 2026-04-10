@@ -1,0 +1,15 @@
+//! LLM Provider 模块
+//!
+//! 本模块提供与大语言模型（LLM）服务交互的抽象层，
+//! 支持多种 LLM 后端的统一接口。
+//!
+//! # 模块结构
+//! - `provider`: 定义 LlmProvider trait 和错误类型
+//! - `ollama`: Ollama 本地 LLM 服务实现
+
+pub mod provider;
+pub mod ollama;
+
+// 重导出常用类型，方便外部使用
+pub use provider::{LlmError, LlmProvider};
+pub use ollama::{OllamaConfig, OllamaProvider};

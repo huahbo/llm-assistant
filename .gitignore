@@ -22,7 +22,9 @@ llm-web.md
 # Local tooling cache
 # ------------------------------
 .tools/
+.claude/
 .codex
+test-llm.md
 
 # ------------------------------
 # OS / IDE

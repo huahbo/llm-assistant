@@ -61,7 +61,16 @@ pub fn initialize_vault(vault_path: &Path, mode: AppMode) -> Result<VaultInitRes
 }
 
 /// 导入 Markdown 文件到 Vault。
-pub fn ingest_markdown(vault_path: &Path, source_path: &Path) -> Result<IngestResult, String> {
+///
+/// # 参数
+/// - `vault_path`: Vault 根目录路径
+/// - `source_path`: 源 Markdown 文件路径
+/// - `llm_summary`: LLM 生成的摘要（可选），如果为 None 则使用截断摘要
+pub fn ingest_markdown(
+    vault_path: &Path,
+    source_path: &Path,
+    llm_summary: Option<&str>,
+) -> Result<IngestResult, String> {
     if !vault_path.exists() {
         return Err("Vault 不存在，请先执行 init_vault".to_string());
     }
@@ -81,7 +90,10 @@ pub fn ingest_markdown(vault_path: &Path, source_path: &Path) -> Result<IngestRe
     let wiki_file_name = format!("ingest-{}.md", timestamp_ns);
     let wiki_path = vault_path.join("wiki").join(&wiki_file_name);
     let wiki_title = wiki_file_name.trim_end_matches(".md").to_string();
-    let summary = summarize_text(&source_content, 200);
+    // 优先使用 LLM 摘要，否则回退到截断摘要
+    let summary = llm_summary
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| fallback_summarize(&source_content, 200));
     let wiki_body = build_wiki_summary(
         &wiki_title,
         source_path,
@@ -144,12 +156,16 @@ pub fn ingest_markdown(vault_path: &Path, source_path: &Path) -> Result<IngestRe
     }
 
     let index_path = vault_path.join("index.md");
+    // index 中使用较短的摘要（截取前 80 字符）
+    let short_summary = llm_summary
+        .map(|s| fallback_summarize(s, 80))
+        .unwrap_or_else(|| fallback_summarize(&source_content, 80));
     let index_entry = format!(
         "- [[wiki/{}|{}]]\n  - Source file: `{}`\n  - Summary: {}\n",
         wiki_file_name,
         wiki_title,
         raw_file_name,
-        summarize_text(&source_content, 80)
+        short_summary
     );
     if let Err(err) = append_markdown_entry(&index_path, INDEX_SEED, &index_entry) {
         finalize_failed_task(&db_path, task.task_id, &timestamp_ms, &err);
@@ -256,7 +272,7 @@ pub fn save_query_answer(
         wiki_file_name,
         page_title,
         timestamp_ms,
-        summarize_text(answer, 80)
+        fallback_summarize(answer, 80)
     );
     append_markdown_entry(&index_path, INDEX_SEED, &index_entry)?;
 
@@ -276,7 +292,7 @@ pub fn save_query_answer(
         &db_path,
         &page_title,
         &wiki_path,
-        &summarize_text(answer, 200),
+        &fallback_summarize(answer, 200),
         &content_hash,
         &timestamp_ms,
     )?;
@@ -330,7 +346,7 @@ fn build_query_page_title(input_title: Option<&str>, question: &str) -> String {
     }
 
     let mut title = String::from("问答-");
-    title.push_str(&summarize_text(question, 24));
+    title.push_str(&fallback_summarize(question, 24));
     title
 }
 
@@ -395,7 +411,10 @@ fn normalize_raw_filename(source_stem: &str, content_hash: &str) -> String {
     format!("{}-{}.md", cleaned, hash_prefix)
 }
 
-fn summarize_text(text: &str, limit: usize) -> String {
+/// 截断文本生成摘要（回退方案）
+///
+/// 当 LLM 不可用时，简单截断原始文本作为摘要。
+pub fn fallback_summarize(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
@@ -595,7 +614,7 @@ mod tests {
         let source_content = "# Source Title\n\nA short note for ingest.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let result = ingest_markdown(&vault_dir, &source_path).expect("导入 Markdown 失败");
+        let result = ingest_markdown(&vault_dir, &source_path, None).expect("导入 Markdown 失败");
 
         assert!(Path::new(&result.raw_path).is_file());
         assert!(Path::new(&result.wiki_path).is_file());
@@ -646,8 +665,8 @@ mod tests {
         let source_content = "# Source Title\n\nDuplicate note content.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let first = ingest_markdown(&vault_dir, &source_path).expect("第一次导入失败");
-        let second = ingest_markdown(&vault_dir, &source_path).expect("第二次导入失败");
+        let first = ingest_markdown(&vault_dir, &source_path, None).expect("第一次导入失败");
+        let second = ingest_markdown(&vault_dir, &source_path, None).expect("第二次导入失败");
 
         assert_eq!(first.wiki_path, second.wiki_path);
         assert_eq!(first.raw_path, second.raw_path);
@@ -684,6 +703,7 @@ mod tests {
                     .join("ingest-1.md")
                     .to_string_lossy()
                     .to_string(),
+                display_path: None,
                 score: 3,
                 excerpt: "本项目用于实现一个 Windows 优先的个人 Wiki 桌面应用。".to_string(),
             }],

@@ -2,32 +2,43 @@ import { useEffect, useState } from "react";
 import {
   fetchAppOverview,
   fetchDefaultPaths,
+  fetchLlmStatus,
   fetchQuerySettings,
   fetchRecentLogs,
+  fetchRecentWikiPages,
+  fetchWikiPageDetail,
+  fetchWikiPageCitations,
   initVault,
   ingestMarkdown,
   isTauriRuntime,
   queryAskWithOptions,
   runLint,
+  searchWikiPages,
   saveQueryAnswer,
   setBackendMode,
   setQueryTopK as persistQueryTopK,
+  formatLlmStatusSummary,
+  resolveDisplayPath,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
-import { formatLintCheckedAt, normalizeLintSeverity } from "./lint-utils";
+import { formatLintCheckedAt, normalizeLintSeverity, resolveLintSeverityStats } from "./lint-utils";
 import type {
   AppOverview,
   BackendAppMode,
+  LlmStatus,
   LintReport,
   LogEntry,
   ModuleItem,
   ModeId,
   ModeOption,
   QueryAnswerResult,
+  WikiPageDetail,
+  WikiPageCitation,
+  WikiPageItem,
 } from "./types";
 
 const defaultVaultPath = "vault";
-const defaultIngestSourcePath = "README.md";
+const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
@@ -52,6 +63,46 @@ const modeIdToBackendMode: Record<ModeId, BackendAppMode> = {
   "strict-local": "StrictLocal",
 };
 
+const answerStrategyLabels: Record<string, string> = {
+  llm: "LLM 合成",
+  rule: "规则回退",
+  llm_synthesis: "LLM 合成",
+  rule_fallback: "规则回退",
+};
+
+const lintSeverityFilterLabels: Record<LintSeverityFilter, string> = {
+  all: "全部",
+  error: "错误",
+  warning: "警告",
+  info: "信息",
+};
+
+const searchStrategyLabels: Record<string, string> = {
+  fts: "FTS 检索",
+  scan: "回退扫描",
+  empty: "空结果",
+};
+
+export const formatQueryAnswerStrategyLabel = (answerStrategy?: string | null) => {
+  const normalizedStrategy = answerStrategy?.trim().toLowerCase();
+
+  if (!normalizedStrategy) {
+    return "未知";
+  }
+
+  return answerStrategyLabels[normalizedStrategy] ?? "未知";
+};
+
+export const formatQuerySearchStrategyLabel = (searchStrategy?: string | null) => {
+  const normalizedStrategy = searchStrategy?.trim().toLowerCase();
+
+  if (!normalizedStrategy) {
+    return "未知";
+  }
+
+  return searchStrategyLabels[normalizedStrategy] ?? "未知";
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -61,28 +112,39 @@ const modules: ModuleItem[] = [
 ];
 
 type DevAction = "init_vault" | "ingest_markdown";
+type LintSeverityFilter = "all" | "error" | "warning" | "info";
 
 type LoadResult = {
   overview: AppOverview | null;
   logs: LogEntry[];
+  pages: WikiPageItem[];
+  llmStatus: LlmStatus | null;
 };
 
 const loadAppData = async (): Promise<LoadResult> => {
-  const [overviewResult, logsResult] = await Promise.allSettled([
+  const [overviewResult, logsResult, pagesResult, llmStatusResult] = await Promise.allSettled([
     fetchAppOverview(),
     fetchRecentLogs(),
+    fetchRecentWikiPages(),
+    fetchLlmStatus(),
   ]);
 
   return {
     overview: overviewResult.status === "fulfilled" ? overviewResult.value : null,
     logs: logsResult.status === "fulfilled" ? logsResult.value : [],
+    pages: pagesResult.status === "fulfilled" ? pagesResult.value : [],
+    llmStatus: llmStatusResult.status === "fulfilled" ? llmStatusResult.value : null,
   };
 };
 
 export default function App() {
   const [overview, setOverview] = useState<AppOverview | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [pages, setPages] = useState<WikiPageItem[]>([]);
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  const [llmStatusLoaded, setLlmStatusLoaded] = useState(false);
   const [lintReport, setLintReport] = useState<LintReport | null>(null);
+  const [lintSeverityFilter, setLintSeverityFilter] = useState<LintSeverityFilter>("all");
   const [queryResult, setQueryResult] = useState<QueryAnswerResult | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [switchingMode, setSwitchingMode] = useState<ModeId | null>(null);
@@ -97,6 +159,14 @@ export default function App() {
   const [queryTopKMax, setQueryTopKMax] = useState(defaultQueryTopKMax);
   const [querySettingsSaving, setQuerySettingsSaving] = useState(false);
   const [queryResultSaving, setQueryResultSaving] = useState(false);
+  const [wikiKeyword, setWikiKeyword] = useState("");
+  const [wikiSearching, setWikiSearching] = useState(false);
+  const [wikiPageDetail, setWikiPageDetail] = useState<WikiPageDetail | null>(null);
+  const [wikiPageCitations, setWikiPageCitations] = useState<WikiPageCitation[]>([]);
+  const [wikiPageDetailLoading, setWikiPageDetailLoading] = useState(false);
+  const [wikiPageCitationsLoading, setWikiPageCitationsLoading] = useState(false);
+  const [wikiPageDetailError, setWikiPageDetailError] = useState("");
+  const [wikiPageCitationsError, setWikiPageCitationsError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -111,10 +181,13 @@ export default function App() {
       if (!cancelled) {
         setOverview(data.overview);
         setLogs(data.logs);
+        setPages(data.pages);
         if (defaultPaths) {
           setVaultPath(defaultPaths.vault_path);
           setIngestSourcePath(defaultPaths.ingest_source_path);
         }
+        setLlmStatus(data.llmStatus);
+        setLlmStatusLoaded(true);
         if (querySettings) {
           setQueryTopK(querySettings.top_k);
           setQueryTopKMin(querySettings.min_top_k);
@@ -133,6 +206,9 @@ export default function App() {
     const data = await loadAppData();
     setOverview(data.overview);
     setLogs(data.logs);
+    setPages(data.pages);
+    setLlmStatus(data.llmStatus);
+    setLlmStatusLoaded(true);
   };
 
   const handleModeSelect = async (modeId: ModeId) => {
@@ -366,6 +442,121 @@ export default function App() {
     }
   };
 
+  const handleSearchWikiPages = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法搜索 Wiki 页面。");
+      return;
+    }
+
+    setWikiSearching(true);
+    setStatusMessage("");
+    try {
+      const result = await searchWikiPages(wikiKeyword.trim());
+      setPages(result);
+      if (wikiKeyword.trim()) {
+        setStatusMessage(`Wiki 搜索完成：关键词“${wikiKeyword.trim()}”，命中 ${result.length} 页。`);
+      } else {
+        setStatusMessage(`已刷新最近 Wiki 页面：${result.length} 页。`);
+      }
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`搜索 Wiki 页面失败：${message}`);
+    } finally {
+      setWikiSearching(false);
+    }
+  };
+
+  const handleResetWikiPages = async () => {
+    setWikiKeyword("");
+    await refreshAppData();
+    setStatusMessage("已恢复显示最近 Wiki 页面。");
+  };
+
+  const handleOpenWikiPage = async (pagePath: string) => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法查看 Wiki 页面内容。");
+      return;
+    }
+
+    setWikiPageDetailLoading(true);
+    setWikiPageCitationsLoading(true);
+    setWikiPageDetailError("");
+    setWikiPageCitationsError("");
+    setStatusMessage("");
+
+    try {
+      const [detail, citations] = await Promise.all([
+        fetchWikiPageDetail(pagePath),
+        fetchWikiPageCitations(pagePath),
+      ]);
+
+      if (!detail) {
+        setWikiPageDetailError("当前环境不支持读取页面内容。");
+        setWikiPageDetail(null);
+        setWikiPageCitations([]);
+        return;
+      }
+
+      setWikiPageDetail(detail);
+      setWikiPageCitations(citations ?? []);
+      if (citations === null) {
+        setWikiPageCitationsError("当前环境不支持读取页面引用。");
+      }
+      setStatusMessage(`已打开页面：${detail.title}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setWikiPageDetailError(`读取页面失败：${message}`);
+      setWikiPageCitationsError("");
+      setWikiPageDetail(null);
+      setWikiPageCitations([]);
+    } finally {
+      setWikiPageDetailLoading(false);
+      setWikiPageCitationsLoading(false);
+    }
+  };
+
+  const handleCloseWikiPreview = () => {
+    setWikiPageDetail(null);
+    setWikiPageCitations([]);
+    setWikiPageDetailError("");
+    setWikiPageCitationsError("");
+    setStatusMessage("已关闭页面预览。");
+  };
+
+  const llmStatusSummary = llmStatus ? formatLlmStatusSummary(llmStatus) : null;
+  const llmAvailabilityText = !isTauriRuntime()
+    ? "浏览器预览"
+    : llmStatusLoaded && llmStatusSummary
+      ? llmStatusSummary.availabilityText
+      : "加载中...";
+  const llmModelText = !isTauriRuntime()
+    ? "未连接 Tauri"
+    : llmStatusLoaded && llmStatusSummary
+      ? llmStatusSummary.modelText
+      : "加载中...";
+  const llmAddressText = !isTauriRuntime()
+    ? "未连接 Tauri"
+    : llmStatusLoaded && llmStatusSummary
+      ? llmStatusSummary.addressText
+      : "加载中...";
+  const llmHintText = !isTauriRuntime()
+    ? "浏览器预览模式下无法读取本地 LLM 状态。"
+    : llmStatusLoaded && llmStatusSummary
+      ? llmStatusSummary.hintText
+      : "正在读取 LLM 状态...";
+  const lintSeverityStats = resolveLintSeverityStats(lintReport);
+  const lintIssues = lintReport?.issues ?? [];
+  const filteredLintIssues =
+    lintSeverityFilter === "all"
+      ? lintIssues
+      : lintIssues.filter((issue) => normalizeLintSeverity(issue.severity) === lintSeverityFilter);
+  const lintFilterEmptyText =
+    lintSeverityFilter === "all"
+      ? "本次 lint 检查未发现问题。"
+      : `当前没有 ${lintSeverityFilterLabels[lintSeverityFilter]} 类问题。`;
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -403,6 +594,24 @@ export default function App() {
         ) : (
           <p className="runtime-hint">当前处于浏览器骨架预览模式。</p>
         )}
+        <div className="runtime-banner" aria-label="LLM 状态">
+          <div className="runtime-banner__item">
+            <span>LLM</span>
+            <strong>{llmAvailabilityText}</strong>
+          </div>
+          <div className="runtime-banner__item">
+            <span>模型</span>
+            <strong>{llmModelText}</strong>
+          </div>
+          <div className="runtime-banner__item">
+            <span>地址</span>
+            <strong>{llmAddressText}</strong>
+          </div>
+          <div className="runtime-banner__item">
+            <span>提示</span>
+            <strong>{llmHintText}</strong>
+          </div>
+        </div>
         {statusMessage ? <p className="runtime-status">{statusMessage}</p> : null}
         <div className="mode-grid">
           {modes.map((mode) => (
@@ -550,6 +759,8 @@ export default function App() {
           <div className="ask-result">
             <div className="ask-result__meta">
               <span>模式：{formatBackendMode(queryResult.mode)}</span>
+              <span>检索策略：{formatQuerySearchStrategyLabel(queryResult.search_strategy)}</span>
+              <span>策略：{formatQueryAnswerStrategyLabel(queryResult.answer_strategy)}</span>
               <span>TopK：{queryTopK}</span>
               <span>命中：{queryResult.matched_pages.length}</span>
               <span>时间：{formatLintCheckedAt(queryResult.checked_at)}</span>
@@ -559,7 +770,7 @@ export default function App() {
               {queryResult.citations.map((citation) => (
                 <article key={`${citation.page_path}-${citation.score}`} className="ask-citation">
                   <div className="ask-citation__top">
-                    <code>{citation.page_path}</code>
+                    <code>{resolveDisplayPath(citation)}</code>
                     <span>score: {citation.score}</span>
                   </div>
                   <p>{citation.excerpt}</p>
@@ -611,11 +822,43 @@ export default function App() {
             <span>问题数量</span>
             <strong>{lintReport ? lintReport.issues.length : 0}</strong>
           </div>
+          <div className="runtime-banner__item">
+            <span>严重级别</span>
+            <strong>
+              {`错误 ${lintSeverityStats.error} · 警告 ${lintSeverityStats.warning} · 信息 ${lintSeverityStats.info}`}
+            </strong>
+          </div>
         </div>
         {lintReport ? (
-          lintReport.issues.length ? (
+          <div className="lint-panel__actions" aria-label="lint 严重级别筛选">
+            {(["all", "error", "warning", "info"] as LintSeverityFilter[]).map((severity) => {
+              const active = lintSeverityFilter === severity;
+              const count =
+                severity === "all"
+                  ? lintIssues.length
+                  : severity === "error"
+                    ? lintSeverityStats.error
+                    : severity === "warning"
+                      ? lintSeverityStats.warning
+                      : lintSeverityStats.info;
+
+              return (
+                <button
+                  key={severity}
+                  type="button"
+                  className={`dev-panel__button ${active ? "dev-panel__button--accent" : ""}`}
+                  onClick={() => setLintSeverityFilter(severity)}
+                >
+                  {lintSeverityFilterLabels[severity]} ({count})
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {lintReport ? (
+          filteredLintIssues.length ? (
             <div className="lint-issue-list">
-              {lintReport.issues.map((issue) => {
+              {filteredLintIssues.map((issue) => {
                 const severity = normalizeLintSeverity(issue.severity);
 
                 return (
@@ -638,7 +881,7 @@ export default function App() {
               })}
             </div>
           ) : (
-            <p className="empty-state">本次 lint 检查未发现问题。</p>
+            <p className="empty-state">{lintFilterEmptyText}</p>
           )
         ) : (
           <p className="empty-state">
@@ -673,6 +916,144 @@ export default function App() {
               : "浏览器预览模式下不加载 Tauri 日志。"}
           </p>
         )}
+      </section>
+
+      <section className="panel">
+        <div className="section-head">
+          <h2>Wiki 页面</h2>
+          <span className="section-head__hint">{pages.length ? `最近 ${pages.length} 页` : "暂无页面"}</span>
+        </div>
+        <div className="dev-panel">
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="wiki-keyword">
+              关键字
+            </label>
+            <input
+              id="wiki-keyword"
+              className="dev-panel__input"
+              type="text"
+              value={wikiKeyword}
+              onChange={(event) => setWikiKeyword(event.target.value)}
+              placeholder="按标题、摘要、路径搜索"
+              spellCheck={false}
+            />
+          </div>
+          <div className="dev-panel__actions">
+            <button
+              type="button"
+              className="dev-panel__button dev-panel__button--accent"
+              onClick={() => void handleSearchWikiPages()}
+              disabled={!isTauriRuntime() || wikiSearching}
+            >
+              {wikiSearching ? "搜索中..." : "搜索 Wiki"}
+            </button>
+            <button
+              type="button"
+              className="dev-panel__button"
+              onClick={() => void handleResetWikiPages()}
+              disabled={wikiSearching}
+            >
+              恢复最近
+            </button>
+          </div>
+        </div>
+        {pages.length ? (
+          <div className="ask-result__citations">
+            {pages.map((page) => (
+              <article key={page.path} className="ask-citation">
+                <div className="ask-citation__top">
+                  <code>{page.title}</code>
+                  <span>{formatLintCheckedAt(page.updated_at)}</span>
+                </div>
+                <p>{page.summary}</p>
+                <div className="wiki-card__footer">
+                  <code>{resolveDisplayPath(page)}</code>
+                  <button
+                    type="button"
+                    className="dev-panel__button wiki-card__button"
+                    onClick={() => void handleOpenWikiPage(page.path)}
+                    disabled={!isTauriRuntime() || wikiPageDetailLoading}
+                  >
+                    查看内容
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-state">
+            {isTauriRuntime()
+              ? "当前没有可展示的 wiki 页面。先执行示例摄入或保存 Query 结果。"
+              : "浏览器预览模式下不加载后端 wiki 页面列表。"}
+          </p>
+        )}
+        {wikiPageDetail ? (
+          <article className="wiki-preview">
+            <div className="wiki-preview__head">
+              <div className="wiki-preview__title">
+                <h3>{wikiPageDetail.title}</h3>
+                <p>
+                  <code>{resolveDisplayPath(wikiPageDetail)}</code>
+                </p>
+              </div>
+              <div className="wiki-preview__actions">
+                <span>{formatLintCheckedAt(wikiPageDetail.updated_at)}</span>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={handleCloseWikiPreview}
+                >
+                  关闭预览
+                </button>
+              </div>
+            </div>
+            <pre className="wiki-preview__content">{wikiPageDetail.content}</pre>
+            <div className="wiki-preview__citations">
+              <div className="section-head wiki-preview__citations-head">
+                <h3>页面引用</h3>
+                <span className="section-head__hint">
+                  {wikiPageCitations.length ? `${wikiPageCitations.length} 条` : "暂无引用"}
+                </span>
+              </div>
+              {wikiPageCitationsError ? <p className="runtime-status">{wikiPageCitationsError}</p> : null}
+              {wikiPageCitationsLoading ? <p className="runtime-hint">正在读取页面引用...</p> : null}
+              {wikiPageCitations.length ? (
+                <div className="wiki-citation-list">
+                  {wikiPageCitations.map((citation) => (
+                    <article key={`${citation.cited_page_path}-${citation.score}`} className="wiki-citation">
+                      <div className="wiki-citation__top">
+                        <code>{resolveDisplayPath(citation)}</code>
+                        <span className={`pill ${citation.target_exists ? "pill--ok" : "pill--danger"}`}>
+                          {citation.target_exists ? "目标存在" : "目标缺失"}
+                        </span>
+                      </div>
+                      <div className="wiki-citation__meta">
+                        <span>score: {citation.score}</span>
+                      </div>
+                      <p>{citation.excerpt}</p>
+                      <div className="wiki-citation__actions">
+                        <button
+                          type="button"
+                          className="dev-panel__button wiki-citation__button"
+                          onClick={() => void handleOpenWikiPage(citation.cited_page_path)}
+                          disabled={!isTauriRuntime() || !citation.target_exists || wikiPageDetailLoading}
+                        >
+                          {citation.target_exists ? "查看被引页面" : "目标页面缺失"}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty-state">当前页面没有可展示的引用。</p>
+              )}
+            </div>
+          </article>
+        ) : wikiPageDetailError ? (
+          <p className="runtime-status">{wikiPageDetailError}</p>
+        ) : wikiPageDetailLoading ? (
+          <p className="runtime-hint">正在读取页面内容...</p>
+        ) : null}
       </section>
 
       <section className="panel">

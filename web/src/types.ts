@@ -19,6 +19,13 @@ export type BackendAppMode = "Hybrid" | "StrictLocal";
 
 export type LogLevel = "Info" | "Warn" | "Error";
 
+export interface LlmStatus {
+  available: boolean;
+  model: string;
+  address: string;
+  message: string;
+}
+
 export interface AppOverview {
   app_name: string;
   mode: BackendAppMode;
@@ -54,13 +61,20 @@ export interface DefaultPaths {
 
 export interface QueryCitation {
   page_path: string;
+  display_path?: string | null;
+  displayPath?: string | null;
   score: number;
   excerpt: string;
 }
 
+export type QueryAnswerStrategy = "llm" | "rule";
+export type LegacyQueryAnswerStrategy = "llm_synthesis" | "rule_fallback";
+
 export interface QueryAnswerResult {
   question: string;
   answer: string;
+  search_strategy?: string | null;
+  answer_strategy?: QueryAnswerStrategy | LegacyQueryAnswerStrategy | null;
   citations: QueryCitation[];
   matched_pages: string[];
   mode: BackendAppMode;
@@ -90,6 +104,34 @@ export interface SaveQueryAnswerResult {
   message: string;
 }
 
+export interface WikiPageItem {
+  title: string;
+  path: string;
+  display_path?: string | null;
+  displayPath?: string | null;
+  summary: string;
+  updated_at: string;
+}
+
+export interface WikiPageDetail {
+  title: string;
+  path: string;
+  display_path?: string | null;
+  displayPath?: string | null;
+  content: string;
+  updated_at: string;
+}
+
+export interface WikiPageCitation {
+  cited_page_path: string;
+  display_path?: string | null;
+  displayPath?: string | null;
+  cited_page_display_path?: string | null;
+  score: number;
+  excerpt: string;
+  target_exists: boolean;
+}
+
 export interface LintIssue {
   code: string;
   severity: string;
@@ -98,10 +140,17 @@ export interface LintIssue {
   suggestion: string;
 }
 
+export interface LintSeverityStats {
+  error: number;
+  warning: number;
+  info: number;
+}
+
 export interface LintReport {
   mode: BackendAppMode;
   checked_at: string;
   summary: string;
+  severity_stats?: LintSeverityStats | null;
   issues: LintIssue[];
 }
 

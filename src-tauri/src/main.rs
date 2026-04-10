@@ -2,6 +2,7 @@
 
 mod commands;
 mod db;
+mod llm;
 mod models;
 mod state;
 mod vault;
@@ -17,7 +18,12 @@ fn main() {
             commands::get_query_settings,
             commands::set_mode,
             commands::get_recent_logs,
+            commands::get_recent_wiki_pages,
+            commands::search_wiki_pages,
+            commands::get_wiki_page_detail,
+            commands::get_wiki_page_citations,
             commands::run_lint,
+            commands::get_llm_status,
             commands::init_vault,
             commands::ingest_markdown,
             commands::query_ask,

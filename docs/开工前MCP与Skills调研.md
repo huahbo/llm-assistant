@@ -94,13 +94,21 @@
   - `filesystem`
   - `git`
   - `time`
-- 本机注册命令（Codex MCP）：
-  - `filesystem` -> `/mnt/e/llm-wiki/.tools/mcp-node/node_modules/.bin/mcp-server-filesystem /mnt/e/llm-wiki /tmp`
-  - `git` -> `/mnt/e/llm-wiki/.tools/mcp-venv/bin/mcp-server-git --repository /mnt/e/llm-wiki`
-  - `time` -> `/mnt/e/llm-wiki/.tools/mcp-venv/bin/mcp-server-time`
+- 本机注册命令（双栈对照；以当前执行器为准）
+  - 当前执行器：Codex
+    - `filesystem` -> `/mnt/e/llm-wiki/.tools/mcp-node/node_modules/.bin/mcp-server-filesystem /mnt/e/llm-wiki /tmp`
+    - `git` -> `/mnt/e/llm-wiki/.tools/mcp-venv/bin/mcp-server-git --repository /mnt/e/llm-wiki`
+    - `time` -> `/mnt/e/llm-wiki/.tools/mcp-venv/bin/mcp-server-time`
+    - 验证命令：`codex mcp list`、`codex mcp get <name>`
+  - Claude Code 对照口径：
+    - `filesystem` -> `<path-to-mcp-server-filesystem> /mnt/e/llm-wiki /tmp`
+    - `git` -> `<path-to-mcp-server-git> --repository /mnt/e/llm-wiki`
+    - `time` -> `<path-to-mcp-server-time>`
+    - 验证命令：`claude mcp list`、`claude mcp get <name>`
 - 验证结果：
-  - `codex mcp list` 与 `codex mcp get <name>` 均显示 enabled。
+  - 当前执行器下的 `codex mcp list` 与 `codex mcp get <name>` 均显示 enabled。
   - 三个服务进程均可启动并保持运行（3 秒超时退出码 `124`）。
 - 备注：
+  - 上述 Claude Code 命令为兼容性对照示例，实际执行口径以当前执行器为准，不绑定单一工具。
   - WSL 下通过 Windows 代理 `172.25.64.1:7897` 访问外网安装。
   - `mcp-server-git/time` 来源为 PyPI；`filesystem` 来源为 npm。
