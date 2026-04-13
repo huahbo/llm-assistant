@@ -52,7 +52,6 @@ import type {
   LogEntry,
   ModuleItem,
   ModeId,
-  ModeOption,
   ProgressPayload,
   QueryAnswerResult,
   WikiPageDetail,
@@ -65,24 +64,25 @@ const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
-const modes: ModeOption[] = [
-  {
-    id: "hybrid",
-    name: "Hybrid",
-    description: "本地优先，必要时可路由到云 Provider。",
-    badge: "默认",
-  },
-  {
-    id: "strict-local",
-    name: "Strict Local",
-    description: "仅允许本地 Ollama，阻断所有云调用。",
-    badge: "受限",
-  },
-];
 
 const modeIdToBackendMode: Record<ModeId, BackendAppMode> = {
   hybrid: "Hybrid",
   "strict-local": "StrictLocal",
+};
+
+const backendModeToModeId: Record<BackendAppMode, ModeId> = {
+  Hybrid: "hybrid",
+  StrictLocal: "strict-local",
+};
+
+const modeIdLabels: Record<ModeId, string> = {
+  hybrid: "Hybrid（自由模式）",
+  "strict-local": "Strict Local（仅本地）",
+};
+
+const modeIdDescriptions: Record<ModeId, string> = {
+  hybrid: "允许本地与云 Provider 按任务路由，适合常规工作流。",
+  "strict-local": "只允许本地 Ollama，自动拦截云调用与外部模型请求。",
 };
 
 const answerStrategyLabels: Record<string, string> = {
@@ -1028,25 +1028,28 @@ export default function App() {
           </div>
         </div>
         {statusMessage ? <p className="runtime-status">{statusMessage}</p> : null}
-        <div className="mode-grid">
-          {modes.map((mode) => (
-            <button
-              key={mode.id}
-              type="button"
-              className={`mode-card ${
-                overview?.mode === modeIdToBackendMode[mode.id] ? "mode-card--active" : ""
-              }`}
-              onClick={() => void handleModeSelect(mode.id)}
-              disabled={!isTauriRuntime() || switchingMode !== null}
-              aria-pressed={overview?.mode === modeIdToBackendMode[mode.id]}
+        <div className="mode-selector">
+          <label className="mode-selector__label" htmlFor="runtime-mode-selector">
+            运行策略选择器
+          </label>
+          <div className="mode-selector__control">
+            <select
+              id="runtime-mode-selector"
+              className="mode-selector__select"
+              value={overview ? backendModeToModeId[overview.mode] : "hybrid"}
+              onChange={(event) => void handleModeSelect(event.target.value as ModeId)}
+              disabled={!isTauriRuntime() || !overview || switchingMode !== null}
             >
-              <div className="mode-card__top">
-                <h3>{mode.name}</h3>
-                <span className="pill">{mode.badge}</span>
-              </div>
-              <p>{mode.description}</p>
-            </button>
-          ))}
+              <option value="hybrid">{modeIdLabels.hybrid}</option>
+              <option value="strict-local">{modeIdLabels["strict-local"]}</option>
+            </select>
+            {switchingMode ? <span className="mode-selector__status">切换中...</span> : null}
+          </div>
+          <p className="mode-selector__hint">
+            {overview
+              ? modeIdDescriptions[backendModeToModeId[overview.mode]]
+              : "浏览器预览模式下不可切换运行策略。"}
+          </p>
         </div>
       </section>
 
