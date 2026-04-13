@@ -29,6 +29,56 @@ pub struct AppConfig {
     pub vault_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query_top_k: Option<usize>,
+    /// 云端 API Key（仅存本地，不入仓库）
+    #[serde(alias = "openai_api_key", default, skip_serializing_if = "Option::is_none")]
+    pub cloud_api_key: Option<String>,
+    /// 云端基础地址，兼容 OpenAI / DeepSeek 等 OpenAI-compatible Provider
+    #[serde(alias = "openai_base_url", default, skip_serializing_if = "Option::is_none")]
+    pub cloud_base_url: Option<String>,
+    /// 云端模型名
+    #[serde(alias = "openai_model", default, skip_serializing_if = "Option::is_none")]
+    pub cloud_model: Option<String>,
+    /// 云端 Provider 名称
+    #[serde(alias = "openai_provider_name", default, skip_serializing_if = "Option::is_none")]
+    pub cloud_provider_name: Option<String>,
+    /// 当前活跃 Provider
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_provider: Option<String>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            mode: AppMode::default(),
+            vault_path: None,
+            query_top_k: None,
+            cloud_api_key: None,
+            cloud_base_url: None,
+            cloud_model: None,
+            cloud_provider_name: None,
+            active_provider: None,
+        }
+    }
+}
+
+/// LLM Provider 配置（Settings 页面读写接口）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProviderConfig {
+    /// 云端 API Key（空字符串表示未配置）
+    #[serde(alias = "openai_api_key", default)]
+    pub cloud_api_key: String,
+    /// 云端基础地址，兼容 OpenAI / DeepSeek 等 OpenAI-compatible Provider
+    #[serde(alias = "openai_base_url", default)]
+    pub cloud_base_url: String,
+    /// 云端模型名，空字符串时使用默认值
+    #[serde(alias = "openai_model", default)]
+    pub cloud_model: String,
+    /// 云端 Provider 名称，空字符串时使用默认值
+    #[serde(alias = "openai_provider_name", default)]
+    pub cloud_provider_name: String,
+    /// 当前活跃的 provider 类型（"cloud" / "ollama"）
+    #[serde(default)]
+    pub active_provider: String,
 }
 
 /// 应用总览。
@@ -92,6 +142,88 @@ pub struct LintReport {
     pub severity_stats: LintSeverityStats,
 }
 
+/// Lint 补丁建议项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchSuggestion {
+    pub issue_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub title: String,
+    pub proposed_action: String,
+    pub patch_preview: String,
+}
+
+/// Lint 补丁预览结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchPreview {
+    pub generated_at: String,
+    pub total: usize,
+    pub suggestions: Vec<LintPatchSuggestion>,
+}
+
+/// Lint 补丁应用请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchApplyInput {
+    pub issue_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Lint 补丁应用结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchApplyResult {
+    pub issue_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub applied: bool,
+    pub message: String,
+    pub touched_paths: Vec<String>,
+}
+
+/// Lint 补丁批量应用状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LintPatchBatchApplyStatus {
+    Success,
+    Failed,
+    Skipped,
+}
+
+/// Lint 补丁批量应用项结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchBatchApplyItemResult {
+    pub issue_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub status: LintPatchBatchApplyStatus,
+    pub applied: bool,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touched_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Lint 补丁批量应用结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchBatchApplyResult {
+    pub total: usize,
+    pub success: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub items: Vec<LintPatchBatchApplyItemResult>,
+}
+
+/// Lint 补丁应用事件项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintPatchEventItem {
+    pub issue_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub applied: bool,
+    pub message: String,
+    pub created_at: String,
+}
+
 /// Vault 初始化结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultInitResult {
@@ -107,6 +239,12 @@ pub struct IngestResult {
     pub raw_path: String,
     pub wiki_path: String,
     pub message: String,
+    /// LLM 提取的关键实体列表（P1 复利机制）
+    #[serde(default)]
+    pub entities: Vec<String>,
+    /// 被注入反向链接的相关 Wiki 页面路径（P1 复利机制）
+    #[serde(default)]
+    pub updated_pages: Vec<String>,
 }
 
 /// 默认路径集合。
@@ -180,6 +318,15 @@ pub struct SaveQueryAnswerInput {
 pub struct SaveQueryAnswerResult {
     pub wiki_path: String,
     pub page_title: String,
+    pub message: String,
+}
+
+/// 长时间操作的进度事件载荷（Tauri emit 用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressPayload {
+    /// 当前步骤标识，如 "summarizing" / "extracting_entities" / "done"
+    pub step: String,
+    /// 面向用户的进度描述
     pub message: String,
 }
 

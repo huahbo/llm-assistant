@@ -1,14 +1,17 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, DefaultPaths, IngestResult, LintReport, LlmStatus, LogEntry,
-    ModeChangeResult, QueryAnswerResult, QueryAskOptions, QuerySettings, SaveQueryAnswerInput,
-    SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    AppMode, AppOverview, DefaultPaths, IngestResult, LintPatchApplyInput, LintPatchApplyResult,
+    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport,
+    LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, QueryAnswerResult, QueryAskOptions,
+    QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
+    WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
 const RECENT_LOG_LIMIT: usize = 10;
 const RECENT_WIKI_LIMIT: usize = 20;
+const RECENT_LINT_PATCH_EVENT_LIMIT: usize = 20;
 const SEARCH_WIKI_LIMIT: usize = 50;
 
 /// 返回应用总览。
@@ -74,10 +77,44 @@ pub fn get_wiki_page_citations(
     state.wiki_page_citations(page_path)
 }
 
-/// 返回当前 lint 报告。
+/// 返回当前 lint 报告（规则检查 + LLM 语义分析）。
 #[tauri::command]
-pub fn run_lint(state: State<'_, AppState>) -> LintReport {
-    state.lint_report()
+pub async fn run_lint(state: State<'_, AppState>) -> Result<LintReport, String> {
+    let future = state.lint_report_full_future();
+    drop(state);
+    Ok(future.await)
+}
+
+/// 预览 Lint 建议补丁。
+#[tauri::command]
+pub fn preview_lint_patches(state: State<'_, AppState>) -> LintPatchPreview {
+    state.preview_lint_patches()
+}
+
+/// 手动应用 Lint 补丁。
+#[tauri::command]
+pub fn apply_lint_patch(
+    input: LintPatchApplyInput,
+    state: State<'_, AppState>,
+) -> Result<LintPatchApplyResult, String> {
+    state.apply_lint_patch(input)
+}
+
+/// 批量应用 Lint 补丁。
+#[tauri::command]
+pub fn apply_lint_patches_batch(
+    inputs: Vec<LintPatchApplyInput>,
+    state: State<'_, AppState>,
+) -> Result<LintPatchBatchApplyResult, String> {
+    state.apply_lint_patches_batch(inputs)
+}
+
+/// 返回最近的 Lint 补丁应用事件。
+#[tauri::command]
+pub fn get_recent_lint_patch_events(
+    state: State<'_, AppState>,
+) -> Result<Vec<LintPatchEventItem>, String> {
+    state.recent_lint_patch_events(RECENT_LINT_PATCH_EVENT_LIMIT)
 }
 
 /// 返回 LLM 状态。
@@ -110,23 +147,23 @@ pub async fn ingest_markdown(
 
 /// 问答查询。
 #[tauri::command]
-pub fn query_ask(
+pub async fn query_ask(
     question: String,
     state: State<'_, AppState>,
 ) -> Result<QueryAnswerResult, String> {
     eprintln!("[query_ask] called with question={}", question);
-    state.query_ask(question)
+    state.query_ask(question).await
 }
 
 /// 问答查询（带参数）。
 #[tauri::command]
-pub fn query_ask_with_options(
+pub async fn query_ask_with_options(
     question: String,
     options: Option<QueryAskOptions>,
     state: State<'_, AppState>,
 ) -> Result<QueryAnswerResult, String> {
     eprintln!("[query_ask_with_options] called with question={}", question);
-    state.query_ask_with_options(question, options.unwrap_or_default())
+    state.query_ask_with_options(question, options.unwrap_or_default()).await
 }
 
 /// 保存 Query TopK 配置。
@@ -147,4 +184,24 @@ pub fn save_query_answer(
 ) -> Result<SaveQueryAnswerResult, String> {
     eprintln!("[save_query_answer] called");
     state.save_query_answer(input)
+}
+
+/// 读取云端 Provider 配置（Settings 页面用）。
+#[tauri::command]
+pub fn get_llm_config(state: State<'_, AppState>) -> LlmProviderConfig {
+    state.get_llm_config()
+}
+
+/// 保存云端 Provider 配置。
+#[tauri::command]
+pub fn set_llm_config(
+    config: LlmProviderConfig,
+    state: State<'_, AppState>,
+) -> Result<LlmProviderConfig, String> {
+    eprintln!(
+        "[set_llm_config] called with active_provider={}, cloud_provider_name={}",
+        config.active_provider,
+        config.cloud_provider_name
+    );
+    state.set_llm_config(config)
 }

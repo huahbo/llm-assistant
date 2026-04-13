@@ -6,14 +6,22 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+use tauri::{AppHandle, Emitter};
+
 use crate::{
     db,
-    llm::{LlmError, LlmProvider, OllamaConfig, OllamaProvider},
+    llm::{
+        LlmError, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider,
+        DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
+    },
     models::{
         AppConfig, AppMode, AppOverview, DefaultPaths, IngestResult, LintIssue, LintReport,
-        LintSeverityStats, LlmStatus, LogEntry, LogLevel, ModeChangeResult, QueryAnswerResult,
-        QueryAskOptions, QueryCitation, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
-        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+        LintPatchApplyInput, LintPatchApplyResult, LintPatchPreview, LintPatchSuggestion,
+        LintPatchBatchApplyItemResult, LintPatchBatchApplyResult, LintPatchBatchApplyStatus,
+        LintPatchEventItem, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
+        ModeChangeResult, ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation,
+        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
+        WikiPageCitationItem, WikiPageDetail, WikiPageItem,
     },
     vault,
 };
@@ -32,6 +40,8 @@ pub struct AppState {
     config_path: PathBuf,
     /// LLM Provider（延迟初始化）
     llm_provider: OnceLock<Option<Arc<OllamaProvider>>>,
+    /// Tauri AppHandle（应用启动后由 setup hook 注入，用于 emit 进度事件）
+    app_handle: OnceLock<AppHandle>,
 }
 
 /// 状态快照。
@@ -43,6 +53,16 @@ struct AppStateData {
     logs: Vec<LogEntry>,
     next_log_id: u64,
     config_snapshot: Option<String>,
+    /// Hybrid 模式下可选云端 API Key（不入仓库）
+    cloud_api_key: Option<String>,
+    /// Hybrid 模式下使用的云端基础地址
+    cloud_base_url: Option<String>,
+    /// Hybrid 模式下使用的云端模型名
+    cloud_model: Option<String>,
+    /// 云端 Provider 名称
+    cloud_provider_name: Option<String>,
+    /// 当前活跃 Provider
+    active_provider: Option<String>,
 }
 
 impl Default for AppState {
@@ -54,9 +74,24 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let config_path = Self::default_config_path();
-        let (mode, vault_path, query_top_k, config_snapshot) = Self::load_config(&config_path);
+        let (config, config_snapshot) = Self::load_config(&config_path);
+        let mode = config.mode;
+        let vault_path = config.vault_path.clone().map(PathBuf::from);
+        let query_top_k = config.query_top_k;
         let query_top_k = normalize_top_k(query_top_k);
-        let serialized = Self::serialize_config(mode, vault_path.as_deref(), query_top_k);
+        // 初始序列化包含所有字段（含云端配置）
+        let serialized = Self::serialize_config_full(&AppConfig {
+            mode,
+            vault_path: vault_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            query_top_k: Some(query_top_k),
+            cloud_api_key: config.cloud_api_key.clone(),
+            cloud_base_url: config.cloud_base_url.clone(),
+            cloud_model: config.cloud_model.clone(),
+            cloud_provider_name: config.cloud_provider_name.clone(),
+            active_provider: config.active_provider.clone(),
+        });
         let mut runtime_snapshot = config_snapshot.clone();
 
         if runtime_snapshot.is_none() {
@@ -90,9 +125,30 @@ impl AppState {
                 next_log_id: 3,
                 logs,
                 config_snapshot: runtime_snapshot,
+                cloud_api_key: config.cloud_api_key,
+                cloud_base_url: config.cloud_base_url,
+                cloud_model: config.cloud_model,
+                cloud_provider_name: config.cloud_provider_name,
+                active_provider: config.active_provider,
             }),
             config_path,
             llm_provider: OnceLock::new(),
+            app_handle: OnceLock::new(),
+        }
+    }
+
+    /// 注入 Tauri AppHandle（在应用 setup hook 中调用一次）。
+    pub fn set_app_handle(&self, handle: AppHandle) {
+        let _ = self.app_handle.set(handle);
+    }
+
+    /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。
+    fn emit_progress(&self, event: &str, step: &str, message: &str) {
+        if let Some(handle) = self.app_handle.get() {
+            let _ = handle.emit(event, ProgressPayload {
+                step: step.to_string(),
+                message: message.to_string(),
+            });
         }
     }
 
@@ -108,12 +164,56 @@ impl AppState {
             .clone()
     }
 
-    /// 获取 LLM Provider（延迟初始化）。
+    /// 获取 LLM Provider，按模式路由：
+    /// - StrictLocal → 仅 Ollama
+    /// - Hybrid → 优先使用 active_provider（仅 cloud/ollama），并在无 key 时安全回退到 ollama
     fn get_llm_provider(&self) -> Option<Arc<dyn LlmProvider>> {
-        self.get_ollama_provider().map(|provider| {
-            let provider: Arc<dyn LlmProvider> = provider;
-            provider
-        })
+        let (mode, cloud_api_key, cloud_base_url, cloud_model, cloud_provider_name, active_provider) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (
+                guard.mode,
+                guard.cloud_api_key.clone(),
+                guard.cloud_base_url.clone(),
+                guard.cloud_model.clone(),
+                guard.cloud_provider_name.clone(),
+                guard.active_provider.clone(),
+            )
+        };
+
+        let has_cloud_key = cloud_api_key
+            .as_deref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false);
+        let resolved_provider =
+            resolve_active_provider(mode, active_provider.as_deref(), has_cloud_key, None);
+
+        match mode {
+            AppMode::StrictLocal => {
+                // 严格本地模式：禁止云 Provider
+                self.get_ollama_provider()
+                    .map(|p| p as Arc<dyn LlmProvider>)
+            }
+            AppMode::Hybrid => {
+                // Hybrid 模式：遵循 active_provider，cloud 仅在 key 可用时生效
+                if resolved_provider == "cloud" {
+                    let key = cloud_api_key
+                        .filter(|k| !k.trim().is_empty())
+                        .expect("resolved_provider=cloud 时必须存在非空 key");
+                    let model = cloud_model
+                        .filter(|m| !m.trim().is_empty())
+                        .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+                    let base_url = effective_cloud_base_url(
+                        cloud_provider_name.as_deref(),
+                        cloud_base_url.as_deref(),
+                    );
+                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model);
+                    Some(Arc::new(OpenAiProvider::new(config)) as Arc<dyn LlmProvider>)
+                } else {
+                    self.get_ollama_provider()
+                        .map(|p| p as Arc<dyn LlmProvider>)
+                }
+            }
+        }
     }
 
     /// 使用 LLM 生成摘要，失败时回退到截断
@@ -165,69 +265,247 @@ impl AppState {
     }
 
     /// 构造 LLM 状态查询输入，避免在异步命令中持有 `State` 借用。
-    fn llm_status_input(&self) -> (AppMode, Option<Arc<OllamaProvider>>) {
-        let mode = {
+    /// 返回 (mode, cloud_config_if_active, ollama_provider_if_active)
+    fn llm_status_input(
+        &self,
+    ) -> (AppMode, Option<String>, Option<OpenAiConfig>, Option<Arc<OllamaProvider>>) {
+        let (mode, cloud_api_key, cloud_base_url, cloud_model, cloud_provider_name, active_provider) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.mode
+            (
+                guard.mode,
+                guard.cloud_api_key.clone(),
+                guard.cloud_base_url.clone(),
+                guard.cloud_model.clone(),
+                guard.cloud_provider_name.clone(),
+                guard.active_provider.clone(),
+            )
         };
-        let provider = self.get_ollama_provider();
-        (mode, provider)
-    }
 
-    /// 使用输入快照查询本地 Ollama 健康状态。
-    async fn llm_status_from_input(mode: AppMode, provider: Option<Arc<OllamaProvider>>) -> LlmStatus {
-        match provider {
-            Some(provider) => {
-                let base_url = provider.base_url().to_string();
-                let model = provider.model().to_string();
+        let has_cloud_key = cloud_api_key
+            .as_deref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false);
+        let resolved_provider =
+            resolve_active_provider(mode, active_provider.as_deref(), has_cloud_key, None);
 
-                match provider.health_check().await {
-                    Ok(true) => build_llm_status(
-                        &base_url,
-                        &model,
-                        mode,
-                        true,
-                        "本地 Ollama 可用".to_string(),
-                    ),
-                    Ok(false) => build_llm_status(
-                        &base_url,
-                        &model,
-                        mode,
-                        false,
-                        "本地 Ollama 健康检查未通过，请确认服务已启动且模型已准备好".to_string(),
-                    ),
-                    Err(err) => build_llm_status(
-                        &base_url,
-                        &model,
-                        mode,
-                        false,
-                        llm_health_error_message(&err),
-                    ),
+        match mode {
+            AppMode::StrictLocal => (mode, None, None, self.get_ollama_provider()),
+            AppMode::Hybrid => {
+                if resolved_provider == "cloud" {
+                    let key = cloud_api_key
+                        .filter(|k| !k.trim().is_empty())
+                        .expect("resolved_provider=cloud 时必须存在非空 key");
+                    let model = cloud_model
+                        .filter(|m| !m.trim().is_empty())
+                        .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+                    let base_url = effective_cloud_base_url(
+                        cloud_provider_name.as_deref(),
+                        cloud_base_url.as_deref(),
+                    );
+                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model);
+                    (mode, cloud_provider_name, Some(config), None)
+                } else {
+                    (mode, None, None, self.get_ollama_provider())
                 }
             }
-            None => {
-                let config = OllamaConfig::default();
-                build_llm_status(
-                    &config.base_url,
-                    &config.model,
+        }
+    }
+
+    /// 使用输入快照查询当前活跃 Provider 的健康状态。
+    async fn llm_status_from_input(
+        mode: AppMode,
+        cloud_provider_name: Option<String>,
+        cloud_config: Option<OpenAiConfig>,
+        ollama_provider: Option<Arc<OllamaProvider>>,
+    ) -> LlmStatus {
+        if let Some(config) = cloud_config {
+            let provider_name = normalize_cloud_provider_name(cloud_provider_name.as_deref())
+                .as_deref()
+                .map(display_cloud_provider_name)
+                .unwrap_or_else(|| "openai-compatible".to_string());
+            let base_url = config.base_url.clone();
+            let model = config.model.clone();
+            let provider = OpenAiProvider::new(config);
+            match provider.health_check().await {
+                Ok(true) => build_llm_status(
+                    &provider_name,
+                    &base_url,
+                    &model,
+                    mode,
+                    true,
+                    format!("云端 Provider（OpenAI-compatible）可用：{}", provider_name),
+                ),
+                Ok(false) => build_llm_status(
+                    &provider_name,
+                    &base_url,
+                    &model,
                     mode,
                     false,
-                    "本地 Ollama Provider 初始化失败".to_string(),
-                )
+                    "云端 Provider（OpenAI-compatible）健康检查未通过，请确认 API Key、基础地址与网络可达"
+                        .to_string(),
+                ),
+                Err(err) => build_llm_status(
+                    &provider_name,
+                    &base_url,
+                    &model,
+                    mode,
+                    false,
+                    format!("云端 Provider（OpenAI-compatible）状态检查失败: {}", err),
+                ),
+            }
+        } else {
+            // 使用本地 Ollama
+            match ollama_provider {
+                Some(provider) => {
+                    let base_url = provider.base_url().to_string();
+                    let model = provider.model().to_string();
+
+                    match provider.health_check().await {
+                        Ok(true) => build_llm_status(
+                            "ollama",
+                            &base_url,
+                            &model,
+                            mode,
+                            true,
+                            "本地 Ollama 可用".to_string(),
+                        ),
+                        Ok(false) => build_llm_status(
+                            "ollama",
+                            &base_url,
+                            &model,
+                            mode,
+                            false,
+                            "本地 Ollama 健康检查未通过，请确认服务已启动且模型已准备好".to_string(),
+                        ),
+                        Err(err) => build_llm_status(
+                            "ollama",
+                            &base_url,
+                            &model,
+                            mode,
+                            false,
+                            llm_health_error_message(&err),
+                        ),
+                    }
+                }
+                None => {
+                    let config = OllamaConfig::default();
+                    build_llm_status(
+                        "ollama",
+                        &config.base_url,
+                        &config.model,
+                        mode,
+                        false,
+                        "本地 Ollama Provider 初始化失败".to_string(),
+                    )
+                }
             }
         }
     }
 
     /// 返回可在异步命令中安全等待的 LLM 状态查询 Future。
     pub fn llm_status_future(&self) -> impl std::future::Future<Output = LlmStatus> + Send + 'static {
-        let (mode, provider) = self.llm_status_input();
-        async move { Self::llm_status_from_input(mode, provider).await }
+        let (mode, cloud_provider_name, cloud_config, ollama_provider) = self.llm_status_input();
+        async move { Self::llm_status_from_input(mode, cloud_provider_name, cloud_config, ollama_provider).await }
     }
 
-    /// 查询本地 Ollama 的健康状态。
-    pub async fn llm_status(&self) -> LlmStatus {
-        let (mode, provider) = self.llm_status_input();
-        Self::llm_status_from_input(mode, provider).await
+    /// 获取当前 LLM Provider 配置（供 Settings 页面读取）。
+    pub fn get_llm_config(&self) -> LlmProviderConfig {
+        let guard = self.inner.lock().expect("状态锁已被污染");
+        let mode = guard.mode;
+        let cloud_api_key = guard.cloud_api_key.clone().unwrap_or_default();
+        let normalized_provider_name =
+            normalize_cloud_provider_name(guard.cloud_provider_name.as_deref());
+        let cloud_base_url =
+            normalize_cloud_base_url(normalized_provider_name.as_deref(), guard.cloud_base_url.as_deref())
+                .unwrap_or_default();
+        let cloud_model = guard.cloud_model.clone().unwrap_or_default();
+        let cloud_provider_name = normalized_provider_name
+            .as_deref()
+            .map(display_cloud_provider_name)
+            .unwrap_or_else(|| "openai-compatible".to_string());
+        let has_cloud_key = !cloud_api_key.trim().is_empty();
+        let active_provider = resolve_active_provider(
+            mode,
+            guard.active_provider.as_deref(),
+            has_cloud_key,
+            None,
+        );
+
+        LlmProviderConfig {
+            cloud_api_key,
+            cloud_base_url,
+            cloud_model,
+            cloud_provider_name,
+            active_provider,
+        }
+    }
+
+    /// 保存 LLM Provider 配置（云端字段持久化）。
+    pub fn set_llm_config(&self, config: LlmProviderConfig) -> Result<LlmProviderConfig, String> {
+        let (mode, vault_path, query_top_k, expected_snapshot, persisted_active_provider) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (
+                guard.mode,
+                guard.vault_path.clone(),
+                guard.query_top_k,
+                guard.config_snapshot.clone(),
+                guard.active_provider.clone(),
+            )
+        };
+
+        let cloud_api_key = if config.cloud_api_key.trim().is_empty() {
+            None
+        } else {
+            Some(config.cloud_api_key.trim().to_string())
+        };
+        let cloud_provider_name = normalize_cloud_provider_name(Some(config.cloud_provider_name.as_str()));
+        let cloud_base_url = normalize_cloud_base_url(
+            cloud_provider_name.as_deref(),
+            Some(config.cloud_base_url.as_str()),
+        );
+        let cloud_model = if config.cloud_model.trim().is_empty() {
+            None
+        } else {
+            Some(config.cloud_model.trim().to_string())
+        };
+        let has_cloud_key = cloud_api_key
+            .as_deref()
+            .map(|key| !key.trim().is_empty())
+            .unwrap_or(false);
+        let active_provider = resolve_active_provider(
+            mode,
+            Some(config.active_provider.as_str()),
+            has_cloud_key,
+            persisted_active_provider.as_deref(),
+        );
+
+        // 先更新 guard，persist_config 会从 guard 读取云端字段
+        {
+            let mut guard = self.inner.lock().expect("状态锁已被污染");
+            guard.cloud_api_key = cloud_api_key;
+            guard.cloud_provider_name = cloud_provider_name;
+            guard.cloud_base_url = cloud_base_url;
+            guard.cloud_model = cloud_model;
+            guard.active_provider = Some(active_provider);
+        }
+
+        match self.persist_config(mode, vault_path.as_deref(), query_top_k, expected_snapshot.as_deref()) {
+            Ok(serialized) => {
+                let mut guard = self.inner.lock().expect("状态锁已被污染");
+                guard.config_snapshot = Some(serialized);
+                guard.push_log(
+                    LogLevel::Info,
+                    "云端 Provider 配置已保存".to_string(),
+                    current_timestamp_ms(),
+                );
+                drop(guard);
+                Ok(self.get_llm_config())
+            }
+            Err(err) => {
+                self.push_log(LogLevel::Warn, format!("云端 Provider 配置持久化失败: {}", err));
+                Err(err)
+            }
+        }
     }
 
     pub fn set_mode(&self, mode: AppMode) -> ModeChangeResult {
@@ -321,10 +599,13 @@ impl AppState {
         let source_content = fs::read_to_string(&source_path)
             .map_err(|err| format!("读取源文件失败: {}", err))?;
 
-        // 在异步上下文中直接调用 LLM 摘要生成
+        // 步骤1：LLM 摘要生成
+        self.emit_progress("ingest_progress", "summarizing", "正在生成摘要（LLM）...");
         let llm_summary = self.generate_summary(&source_content).await;
 
-        match vault::ingest_markdown(&vault_path, &source_path, Some(&llm_summary)) {
+        // 步骤2：写入 Wiki 页面
+        self.emit_progress("ingest_progress", "writing_wiki", "写入 Wiki 页面...");
+        let mut result = match vault::ingest_markdown(&vault_path, &source_path, Some(&llm_summary)) {
             Ok(result) => {
                 self.push_log(
                     LogLevel::Info,
@@ -334,124 +615,205 @@ impl AppState {
                         result.wiki_path
                     ),
                 );
-                Ok(result)
+                result
             }
             Err(err) => {
                 self.push_log(
                     LogLevel::Warn,
-                    format!(
-                        "Markdown 导入失败: {}",
-                        err
-                    ),
+                    format!("Markdown 导入失败: {}", err),
                 );
-                Err(err)
-            }
-        }
-    }
-
-    /// 同步调用 LLM 生成摘要（内部方法）
-    ///
-    /// 使用 tokio runtime 的 block_on 在同步上下文中调用异步 LLM。
-    fn generate_summary_sync(&self, content: &str) -> String {
-        // 尝试获取当前 tokio runtime handle
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                // 在已有 runtime 中，使用 spawn_blocking + block_on
-                // 但由于我们在同步上下文中，需要 block_in_place
-                let content = content.to_string();
-                let provider = self.get_llm_provider();
-
-                tokio::task::block_in_place(|| {
-                    handle.block_on(async {
-                        self.generate_summary_with_provider(&content, provider).await
-                    })
-                })
-            }
-            Err(_) => {
-                // 没有 runtime，回退到截断摘要
-                self.push_log(
-                    LogLevel::Warn,
-                    "没有可用的 tokio runtime，回退到截断摘要".to_string(),
-                );
-                vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS)
-            }
-        }
-    }
-
-    /// 使用 LLM Provider 生成摘要（异步内部方法）
-    async fn generate_summary_with_provider(
-        &self,
-        content: &str,
-        provider: Option<Arc<dyn LlmProvider>>,
-    ) -> String {
-        let provider = match provider {
-            Some(p) => p,
-            None => {
-                self.push_log(
-                    LogLevel::Warn,
-                    "LLM Provider 不可用，回退到截断摘要".to_string(),
-                );
-                return vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS);
+                return Err(err);
             }
         };
 
-        match provider.summarize(content, LLM_SUMMARY_MAX_TOKENS).await {
-            Ok(summary) => {
-                let summary = summary.trim().to_string();
-                if summary.is_empty() {
-                    self.push_log(
-                        LogLevel::Warn,
-                        "LLM 返回空摘要，回退到截断摘要".to_string(),
-                    );
-                    vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS)
-                } else {
+        // 步骤3：LLM 实体提取
+        self.emit_progress("ingest_progress", "extracting_entities", "正在提取关键实体（LLM）...");
+        let entities = self.extract_entities(&source_content).await;
+
+        // 步骤4：双向链接注入
+        self.emit_progress("ingest_progress", "updating_links", "注入双向链接...");
+        let db_path = vault_path.join(".app").join("meta.db");
+        let wiki_title = PathBuf::from(&result.wiki_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        let updated_pages = self
+            .update_related_pages_with_link(
+                &db_path,
+                &vault_path,
+                &result.wiki_path,
+                &wiki_title,
+                &entities,
+            )
+            .await;
+
+        result.entities = entities;
+        result.updated_pages = updated_pages;
+
+        Ok(result)
+    }
+
+    /// 用 LLM 从文档内容中提取关键实体（LLM 不可用时返回空列表）。
+    async fn extract_entities(&self, content: &str) -> Vec<String> {
+        let provider = match self.get_llm_provider() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        // 截断内容，避免超出 token 上限
+        let truncated: String = content.chars().take(2000).collect();
+        let prompt = format!(
+            "请从以下文档中提取关键实体（技术名、概念名、产品名、人名等），\
+每行输出一个实体名称，不要编号，不要解释，最多提取10个最重要的实体：\n\n{}",
+            truncated
+        );
+
+        match provider.complete(&prompt).await {
+            Ok(response) => {
+                let entities: Vec<String> = response
+                    .lines()
+                    .map(|line| line.trim().trim_start_matches('-').trim().to_string())
+                    .filter(|e| !e.is_empty() && e.len() <= 60)
+                    .take(10)
+                    .collect();
+
+                if !entities.is_empty() {
                     self.push_log(
                         LogLevel::Info,
-                        format!("LLM 摘要生成成功，长度={}", summary.chars().count()),
+                        format!("实体提取完成，共 {} 个实体", entities.len()),
                     );
-                    summary
                 }
+                entities
             }
             Err(err) => {
                 self.push_log(
                     LogLevel::Warn,
-                    format!("LLM 摘要生成失败: {}，回退到截断摘要", err),
+                    format!("实体提取失败，跳过: {}", err),
                 );
-                vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS)
+                Vec::new()
             }
         }
     }
 
-    /// 同步调用本地 LLM 生成 Query 回答。
+    /// Ingest 后扫描相关 Wiki 页面并注入双向 See Also 链接。
     ///
-    /// 该路径只允许使用本地 Ollama Provider；如果运行时不可用或调用失败，
-    /// 会回退到规则回答，保证 StrictLocal 语义不被破坏。
-    fn generate_query_answer_sync(
+    /// 流程：
+    /// 1. 用实体名在 FTS 中搜索相关页面（最多 5 页）。
+    /// 2. 向每个相关页面追加指向新页的 See Also 链接。
+    /// 3. 向新页追加指向相关页面的 See Also 链接。
+    /// 4. 更新受影响页面的 FTS 索引。
+    ///
+    /// 任何单步失败都记录告警但不中断整体流程。
+    async fn update_related_pages_with_link(
         &self,
-        question: &str,
-        matches: &[WikiMatch],
-    ) -> (String, String) {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let question = question.to_string();
-                let matches = matches.to_vec();
-                let provider = self.get_llm_provider();
+        db_path: &Path,
+        vault_path: &Path,
+        new_wiki_abs_path: &str,
+        new_wiki_title: &str,
+        entities: &[String],
+    ) -> Vec<String> {
+        if entities.is_empty() {
+            return Vec::new();
+        }
 
-                tokio::task::block_in_place(|| {
-                    handle.block_on(async move {
-                        self.generate_query_answer_with_provider(&question, &matches, provider)
-                            .await
-                    })
-                })
-            }
-            Err(_) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    "没有可用的 tokio runtime，Query 已回退到规则回答".to_string(),
-                );
-                (build_query_answer(question, matches), "rule".to_string())
+        // 将实体名称分词，合并去重后送入 FTS
+        let mut token_set = std::collections::HashSet::new();
+        for entity in entities {
+            for token in tokenize_query(entity) {
+                token_set.insert(token);
             }
         }
+        let tokens: Vec<String> = token_set.into_iter().collect();
+
+        if tokens.is_empty() {
+            return Vec::new();
+        }
+
+        // FTS 搜索相关页面（最多取 5 个，排除自身）
+        let related_paths: Vec<String> = match db::search_fts_page_paths(db_path, &tokens, 10) {
+            Ok(paths) => paths
+                .into_iter()
+                .filter(|p| p != new_wiki_abs_path)
+                .take(5)
+                .collect(),
+            Err(err) => {
+                self.push_log(LogLevel::Warn, format!("相关页面 FTS 搜索失败: {}", err));
+                return Vec::new();
+            }
+        };
+
+        if related_paths.is_empty() {
+            return Vec::new();
+        }
+
+        // 新页面相对于 vault 根的路径（用于写入其他页面的链接）
+        let new_wiki_relative = PathBuf::from(new_wiki_abs_path)
+            .strip_prefix(vault_path)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| new_wiki_abs_path.to_string());
+
+        let mut updated = Vec::new();
+
+        for related_abs in &related_paths {
+            let related_path = PathBuf::from(related_abs);
+            if !related_path.exists() {
+                continue;
+            }
+
+            let related_relative = related_path
+                .strip_prefix(vault_path)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| related_abs.clone());
+
+            let related_title = related_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            // 1. 向相关页面追加指向新页的反向链接
+            match vault::append_see_also_link(&related_path, &new_wiki_relative, new_wiki_title) {
+                Ok(true) => {
+                    updated.push(related_abs.clone());
+                    // 更新该相关页面的 FTS 索引
+                    if let Ok(content) = fs::read_to_string(&related_path) {
+                        let _ = db::upsert_fts_page(db_path, Path::new(related_abs), &related_title, &content);
+                    }
+                }
+                Ok(false) => {} // 链接已存在，跳过
+                Err(err) => {
+                    self.push_log(
+                        LogLevel::Warn,
+                        format!("注入反向链接失败 {}: {}", related_abs, err),
+                    );
+                }
+            }
+
+            // 2. 向新页追加指向相关页面的正向链接（失败不计入 updated）
+            let new_path = PathBuf::from(new_wiki_abs_path);
+            if let Err(err) =
+                vault::append_see_also_link(&new_path, &related_relative, &related_title)
+            {
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("注入正向链接失败 {}: {}", related_abs, err),
+                );
+            }
+        }
+
+        // 更新新页的 FTS 索引（包含追加的 See Also 内容）
+        if !updated.is_empty() {
+            if let Ok(content) = fs::read_to_string(new_wiki_abs_path) {
+                let _ = db::upsert_fts_page(db_path, Path::new(new_wiki_abs_path), new_wiki_title, &content);
+            }
+            self.push_log(
+                LogLevel::Info,
+                format!("双向链接注入完成，更新了 {} 个相关页面", updated.len()),
+            );
+        }
+
+        updated
     }
 
     /// 使用本地 Provider 生成 Query 回答。
@@ -591,6 +953,22 @@ impl AppState {
                 }
             })
             .collect())
+    }
+
+    pub fn recent_lint_patch_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<LintPatchEventItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        db::ensure_meta_db(&db_path)?;
+        db::list_recent_lint_patch_events(&db_path, limit)
     }
 
     pub fn search_wiki_pages(&self, keyword: String, limit: usize) -> Result<Vec<WikiPageItem>, String> {
@@ -904,11 +1282,301 @@ impl AppState {
         build_lint_report(mode, format!("已返回 {} 条 lint 问题", issues.len()), issues)
     }
 
-    pub fn query_ask(&self, question: String) -> Result<QueryAnswerResult, String> {
-        self.query_ask_with_options(question, QueryAskOptions::default())
+    pub fn preview_lint_patches(&self) -> LintPatchPreview {
+        let report = self.lint_report();
+        let suggestions = report
+            .issues
+            .iter()
+            .map(build_lint_patch_suggestion)
+            .collect::<Vec<_>>();
+
+        LintPatchPreview {
+            generated_at: current_timestamp_ms(),
+            total: suggestions.len(),
+            suggestions,
+        }
     }
 
-    pub fn query_ask_with_options(
+    /// 收集语义 Lint 所需的页面数据（同步，在 State 作用域内完成）。
+    ///
+    /// 返回 (页面列表[(path, title, summary)], mode)。
+    fn collect_semantic_lint_input(&self) -> (Vec<(String, String, String)>, AppMode) {
+        let (mode, vault_path) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (guard.mode, guard.vault_path.clone())
+        };
+
+        let pages = vault_path
+            .map(|p| p.join(".app").join("meta.db"))
+            .and_then(|db_path| db::list_recent_wiki_pages(&db_path, 20).ok())
+            .map(|records| {
+                records
+                    .into_iter()
+                    .map(|r| (r.path, r.title, r.summary))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        (pages, mode)
+    }
+
+    /// 执行 LLM 语义 Lint 分析（矛盾 / 陈旧 / 覆盖度）。
+    ///
+    /// - LLM 不可用时返回空列表，不报错。
+    /// - 最多返回 10 条语义问题。
+    async fn run_semantic_lint(
+        pages: Vec<(String, String, String)>,
+        provider: Option<Arc<OllamaProvider>>,
+    ) -> Vec<LintIssue> {
+        let provider = match provider {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        if pages.is_empty() {
+            return Vec::new();
+        }
+
+        // 构建页面摘要文本（每条摘要截断到 200 字符，控制 token 用量）
+        let pages_text = pages
+            .iter()
+            .map(|(path, title, summary)| {
+                let short: String = summary.chars().take(200).collect();
+                format!("- [{}] {}\n  摘要: {}", path, title, short)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "你是 Wiki 内容质量审查员。以下是 Wiki 页面列表（路径+标题+摘要）。\n\
+请检查并报告以下3类问题，每行一个，用 | 分隔，严格按格式输出：\n\
+CODE|severity|message|path|suggestion\n\
+CODE 仅限：SEMANTIC_CONTRADICTION（矛盾陈述）、SEMANTIC_STALE（过时结论）、SEMANTIC_COVERAGE_GAP（缺少重要实体页）\n\
+severity 仅限：warning 或 info\n\
+path 填相关页面路径，无则留空\n\
+若无问题则只输出：NO_ISSUES\n\n\
+Wiki 页面：\n{}",
+            pages_text
+        );
+
+        match provider.complete(&prompt).await {
+            Ok(response) => parse_semantic_lint_response(&response),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// 返回完整 Lint（规则 + 语义 LLM）的 Future，可在异步命令中安全 await。
+    pub fn lint_report_full_future(
+        &self,
+    ) -> impl std::future::Future<Output = LintReport> + Send + 'static {
+        let rules = self.lint_report();
+        let (pages, _mode) = self.collect_semantic_lint_input();
+        let provider = self.get_ollama_provider();
+        async move {
+            let semantic = Self::run_semantic_lint(pages, provider).await;
+            merge_lint_with_semantic(rules, semantic)
+        }
+    }
+
+    pub fn apply_lint_patch(
+        &self,
+        input: LintPatchApplyInput,
+    ) -> Result<LintPatchApplyResult, String> {
+        let issue_code = input.issue_code.trim().to_string();
+        let input_path = input.path.clone();
+        if issue_code.is_empty() {
+            return Err("issue_code 不能为空".to_string());
+        }
+
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+
+        let (applied, message, touched_paths) = match issue_code.as_str() {
+            "MISSING_INDEX_ENTRY" => {
+                let path = input_path
+                    .as_deref()
+                    .ok_or_else(|| "MISSING_INDEX_ENTRY 需要提供 path".to_string())?;
+                let page_path = resolve_existing_wiki_page_path(&vault_path, path)?;
+                let index_path = vault_path.join("index.md");
+                if !index_path.exists() {
+                    return Err("index.md 缺失，请先处理 INDEX_MISSING".to_string());
+                }
+
+                let link_target = wiki_link_target_from_path(&vault_path, &page_path)?;
+                let link_label = wiki_link_label(&page_path);
+                let changed = append_index_link_if_missing(&index_path, &link_target, &link_label)?;
+                let message = if changed {
+                    "已补齐 index.md 引用".to_string()
+                } else {
+                    "index.md 中已存在该页面引用，未重复写入".to_string()
+                };
+                let mut touched_paths = vec![index_path.to_string_lossy().to_string()];
+                touched_paths.push(page_path.to_string_lossy().to_string());
+                (changed, message, touched_paths)
+            }
+            "ORPHAN_WIKI_PAGE" => {
+                let path = input_path
+                    .as_deref()
+                    .ok_or_else(|| "ORPHAN_WIKI_PAGE 需要提供 path".to_string())?;
+                let page_path = resolve_existing_wiki_page_path(&vault_path, path)?;
+                let index_path = vault_path.join("index.md");
+                if !index_path.exists() {
+                    return Err("index.md 缺失，请先处理 INDEX_MISSING".to_string());
+                }
+
+                let link_target = wiki_link_target_from_path(&vault_path, &page_path)?;
+                let link_label = wiki_link_label(&page_path);
+                let changed = append_index_link_if_missing(&index_path, &link_target, &link_label)?;
+                let message = if changed {
+                    "已将页面加入 index.md".to_string()
+                } else {
+                    "index.md 中已存在该页面引用，未重复写入".to_string()
+                };
+                let mut touched_paths = vec![index_path.to_string_lossy().to_string()];
+                touched_paths.push(page_path.to_string_lossy().to_string());
+                (changed, message, touched_paths)
+            }
+            "INDEX_MISSING" => {
+                let index_path = vault_path.join("index.md");
+                let created = if index_path.exists() {
+                    false
+                } else {
+                    fs::write(&index_path, seed_index_content())
+                        .map_err(|err| format!("写入 index.md 失败: {}", err))?;
+                    true
+                };
+                let message = if created {
+                    "已创建 index.md".to_string()
+                } else {
+                    "index.md 已存在，未作修改".to_string()
+                };
+                (created, message, vec![index_path.to_string_lossy().to_string()])
+            }
+            "LOG_MISSING" => {
+                let log_path = vault_path.join("log.md");
+                let created = if log_path.exists() {
+                    false
+                } else {
+                    fs::write(&log_path, seed_log_content())
+                        .map_err(|err| format!("写入 log.md 失败: {}", err))?;
+                    true
+                };
+                let message = if created {
+                    "已创建 log.md".to_string()
+                } else {
+                    "log.md 已存在，未作修改".to_string()
+                };
+                (created, message, vec![log_path.to_string_lossy().to_string()])
+            }
+            _ => {
+                return Err("暂不支持自动应用，请手动处理".to_string());
+            }
+        };
+
+        self.push_log(
+            LogLevel::Info,
+            format!(
+                "Lint 补丁应用完成: issue_code={}, path={}, applied={}, message={}",
+                issue_code,
+                input_path.as_deref().unwrap_or("无"),
+                applied,
+                message
+            ),
+        );
+
+        self.record_lint_patch_event(
+            &vault_path,
+            &issue_code,
+            input_path.as_deref(),
+            applied,
+            &message,
+        );
+
+        Ok(LintPatchApplyResult {
+            issue_code,
+            path: input_path,
+            applied,
+            message,
+            touched_paths,
+        })
+    }
+
+    pub fn apply_lint_patches_batch(
+        &self,
+        inputs: Vec<LintPatchApplyInput>,
+    ) -> Result<LintPatchBatchApplyResult, String> {
+        let total = inputs.len();
+        let mut success = 0usize;
+        let mut failed = 0usize;
+        let mut skipped = 0usize;
+        let mut items = Vec::with_capacity(total);
+
+        for input in inputs {
+            let issue_code = input.issue_code.trim().to_string();
+            let path = input.path.clone();
+
+            match self.apply_lint_patch(input) {
+                Ok(result) => {
+                    let status = if result.applied {
+                        success += 1;
+                        LintPatchBatchApplyStatus::Success
+                    } else {
+                        skipped += 1;
+                        LintPatchBatchApplyStatus::Skipped
+                    };
+
+                    items.push(LintPatchBatchApplyItemResult {
+                        issue_code: result.issue_code,
+                        path: result.path,
+                        status,
+                        applied: result.applied,
+                        message: result.message,
+                        touched_paths: result.touched_paths,
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    failed += 1;
+                    items.push(LintPatchBatchApplyItemResult {
+                        issue_code,
+                        path,
+                        status: LintPatchBatchApplyStatus::Failed,
+                        applied: false,
+                        message: error.clone(),
+                        touched_paths: Vec::new(),
+                        error: Some(error),
+                    });
+                }
+            }
+        }
+
+        self.push_log(
+            LogLevel::Info,
+            format!(
+                "批量应用 Lint 补丁完成：total={}，success={}，failed={}，skipped={}",
+                total, success, failed, skipped
+            ),
+        );
+
+        Ok(LintPatchBatchApplyResult {
+            total,
+            success,
+            failed,
+            skipped,
+            items,
+        })
+    }
+
+    pub async fn query_ask(&self, question: String) -> Result<QueryAnswerResult, String> {
+        self.query_ask_with_options(question, QueryAskOptions::default()).await
+    }
+
+    pub async fn query_ask_with_options(
         &self,
         question: String,
         options: QueryAskOptions,
@@ -928,6 +1596,9 @@ impl AppState {
         let db_path = vault_path.join(".app").join("meta.db");
         let tokens = tokenize_query(&normalized_question);
         let top_k = normalize_top_k(options.top_k.or(Some(default_top_k)));
+
+        // 步骤1：FTS 检索
+        self.emit_progress("query_progress", "searching", "FTS 检索中...");
         let (matches, search_strategy, fts_error) =
             search_wiki_matches_with_fts(&db_path, &wiki_dir, &tokens, &normalized_question, top_k)?;
 
@@ -950,7 +1621,14 @@ impl AppState {
                 }
             })
             .collect::<Vec<_>>();
-        let (answer, answer_strategy) = self.generate_query_answer_sync(&normalized_question, &matches);
+
+        // 步骤2：LLM 合成回答
+        self.emit_progress("query_progress", "generating", "正在合成回答（LLM）...");
+        let provider = self.get_llm_provider();
+        let (answer, answer_strategy) = self
+            .generate_query_answer_with_provider(&normalized_question, &matches, provider)
+            .await;
+
         let matched_pages = matches
             .iter()
             .map(|item| item.page_path.clone())
@@ -1084,31 +1762,25 @@ impl AppState {
         root.join(".runtime").join("app-config.json")
     }
 
-    fn load_config(config_path: &Path) -> (AppMode, Option<PathBuf>, Option<usize>, Option<String>) {
+    fn load_config(
+        config_path: &Path,
+    ) -> (AppConfig, Option<String>) {
         match fs::read_to_string(config_path) {
             Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
-                Ok(config) => (
-                    config.mode,
-                    config.vault_path.map(PathBuf::from),
-                    config.query_top_k,
-                    Some(raw),
-                ),
-                Err(_) => (AppMode::default(), None, None, Some(raw)),
+                Ok(config) => (config, Some(raw)),
+                Err(_) => (AppConfig::default(), Some(raw)),
             },
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                (AppMode::default(), None, None, None)
+                (AppConfig::default(), None)
             }
-            Err(_) => (AppMode::default(), None, None, None),
+            Err(_) => (AppConfig::default(), None),
         }
     }
 
-    fn serialize_config(mode: AppMode, vault_path: Option<&Path>, query_top_k: usize) -> String {
-        serde_json::to_string_pretty(&AppConfig {
-            mode,
-            vault_path: vault_path.map(|path| path.to_string_lossy().to_string()),
-            query_top_k: Some(query_top_k),
-        })
-        .expect("配置序列化失败")
+    /// 将运行时配置序列化为新字段格式。
+    fn serialize_config_full(config: &AppConfig) -> String {
+        serde_json::to_string_pretty(config)
+            .expect("配置序列化失败")
     }
 
     fn persist_config(
@@ -1118,7 +1790,21 @@ impl AppState {
         query_top_k: usize,
         expected_snapshot: Option<&str>,
     ) -> Result<String, String> {
-        let serialized = Self::serialize_config(mode, vault_path, query_top_k);
+        // 从当前 guard 读取云端字段，确保不丢失已保存的配置
+        let config = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            AppConfig {
+                mode,
+                vault_path: vault_path.map(|path| path.to_string_lossy().to_string()),
+                query_top_k: Some(query_top_k),
+                cloud_api_key: guard.cloud_api_key.clone(),
+                cloud_base_url: guard.cloud_base_url.clone(),
+                cloud_model: guard.cloud_model.clone(),
+                cloud_provider_name: guard.cloud_provider_name.clone(),
+                active_provider: guard.active_provider.clone(),
+            }
+        };
+        let serialized = Self::serialize_config_full(&config);
 
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)
@@ -1178,6 +1864,32 @@ impl AppState {
     fn push_log(&self, level: LogLevel, message: String) {
         let mut guard = self.inner.lock().expect("状态锁已被污染");
         guard.push_log(level, message, current_timestamp_ms());
+    }
+
+    fn record_lint_patch_event(
+        &self,
+        vault_path: &Path,
+        issue_code: &str,
+        path: Option<&str>,
+        applied: bool,
+        message: &str,
+    ) {
+        let db_path = vault_path.join(".app").join("meta.db");
+        let timestamp_ms = current_timestamp_ms();
+
+        if let Err(err) = db::insert_lint_patch_event(
+            &db_path,
+            issue_code,
+            path,
+            applied,
+            message,
+            &timestamp_ms,
+        ) {
+            self.push_log(
+                LogLevel::Warn,
+                format!("写入 lint_patch_events 失败: {}", err),
+            );
+        }
     }
 }
 
@@ -1326,6 +2038,76 @@ fn current_timestamp_ms() -> String {
     millis.to_string()
 }
 
+/// LLM 语义 Lint 合法 code 列表。
+const SEMANTIC_LINT_CODES: &[&str] = &[
+    "SEMANTIC_CONTRADICTION",
+    "SEMANTIC_STALE",
+    "SEMANTIC_COVERAGE_GAP",
+];
+
+/// 解析 LLM 返回的语义 Lint 文本为 LintIssue 列表。
+///
+/// 格式要求：每行 `CODE|severity|message|path|suggestion`，
+/// 非法行静默跳过，最多返回 10 条。
+fn parse_semantic_lint_response(response: &str) -> Vec<LintIssue> {
+    response
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.eq_ignore_ascii_case("NO_ISSUES") {
+                return None;
+            }
+            let parts: Vec<&str> = line.splitn(5, '|').collect();
+            if parts.len() < 5 {
+                return None;
+            }
+            let code = parts[0].trim();
+            let severity = parts[1].trim();
+            let message = parts[2].trim();
+            let path = parts[3].trim();
+            let suggestion = parts[4].trim();
+
+            if !SEMANTIC_LINT_CODES.contains(&code) {
+                return None;
+            }
+            if severity != "warning" && severity != "info" {
+                return None;
+            }
+            if message.is_empty() || suggestion.is_empty() {
+                return None;
+            }
+
+            Some(LintIssue {
+                code: code.to_string(),
+                severity: severity.to_string(),
+                message: message.to_string(),
+                path: if path.is_empty() { None } else { Some(path.to_string()) },
+                suggestion: suggestion.to_string(),
+            })
+        })
+        .take(10)
+        .collect()
+}
+
+/// 将语义问题合并进规则 Lint 报告，更新统计与摘要。
+fn merge_lint_with_semantic(mut rules: LintReport, semantic: Vec<LintIssue>) -> LintReport {
+    if semantic.is_empty() {
+        return rules;
+    }
+    for issue in &semantic {
+        match issue.severity.as_str() {
+            "error" => rules.severity_stats.error += 1,
+            "warning" => rules.severity_stats.warning += 1,
+            "info" => rules.severity_stats.info += 1,
+            _ => {}
+        }
+    }
+    rules.issues.extend(semantic);
+    let total = rules.issues.len();
+    rules.summary = format!("共发现 {} 个问题（规则 + 语义分析）", total);
+    rules
+}
+
 fn build_lint_report(mode: AppMode, summary: String, issues: Vec<LintIssue>) -> LintReport {
     let severity_stats = count_lint_severity_stats(&issues);
 
@@ -1351,6 +2133,138 @@ fn count_lint_severity_stats(issues: &[LintIssue]) -> LintSeverityStats {
     }
 
     stats
+}
+
+fn lint_patch_link_target(path: Option<&str>) -> String {
+    let file_name = path
+        .and_then(|value| Path::new(value).file_name())
+        .and_then(|value| value.to_str())
+        .unwrap_or("xxx.md");
+    format!("wiki/{}", file_name)
+}
+
+fn lint_patch_link_label(path: Option<&str>) -> String {
+    path.and_then(|value| Path::new(value).file_stem())
+        .and_then(|value| value.to_str())
+        .unwrap_or("xxx")
+        .to_string()
+}
+
+fn build_lint_patch_suggestion(issue: &LintIssue) -> LintPatchSuggestion {
+    let (title, proposed_action, patch_preview) = match issue.code.as_str() {
+        "VAULT_NOT_INITIALIZED" => (
+            "初始化 Vault".to_string(),
+            "先执行 init_vault 创建本地 Vault".to_string(),
+            "```text\n执行 init_vault 后，系统会生成 vault/index.md、vault/log.md 和 .app/meta.db。\n```"
+                .to_string(),
+        ),
+        "INDEX_READ_FAILED" => (
+            "检查 index.md 读取".to_string(),
+            "确认 index.md 可读并修复文件权限或编码问题".to_string(),
+            format!(
+                "```text\n检查文件：{}\n若文件可读性异常，修复后重新运行 lint。\n```",
+                issue.path.as_deref().unwrap_or("index.md")
+            ),
+        ),
+        "INDEX_MISSING" => (
+            "补回 index.md".to_string(),
+            "重新执行 init_vault 或补回 index.md".to_string(),
+            "```text\n# Index\n\n## Imported Pages\n- [[wiki/xxx.md|xxx]]\n```".to_string(),
+        ),
+        "LOG_MISSING" => (
+            "补回 log.md".to_string(),
+            "重新执行 init_vault 或补回 log.md".to_string(),
+            "```text\n# Log\n\n## 事件日志\n```".to_string(),
+        ),
+        "DB_SCHEMA_UPGRADE_FAILED" | "DB_MISSING" | "DB_QUERY_FAILED" => (
+            "检查 meta.db".to_string(),
+            "确认 SQLite 数据库可用并重试结构校验".to_string(),
+            "```text\n确认 .app/meta.db 可读写，并检查数据库结构是否完整。\n```"
+                .to_string(),
+        ),
+        "CITATION_QUERY_FAILED" => (
+            "检查 citations 查询".to_string(),
+            "确认 citations 表可查询并修复数据库结构".to_string(),
+            "```text\n检查 citations 表与相关索引是否存在。\n```".to_string(),
+        ),
+        "BROKEN_CITING_PAGE" => (
+            "处理失效引用所属页面".to_string(),
+            "恢复对应页面或移除失效引用记录".to_string(),
+            format!(
+                "```text\n引用所属页面不存在：{}\n建议恢复页面或清理引用记录。\n```",
+                issue.path.as_deref().unwrap_or("未知路径")
+            ),
+        ),
+        "BROKEN_CITATION" => (
+            "修复引用目标页面".to_string(),
+            "补回被引用页面或修正引用路径".to_string(),
+            format!(
+                "```text\n引用目标缺失：{}\n建议修复引用路径或补回页面。\n```",
+                issue.path.as_deref().unwrap_or("未知路径")
+            ),
+        ),
+        "MISSING_INDEX_ENTRY" => (
+            "补齐 index 引用".to_string(),
+            "把缺失页面加入 index.md".to_string(),
+            format!(
+                "```text\n- [[{}|{}]]\n```",
+                lint_patch_link_target(issue.path.as_deref()),
+                lint_patch_link_label(issue.path.as_deref())
+            ),
+        ),
+        "ORPHAN_WIKI_PAGE" => (
+            "把页面挂回 index.md".to_string(),
+            "将该页面加入 index.md，或确认其应保留为孤页".to_string(),
+            format!(
+                "```text\n- [[{}|{}]]\n```",
+                lint_patch_link_target(issue.path.as_deref()),
+                lint_patch_link_label(issue.path.as_deref())
+            ),
+        ),
+        "DB_MISSING_PAGE_RECORD" => (
+            "同步 wiki_pages 记录".to_string(),
+            "重新同步 wiki_pages 表记录".to_string(),
+            format!(
+                "```text\n补写 wiki_pages 记录以匹配页面：{}\n```",
+                issue.path.as_deref().unwrap_or("未知路径")
+            ),
+        ),
+        "STALE_PENDING_TASK" => (
+            "推进卡住的任务".to_string(),
+            "更新任务状态或清理陈旧任务".to_string(),
+            format!(
+                "```text\n任务路径：{}\n建议推进状态到 applied/failed，或清理过期任务。\n```",
+                issue.path.as_deref().unwrap_or("未知路径")
+            ),
+        ),
+        "TASK_QUERY_FAILED" => (
+            "检查任务查询".to_string(),
+            "确认 tasks 表可查询并修复数据库结构".to_string(),
+            "```text\n检查 tasks 表与数据库可读性。\n```".to_string(),
+        ),
+        "STRICT_LOCAL_GATE" => (
+            "严格本地模式提示".to_string(),
+            "无需修改；仅确认当前运行在严格本地模式".to_string(),
+            "```text\n该项为信息提示，无需应用补丁。\n```".to_string(),
+        ),
+        _ => (
+            "检查问题".to_string(),
+            "根据 lint 结果进行人工确认".to_string(),
+            format!(
+                "```text\n问题代码：{}\n路径：{}\n```",
+                issue.code,
+                issue.path.as_deref().unwrap_or("全局")
+            ),
+        ),
+    };
+
+    LintPatchSuggestion {
+        issue_code: issue.code.clone(),
+        path: issue.path.clone(),
+        title,
+        proposed_action,
+        patch_preview,
+    }
 }
 
 fn file_modified_timestamp_ms(path: &Path) -> String {
@@ -1419,6 +2333,58 @@ fn is_existing_wiki_page_target(vault_path: &Path, raw_path: &str) -> bool {
     };
 
     canonical_target.starts_with(&canonical_root)
+}
+
+fn wiki_link_target_from_path(vault_path: &Path, page_path: &Path) -> Result<String, String> {
+    let wiki_root = fs::canonicalize(vault_path.join("wiki"))
+        .map_err(|err| format!("解析 wiki 根目录失败: {}", err))?;
+    let canonical_page = fs::canonicalize(page_path)
+        .map_err(|err| format!("解析页面路径失败: {}", err))?;
+    let relative = canonical_page
+        .strip_prefix(&wiki_root)
+        .map_err(|_| "页面不在 vault/wiki 目录下".to_string())?;
+
+    Ok(format!(
+        "wiki/{}",
+        relative.to_string_lossy().replace('\\', "/")
+    ))
+}
+
+fn wiki_link_label(page_path: &Path) -> String {
+    page_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("xxx")
+        .to_string()
+}
+
+fn append_index_link_if_missing(
+    index_path: &Path,
+    link_target: &str,
+    label: &str,
+) -> Result<bool, String> {
+    let existing = fs::read_to_string(index_path)
+        .map_err(|err| format!("读取 index.md 失败: {}", err))?;
+    let link = format!("[[{}|{}]]", link_target, label);
+    if existing.contains(&link) {
+        return Ok(false);
+    }
+
+    let mut updated = existing;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(&format!("- {}\n", link));
+    fs::write(index_path, updated).map_err(|err| format!("写入 index.md 失败: {}", err))?;
+    Ok(true)
+}
+
+fn seed_index_content() -> &'static str {
+    "# Index\n\n## Imported Pages\n"
+}
+
+fn seed_log_content() -> &'static str {
+    "# Log\n\n## Event Log\n"
 }
 
 #[derive(Debug, Clone)]
@@ -1739,6 +2705,7 @@ fn build_query_answer(question: &str, matches: &[WikiMatch]) -> String {
 }
 
 fn build_llm_status(
+    provider: &str,
     base_url: &str,
     model: &str,
     mode: AppMode,
@@ -1746,13 +2713,108 @@ fn build_llm_status(
     message: String,
 ) -> LlmStatus {
     LlmStatus {
-        provider: "ollama".to_string(),
+        provider: provider.to_string(),
         base_url: base_url.to_string(),
         model: model.to_string(),
         healthy,
         message,
         mode,
     }
+}
+
+fn normalize_cloud_provider_name(provider_name: Option<&str>) -> Option<String> {
+    let value = provider_name?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let lowered = value.to_ascii_lowercase();
+    let canonical = if lowered.contains("deepseek") {
+        "deepseek"
+    } else if lowered.contains("zhipu") || lowered.contains("glm") {
+        "glm"
+    } else if lowered.contains("minimax") {
+        "minimax"
+    } else {
+        value
+    };
+
+    Some(canonical.to_string())
+}
+
+fn normalize_active_provider(active_provider: Option<&str>) -> Option<&'static str> {
+    let value = active_provider?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let lowered = value.to_ascii_lowercase();
+    match lowered.as_str() {
+        "cloud" => Some("cloud"),
+        "ollama" => Some("ollama"),
+        _ => None,
+    }
+}
+
+fn resolve_active_provider(
+    mode: AppMode,
+    preferred: Option<&str>,
+    has_cloud_key: bool,
+    fallback: Option<&str>,
+) -> String {
+    if matches!(mode, AppMode::StrictLocal) {
+        return "ollama".to_string();
+    }
+
+    let preferred = normalize_active_provider(preferred)
+        .or_else(|| normalize_active_provider(fallback));
+
+    match preferred {
+        Some("cloud") if has_cloud_key => "cloud".to_string(),
+        Some("cloud") => "ollama".to_string(),
+        Some("ollama") => "ollama".to_string(),
+        _ if has_cloud_key => "cloud".to_string(),
+        _ => "ollama".to_string(),
+    }
+}
+
+fn display_cloud_provider_name(provider_name: &str) -> String {
+    let trimmed = provider_name.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    match lowered.as_str() {
+        "deepseek" => "DeepSeek".to_string(),
+        "glm" => "GLM".to_string(),
+        "minimax" => "MiniMax".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn provider_default_base_url(provider_name: Option<&str>) -> Option<String> {
+    let lowered = provider_name?.trim().to_ascii_lowercase();
+    if lowered.contains("deepseek") {
+        Some("https://api.deepseek.com/v1".to_string())
+    } else if lowered.contains("zhipu") || lowered.contains("glm") {
+        Some("https://open.bigmodel.cn/api/paas/v4".to_string())
+    } else if lowered.contains("minimax") {
+        Some("https://api.minimax.chat/v1".to_string())
+    } else {
+        None
+    }
+}
+
+fn normalize_cloud_base_url(provider_name: Option<&str>, base_url: Option<&str>) -> Option<String> {
+    if let Some(value) = base_url {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    provider_default_base_url(provider_name)
+}
+
+fn effective_cloud_base_url(provider_name: Option<&str>, base_url: Option<&str>) -> String {
+    normalize_cloud_base_url(provider_name, base_url)
+        .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string())
 }
 
 fn llm_health_error_message(err: &LlmError) -> String {
@@ -1848,13 +2910,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_ask_rejects_empty_question() {
+    #[tokio::test]
+    async fn query_ask_rejects_empty_question() {
         let vault_dir = make_temp_dir("llm-wiki-query-empty");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
 
-        let result = state.query_ask("   ".to_string());
+        let result = state.query_ask("   ".to_string()).await;
         assert!(result.is_err());
         assert_eq!(result.err(), Some("问题不能为空".to_string()));
     }
@@ -1871,6 +2933,181 @@ mod tests {
         assert_eq!(report.severity_stats.error, 1);
         assert_eq!(report.severity_stats.warning, 0);
         assert_eq!(report.severity_stats.info, 0);
+    }
+
+    #[test]
+    fn preview_lint_patches_returns_uninitialized_vault_suggestion() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-preview-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let preview = state.preview_lint_patches();
+        assert_eq!(preview.total, 1);
+        assert_eq!(preview.suggestions.len(), 1);
+        let suggestion = &preview.suggestions[0];
+        assert_eq!(suggestion.issue_code, "VAULT_NOT_INITIALIZED");
+        assert_eq!(suggestion.title, "初始化 Vault");
+        assert!(suggestion.patch_preview.contains("init_vault"));
+    }
+
+    #[test]
+    fn apply_lint_patch_supports_orphan_wiki_page_and_writes_log() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-orphan");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let orphan_path = vault_dir.join("wiki").join("orphan.md");
+        let orphan_path_str = orphan_path.to_string_lossy().to_string();
+        fs::write(&orphan_path, "# Orphan\n\n孤页内容。").expect("写入 orphan 页面失败");
+
+        let result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "ORPHAN_WIKI_PAGE".to_string(),
+                path: Some(orphan_path.to_string_lossy().to_string()),
+            })
+            .expect("应用 lint 补丁失败");
+
+        assert!(result.applied);
+        assert_eq!(result.issue_code, "ORPHAN_WIKI_PAGE");
+        assert_eq!(result.path.as_deref(), Some(orphan_path_str.as_str()));
+        assert!(result.touched_paths.iter().any(|path| path.ends_with("index.md")));
+
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        assert!(index_content.contains("[[wiki/orphan.md|orphan]]"));
+
+        let recent_log = state.recent_logs(1);
+        assert_eq!(recent_log.len(), 1);
+        assert!(recent_log[0].message.contains("ORPHAN_WIKI_PAGE"));
+    }
+
+    #[test]
+    fn apply_lint_patch_supports_missing_index_entry_and_appends_link() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-missing-index");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("standalone.md");
+        fs::write(&page_path, "# Standalone\n\n页面内容。").expect("写入页面失败");
+
+        let result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "MISSING_INDEX_ENTRY".to_string(),
+                path: Some(page_path.to_string_lossy().to_string()),
+            })
+            .expect("应用 lint 补丁失败");
+
+        assert!(result.applied);
+        assert_eq!(result.issue_code, "MISSING_INDEX_ENTRY");
+        assert!(result
+            .touched_paths
+            .iter()
+            .any(|path| path.ends_with("index.md")));
+
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        assert!(index_content.contains("[[wiki/standalone.md|standalone]]"));
+    }
+
+    #[test]
+    fn apply_lint_patch_records_event_and_recent_query_returns_latest() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-event");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let orphan_path = vault_dir.join("wiki").join("event-note.md");
+        let orphan_path_str = orphan_path.to_string_lossy().to_string();
+        fs::write(&orphan_path, "# Event Note\n\n页面内容。").expect("写入页面失败");
+
+        let result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "ORPHAN_WIKI_PAGE".to_string(),
+                path: Some(orphan_path.to_string_lossy().to_string()),
+            })
+            .expect("应用 lint 补丁失败");
+
+        assert!(result.applied);
+
+        let events = state
+            .recent_lint_patch_events(10)
+            .expect("读取 lint 补丁事件失败");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].issue_code, "ORPHAN_WIKI_PAGE");
+        assert_eq!(events[0].path.as_deref(), Some(orphan_path_str.as_str()));
+        assert!(events[0].applied);
+        assert!(events[0].message.contains("已将页面加入 index.md"));
+        assert!(!events[0].created_at.is_empty());
+    }
+
+    #[test]
+    fn apply_lint_patches_batch_summarizes_success_and_failure() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-batch");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let success_path = vault_dir.join("wiki").join("batch-note.md");
+        fs::write(&success_path, "# Batch Note\n\n页面内容。").expect("写入页面失败");
+
+        let result = state
+            .apply_lint_patches_batch(vec![
+                LintPatchApplyInput {
+                    issue_code: "ORPHAN_WIKI_PAGE".to_string(),
+                    path: Some(success_path.to_string_lossy().to_string()),
+                },
+                LintPatchApplyInput {
+                    issue_code: "TASK_QUERY_FAILED".to_string(),
+                    path: None,
+                },
+            ])
+            .expect("批量应用 lint 补丁失败");
+
+        assert_eq!(result.total, 2);
+        assert_eq!(result.success, 1);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.items.len(), 2);
+        assert!(matches!(
+            result.items[0].status,
+            LintPatchBatchApplyStatus::Success
+        ));
+        assert!(result.items[0].applied);
+        assert!(matches!(
+            result.items[1].status,
+            LintPatchBatchApplyStatus::Failed
+        ));
+        assert!(!result.items[1].applied);
+        assert!(result.items[1].error.is_some());
+
+        let recent_log = state.recent_logs(1);
+        assert_eq!(recent_log.len(), 1);
+        assert!(recent_log[0].message.contains("批量应用 Lint 补丁完成"));
+        assert!(recent_log[0].message.contains("total=2"));
+        assert!(recent_log[0].message.contains("success=1"));
+        assert!(recent_log[0].message.contains("failed=1"));
+        assert!(recent_log[0].message.contains("skipped=0"));
+    }
+
+    #[test]
+    fn apply_lint_patch_rejects_unsupported_issue_code() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-unsupported");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let result = state.apply_lint_patch(LintPatchApplyInput {
+            issue_code: "TASK_QUERY_FAILED".to_string(),
+            path: None,
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("暂不支持自动应用，请手动处理".to_string())
+        );
     }
 
     #[test]
@@ -1892,13 +3129,13 @@ mod tests {
         assert_eq!(result.answer_strategy, "rule");
     }
 
-    #[test]
-    fn query_ask_requires_initialized_vault() {
+    #[tokio::test]
+    async fn query_ask_requires_initialized_vault() {
         let vault_dir = make_temp_dir("llm-wiki-query-uninit");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
 
-        let result = state.query_ask("rust wiki".to_string());
+        let result = state.query_ask("rust wiki".to_string()).await;
         assert!(result.is_err());
         assert_eq!(
             result.err(),
@@ -2240,8 +3477,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_ask_returns_matches_with_citations() {
+    #[tokio::test]
+    async fn query_ask_returns_matches_with_citations() {
         let vault_dir = make_temp_dir("llm-wiki-query-hit");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
@@ -2264,6 +3501,7 @@ mod tests {
 
         let result = state
             .query_ask("Rust backend".to_string())
+            .await
             .expect("query_ask 应返回成功");
 
         assert_eq!(result.question, "Rust backend");
@@ -2271,7 +3509,8 @@ mod tests {
         assert!(!result.citations.is_empty());
         assert_eq!(result.mode, AppMode::Hybrid);
         assert_eq!(result.search_strategy, "scan");
-        assert_eq!(result.answer_strategy, "rule");
+        // answer_strategy 取决于 Ollama 是否可用：可用时为 "llm"，不可用时回退 "rule"
+        assert!(result.answer_strategy == "llm" || result.answer_strategy == "rule");
         assert!(result
             .citations
             .iter()
@@ -2362,6 +3601,7 @@ mod tests {
     #[test]
     fn build_llm_status_formats_expected_fields() {
         let status = build_llm_status(
+            "ollama",
             "http://localhost:11434",
             "llama3:8b",
             AppMode::StrictLocal,
@@ -2375,6 +3615,138 @@ mod tests {
         assert!(status.healthy);
         assert_eq!(status.message, "本地 Ollama 可用");
         assert_eq!(status.mode, AppMode::StrictLocal);
+    }
+
+    #[test]
+    fn load_config_compatibly_reads_legacy_openai_fields() {
+        let dir = make_temp_dir("llm-wiki-config-legacy");
+        let _guard = TempDirGuard(dir.clone());
+        let config_path = dir.join("app-config.json");
+        fs::write(
+            &config_path,
+            r#"{
+  "mode": "Hybrid",
+  "vault_path": "C:/wiki",
+  "query_top_k": 5,
+  "openai_api_key": "sk-legacy",
+  "openai_provider_name": "DeepSeek",
+  "openai_model": "deepseek-chat"
+}"#,
+        )
+        .expect("写入旧配置失败");
+
+        let (config, snapshot) = AppState::load_config(&config_path);
+
+        assert_eq!(snapshot.as_deref().map(str::trim), Some(r#"{
+  "mode": "Hybrid",
+  "vault_path": "C:/wiki",
+  "query_top_k": 5,
+  "openai_api_key": "sk-legacy",
+  "openai_provider_name": "DeepSeek",
+  "openai_model": "deepseek-chat"
+}"#));
+        assert_eq!(config.mode, AppMode::Hybrid);
+        assert_eq!(config.vault_path.as_deref(), Some("C:/wiki"));
+        assert_eq!(config.query_top_k, Some(5));
+        assert_eq!(config.cloud_api_key.as_deref(), Some("sk-legacy"));
+        assert_eq!(config.cloud_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(config.cloud_provider_name.as_deref(), Some("DeepSeek"));
+        assert!(config.cloud_base_url.is_none());
+        assert!(config.active_provider.is_none());
+    }
+
+    #[test]
+    fn provider_aliases_are_canonicalized_and_default_urls_are_derived() {
+        assert_eq!(
+            normalize_cloud_provider_name(Some("  DeepSeek Chat  ")).as_deref(),
+            Some("deepseek")
+        );
+        assert_eq!(
+            normalize_cloud_provider_name(Some("GLM-4")).as_deref(),
+            Some("glm")
+        );
+        assert_eq!(
+            normalize_cloud_provider_name(Some("zhipu ai")).as_deref(),
+            Some("glm")
+        );
+        assert_eq!(
+            normalize_cloud_provider_name(Some("MiniMax abab6.5")).as_deref(),
+            Some("minimax")
+        );
+        assert_eq!(display_cloud_provider_name("deepseek"), "DeepSeek");
+        assert_eq!(display_cloud_provider_name("glm"), "GLM");
+        assert_eq!(display_cloud_provider_name("minimax"), "MiniMax");
+
+        let cases = [
+            (
+                "deepseek",
+                Some("https://api.deepseek.com/v1"),
+            ),
+            (
+                "glm",
+                Some("https://open.bigmodel.cn/api/paas/v4"),
+            ),
+            (
+                "zhipu",
+                Some("https://open.bigmodel.cn/api/paas/v4"),
+            ),
+            (
+                "minimax",
+                Some("https://api.minimax.chat/v1"),
+            ),
+        ];
+
+        for (provider_name, expected_base_url) in cases {
+            assert_eq!(
+                normalize_cloud_base_url(Some(provider_name), None).as_deref(),
+                expected_base_url
+            );
+            assert_eq!(
+                effective_cloud_base_url(Some(provider_name), None),
+                expected_base_url.unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn llm_status_input_prefers_ollama_when_active_provider_is_ollama_in_hybrid() {
+        let vault_dir = make_temp_dir("llm-wiki-provider-route-ollama");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        {
+            let mut guard = state.inner.lock().expect("状态锁已被污染");
+            guard.mode = AppMode::Hybrid;
+            guard.cloud_api_key = Some("sk-test".to_string());
+            guard.cloud_model = Some("gpt-4o-mini".to_string());
+            guard.active_provider = Some("ollama".to_string());
+        }
+
+        let (_mode, _cloud_provider_name, cloud_config, ollama_provider) = state.llm_status_input();
+        assert!(cloud_config.is_none());
+        assert!(ollama_provider.is_some());
+    }
+
+    #[test]
+    fn set_llm_config_falls_back_to_ollama_when_cloud_selected_without_key() {
+        let vault_dir = make_temp_dir("llm-wiki-provider-fallback");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let saved = state
+            .set_llm_config(LlmProviderConfig {
+                cloud_api_key: "".to_string(),
+                cloud_base_url: "".to_string(),
+                cloud_model: "gpt-4o-mini".to_string(),
+                cloud_provider_name: "DeepSeek".to_string(),
+                active_provider: "cloud".to_string(),
+            })
+            .expect("保存 LLM 配置失败");
+
+        assert_eq!(saved.active_provider, "ollama");
     }
 
     #[test]
@@ -2432,8 +3804,8 @@ mod tests {
         assert!(tokens.iter().any(|item| item == "核心"));
     }
 
-    #[test]
-    fn query_ask_with_options_applies_top_k_clamp() {
+    #[tokio::test]
+    async fn query_ask_with_options_applies_top_k_clamp() {
         let vault_dir = make_temp_dir("llm-wiki-query-topk");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
@@ -2458,6 +3830,7 @@ mod tests {
                 "这个项目的核心目标是什么".to_string(),
                 QueryAskOptions { top_k: Some(1) },
             )
+            .await
             .expect("query_ask_with_options 应返回成功");
         assert_eq!(result.matched_pages.len(), 1);
         assert_eq!(result.search_strategy, "fts");
@@ -2468,6 +3841,7 @@ mod tests {
                 "这个项目的核心目标是什么".to_string(),
                 QueryAskOptions { top_k: Some(99) },
             )
+            .await
             .expect("query_ask_with_options 应返回成功");
         assert!(result.matched_pages.len() <= QUERY_TOP_K_MAX);
         assert_eq!(result.search_strategy, "fts");
@@ -2492,8 +3866,8 @@ mod tests {
         assert_eq!(config.query_top_k, Some(6));
     }
 
-    #[test]
-    fn query_ask_with_options_uses_persisted_default_top_k() {
+    #[tokio::test]
+    async fn query_ask_with_options_uses_persisted_default_top_k() {
         let vault_dir = make_temp_dir("llm-wiki-query-default-topk");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
@@ -2521,6 +3895,7 @@ mod tests {
                 "query default topk".to_string(),
                 QueryAskOptions::default(),
             )
+            .await
             .expect("query_ask_with_options 应返回成功");
         assert_eq!(result.matched_pages.len(), 2);
         assert_eq!(result.search_strategy, "fts");
@@ -2687,6 +4062,77 @@ mod tests {
     }
 
     #[test]
+    fn preview_lint_patches_total_matches_suggestions_for_multiple_issues() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-preview-multi");
+        let _guard = TempDirGuard(vault_dir.clone());
+
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let present_path = vault_dir.join("wiki").join("present.md");
+        let orphan_path = vault_dir.join("wiki").join("orphan.md");
+        fs::write(&present_path, "# present\n").expect("写入 present 失败");
+        fs::write(&orphan_path, "# orphan\n").expect("写入 orphan 失败");
+
+        fs::write(
+            vault_dir.join("index.md"),
+            "# Index\n\n## Imported Pages\n- [[wiki/present.md|present]]\n- [[wiki/missing.md|missing]]\n",
+        )
+        .expect("写入 index.md 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "hash-preview",
+                vault_dir.join("source.md").to_string_lossy().to_string(),
+                vault_dir.join("raw").join("source.md").to_string_lossy().to_string(),
+                "1"
+            ],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                source_id,
+                "present",
+                present_path.to_string_lossy().to_string(),
+                "present summary",
+                "1",
+                "1"
+            ],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                present_path.to_string_lossy().to_string(),
+                vault_dir.join("wiki").join("missing-cited.md").to_string_lossy().to_string(),
+                3_i64,
+                "missing citation",
+                "1"
+            ],
+        )
+        .expect("写入 citations 失败");
+
+        let report = state.lint_report();
+        let preview = state.preview_lint_patches();
+
+        assert_eq!(preview.total, preview.suggestions.len());
+        assert_eq!(preview.total, report.issues.len());
+        assert!(preview
+            .suggestions
+            .iter()
+            .any(|item| item.issue_code == "BROKEN_CITATION"));
+        assert!(preview
+            .suggestions
+            .iter()
+            .any(|item| item.issue_code == "MISSING_INDEX_ENTRY"));
+    }
+
+    #[test]
     fn lint_report_flags_stale_pending_tasks() {
         let vault_dir = make_temp_dir("llm-wiki-lint-tasks");
         let _guard = TempDirGuard(vault_dir.clone());
@@ -2759,9 +4205,17 @@ mod tests {
                 logs: Vec::new(),
                 next_log_id: 1,
                 config_snapshot: None,
+                // 测试环境不配置云端 Provider，以确保回退到 Ollama
+                cloud_api_key: None,
+                cloud_base_url: None,
+                cloud_model: None,
+                cloud_provider_name: None,
+                active_provider: None,
             }),
             config_path: vault_dir.join(".runtime").join("app-config.json"),
             llm_provider: OnceLock::new(),
+            // 测试环境不注入 AppHandle，emit_progress 静默跳过
+            app_handle: OnceLock::new(),
         }
     }
 
@@ -2776,5 +4230,73 @@ mod tests {
             expected,
             actual
         );
+    }
+
+    // ── 语义 Lint 解析测试 ──────────────────────────────────────────
+
+    #[test]
+    fn parse_semantic_lint_response_parses_valid_lines() {
+        let input = "SEMANTIC_CONTRADICTION|warning|page A 与 page B 矛盾|wiki/a.md|对齐两页内容\n\
+                     SEMANTIC_STALE|info|结论可能已过时||更新至最新信息\n\
+                     NO_ISSUES";
+        let issues = parse_semantic_lint_response(input);
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].code, "SEMANTIC_CONTRADICTION");
+        assert_eq!(issues[0].severity, "warning");
+        assert_eq!(issues[0].path, Some("wiki/a.md".to_string()));
+        assert_eq!(issues[1].code, "SEMANTIC_STALE");
+        assert_eq!(issues[1].severity, "info");
+        assert_eq!(issues[1].path, None);
+    }
+
+    #[test]
+    fn parse_semantic_lint_response_rejects_invalid_codes() {
+        // 非法 code 行应被跳过
+        let input = "INVALID_CODE|warning|some message|wiki/a.md|fix it\n\
+                     SEMANTIC_COVERAGE_GAP|info|缺少 Rust 语言页面||新建 wiki/rust.md";
+        let issues = parse_semantic_lint_response(input);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "SEMANTIC_COVERAGE_GAP");
+    }
+
+    #[test]
+    fn parse_semantic_lint_response_handles_no_issues() {
+        let issues = parse_semantic_lint_response("NO_ISSUES");
+        assert!(issues.is_empty());
+
+        let issues2 = parse_semantic_lint_response("");
+        assert!(issues2.is_empty());
+    }
+
+    #[test]
+    fn parse_semantic_lint_response_caps_at_ten() {
+        // 超过 10 条时只返回前 10 条
+        let line = "SEMANTIC_STALE|info|old conclusion||update it\n";
+        let input = line.repeat(15);
+        let issues = parse_semantic_lint_response(&input);
+        assert_eq!(issues.len(), 10);
+    }
+
+    #[test]
+    fn merge_lint_with_semantic_updates_stats_and_summary() {
+        use crate::models::LintSeverityStats;
+        let rules = LintReport {
+            mode: AppMode::Hybrid,
+            checked_at: "0".to_string(),
+            summary: "初始".to_string(),
+            issues: vec![],
+            severity_stats: LintSeverityStats { error: 0, warning: 1, info: 0 },
+        };
+        let semantic = vec![LintIssue {
+            code: "SEMANTIC_STALE".to_string(),
+            severity: "warning".to_string(),
+            message: "过时".to_string(),
+            path: None,
+            suggestion: "更新".to_string(),
+        }];
+        let merged = merge_lint_with_semantic(rules, semantic);
+        assert_eq!(merged.issues.len(), 1);
+        assert_eq!(merged.severity_stats.warning, 2); // 原1 + 新增1
+        assert!(merged.summary.contains("1 个问题"));
     }
 }

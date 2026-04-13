@@ -207,6 +207,83 @@ h1 {
   margin-bottom: 14px;
 }
 
+.lint-patch-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.lint-patch-panel__summary {
+  color: var(--accent-strong);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.lint-patch-history {
+  margin-top: 16px;
+}
+
+.lint-patch-history__list {
+  display: grid;
+  gap: 12px;
+}
+
+.lint-patch-history__item {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #fffaf2;
+}
+
+.lint-patch-history__item--applied {
+  border-color: rgba(58, 123, 93, 0.22);
+}
+
+.lint-patch-history__item--skipped {
+  border-color: rgba(167, 92, 47, 0.22);
+}
+
+.lint-patch-history__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lint-patch-history__code {
+  color: var(--accent-strong);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.lint-patch-history__field {
+  display: grid;
+  gap: 4px;
+}
+
+.lint-patch-history__field span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lint-patch-history__field code,
+.lint-patch-history__field time,
+.lint-patch-history__message {
+  word-break: break-all;
+}
+
+.lint-patch-history__message {
+  color: var(--text);
+  line-height: 1.65;
+}
+
 .ask-panel {
   display: grid;
   gap: 10px;
@@ -505,6 +582,12 @@ h1 {
   line-height: 1.7;
 }
 
+.lint-issue__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
 .pill--lint {
   min-width: 76px;
 }
@@ -612,6 +695,45 @@ h1 {
   color: var(--text-muted);
   font-size: 0.9rem;
   line-height: 1.7;
+}
+
+/* Settings 面板单独布局：避免继承通用三列导致字段和按钮互相挤压。 */
+.settings-panel {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.settings-panel__status,
+.settings-panel__hint {
+  margin-top: 0;
+}
+
+.settings-panel__status strong {
+  margin-left: 8px;
+}
+
+.settings-panel__presets {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.settings-panel__presets .dev-panel__button {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.settings-panel__fields {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-panel__fields .dev-panel__field {
+  min-width: 0;
+}
+
+.settings-panel__save {
+  justify-content: flex-start;
 }
 
 .module-grid {
@@ -769,6 +891,10 @@ h1 {
   .dev-panel {
     grid-template-columns: 1fr;
   }
+
+  .settings-panel__fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -798,6 +924,20 @@ h1 {
   }
 
   .dev-panel__button {
+    width: 100%;
+  }
+
+  .settings-panel__presets {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .settings-panel__presets .dev-panel__button {
+    width: auto;
+    flex: 1 1 140px;
+  }
+
+  .settings-panel__save .dev-panel__button {
     width: 100%;
   }
 

@@ -94,11 +94,6 @@ impl OllamaProvider {
         Self { config, client }
     }
 
-    /// 使用默认配置创建 Provider
-    pub fn with_defaults() -> Self {
-        Self::new(OllamaConfig::default())
-    }
-
     /// 获取当前配置的模型名称
     pub fn model(&self) -> &str {
         &self.config.model
@@ -243,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_provider_creation() {
-        let provider = OllamaProvider::with_defaults();
+        let provider = OllamaProvider::new(OllamaConfig::default());
         assert_eq!(provider.model(), "llama3:8b");
         assert_eq!(provider.base_url(), "http://localhost:11434");
     }

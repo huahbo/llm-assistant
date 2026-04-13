@@ -52,6 +52,10 @@ export interface IngestResult {
   raw_path: string;
   wiki_path: string;
   message: string;
+  /** LLM 提取的关键实体列表（P1 复利机制） */
+  entities?: string[];
+  /** 被注入反向链接的相关 Wiki 页面路径（P1 复利机制） */
+  updated_pages?: string[];
 }
 
 export interface DefaultPaths {
@@ -154,9 +158,78 @@ export interface LintReport {
   issues: LintIssue[];
 }
 
+export interface LintPatchPreviewItem {
+  issue_code: string;
+  title: string;
+  proposed_action: string;
+  patch_preview: string;
+  path?: string | null;
+}
+
+export interface LintPatchApplyResult {
+  issue_code?: string;
+  path?: string | null;
+  applied?: boolean;
+  message?: string | null;
+  touched_paths?: string[];
+}
+
+export interface LintPatchBatchItemInput {
+  issue_code: string;
+  path?: string | null;
+}
+
+export interface LintPatchBatchItemResult {
+  issue_code?: string;
+  path?: string | null;
+  applied?: boolean;
+  skipped?: boolean;
+  status?: string;
+  message?: string | null;
+  touched_paths?: string[];
+  error?: string | null;
+}
+
+export interface LintPatchBatchResult {
+  summary?: string | null;
+  success_count: number;
+  failure_count: number;
+  skipped_count: number;
+  total_count: number;
+  items: LintPatchBatchItemResult[];
+}
+
+export interface LintPatchEvent {
+  issue_code: string;
+  path?: string | null;
+  applied: boolean;
+  message: string;
+  created_at: string;
+}
+
 export interface LogEntry {
   id: number;
   level: LogLevel;
   message: string;
   created_at: string;
+}
+
+/** 长时间操作的进度事件载荷（ingest_progress / query_progress） */
+export interface ProgressPayload {
+  step: string;
+  message: string;
+}
+
+/** LLM Provider 配置（Settings 页面读写） */
+export interface LlmProviderConfig {
+  /** 云端 API Key，空字符串表示未配置 */
+  cloud_api_key: string;
+  /** 云端 Base URL，空字符串时由后端使用默认值 */
+  cloud_base_url: string;
+  /** 云端模型名，空字符串时由后端使用默认值 */
+  cloud_model: string;
+  /** 云端 Provider 显示名，例如 OpenAI / DeepSeek */
+  cloud_provider_name: string;
+  /** 当前活跃的 provider 类型，"ollama" 或 "cloud" */
+  active_provider: string;
 }

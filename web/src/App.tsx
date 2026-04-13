@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchAppOverview,
   fetchDefaultPaths,
   fetchLlmStatus,
+  fetchLlmConfig,
+  fetchRecentLintPatchEvents,
   fetchQuerySettings,
   fetchRecentLogs,
   fetchRecentWikiPages,
@@ -13,24 +15,45 @@ import {
   isTauriRuntime,
   queryAskWithOptions,
   runLint,
+  applyLintPatch,
+  applyLintPatchesBatch,
+  previewLintPatches,
+  saveLlmConfig,
   searchWikiPages,
   saveQueryAnswer,
   setBackendMode,
   setQueryTopK as persistQueryTopK,
   formatLlmStatusSummary,
   resolveDisplayPath,
+  listenProgress,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
-import { formatLintCheckedAt, normalizeLintSeverity, resolveLintSeverityStats } from "./lint-utils";
+import {
+  filterLintIssuesByCode,
+  filterLintIssuesByPath,
+  filterLintIssuesBySuggestion,
+  filterLintIssuesBySeverity,
+  formatLintCheckedAt,
+  normalizeLintSeverity,
+  readLintFilterState,
+  resolveLintSeverityStats,
+  writeLintFilterState,
+} from "./lint-utils";
+import type { LintSeverityFilter } from "./lint-utils";
 import type {
   AppOverview,
   BackendAppMode,
+  LlmProviderConfig,
   LlmStatus,
   LintReport,
+  LintPatchBatchResult,
+  LintPatchEvent,
+  LintPatchPreviewItem,
   LogEntry,
   ModuleItem,
   ModeId,
   ModeOption,
+  ProgressPayload,
   QueryAnswerResult,
   WikiPageDetail,
   WikiPageCitation,
@@ -42,7 +65,6 @@ const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
-
 const modes: ModeOption[] = [
   {
     id: "hybrid",
@@ -83,6 +105,97 @@ const searchStrategyLabels: Record<string, string> = {
   empty: "空结果",
 };
 
+export const defaultCloudProviderName = "DeepSeek";
+export const defaultCloudBaseUrl = "https://api.deepseek.com/v1";
+export const defaultCloudModel = "deepseek-chat";
+
+type CloudProviderPresetId = "deepseek" | "glm" | "minimax";
+
+export const cloudProviderPresets: Record<
+  CloudProviderPresetId,
+  {
+    name: string;
+    providerName: string;
+    baseUrl: string;
+    model: string;
+  }
+> = {
+  deepseek: {
+    name: "DeepSeek",
+    providerName: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    model: "deepseek-chat",
+  },
+  glm: {
+    name: "GLM",
+    providerName: "GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    model: "glm-4-flash",
+  },
+  minimax: {
+    name: "MiniMax",
+    providerName: "MiniMax",
+    baseUrl: "https://api.minimax.chat/v1",
+    model: "abab6.5-chat",
+  },
+};
+
+export const buildLlmProviderConfig = (input: {
+  activeProvider: "cloud" | "ollama";
+  cloudApiKey: string;
+  cloudBaseUrl: string;
+  cloudModel: string;
+  cloudProviderName: string;
+}) => {
+  const active_provider = input.activeProvider;
+  const cloud_api_key = input.cloudApiKey.trim();
+  const cloud_base_url = input.cloudBaseUrl.trim();
+  const cloud_model = input.cloudModel.trim();
+  const cloud_provider_name = input.cloudProviderName.trim();
+
+  return {
+    cloud_api_key,
+    cloud_base_url,
+    cloud_model,
+    cloud_provider_name,
+    active_provider,
+  };
+};
+
+export const resolveNextActiveProvider = (
+  activeProvider: "cloud" | "ollama",
+  cloudApiKey: string,
+) => {
+  if (activeProvider === "cloud" && !cloudApiKey.trim()) {
+    return {
+      activeProvider: "ollama" as const,
+      fallbackMessage: "检测到你选择了云端 Provider，但 API Key 为空，已自动回退为本地 Ollama。",
+    };
+  }
+
+  return {
+    activeProvider,
+    fallbackMessage: "",
+  };
+};
+
+export const buildCloudProviderPresetConfig = (
+  presetId: CloudProviderPresetId,
+  activeProvider: "cloud" | "ollama",
+  existingApiKey = "",
+) => {
+  const preset = cloudProviderPresets[presetId];
+
+  // 预设只填充云端三项，保留用户已经输入的 API Key。
+  return buildLlmProviderConfig({
+    activeProvider,
+    cloudApiKey: existingApiKey,
+    cloudBaseUrl: preset.baseUrl,
+    cloudModel: preset.model,
+    cloudProviderName: preset.providerName,
+  });
+};
+
 export const formatQueryAnswerStrategyLabel = (answerStrategy?: string | null) => {
   const normalizedStrategy = answerStrategy?.trim().toLowerCase();
 
@@ -112,7 +225,6 @@ const modules: ModuleItem[] = [
 ];
 
 type DevAction = "init_vault" | "ingest_markdown";
-type LintSeverityFilter = "all" | "error" | "warning" | "info";
 
 type LoadResult = {
   overview: AppOverview | null;
@@ -145,6 +257,19 @@ export default function App() {
   const [llmStatusLoaded, setLlmStatusLoaded] = useState(false);
   const [lintReport, setLintReport] = useState<LintReport | null>(null);
   const [lintSeverityFilter, setLintSeverityFilter] = useState<LintSeverityFilter>("all");
+  const [lintCodeKeyword, setLintCodeKeyword] = useState("");
+  const [lintPathKeyword, setLintPathKeyword] = useState("");
+  const [lintSuggestionKeyword, setLintSuggestionKeyword] = useState("");
+  const [lintFilterStateLoaded, setLintFilterStateLoaded] = useState(false);
+  const [lintPatchPreviewLoading, setLintPatchPreviewLoading] = useState(false);
+  const [lintPatchPreviewItems, setLintPatchPreviewItems] = useState<LintPatchPreviewItem[]>([]);
+  const [lintPatchPreviewError, setLintPatchPreviewError] = useState("");
+  const [lintPatchApplyingKey, setLintPatchApplyingKey] = useState<string | null>(null);
+  const [lintPatchBatchApplying, setLintPatchBatchApplying] = useState(false);
+  const [lintPatchBatchSummary, setLintPatchBatchSummary] = useState<LintPatchBatchResult | null>(
+    null,
+  );
+  const [recentLintPatchEvents, setRecentLintPatchEvents] = useState<LintPatchEvent[]>([]);
   const [queryResult, setQueryResult] = useState<QueryAnswerResult | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [switchingMode, setSwitchingMode] = useState<ModeId | null>(null);
@@ -167,16 +292,29 @@ export default function App() {
   const [wikiPageCitationsLoading, setWikiPageCitationsLoading] = useState(false);
   const [wikiPageDetailError, setWikiPageDetailError] = useState("");
   const [wikiPageCitationsError, setWikiPageCitationsError] = useState("");
+  // LLM Provider 配置（Settings 面板）
+  const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
+  const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
+  const [llmConfigCloudBaseUrl, setLlmConfigCloudBaseUrl] = useState("");
+  const [llmConfigCloudModel, setLlmConfigCloudModel] = useState("");
+  const [llmConfigCloudProviderName, setLlmConfigCloudProviderName] = useState("");
+  const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState<"cloud" | "ollama">(
+    "ollama",
+  );
+  const [llmConfigSaving, setLlmConfigSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
-      const [data, defaultPaths, querySettings] = await Promise.all([
-        loadAppData(),
-        fetchDefaultPaths(),
-        fetchQuerySettings(),
-      ]);
+      const [data, defaultPaths, querySettings, lintPatchEvents, llmConfigResult] =
+        await Promise.all([
+          loadAppData(),
+          fetchDefaultPaths(),
+          fetchQuerySettings(),
+          fetchRecentLintPatchEvents(),
+          fetchLlmConfig(),
+        ]);
 
       if (!cancelled) {
         setOverview(data.overview);
@@ -193,6 +331,24 @@ export default function App() {
           setQueryTopKMin(querySettings.min_top_k);
           setQueryTopKMax(querySettings.max_top_k);
         }
+        if (llmConfigResult) {
+          setLlmConfig(llmConfigResult);
+          setLlmConfigCloudApiKey(llmConfigResult.cloud_api_key);
+          setLlmConfigCloudBaseUrl(llmConfigResult.cloud_base_url);
+          setLlmConfigCloudModel(llmConfigResult.cloud_model);
+          setLlmConfigCloudProviderName(llmConfigResult.cloud_provider_name);
+          setLlmConfigActiveProvider(
+            llmConfigResult.active_provider === "cloud" ? "cloud" : "ollama",
+          );
+        }
+
+        setRecentLintPatchEvents(lintPatchEvents);
+        const lintFilterState = readLintFilterState();
+        setLintSeverityFilter(lintFilterState.severity);
+        setLintCodeKeyword(lintFilterState.codeKeyword);
+        setLintPathKeyword(lintFilterState.pathKeyword);
+        setLintSuggestionKeyword(lintFilterState.suggestionKeyword);
+        setLintFilterStateLoaded(true);
       }
     };
 
@@ -202,6 +358,19 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!lintFilterStateLoaded) {
+      return;
+    }
+
+    writeLintFilterState({
+      severity: lintSeverityFilter,
+      codeKeyword: lintCodeKeyword,
+      pathKeyword: lintPathKeyword,
+      suggestionKeyword: lintSuggestionKeyword,
+    });
+  }, [lintCodeKeyword, lintFilterStateLoaded, lintPathKeyword, lintSeverityFilter, lintSuggestionKeyword]);
+
   const refreshAppData = async () => {
     const data = await loadAppData();
     setOverview(data.overview);
@@ -209,6 +378,11 @@ export default function App() {
     setPages(data.pages);
     setLlmStatus(data.llmStatus);
     setLlmStatusLoaded(true);
+  };
+
+  const refreshRecentLintPatchEvents = async () => {
+    const events = await fetchRecentLintPatchEvents();
+    setRecentLintPatchEvents(events);
   };
 
   const handleModeSelect = async (modeId: ModeId) => {
@@ -284,7 +458,12 @@ export default function App() {
 
     const nextSourcePath = ingestSourcePath.trim() || defaultIngestSourcePath;
     setDevAction("ingest_markdown");
-    setStatusMessage("");
+    setStatusMessage("摄入中...");
+
+    // 订阅后端进度事件，实时更新状态栏
+    const unlisten = await listenProgress("ingest_progress", (payload) => {
+      setStatusMessage(payload.message);
+    });
 
     try {
       const result = await ingestMarkdown(nextSourcePath);
@@ -294,39 +473,54 @@ export default function App() {
       }
 
       await refreshAppData();
-      setStatusMessage(result.message || `已处理 ${result.source_path}。`);
+      const entitiesMsg =
+        result.entities && result.entities.length > 0
+          ? `\n提取实体：${result.entities.join("、")}`
+          : "";
+      const updatedMsg =
+        result.updated_pages && result.updated_pages.length > 0
+          ? `\n更新相关页面：${result.updated_pages.length} 个`
+          : "";
+      setStatusMessage(
+        `${result.message || `已处理 ${result.source_path}`}${entitiesMsg}${updatedMsg}`
+      );
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
       setStatusMessage(`示例摄入失败：${message}`);
     } finally {
+      unlisten();
       setDevAction(null);
     }
   };
 
-  const handleRunLint = async () => {
+  const handleRunLint = async (): Promise<boolean> => {
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法运行 Lint。");
-      return;
+      return false;
     }
 
     setLintRunning(true);
+    setLintPatchPreviewItems([]);
+    setLintPatchPreviewError("");
     setStatusMessage("");
 
     try {
       const report = await runLint();
       if (!report) {
         setStatusMessage("当前环境不支持运行 Lint。");
-        return;
+        return false;
       }
 
       setLintReport(report);
       await refreshAppData();
       setStatusMessage(`Lint 已完成：${report.summary}`);
+      return true;
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
       setStatusMessage(`Lint 运行失败：${message}`);
+      return false;
     } finally {
       setLintRunning(false);
     }
@@ -350,7 +544,12 @@ export default function App() {
     setQueryTopK(nextTopK);
 
     setQueryRunning(true);
-    setStatusMessage("");
+    setStatusMessage("查询中...");
+
+    // 订阅后端进度事件，实时更新状态栏
+    const unlisten = await listenProgress("query_progress", (payload) => {
+      setStatusMessage(payload.message);
+    });
 
     try {
       const result = await queryAskWithOptions(nextQuestion, { top_k: nextTopK });
@@ -368,8 +567,70 @@ export default function App() {
       const message = error instanceof Error ? error.message : String(error);
       setStatusMessage(`Query 失败：${message}`);
     } finally {
+      unlisten();
       setQueryRunning(false);
     }
+  };
+
+  const handleSaveLlmConfig = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法保存 LLM 配置。");
+      return;
+    }
+
+    setLlmConfigSaving(true);
+    setStatusMessage("");
+
+    try {
+      const providerDecision = resolveNextActiveProvider(llmConfigActiveProvider, llmConfigCloudApiKey);
+      const nextConfig = buildLlmProviderConfig({
+        activeProvider: providerDecision.activeProvider,
+        cloudApiKey: llmConfigCloudApiKey,
+        cloudBaseUrl: llmConfigCloudBaseUrl,
+        cloudModel: llmConfigCloudModel,
+        cloudProviderName: llmConfigCloudProviderName,
+      });
+      const result = await saveLlmConfig(nextConfig);
+      if (!result) {
+        setStatusMessage("当前环境不支持保存 LLM 配置。");
+        return;
+      }
+      setLlmConfig(result);
+      setLlmConfigCloudApiKey(result.cloud_api_key);
+      setLlmConfigCloudBaseUrl(result.cloud_base_url);
+      setLlmConfigCloudModel(result.cloud_model);
+      setLlmConfigCloudProviderName(result.cloud_provider_name);
+      setLlmConfigActiveProvider(result.active_provider === "cloud" ? "cloud" : "ollama");
+      // 刷新 LLM 状态显示（Provider 可能已切换）
+      await refreshAppData();
+      const savedMessage =
+        result.active_provider === "cloud"
+          ? `LLM 配置已保存，当前使用 ${result.cloud_provider_name || "云端 Provider"}（${result.cloud_model || defaultCloudModel}）。`
+          : "LLM 配置已保存，当前使用本地 Ollama。";
+      setStatusMessage(
+        providerDecision.fallbackMessage
+          ? `${providerDecision.fallbackMessage} ${savedMessage}`
+          : savedMessage,
+      );
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`保存 LLM 配置失败：${message}`);
+    } finally {
+      setLlmConfigSaving(false);
+    }
+  };
+
+  const handleApplyCloudPreset = (presetId: CloudProviderPresetId) => {
+    const presetConfig = buildCloudProviderPresetConfig(
+      presetId,
+      llmConfigActiveProvider,
+      llmConfigCloudApiKey,
+    );
+    setLlmConfigCloudProviderName(presetConfig.cloud_provider_name);
+    setLlmConfigCloudBaseUrl(presetConfig.cloud_base_url);
+    setLlmConfigCloudModel(presetConfig.cloud_model);
+    setStatusMessage(`已填充 ${cloudProviderPresets[presetId].name} 预设。`);
   };
 
   const handleSaveQuerySettings = async () => {
@@ -548,14 +809,168 @@ export default function App() {
       : "正在读取 LLM 状态...";
   const lintSeverityStats = resolveLintSeverityStats(lintReport);
   const lintIssues = lintReport?.issues ?? [];
-  const filteredLintIssues =
-    lintSeverityFilter === "all"
-      ? lintIssues
-      : lintIssues.filter((issue) => normalizeLintSeverity(issue.severity) === lintSeverityFilter);
-  const lintFilterEmptyText =
-    lintSeverityFilter === "all"
-      ? "本次 lint 检查未发现问题。"
-      : `当前没有 ${lintSeverityFilterLabels[lintSeverityFilter]} 类问题。`;
+  const lintCodeKeywordNormalized = lintCodeKeyword.trim();
+  const lintPathKeywordNormalized = lintPathKeyword.trim();
+  const lintSuggestionKeywordNormalized = lintSuggestionKeyword.trim();
+  const lintSeverityFilteredIssues = filterLintIssuesBySeverity(lintIssues, lintSeverityFilter);
+  const lintCodeFilteredIssues = filterLintIssuesByCode(lintIssues, lintCodeKeywordNormalized);
+  const lintPathFilteredIssues = filterLintIssuesByPath(lintIssues, lintPathKeywordNormalized);
+  const lintSuggestionFilteredIssues = filterLintIssuesBySuggestion(lintIssues, lintSuggestionKeywordNormalized);
+  const filteredLintIssues = filterLintIssuesBySuggestion(
+    filterLintIssuesByPath(
+      filterLintIssuesByCode(lintSeverityFilteredIssues, lintCodeKeywordNormalized),
+      lintPathKeywordNormalized,
+    ),
+    lintSuggestionKeywordNormalized,
+  );
+  const lintHasSeverityHit = lintSeverityFilteredIssues.length > 0;
+  const lintHasCodeHit = lintCodeFilteredIssues.length > 0;
+  const lintHasPathHit = lintPathFilteredIssues.length > 0;
+  const lintHasSuggestionHit = lintSuggestionFilteredIssues.length > 0;
+  const lintEmptyFilterLabels = [
+    !lintHasSeverityHit ? "严重级别" : null,
+    !lintHasCodeHit ? "code 关键词" : null,
+    !lintHasPathHit ? "path 关键词" : null,
+    !lintHasSuggestionHit ? "suggestion 关键词" : null,
+  ].filter(Boolean) as string[];
+  const lintFilterEmptyText = lintIssues.length === 0
+    ? "本次 lint 检查未发现问题。"
+    : lintEmptyFilterLabels.length === 1
+      ? `当前筛选的${lintEmptyFilterLabels[0]}没有命中任何问题。`
+      : lintEmptyFilterLabels.length > 1
+        ? `当前筛选的${lintEmptyFilterLabels.join("、")}组合后没有命中任何问题。`
+        : "当前筛选条件没有命中任何问题。";
+
+  const handleClearLintFilters = () => {
+    setLintSeverityFilter("all");
+    setLintCodeKeyword("");
+    setLintPathKeyword("");
+    setLintSuggestionKeyword("");
+  };
+
+  const handlePreviewLintPatches = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法生成补丁建议。");
+      return;
+    }
+    if (!lintReport) {
+      setStatusMessage("请先运行 Lint，再生成补丁建议。");
+      return;
+    }
+
+    setLintPatchPreviewLoading(true);
+    setLintPatchPreviewError("");
+    setStatusMessage("");
+
+    try {
+      const items = await previewLintPatches();
+      if (!items) {
+        setStatusMessage("当前环境不支持生成补丁建议。");
+        setLintPatchPreviewItems([]);
+        setLintPatchBatchSummary(null);
+        return;
+      }
+
+      setLintPatchPreviewItems(items);
+      setLintPatchBatchSummary(null);
+      setStatusMessage(`补丁建议已生成：${items.length} 项。`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setLintPatchPreviewError(`生成补丁建议失败：${message}`);
+      setLintPatchPreviewItems([]);
+      setLintPatchBatchSummary(null);
+    } finally {
+      setLintPatchPreviewLoading(false);
+    }
+  };
+
+  const handleApplyLintPatch = async (item: LintPatchPreviewItem) => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法应用补丁建议。");
+      return;
+    }
+
+    const patchKey = `${item.issue_code}-${item.path ?? "global"}`;
+    setLintPatchApplyingKey(patchKey);
+    setStatusMessage("");
+
+    try {
+      const result = await applyLintPatch(item);
+      if (!result) {
+        setStatusMessage("当前环境不支持应用补丁建议。");
+        return;
+      }
+
+      await refreshRecentLintPatchEvents();
+      const lintRefreshed = await handleRunLint();
+      if (!lintRefreshed) {
+        return;
+      }
+
+      const resultMessage = result.message?.trim();
+      if (result.applied === false) {
+        setStatusMessage(
+          resultMessage
+            ? `补丁建议已处理（无实际改动）：${resultMessage}`
+            : `补丁建议已处理（无实际改动）：${item.issue_code}。`,
+        );
+      } else {
+        setStatusMessage(
+          resultMessage
+            ? `补丁建议已应用：${resultMessage}`
+            : `补丁建议已应用：${item.issue_code}。已刷新概览、日志和 Lint。`,
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`应用建议失败：${message}`);
+    } finally {
+      setLintPatchApplyingKey(null);
+    }
+  };
+
+  const handleApplyLintPatchesBatch = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法批量应用补丁建议。");
+      return;
+    }
+
+    if (!lintPatchPreviewItems.length) {
+      setStatusMessage("当前没有可批量应用的补丁建议。");
+      return;
+    }
+
+    setLintPatchBatchApplying(true);
+    setStatusMessage("");
+
+    try {
+      const result = await applyLintPatchesBatch(lintPatchPreviewItems);
+      if (!result) {
+        setStatusMessage("当前环境不支持批量应用补丁建议。");
+        return;
+      }
+
+      setLintPatchBatchSummary(result);
+      await refreshRecentLintPatchEvents();
+      const lintRefreshed = await handleRunLint();
+      if (!lintRefreshed) {
+        return;
+      }
+
+      const summaryText =
+        result.summary?.trim() ||
+        `成功 ${result.success_count}，失败 ${result.failure_count}，跳过 ${result.skipped_count}。`;
+      setStatusMessage(`批量应用已完成：${summaryText}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`批量应用失败：${message}`);
+    } finally {
+      setLintPatchBatchApplying(false);
+    }
+  };
 
   return (
     <main className="app-shell">
@@ -808,6 +1223,66 @@ export default function App() {
               ? "按钮会调用本地 run_lint 命令并刷新摘要、时间与问题列表。"
               : "浏览器预览模式下可查看界面结构，点击仅更新状态提示。"}
           </p>
+          <button
+            type="button"
+            className="dev-panel__button"
+            onClick={handleClearLintFilters}
+            disabled={!lintFilterStateLoaded}
+          >
+            清空筛选
+          </button>
+          <button
+            type="button"
+            className="dev-panel__button dev-panel__button--accent"
+            onClick={() => void handlePreviewLintPatches()}
+            disabled={!isTauriRuntime() || lintPatchPreviewLoading || !lintReport}
+          >
+            {lintPatchPreviewLoading ? "生成中..." : "生成补丁建议"}
+          </button>
+        </div>
+        <div className="dev-panel">
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="lint-code-keyword">
+              code 关键词
+            </label>
+            <input
+              id="lint-code-keyword"
+              className="dev-panel__input"
+              type="text"
+              value={lintCodeKeyword}
+              onChange={(event) => setLintCodeKeyword(event.target.value)}
+              placeholder="按 code 关键词筛选"
+              spellCheck={false}
+            />
+          </div>
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="lint-path-keyword">
+              path 关键词
+            </label>
+            <input
+              id="lint-path-keyword"
+              className="dev-panel__input"
+              type="text"
+              value={lintPathKeyword}
+              onChange={(event) => setLintPathKeyword(event.target.value)}
+              placeholder="按 path 关键词筛选"
+              spellCheck={false}
+            />
+          </div>
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="lint-suggestion-keyword">
+              suggestion 关键词
+            </label>
+            <input
+              id="lint-suggestion-keyword"
+              className="dev-panel__input"
+              type="text"
+              value={lintSuggestionKeyword}
+              onChange={(event) => setLintSuggestionKeyword(event.target.value)}
+              placeholder="按 suggestion 关键词筛选"
+              spellCheck={false}
+            />
+          </div>
         </div>
         <div className="runtime-banner lint-panel__summary">
           <div className="runtime-banner__item">
@@ -890,6 +1365,119 @@ export default function App() {
               : "浏览器预览模式下不连接后端，无法生成真实 lint 报告。"}
           </p>
         )}
+        <div className="dev-panel lint-patch-history">
+          <div className="section-head">
+            <h3>最近补丁应用记录</h3>
+            <span className="section-head__hint">
+              {recentLintPatchEvents.length ? `最近 ${recentLintPatchEvents.length} 条` : "暂无记录"}
+            </span>
+          </div>
+          {recentLintPatchEvents.length ? (
+            <div className="lint-patch-history__list">
+              {recentLintPatchEvents.map((event) => (
+                <article
+                  key={`${event.issue_code}-${event.path ?? "global"}-${event.created_at}`}
+                  className={`lint-patch-history__item ${
+                    event.applied ? "lint-patch-history__item--applied" : "lint-patch-history__item--skipped"
+                  }`}
+                >
+                  <div className="lint-patch-history__meta">
+                    <span className="lint-patch-history__code">{event.issue_code}</span>
+                    <span className={`pill ${event.applied ? "pill--ok" : "pill--danger"}`}>
+                      {event.applied ? "已应用" : "未应用"}
+                    </span>
+                  </div>
+                  <div className="lint-patch-history__field">
+                    <span>path</span>
+                    <code>{event.path ?? "全局"}</code>
+                  </div>
+                  <div className="lint-patch-history__field">
+                    <span>message</span>
+                    <p className="lint-patch-history__message">{event.message || "无"}</p>
+                  </div>
+                  <div className="lint-patch-history__field">
+                    <span>created_at</span>
+                    <time dateTime={event.created_at}>{formatLintCheckedAt(event.created_at)}</time>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">
+              {isTauriRuntime()
+                ? "尚无补丁应用记录。应用补丁后会在这里显示最近历史。"
+                : "浏览器预览模式下不加载补丁应用记录。"}
+            </p>
+          )}
+        </div>
+        <div className="dev-panel">
+          <div className="section-head">
+            <h3>补丁建议</h3>
+            <span className="section-head__hint">
+              {lintPatchPreviewItems.length ? `最近 ${lintPatchPreviewItems.length} 项` : "暂无建议"}
+            </span>
+          </div>
+          <div className="lint-patch-panel__actions">
+            <button
+              type="button"
+              className="dev-panel__button dev-panel__button--accent"
+              onClick={() => void handleApplyLintPatchesBatch()}
+              disabled={!isTauriRuntime() || lintPatchBatchApplying || lintPatchPreviewItems.length === 0}
+            >
+              {lintPatchBatchApplying ? "批量应用中..." : "批量应用可应用项"}
+            </button>
+            {lintPatchBatchSummary ? (
+              <p className="lint-patch-panel__summary">
+                {lintPatchBatchSummary.summary?.trim() ||
+                  `成功 ${lintPatchBatchSummary.success_count} · 失败 ${lintPatchBatchSummary.failure_count} · 跳过 ${lintPatchBatchSummary.skipped_count}`}
+              </p>
+            ) : null}
+          </div>
+          {lintPatchPreviewError ? <p className="runtime-status">{lintPatchPreviewError}</p> : null}
+          {lintPatchPreviewItems.length ? (
+            <div className="lint-issue-list">
+              {lintPatchPreviewItems.map((item) => (
+                <article key={`${item.issue_code}-${item.path ?? "global"}`} className="lint-issue">
+                  <div className="lint-issue__head">
+                    <div className="lint-issue__code">{item.issue_code}</div>
+                    <span className="pill pill--lint pill--lint-info">suggestion</span>
+                  </div>
+                  <p className="lint-issue__message">{item.title}</p>
+                  <div className="lint-issue__field">
+                    <span>建议动作</span>
+                    <p className="lint-issue__suggestion">{item.proposed_action}</p>
+                  </div>
+                  <div className="lint-issue__field">
+                    <span>路径</span>
+                    <code>{item.path ?? "全局"}</code>
+                  </div>
+                  <div className="lint-issue__field">
+                    <span>补丁预览</span>
+                    <pre className="wiki-preview__content">{item.patch_preview}</pre>
+                  </div>
+                  <div className="lint-issue__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handleApplyLintPatch(item)}
+                      disabled={!isTauriRuntime() || lintPatchApplyingKey !== null}
+                    >
+                      {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
+                        ? "应用中..."
+                        : "应用建议"}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : lintPatchPreviewLoading ? (
+            <p className="runtime-hint">正在生成补丁建议...</p>
+          ) : (
+            <p className="empty-state">
+              {lintReport ? "点击“生成补丁建议”后在此查看候选补丁预览。" : "请先运行 Lint，再生成补丁建议。"}
+            </p>
+          )}
+        </div>
       </section>
 
       <section className="panel">
@@ -1069,6 +1657,140 @@ export default function App() {
               <p>{module.description}</p>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="section-head">
+          <h2>Settings</h2>
+          <span className="section-head__hint">
+            {isTauriRuntime() ? "模式、Provider 与本地配置" : "浏览器预览"}
+          </span>
+        </div>
+        <div className="dev-panel settings-panel">
+          <p className="dev-panel__hint settings-panel__status">
+            当前活跃 Provider：
+            <strong>
+              {llmConfig
+                ? llmConfig.active_provider === "cloud"
+                  ? `${llmConfig.cloud_provider_name || "云端 Provider"}（${llmConfig.cloud_model || defaultCloudModel}）`
+                  : "本地 Ollama"
+                : "加载中..."}
+            </strong>
+          </p>
+          <div className="dev-panel__actions settings-panel__presets">
+            <button
+              type="button"
+              className="dev-panel__button"
+              onClick={() => void handleApplyCloudPreset("deepseek")}
+            >
+              DeepSeek 预设
+            </button>
+            <button
+              type="button"
+              className="dev-panel__button"
+              onClick={() => void handleApplyCloudPreset("glm")}
+            >
+              GLM 预设
+            </button>
+            <button
+              type="button"
+              className="dev-panel__button"
+              onClick={() => void handleApplyCloudPreset("minimax")}
+            >
+              MiniMax 预设
+            </button>
+          </div>
+          <div className="settings-panel__fields">
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="active-provider">
+                活跃 Provider
+              </label>
+              <select
+                id="active-provider"
+                className="dev-panel__input"
+                value={llmConfigActiveProvider}
+                onChange={(event) =>
+                  setLlmConfigActiveProvider(event.target.value === "cloud" ? "cloud" : "ollama")
+                }
+              >
+                <option value="ollama">ollama（本地）</option>
+                <option value="cloud">cloud（云端）</option>
+              </select>
+            </div>
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="cloud-provider-name">
+                云端 Provider 名称
+              </label>
+              <input
+                id="cloud-provider-name"
+                className="dev-panel__input"
+                type="text"
+                value={llmConfigCloudProviderName}
+                onChange={(event) => setLlmConfigCloudProviderName(event.target.value)}
+                placeholder={`${defaultCloudProviderName}（可改为 OpenAI / DeepSeek / GLM / MiniMax）`}
+                spellCheck={false}
+              />
+            </div>
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="cloud-api-key">
+                云端 API Key（OpenAI-compatible）
+              </label>
+              <input
+                id="cloud-api-key"
+                className="dev-panel__input"
+                type="password"
+                value={llmConfigCloudApiKey}
+                onChange={(event) => setLlmConfigCloudApiKey(event.target.value)}
+                placeholder="sk-...（选择 cloud 时必填）"
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </div>
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="cloud-base-url">
+                云端 Base URL（OpenAI-compatible）
+              </label>
+              <input
+                id="cloud-base-url"
+                className="dev-panel__input"
+                type="text"
+                value={llmConfigCloudBaseUrl}
+                onChange={(event) => setLlmConfigCloudBaseUrl(event.target.value)}
+                placeholder={defaultCloudBaseUrl}
+                spellCheck={false}
+              />
+            </div>
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="cloud-model">
+                云端模型名
+              </label>
+              <input
+                id="cloud-model"
+                className="dev-panel__input"
+                type="text"
+                value={llmConfigCloudModel}
+                onChange={(event) => setLlmConfigCloudModel(event.target.value)}
+                placeholder={defaultCloudModel}
+                spellCheck={false}
+              />
+            </div>
+          </div>
+          <div className="dev-panel__actions settings-panel__save">
+            <button
+              type="button"
+              className="dev-panel__button dev-panel__button--accent"
+              onClick={() => void handleSaveLlmConfig()}
+              disabled={!isTauriRuntime() || llmConfigSaving}
+            >
+              {llmConfigSaving ? "保存中..." : "保存 LLM 配置"}
+            </button>
+          </div>
+          <p className="dev-panel__hint settings-panel__hint">
+            {isTauriRuntime()
+              ? "云端配置仅保存在本地配置文件中，不会提交到仓库。可用 DeepSeek、GLM、MiniMax 三家预设，也可自由编辑为任意 OpenAI-compatible Provider。StrictLocal 模式下云 Provider 将被忽略。"
+              : "浏览器预览模式下无法保存配置。"}
+          </p>
         </div>
       </section>
     </main>

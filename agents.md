@@ -153,9 +153,19 @@
 4. 未完成项明确列出，带 TODO 标记。
 
 ### 16.4 上下文传递
-- 使用 `agents.md` 作为规范来源。
-- 使用 `docs/实施过程记录.md` 作为进度来源。
-- 新 Agent 启动时必须先读取这两个文件。
+- 使用 `agents.md` 作为规范来源（含 §18 当前状态）。
+- 使用 `docs/实施过程记录.md` 作为进度来源（最新条目在最前）。
+- **新 Agent 启动时必须先读取这两个文件，然后执行 §16.3 检查清单验证基线。**
+- 基线验证命令（WSL/Linux）：
+  ```bash
+  cd src-tauri && cargo check && cargo test
+  cd ../web && npm run typecheck && npm run test -- --run
+  ```
+- 基线验证命令（Windows PowerShell）：
+  ```powershell
+  cd src-tauri; cargo check; cargo test
+  cd ../web; npm run typecheck; npm run test -- --run
+  ```
 
 ### 16.5 本机私有配置提交禁令
 - 本机私有配置与授权信息不得提交到仓库，包括但不限于 `.claude/`、`.codex/` 以及本机授权、凭证类文件。
@@ -178,4 +188,70 @@
 
 ### P3 - 用户体验
 9. **进度指示**：长时间 LLM 调用的流式反馈。
-10. **Cloud Provider**：OpenAI / Claude API 集成（Hybrid 模式）。
+10. **Cloud Provider**：OpenAI-compatible 云端 API 集成（Hybrid 模式，含 DeepSeek / GLM / MiniMax 预设）。
+
+---
+
+## 18) 当前开发状态（Agent 交接必读）
+
+> 本节由每轮结束的主控 Agent 维护，是下一轮开发的起点。
+
+### 18.1 已完成（截至 2026-04-13）
+
+| 优先级 | 功能 | 状态 |
+|--------|------|------|
+| P0 | `LlmProvider` trait + Ollama 实现 | ✅ `src-tauri/src/llm/` |
+| P0 | Ingest 使用 LLM 生成摘要（替换 truncate） | ✅ `state.rs::ingest_markdown` |
+| P0 | Query 使用 LLM 合成回答（FTS 召回 + Ollama 生成） | ✅ `state.rs::generate_query_answer_with_provider` |
+| P0 | `get_llm_status` 命令 + 前端 LLM 状态显示 | ✅ |
+| P1 | 实体提取（Ingest 时 LLM 提取关键实体） | ✅ `state.rs::extract_entities` |
+| P1 | 双向链接注入（See Also 节，FTS 同步） | ✅ `state.rs::update_related_pages_with_link` + `vault.rs::append_see_also_link` |
+| P1 | IngestResult 返回 `entities` + `updated_pages` | ✅ `models.rs` + `types.ts` |
+| P2 | 语义 Lint（LLM 矛盾/陈旧/覆盖度检测） | ✅ `state.rs::lint_report_full_future` |
+| P2 | `run_lint` 命令升级为 async + 语义合并 | ✅ `commands.rs` |
+| P3-A | 进度反馈（Tauri emit + 前端 listenProgress） | ✅ `state.rs::emit_progress` + `tauri-client.ts::listenProgress` |
+| P3-B | Cloud Provider（OpenAI-compatible + Hybrid 路由 + Settings UI） | ✅ `src-tauri/src/llm/openai.rs` + `get_llm_config/set_llm_config` |
+
+### 18.2 下一轮待开发（TODO）
+
+**P3-C：Entities 持久化到 frontmatter**
+- Ingest 生成的实体列表目前只在内存和返回值中，未写入 Wiki 页面 frontmatter。
+- 可在 `vault.rs::build_wiki_summary` 中添加 YAML frontmatter 块。
+
+### 18.3 当前代码快照
+
+```
+src-tauri/src/
+  llm/
+    mod.rs          # pub use provider + ollama + openai
+    provider.rs     # LlmProvider trait, LlmError
+    ollama.rs       # OllamaProvider (health_check, complete, summarize)
+    openai.rs       # OpenAiProvider (OpenAI-compatible Chat Completions API, Hybrid 模式)
+  commands.rs       # 所有 Tauri 命令（含 get_llm_config/set_llm_config）
+  db.rs             # SQLite 操作
+  main.rs           # Tauri app 入口（含 setup hook 注入 AppHandle）
+  models.rs         # 全部数据模型（AppConfig 含 cloud_* 字段并兼容 openai_* 旧字段，LlmProviderConfig）
+  state.rs          # AppState 核心逻辑（含 provider 路由、get_llm_config/set_llm_config）
+  vault.rs          # 文件系统操作（含 append_see_also_link）
+
+web/src/
+  App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
+  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig）
+  types.ts          # TS 类型定义（含 LlmProviderConfig）
+  app-utils.test.ts # 前端单元测试（43 个）
+```
+
+### 18.4 验证基线
+
+- `cargo test`（src-tauri/）：**61 通过，0 失败**
+- `npm run test`（web/）：**43 通过，0 失败**
+- `cargo check`：**零错误（2 个 dead_code 警告，已知不影响功能）**
+- TypeScript 类型检查：**零错误**
+
+### 18.5 关键约束提醒
+
+- **LLM 调用全部在异步上下文**，不使用 `block_in_place`（已清理）。
+- **Tauri 异步命令带引用参数必须返回 `Result<T, String>`**（见 `run_lint`, `get_llm_status`）。
+- **`lint_report_full_future` / `llm_status_future` 模式**：先同步提取数据，`drop(state)` 后再 await。
+- **文件写入幂等**：`append_see_also_link` 先检查链接是否已存在再写入。
+- **API Key 禁止入仓**：`.claude/`、`.codex/`、`.env` 均在 §16.5 禁止提交。

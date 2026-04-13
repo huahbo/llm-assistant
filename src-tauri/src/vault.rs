@@ -42,6 +42,11 @@ pub fn initialize_vault(vault_path: &Path, mode: AppMode) -> Result<VaultInitRes
         mode,
         vault_path: Some(vault_path.to_string_lossy().to_string()),
         query_top_k: Some(3),
+        cloud_api_key: None,
+        cloud_base_url: None,
+        cloud_model: None,
+        cloud_provider_name: None,
+        active_provider: None,
     })
     .map_err(|err| format!("序列化 Vault 配置失败: {}", err))?;
     create_file_if_missing(&config_path, &config_content, &mut created_paths)?;
@@ -112,6 +117,8 @@ pub fn ingest_markdown(
                 raw_path: existing.raw_path,
                 wiki_path: existing.wiki_path,
                 message: "检测到重复内容，已复用既有 Wiki 页面".to_string(),
+                entities: Vec::new(),
+                updated_pages: Vec::new(),
             });
         }
     }
@@ -236,6 +243,8 @@ pub fn ingest_markdown(
         raw_path: raw_path.to_string_lossy().to_string(),
         wiki_path: wiki_path.to_string_lossy().to_string(),
         message,
+        entities: Vec::new(),
+        updated_pages: Vec::new(),
     })
 }
 
@@ -313,6 +322,45 @@ pub fn save_query_answer(
         page_title,
         message: "Query 结果已保存到 Wiki".to_string(),
     })
+}
+
+/// 在指定 Wiki 页面末尾追加 See Also 链接（幂等：链接已存在则跳过）。
+///
+/// # 参数
+/// - `page_path`: 目标页面绝对路径
+/// - `link_target`: 链接目标（相对于 vault 根，如 `wiki/ingest-123.md`）
+/// - `link_title`: 链接显示标题
+///
+/// # 返回
+/// - `Ok(true)`: 已成功追加
+/// - `Ok(false)`: 链接已存在，跳过
+pub fn append_see_also_link(
+    page_path: &Path,
+    link_target: &str,
+    link_title: &str,
+) -> Result<bool, String> {
+    let content = fs::read_to_string(page_path)
+        .map_err(|err| format!("读取页面失败 {}: {}", page_path.to_string_lossy(), err))?;
+
+    // 幂等检查：链接目标已在内容中则跳过
+    if content.contains(link_target) {
+        return Ok(false);
+    }
+
+    let link_line = format!("- [[{}|{}]]", link_target, link_title);
+
+    let new_content = if content.contains("## See Also") {
+        // 追加到已有 See Also 节末尾
+        format!("{}\n{}", content.trim_end(), link_line)
+    } else {
+        // 新建 See Also 节
+        format!("{}\n\n## See Also\n{}\n", content.trim_end(), link_line)
+    };
+
+    fs::write(page_path, &new_content)
+        .map_err(|err| format!("写入页面失败 {}: {}", page_path.to_string_lossy(), err))?;
+
+    Ok(true)
 }
 
 fn finalize_failed_task(db_path: &Path, task_id: i64, timestamp_ms: &str, error: &str) {

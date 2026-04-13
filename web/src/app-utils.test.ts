@@ -1,10 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { formatQueryAnswerStrategyLabel, formatQuerySearchStrategyLabel } from "./App";
+import {
+  buildLlmProviderConfig,
+  buildCloudProviderPresetConfig,
+  cloudProviderPresets,
+  formatQueryAnswerStrategyLabel,
+  formatQuerySearchStrategyLabel,
+  resolveNextActiveProvider,
+} from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
   createIngestMarkdownArgs,
   createQueryAskArgs,
   createQueryAskWithOptionsArgs,
+  createPreviewLintPatchesArgs,
+  createFetchRecentLintPatchEventsArgs,
+  createApplyLintPatchArgs,
+  createApplyLintPatchesBatchArgs,
   createSaveQueryAnswerArgs,
   createSearchWikiPagesArgs,
   createWikiPageCitationsArgs,
@@ -13,14 +24,25 @@ import {
   createVaultInitArgs,
   formatLlmStatusSummary,
   isTauriRuntime,
+  applyLintPatch,
+  applyLintPatchesBatch,
+  fetchRecentLintPatchEvents,
+  normalizeLintPatchPreviewResponse,
   normalizeLlmStatus,
+  normalizeLlmProviderConfig,
+  saveLlmConfig,
   resolveDisplayPath,
 } from "./tauri-client";
 import {
+  filterLintIssuesByCode,
+  filterLintIssuesByPath,
   filterLintIssuesBySeverity,
+  filterLintIssuesBySuggestion,
   formatLintCheckedAt,
   normalizeLintSeverity,
+  readLintFilterState,
   resolveLintSeverityStats,
+  writeLintFilterState,
 } from "./lint-utils";
 
 describe("格式化函数", () => {
@@ -124,6 +146,121 @@ describe("Tauri 运行时与参数映射", () => {
       pagePath: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
       page_path: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
     });
+
+    expect(createPreviewLintPatchesArgs()).toEqual({});
+    expect(createFetchRecentLintPatchEventsArgs()).toEqual({});
+
+    for (const [presetId, preset] of Object.entries(cloudProviderPresets) as Array<
+      [keyof typeof cloudProviderPresets, (typeof cloudProviderPresets)[keyof typeof cloudProviderPresets]]
+    >) {
+      expect(buildCloudProviderPresetConfig(presetId, "cloud", "sk-test")).toEqual({
+        cloud_api_key: "sk-test",
+        cloud_base_url: preset.baseUrl,
+        cloud_model: preset.model,
+        cloud_provider_name: preset.providerName,
+        active_provider: "cloud",
+      });
+    }
+
+    expect(
+      buildLlmProviderConfig({
+        activeProvider: "cloud",
+        cloudApiKey: "  sk-test  ",
+        cloudBaseUrl: "  https://api.deepseek.com/v1  ",
+        cloudModel: "  deepseek-chat  ",
+        cloudProviderName: "  DeepSeek  ",
+      }),
+    ).toEqual({
+      cloud_api_key: "sk-test",
+      cloud_base_url: "https://api.deepseek.com/v1",
+      cloud_model: "deepseek-chat",
+      cloud_provider_name: "DeepSeek",
+      active_provider: "cloud",
+    });
+
+    expect(
+      buildLlmProviderConfig({
+        activeProvider: "cloud",
+        cloudApiKey: "   ",
+        cloudBaseUrl: "  ",
+        cloudModel: "  ",
+        cloudProviderName: "  ",
+      }),
+    ).toEqual({
+      cloud_api_key: "",
+      cloud_base_url: "",
+      cloud_model: "",
+      cloud_provider_name: "",
+      active_provider: "cloud",
+    });
+
+    expect(
+      buildLlmProviderConfig({
+        activeProvider: "ollama",
+        cloudApiKey: " sk-test ",
+        cloudBaseUrl: " https://api.deepseek.com/v1 ",
+        cloudModel: " deepseek-chat ",
+        cloudProviderName: " DeepSeek ",
+      }),
+    ).toEqual({
+      cloud_api_key: "sk-test",
+      cloud_base_url: "https://api.deepseek.com/v1",
+      cloud_model: "deepseek-chat",
+      cloud_provider_name: "DeepSeek",
+      active_provider: "ollama",
+    });
+
+    expect(
+      createApplyLintPatchArgs({
+        issue_code: "BROKEN_CITATION",
+        path: "E:\\llm-wiki\\vault\\wiki\\missing.md",
+        title: "修复引用目标页面",
+        proposed_action: "补回被引用页面或修正引用路径",
+        patch_preview: "```text\n引用目标缺失：E:\\llm-wiki\\vault\\wiki\\missing.md\n```",
+      }),
+    ).toEqual({
+      issueCode: "BROKEN_CITATION",
+      issue_code: "BROKEN_CITATION",
+      path: "E:\\llm-wiki\\vault\\wiki\\missing.md",
+    });
+
+    expect(
+      createApplyLintPatchesBatchArgs([
+        {
+          issue_code: "BROKEN_CITATION",
+          path: "E:\\llm-wiki\\vault\\wiki\\missing.md",
+        },
+        {
+          issue_code: "STRICT_LOCAL_GATE",
+          path: null,
+        },
+      ]),
+    ).toEqual({
+      inputs: [
+        {
+          issueCode: "BROKEN_CITATION",
+          issue_code: "BROKEN_CITATION",
+          path: "E:\\llm-wiki\\vault\\wiki\\missing.md",
+        },
+        {
+          issueCode: "STRICT_LOCAL_GATE",
+          issue_code: "STRICT_LOCAL_GATE",
+          path: null,
+        },
+      ],
+      items: [
+        {
+          issueCode: "BROKEN_CITATION",
+          issue_code: "BROKEN_CITATION",
+          path: "E:\\llm-wiki\\vault\\wiki\\missing.md",
+        },
+        {
+          issueCode: "STRICT_LOCAL_GATE",
+          issue_code: "STRICT_LOCAL_GATE",
+          path: null,
+        },
+      ],
+    });
   });
 
   it("按 query/list/citation 对象的优先级顺序解析友好路径", () => {
@@ -167,12 +304,90 @@ describe("Tauri 运行时与参数映射", () => {
   });
 });
 
+describe("云端 Provider 配置辅助函数", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "window");
+  });
+
+  it("兼容旧 OpenAI 字段并归一化为云端字段", () => {
+    expect(
+      normalizeLlmProviderConfig({
+        openai_api_key: "sk-old",
+        openai_base_url: "https://api.deepseek.com/v1",
+        openai_model: "deepseek-chat",
+        openai_provider_name: "DeepSeek",
+        active_provider: "openai",
+      }),
+    ).toEqual({
+      cloud_api_key: "sk-old",
+      cloud_base_url: "https://api.deepseek.com/v1",
+      cloud_model: "deepseek-chat",
+      cloud_provider_name: "DeepSeek",
+      active_provider: "cloud",
+    });
+  });
+
+  it("浏览器预览模式下保存配置直接回退为 null", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+
+    await expect(
+      saveLlmConfig({
+        cloud_api_key: "sk-test",
+        cloud_base_url: "https://api.deepseek.com/v1",
+        cloud_model: "deepseek-chat",
+        cloud_provider_name: "DeepSeek",
+        active_provider: "cloud",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("保存参数保持 cloud_* 字段结构", () => {
+    expect(
+      buildLlmProviderConfig({
+        activeProvider: "cloud",
+        cloudApiKey: "sk-test",
+        cloudBaseUrl: "https://api.deepseek.com/v1",
+        cloudModel: "deepseek-chat",
+        cloudProviderName: "DeepSeek",
+      }),
+    ).toEqual({
+      cloud_api_key: "sk-test",
+      cloud_base_url: "https://api.deepseek.com/v1",
+      cloud_model: "deepseek-chat",
+      cloud_provider_name: "DeepSeek",
+      active_provider: "cloud",
+    });
+  });
+
+  it("当选择 cloud 且 API Key 为空时自动回退为 ollama", () => {
+    expect(resolveNextActiveProvider("cloud", "   ")).toEqual({
+      activeProvider: "ollama",
+      fallbackMessage: "检测到你选择了云端 Provider，但 API Key 为空，已自动回退为本地 Ollama。",
+    });
+  });
+
+  it("当 cloud API Key 有值时保持 cloud 选择", () => {
+    expect(resolveNextActiveProvider("cloud", "sk-test")).toEqual({
+      activeProvider: "cloud",
+      fallbackMessage: "",
+    });
+  });
+
+  it("当用户选择 ollama 时始终保持 ollama", () => {
+    expect(resolveNextActiveProvider("ollama", "")).toEqual({
+      activeProvider: "ollama",
+      fallbackMessage: "",
+    });
+  });
+});
+
 describe("Lint 展示辅助函数", () => {
   const sampleLintIssues = [
-    { severity: "error", code: "E1" },
-    { severity: "warning", code: "W1" },
-    { severity: "info", code: "I1" },
-    { severity: "critical", code: "U1" },
+    { severity: "error", code: "E1", path: "wiki/error.md", suggestion: "修复错误" },
+    { severity: "warning", code: "W1", path: "wiki/warn.md", suggestion: "优化警告" },
+    { severity: "info", code: "I1", path: "wiki/info.md", suggestion: "参考信息" },
+    { severity: "critical", code: "U1", path: "wiki/unknown.md", suggestion: "未知建议" },
+    { severity: "info", code: null, path: null, suggestion: null },
   ];
 
   it("将 lint 时间戳格式化为 UTC 字符串", () => {
@@ -249,22 +464,326 @@ describe("Lint 展示辅助函数", () => {
   });
 
   it("severity 过滤器支持 error", () => {
-    expect(filterLintIssuesBySeverity(sampleLintIssues, "error")).toEqual([
-      { severity: "error", code: "E1" },
-    ]);
+    expect(
+      filterLintIssuesBySeverity(
+        [
+          { severity: "error" },
+          { severity: "warning" },
+          { severity: "critical" },
+        ],
+        "error",
+      ),
+    ).toEqual([{ severity: "error" }]);
   });
 
   it("severity 过滤器支持 warning", () => {
-    expect(filterLintIssuesBySeverity(sampleLintIssues, "warning")).toEqual([
-      { severity: "warning", code: "W1" },
-    ]);
+    expect(
+      filterLintIssuesBySeverity(
+        [
+          { severity: "error" },
+          { severity: "warning" },
+          { severity: "critical" },
+        ],
+        "warning",
+      ),
+    ).toEqual([{ severity: "warning" }]);
   });
 
   it("severity 过滤器支持 info 且未知 severity 归入 info", () => {
-    expect(filterLintIssuesBySeverity(sampleLintIssues, "info")).toEqual([
-      { severity: "info", code: "I1" },
-      { severity: "critical", code: "U1" },
+    expect(
+      filterLintIssuesBySeverity(
+        [
+          { severity: "info" },
+          { severity: "critical" },
+          { severity: "" },
+        ],
+        "info",
+      ),
+    ).toEqual([
+      { severity: "info" },
+      { severity: "critical" },
+      { severity: "" },
     ]);
+  });
+
+  it("code 过滤器在空关键词时返回全部问题", () => {
+    expect(filterLintIssuesByCode(sampleLintIssues, "   ")).toEqual(sampleLintIssues);
+  });
+
+  it("code 过滤器支持大小写不敏感匹配", () => {
+    expect(
+      filterLintIssuesByCode(
+        [
+          { code: "BROKEN_CITATION", severity: "error" },
+          { code: "lint-code-keyword", severity: "warning" },
+          { code: null, severity: "info" },
+        ],
+        "broken",
+      ),
+    ).toEqual([{ code: "BROKEN_CITATION", severity: "error" }]);
+
+    expect(
+      filterLintIssuesByCode(
+        [
+          { code: "BROKEN_CITATION", severity: "error" },
+          { code: "lint-code-keyword", severity: "warning" },
+          { code: null, severity: "info" },
+        ],
+        "CODE",
+      ),
+    ).toEqual([{ code: "lint-code-keyword", severity: "warning" }]);
+  });
+
+  it("code 过滤器在无匹配时返回空数组", () => {
+    expect(
+      filterLintIssuesByCode(
+        [
+          { code: "BROKEN_CITATION", severity: "error" },
+          { code: null, severity: "info" },
+        ],
+        "missing",
+      ),
+    ).toEqual([]);
+  });
+
+  it("path 过滤器在空关键词时返回全部问题", () => {
+    expect(filterLintIssuesByPath(sampleLintIssues, "   ")).toEqual(sampleLintIssues);
+  });
+
+  it("path 过滤器支持大小写不敏感匹配", () => {
+    expect(
+      filterLintIssuesByPath(
+        [
+          { path: "wiki/error.md", severity: "error" },
+          { path: "Wiki/Warning.MD", severity: "warning" },
+          { path: null, severity: "info" },
+        ],
+        "WIKI",
+      ),
+    ).toEqual([
+      { path: "wiki/error.md", severity: "error" },
+      { path: "Wiki/Warning.MD", severity: "warning" },
+    ]);
+  });
+
+  it("path 过滤器在无匹配时返回空数组", () => {
+    expect(
+      filterLintIssuesByPath(
+        [
+          { path: "wiki/error.md", severity: "error" },
+          { path: null, severity: "info" },
+        ],
+        "missing",
+      ),
+    ).toEqual([]);
+  });
+
+  it("suggestion 过滤器在空关键词时返回全部问题", () => {
+    expect(filterLintIssuesBySuggestion(sampleLintIssues, "   ")).toEqual(sampleLintIssues);
+  });
+
+  it("suggestion 过滤器支持大小写不敏感匹配", () => {
+    expect(
+      filterLintIssuesBySuggestion(
+        [
+          { suggestion: "Fix the citation", severity: "error" },
+          { suggestion: "Improve warning text", severity: "warning" },
+          { suggestion: null, severity: "info" },
+        ],
+        "CITATION",
+      ),
+    ).toEqual([{ suggestion: "Fix the citation", severity: "error" }]);
+  });
+
+  it("suggestion 过滤器在无匹配时返回空数组", () => {
+    expect(
+      filterLintIssuesBySuggestion(
+        [
+          { suggestion: "Fix the citation", severity: "error" },
+          { suggestion: null, severity: "info" },
+        ],
+        "missing",
+      ),
+    ).toEqual([]);
+  });
+
+  it("浏览器环境下 previewLintPatches 回退为空", async () => {
+    expect(await import("./tauri-client").then((mod) => mod.previewLintPatches())).toBeNull();
+  });
+
+  it("浏览器环境下 fetchRecentLintPatchEvents 回退为空数组", async () => {
+    await expect(fetchRecentLintPatchEvents()).resolves.toEqual([]);
+  });
+
+  it("浏览器环境下 applyLintPatch 回退为空", async () => {
+    expect(
+      await import("./tauri-client").then((mod) =>
+        mod.applyLintPatch({
+          issue_code: "VAULT_NOT_INITIALIZED",
+          title: "初始化 Vault",
+          proposed_action: "先执行 init_vault 创建本地 Vault",
+          patch_preview: "```text\n执行 init_vault 后将生成必要文件。\n```",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("浏览器环境下 applyLintPatchesBatch 回退为空", async () => {
+    expect(
+      await import("./tauri-client").then((mod) =>
+        mod.applyLintPatchesBatch([
+          {
+            issue_code: "BROKEN_CITATION",
+            path: "E:\\llm-wiki\\vault\\wiki\\missing.md",
+          },
+        ]),
+      ),
+    ).toBeNull();
+  });
+
+  it("补丁预览响应兼容 suggestions 包装对象", () => {
+    expect(
+      normalizeLintPatchPreviewResponse({
+        generated_at: "1",
+        total: 1,
+        suggestions: [
+          {
+            issue_code: "MISSING_INDEX_ENTRY",
+            path: "E:\\llm-wiki\\vault\\wiki\\a.md",
+            title: "补齐 index 引用",
+            proposed_action: "把缺失页面加入 index.md",
+            patch_preview: "- [[wiki/a.md|a]]",
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        issue_code: "MISSING_INDEX_ENTRY",
+        path: "E:\\llm-wiki\\vault\\wiki\\a.md",
+        title: "补齐 index 引用",
+        proposed_action: "把缺失页面加入 index.md",
+        patch_preview: "- [[wiki/a.md|a]]",
+      },
+    ]);
+  });
+
+  it("补丁预览响应兼容数组形式", () => {
+    expect(
+      normalizeLintPatchPreviewResponse([
+        {
+          issue_code: "STRICT_LOCAL_GATE",
+          path: null,
+          title: "严格本地模式提示",
+          proposed_action: "无需修改",
+          patch_preview: "noop",
+        },
+      ]),
+    ).toEqual([
+      {
+        issue_code: "STRICT_LOCAL_GATE",
+        path: null,
+        title: "严格本地模式提示",
+        proposed_action: "无需修改",
+        patch_preview: "noop",
+      },
+    ]);
+  });
+});
+
+describe("Lint 筛选状态持久化", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const localStorageMock = {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: localStorageMock,
+    });
+
+    return { store, localStorageMock };
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  it("在没有 localStorage 时回退默认值", () => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+
+    expect(readLintFilterState()).toEqual({
+      severity: "all",
+      codeKeyword: "",
+      pathKeyword: "",
+      suggestionKeyword: "",
+    });
+  });
+
+  it("非法 JSON 回退默认值", () => {
+    installLocalStorageMock({
+      llm_wiki_lint_filters_v1: "{not-json",
+    });
+
+    expect(readLintFilterState()).toEqual({
+      severity: "all",
+      codeKeyword: "",
+      pathKeyword: "",
+      suggestionKeyword: "",
+    });
+  });
+
+  it("合法值可以正确读取", () => {
+    installLocalStorageMock({
+      llm_wiki_lint_filters_v1: JSON.stringify({
+        severity: "warning",
+        codeKeyword: "BROKEN",
+        pathKeyword: "wiki/",
+        suggestionKeyword: "fix",
+      }),
+    });
+
+    expect(readLintFilterState()).toEqual({
+      severity: "warning",
+      codeKeyword: "BROKEN",
+      pathKeyword: "wiki/",
+      suggestionKeyword: "fix",
+    });
+  });
+
+  it("写入后可以再次读回", () => {
+    const { store } = installLocalStorageMock();
+
+    writeLintFilterState({
+      severity: "info",
+      codeKeyword: "  code  ",
+      pathKeyword: "  path  ",
+      suggestionKeyword: "  suggest  ",
+    });
+
+    expect(store.get("llm_wiki_lint_filters_v1")).toBe(
+      JSON.stringify({
+        severity: "info",
+        codeKeyword: "  code  ",
+        pathKeyword: "  path  ",
+        suggestionKeyword: "  suggest  ",
+      }),
+    );
+    expect(readLintFilterState()).toEqual({
+      severity: "info",
+      codeKeyword: "  code  ",
+      pathKeyword: "  path  ",
+      suggestionKeyword: "  suggest  ",
+    });
   });
 });
 

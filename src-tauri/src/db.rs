@@ -2,6 +2,8 @@ use std::path::Path;
 
 use rusqlite::{params, Connection};
 
+use crate::models::LintPatchEventItem;
+
 /// 导入任务的基础输入。
 pub struct IngestTaskInput<'a> {
     pub source_path: &'a Path,
@@ -207,6 +209,76 @@ pub fn list_citations_for_page(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("读取 citations 失败: {}", err))
+}
+
+/// 写入 Lint 补丁应用事件。
+pub fn insert_lint_patch_event(
+    db_path: &Path,
+    issue_code: &str,
+    path: Option<&str>,
+    applied: bool,
+    message: &str,
+    timestamp_ms: &str,
+) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.execute(
+        r#"
+        INSERT INTO lint_patch_events (
+            issue_code,
+            path,
+            applied,
+            message,
+            created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+        params![
+            issue_code,
+            path,
+            if applied { 1_i64 } else { 0_i64 },
+            message,
+            timestamp_ms
+        ],
+    )
+    .map_err(|err| format!("写入 lint_patch_events 失败: {}", err))?;
+    Ok(())
+}
+
+/// 读取最近的 Lint 补丁应用事件。
+pub fn list_recent_lint_patch_events(
+    db_path: &Path,
+    limit: usize,
+) -> Result<Vec<LintPatchEventItem>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT issue_code, path, applied, message, created_at
+            FROM lint_patch_events
+            ORDER BY id DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 lint_patch_events 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(LintPatchEventItem {
+                issue_code: row.get(0)?,
+                path: row.get(1)?,
+                applied: row.get::<_, i64>(2)? != 0,
+                message: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|err| format!("读取 lint_patch_events 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 lint_patch_events 失败: {}", err))
 }
 
 /// 读取最近更新的 wiki 页面。
@@ -693,8 +765,20 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS lint_patch_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_code TEXT NOT NULL,
+            path TEXT,
+            applied INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_citations_page_path
             ON citations(page_path);
+
+        CREATE INDEX IF NOT EXISTS idx_lint_patch_events_created_at
+            ON lint_patch_events(created_at);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -910,5 +994,42 @@ mod tests {
         let all = search_wiki_pages(&db_path, "   ", 10).expect("读取最近页面失败");
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].title, "Rust 进阶");
+    }
+
+    #[test]
+    fn lint_patch_events_insert_and_list_recent_work() {
+        let dir = make_temp_dir("llm-wiki-db-lint-patch-events");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        insert_lint_patch_event(
+            &db_path,
+            "ORPHAN_WIKI_PAGE",
+            Some("wiki/a.md"),
+            true,
+            "已将页面加入 index.md",
+            "1",
+        )
+        .expect("第一次写入 lint_patch_events 失败");
+        insert_lint_patch_event(
+            &db_path,
+            "MISSING_INDEX_ENTRY",
+            None,
+            false,
+            "index.md 中已存在该页面引用，未重复写入",
+            "2",
+        )
+        .expect("第二次写入 lint_patch_events 失败");
+
+        let events = list_recent_lint_patch_events(&db_path, 10)
+            .expect("读取 lint_patch_events 失败");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].issue_code, "MISSING_INDEX_ENTRY");
+        assert_eq!(events[0].path, None);
+        assert!(!events[0].applied);
+        assert_eq!(events[1].issue_code, "ORPHAN_WIKI_PAGE");
+        assert_eq!(events[1].path.as_deref(), Some("wiki/a.md"));
+        assert!(events[1].applied);
     }
 }
