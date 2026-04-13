@@ -211,12 +211,18 @@
 | P2 | `run_lint` 命令升级为 async + 语义合并 | ✅ `commands.rs` |
 | P3-A | 进度反馈（Tauri emit + 前端 listenProgress） | ✅ `state.rs::emit_progress` + `tauri-client.ts::listenProgress` |
 | P3-B | Cloud Provider（OpenAI-compatible + Hybrid 路由 + Settings UI） | ✅ `src-tauri/src/llm/openai.rs` + `get_llm_config/set_llm_config` |
+| P3-C | Ingest 实体写入 frontmatter（`title/source/raw/imported_at/entities`） | ✅ `vault.rs::build_wiki_frontmatter` + `state.rs::ingest_markdown` |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P3-C：Entities 持久化到 frontmatter**
-- Ingest 生成的实体列表目前只在内存和返回值中，未写入 Wiki 页面 frontmatter。
-- 可在 `vault.rs::build_wiki_summary` 中添加 YAML frontmatter 块。
+**P4-A：Frontmatter 读取与 UI 展示**
+- 目前 entities 已写入 Wiki frontmatter，但前端页面详情尚未结构化展示 frontmatter 字段。
+- 可在 `get_wiki_page_detail` 增加 frontmatter 解析结果，并在 UI 详情区新增元数据展示块。
+
+**P4-B：前端整体布局重构（收尾阶段）**
+- 在全部核心功能完成并测试通过后，再执行一次 UI 信息架构重排。
+- 目标形态：更接近日常桌面 App，采用“侧边栏 + 主内容区”布局，减少当前长页面滚动。
+- 约束：仅做展示层重构，不改变现有后端接口契约与业务行为。
 
 ### 18.3 当前代码快照
 

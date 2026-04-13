@@ -610,9 +610,18 @@ impl AppState {
         self.emit_progress("ingest_progress", "summarizing", "正在生成摘要（LLM）...");
         let llm_summary = self.generate_summary(&source_content).await;
 
-        // 步骤2：写入 Wiki 页面
+        // 步骤2：LLM 实体提取（写入前完成，确保可持久化到 frontmatter）
+        self.emit_progress("ingest_progress", "extracting_entities", "正在提取关键实体（LLM）...");
+        let entities = self.extract_entities(&source_content).await;
+
+        // 步骤3：写入 Wiki 页面（含 frontmatter entities）
         self.emit_progress("ingest_progress", "writing_wiki", "写入 Wiki 页面...");
-        let mut result = match vault::ingest_markdown(&vault_path, &source_path, Some(&llm_summary)) {
+        let mut result = match vault::ingest_markdown(
+            &vault_path,
+            &source_path,
+            Some(&llm_summary),
+            &entities,
+        ) {
             Ok(result) => {
                 self.push_log(
                     LogLevel::Info,
@@ -632,10 +641,6 @@ impl AppState {
                 return Err(err);
             }
         };
-
-        // 步骤3：LLM 实体提取
-        self.emit_progress("ingest_progress", "extracting_entities", "正在提取关键实体（LLM）...");
-        let entities = self.extract_entities(&source_content).await;
 
         // 步骤4：双向链接注入
         self.emit_progress("ingest_progress", "updating_links", "注入双向链接...");

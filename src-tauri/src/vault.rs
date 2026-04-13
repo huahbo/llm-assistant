@@ -75,6 +75,7 @@ pub fn ingest_markdown(
     vault_path: &Path,
     source_path: &Path,
     llm_summary: Option<&str>,
+    entities: &[String],
 ) -> Result<IngestResult, String> {
     if !vault_path.exists() {
         return Err("Vault 不存在，请先执行 init_vault".to_string());
@@ -105,6 +106,7 @@ pub fn ingest_markdown(
         &raw_path,
         &summary,
         &timestamp_ms,
+        entities,
     );
 
     let db_path = vault_path.join(".app").join("meta.db");
@@ -374,15 +376,66 @@ fn build_wiki_summary(
     raw_path: &Path,
     summary: &str,
     timestamp_ms: &str,
+    entities: &[String],
 ) -> String {
+    // 统一在 frontmatter 中写入导入元数据，供后续检索与 lint 使用。
+    let frontmatter = build_wiki_frontmatter(
+        wiki_title,
+        &source_path.to_string_lossy(),
+        &raw_path.to_string_lossy(),
+        timestamp_ms,
+        entities,
+    );
     format!(
-        "# {}\n\n- Source: `{}`\n- Raw: `{}`\n- Imported at: {}\n\n## Summary\n\n{}\n",
+        "{}\n# {}\n\n- Source: `{}`\n- Raw: `{}`\n- Imported at: {}\n\n## Summary\n\n{}\n",
+        frontmatter,
         wiki_title,
         source_path.to_string_lossy(),
         raw_path.to_string_lossy(),
         timestamp_ms,
         summary
     )
+}
+
+fn build_wiki_frontmatter(
+    title: &str,
+    source: &str,
+    raw: &str,
+    imported_at: &str,
+    entities: &[String],
+) -> String {
+    let mut output = String::new();
+    output.push_str("---\n");
+    output.push_str("title: ");
+    output.push_str(&yaml_quote(title));
+    output.push('\n');
+    output.push_str("source: ");
+    output.push_str(&yaml_quote(source));
+    output.push('\n');
+    output.push_str("raw: ");
+    output.push_str(&yaml_quote(raw));
+    output.push('\n');
+    output.push_str("imported_at: ");
+    output.push_str(&yaml_quote(imported_at));
+    output.push('\n');
+    output.push_str("entities:");
+    if entities.is_empty() {
+        output.push_str(" []\n");
+    } else {
+        output.push('\n');
+        for entity in entities {
+            output.push_str("  - ");
+            output.push_str(&yaml_quote(entity));
+            output.push('\n');
+        }
+    }
+    output.push_str("---\n");
+    output
+}
+
+fn yaml_quote(value: &str) -> String {
+    // 使用单引号并转义 YAML 单引号，避免路径和实体中的特殊字符破坏格式。
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn build_query_page_title(input_title: Option<&str>, question: &str) -> String {
@@ -630,6 +683,12 @@ mod tests {
         dir
     }
 
+    fn extract_frontmatter(content: &str) -> Option<&str> {
+        let rest = content.strip_prefix("---\n")?;
+        let end = rest.find("\n---\n")?;
+        Some(&rest[..end])
+    }
+
     #[test]
     fn initialize_vault_creates_expected_files_and_db() {
         let vault_dir = make_temp_dir("llm-wiki-init");
@@ -662,7 +721,7 @@ mod tests {
         let source_content = "# Source Title\n\nA short note for ingest.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let result = ingest_markdown(&vault_dir, &source_path, None).expect("导入 Markdown 失败");
+        let result = ingest_markdown(&vault_dir, &source_path, None, &[]).expect("导入 Markdown 失败");
 
         assert!(Path::new(&result.raw_path).is_file());
         assert!(Path::new(&result.wiki_path).is_file());
@@ -674,6 +733,7 @@ mod tests {
 
         assert_eq!(raw_content, source_content);
         assert!(wiki_content.contains("## Summary"));
+        assert!(wiki_content.contains("entities: []"));
         assert!(index_content.contains("Source file:"));
         assert!(log_content.contains("Event: Markdown ingest"));
 
@@ -713,8 +773,8 @@ mod tests {
         let source_content = "# Source Title\n\nDuplicate note content.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let first = ingest_markdown(&vault_dir, &source_path, None).expect("第一次导入失败");
-        let second = ingest_markdown(&vault_dir, &source_path, None).expect("第二次导入失败");
+        let first = ingest_markdown(&vault_dir, &source_path, None, &[]).expect("第一次导入失败");
+        let second = ingest_markdown(&vault_dir, &source_path, None, &[]).expect("第二次导入失败");
 
         assert_eq!(first.wiki_path, second.wiki_path);
         assert_eq!(first.raw_path, second.raw_path);
@@ -734,6 +794,52 @@ mod tests {
             .expect("查询 wiki_pages 失败");
         assert_eq!(task_count, 1);
         assert_eq!(wiki_count, 1);
+    }
+
+    #[test]
+    fn ingest_generated_page_contains_frontmatter_with_entities_field() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-frontmatter-entities");
+        let _guard = TempDirGuard(vault_dir.clone());
+        initialize_vault(&vault_dir, AppMode::Hybrid).expect("初始化 Vault 失败");
+
+        let source_path = vault_dir.join("source-frontmatter.md");
+        fs::write(&source_path, "# Note\n\nFrontmatter regression test.")
+            .expect("写入源文件失败");
+
+        let entities = vec!["Rust".to_string(), "SQLite".to_string()];
+        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &entities)
+            .expect("导入 Markdown 失败");
+        let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
+        let frontmatter = extract_frontmatter(&wiki_content).expect("缺少 YAML frontmatter");
+
+        assert!(
+            frontmatter.contains("entities:"),
+            "frontmatter 缺少 entities 字段: {}",
+            frontmatter
+        );
+    }
+
+    #[test]
+    fn ingest_generated_page_keeps_valid_frontmatter_when_entities_empty() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-frontmatter-empty-entities");
+        let _guard = TempDirGuard(vault_dir.clone());
+        initialize_vault(&vault_dir, AppMode::Hybrid).expect("初始化 Vault 失败");
+
+        let source_path = vault_dir.join("source-empty-entities.md");
+        fs::write(&source_path, "# Note\n\nEmpty entities regression test.")
+            .expect("写入源文件失败");
+
+        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &[])
+            .expect("导入 Markdown 失败");
+        let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
+        let frontmatter = extract_frontmatter(&wiki_content).expect("缺少 YAML frontmatter");
+
+        assert!(frontmatter.contains("entities:"));
+        assert!(
+            frontmatter.contains("entities: []") || frontmatter.contains("entities:\n"),
+            "entities 为空时格式不合法: {}",
+            frontmatter
+        );
     }
 
     #[test]

@@ -50,6 +50,7 @@ import type {
   LintPatchEvent,
   LintPatchPreviewItem,
   LogEntry,
+  ModuleId,
   ModuleItem,
   ModeId,
   ProgressPayload,
@@ -302,6 +303,8 @@ export default function App() {
     "ollama",
   );
   const [llmConfigSaving, setLlmConfigSaving] = useState(false);
+  // 当前激活的导航模块
+  const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
 
   useEffect(() => {
     let cancelled = false;
@@ -459,13 +462,18 @@ export default function App() {
     const nextSourcePath = ingestSourcePath.trim() || defaultIngestSourcePath;
     setDevAction("ingest_markdown");
     setStatusMessage("摄入中...");
-
-    // 订阅后端进度事件，实时更新状态栏
-    const unlisten = await listenProgress("ingest_progress", (payload) => {
-      setStatusMessage(payload.message);
-    });
+    let unlisten: (() => void) | null = null;
 
     try {
+      // 进度订阅失败不应阻塞主流程，避免按钮状态无法复位。
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行摄入流程。", error);
+      }
+
       const result = await ingestMarkdown(nextSourcePath);
       if (!result) {
         setStatusMessage("当前环境不支持示例摄入。");
@@ -489,7 +497,9 @@ export default function App() {
       const message = error instanceof Error ? error.message : String(error);
       setStatusMessage(`示例摄入失败：${message}`);
     } finally {
-      unlisten();
+      if (unlisten) {
+        unlisten();
+      }
       setDevAction(null);
     }
   };
@@ -545,13 +555,18 @@ export default function App() {
 
     setQueryRunning(true);
     setStatusMessage("查询中...");
-
-    // 订阅后端进度事件，实时更新状态栏
-    const unlisten = await listenProgress("query_progress", (payload) => {
-      setStatusMessage(payload.message);
-    });
+    let unlisten: (() => void) | null = null;
 
     try {
+      // 进度订阅失败不应阻塞查询执行，避免按钮持续处于“执行中”。
+      try {
+        unlisten = await listenProgress("query_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 query 进度事件失败，继续执行查询流程。", error);
+      }
+
       const result = await queryAskWithOptions(nextQuestion, { top_k: nextTopK });
       if (!result) {
         setStatusMessage("当前环境不支持查询。");
@@ -567,7 +582,9 @@ export default function App() {
       const message = error instanceof Error ? error.message : String(error);
       setStatusMessage(`Query 失败：${message}`);
     } finally {
-      unlisten();
+      if (unlisten) {
+        unlisten();
+      }
       setQueryRunning(false);
     }
   };
@@ -972,830 +989,882 @@ export default function App() {
     }
   };
 
+  // 侧边栏导航项定义
+  const navItems: { id: ModuleId; icon: string; label: string }[] = [
+    { id: "inbox",    icon: "⊞", label: "概览" },
+    { id: "wiki",     icon: "📄", label: "Wiki" },
+    { id: "ask",      icon: "💬", label: "Ask" },
+    { id: "lint",     icon: "🔍", label: "Lint" },
+    { id: "settings", icon: "⚙", label: "设置" },
+  ];
+
   return (
-    <main className="app-shell">
-      <section className="hero">
-        <div className="hero__copy">
-          <p className="eyebrow">Windows 优先 · 本地优先 · Tauri + React + SQLite</p>
-          <h1>LLM Wiki</h1>
-          <p className="hero__lead">
-            面向 Markdown Vault 的个人知识桌面骨架，支持 ingest、query、lint 三类核心工作流。
-          </p>
+    <div className="app-shell">
+      {/* 侧边栏导航 */}
+      <nav className="sidebar">
+        <div className="sidebar__brand">
+          {/* LLM Wiki 品牌图标：开卷书 + AI 星芒，纯白填充保证 WebView 渲染 */}
+          <div className="sidebar__brand-logo">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="white" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              {/* 左页 */}
+              <path d="M10 16V5C8.2 4.2 5.5 4.2 3 5V16C5.5 15.2 8.2 15.2 10 16Z" fillOpacity="0.95"/>
+              {/* 右页 */}
+              <path d="M10 16V5C11.8 4.2 14.5 4.2 17 5V16C14.5 15.2 11.8 15.2 10 16Z" fillOpacity="0.55"/>
+              {/* 四角星芒（AI 元素），右页右上角 */}
+              <path d="M14.5 6.5 L15 8 L16.5 8.5 L15 9 L14.5 10.5 L14 9 L12.5 8.5 L14 8 Z" fillOpacity="0.95"/>
+            </svg>
+          </div>
+          <span className="sidebar__brand-name">LLM Wiki</span>
         </div>
-      </section>
-
-      <section className="panel">
-        <div className="section-head">
-          <h2>运行模式</h2>
-          <span className="section-head__hint">
-            {overview ? overview.supported_modes.map(formatBackendMode).join(" / ") : "浏览器预览"}
-          </span>
-        </div>
-        <div className="runtime-banner">
-          <div className="runtime-banner__item">
-            <span>当前后端模式</span>
-            <strong>{overview ? formatBackendMode(overview.mode) : "Browser Preview"}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>Vault 路径</span>
-            <strong>{overview?.vault_path ?? "未连接 Tauri"}</strong>
-          </div>
-        </div>
-        {overview ? (
-          <p className="runtime-hint">
-            当前运行模式：<strong>{formatBackendMode(overview.mode)}</strong>，最近日志
-            <strong> {overview.recent_log_count}</strong> 条。
-          </p>
-        ) : (
-          <p className="runtime-hint">当前处于浏览器骨架预览模式。</p>
-        )}
-        <div className="runtime-banner" aria-label="LLM 状态">
-          <div className="runtime-banner__item">
-            <span>LLM</span>
-            <strong>{llmAvailabilityText}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>模型</span>
-            <strong>{llmModelText}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>地址</span>
-            <strong>{llmAddressText}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>提示</span>
-            <strong>{llmHintText}</strong>
-          </div>
-        </div>
-        {statusMessage ? <p className="runtime-status">{statusMessage}</p> : null}
-        <div className="mode-selector">
-          <label className="mode-selector__label" htmlFor="runtime-mode-selector">
-            运行策略选择器
-          </label>
-          <div className="mode-selector__control">
-            <select
-              id="runtime-mode-selector"
-              className="mode-selector__select"
-              value={overview ? backendModeToModeId[overview.mode] : "hybrid"}
-              onChange={(event) => void handleModeSelect(event.target.value as ModeId)}
-              disabled={!isTauriRuntime() || !overview || switchingMode !== null}
-            >
-              <option value="hybrid">{modeIdLabels.hybrid}</option>
-              <option value="strict-local">{modeIdLabels["strict-local"]}</option>
-            </select>
-            {switchingMode ? <span className="mode-selector__status">切换中...</span> : null}
-          </div>
-          <p className="mode-selector__hint">
-            {overview
-              ? modeIdDescriptions[backendModeToModeId[overview.mode]]
-              : "浏览器预览模式下不可切换运行策略。"}
-          </p>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="section-head">
-          <h2>开发操作</h2>
-          <span className="section-head__hint">{isTauriRuntime() ? "Tauri 可用" : "浏览器预览"}</span>
-        </div>
-        <div className="dev-panel">
-          <div className="dev-panel__field">
-            <label className="dev-panel__label" htmlFor="vault-path">
-              Vault 路径
-            </label>
-            <input
-              id="vault-path"
-              className="dev-panel__input"
-              type="text"
-              value={vaultPath}
-              onChange={(event) => setVaultPath(event.target.value)}
-              placeholder={defaultVaultPath}
-              spellCheck={false}
+        <ul className="sidebar__nav">
+          {navItems.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                className={`sidebar__nav-item${activeModule === item.id ? " sidebar__nav-item--active" : ""}`}
+                onClick={() => setActiveModule(item.id)}
+              >
+                <span className="sidebar__nav-icon">{item.icon}</span>
+                <span className="sidebar__nav-label">{item.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="sidebar__footer">
+          <div className="sidebar__llm-status">
+            <span
+              className={`sidebar__llm-dot${llmStatus?.available ? " sidebar__llm-dot--ok" : " sidebar__llm-dot--off"}`}
             />
+            <span className="sidebar__llm-label">{llmModelText}</span>
           </div>
-          <div className="dev-panel__field">
-            <label className="dev-panel__label" htmlFor="ingest-source-path">
-              示例摄入文件
-            </label>
-            <input
-              id="ingest-source-path"
-              className="dev-panel__input"
-              type="text"
-              value={ingestSourcePath}
-              onChange={(event) => setIngestSourcePath(event.target.value)}
-              placeholder={defaultIngestSourcePath}
-              spellCheck={false}
-            />
-          </div>
-          <div className="dev-panel__actions">
+        </div>
+      </nav>
+
+      {/* 主内容区 */}
+      <div className="main-content">
+        {statusMessage ? (
+          <div className="status-bar">
+            <span>{statusMessage}</span>
             <button
               type="button"
-              className="dev-panel__button"
-              onClick={() => void handleInitVault()}
-              disabled={!isTauriRuntime() || devAction !== null}
+              className="status-bar__close"
+              onClick={() => setStatusMessage("")}
             >
-              {devAction === "init_vault" ? "初始化中..." : "初始化 Vault"}
+              ✕
             </button>
-            <button
-              type="button"
-              className="dev-panel__button dev-panel__button--accent"
-              onClick={() => void handleDemoIngest()}
-              disabled={!isTauriRuntime() || devAction !== null}
-            >
-              {devAction === "ingest_markdown" ? "摄入中..." : "示例摄入"}
-            </button>
-          </div>
-        </div>
-        <p className="dev-panel__hint">
-          {isTauriRuntime()
-            ? "按钮会调用本地 Tauri 命令，成功后自动刷新运行概览和最近日志。"
-            : "浏览器预览模式下按钮保持禁用，仅用于界面预览。"}
-        </p>
-      </section>
-
-      <section className="panel">
-        <div className="section-head">
-          <h2>Ask 面板</h2>
-          <span className="section-head__hint">
-            {isTauriRuntime() ? "可调用 query_ask" : "浏览器预览"}
-          </span>
-        </div>
-        <div className="ask-panel">
-          <label className="dev-panel__label" htmlFor="ask-question">
-            问题
-          </label>
-          <textarea
-            id="ask-question"
-            className="ask-panel__textarea"
-            value={queryQuestion}
-            onChange={(event) => setQueryQuestion(event.target.value)}
-            placeholder="输入你要检索的问题"
-          />
-          <div className="ask-panel__options">
-            <label className="dev-panel__label" htmlFor="ask-top-k">
-              TopK（{queryTopKMin}-{queryTopKMax}）
-            </label>
-            <input
-              id="ask-top-k"
-              className="dev-panel__input ask-panel__topk"
-              type="number"
-              min={queryTopKMin}
-              max={queryTopKMax}
-              step={1}
-              value={queryTopK}
-              onChange={(event) => setQueryTopK(Number(event.target.value))}
-            />
-          </div>
-          <div className="ask-panel__actions">
-            <button
-              type="button"
-              className="dev-panel__button"
-              onClick={() => void handleSaveQuerySettings()}
-              disabled={!isTauriRuntime() || querySettingsSaving}
-            >
-              {querySettingsSaving ? "保存中..." : "保存参数"}
-            </button>
-            <button
-              type="button"
-              className="dev-panel__button dev-panel__button--accent"
-              onClick={() => void handleQueryAsk()}
-              disabled={!isTauriRuntime() || queryRunning}
-            >
-              {queryRunning ? "检索中..." : "执行 Query"}
-            </button>
-            <button
-              type="button"
-              className="dev-panel__button"
-              onClick={() => void handleSaveQueryResult()}
-              disabled={!isTauriRuntime() || queryResultSaving || !queryResult}
-            >
-              {queryResultSaving ? "保存中..." : "保存回答到 Wiki"}
-            </button>
-          </div>
-        </div>
-        {queryResult ? (
-          <div className="ask-result">
-            <div className="ask-result__meta">
-              <span>模式：{formatBackendMode(queryResult.mode)}</span>
-              <span>检索策略：{formatQuerySearchStrategyLabel(queryResult.search_strategy)}</span>
-              <span>策略：{formatQueryAnswerStrategyLabel(queryResult.answer_strategy)}</span>
-              <span>TopK：{queryTopK}</span>
-              <span>命中：{queryResult.matched_pages.length}</span>
-              <span>时间：{formatLintCheckedAt(queryResult.checked_at)}</span>
-            </div>
-            <pre className="ask-result__answer">{queryResult.answer}</pre>
-            <div className="ask-result__citations">
-              {queryResult.citations.map((citation) => (
-                <article key={`${citation.page_path}-${citation.score}`} className="ask-citation">
-                  <div className="ask-citation__top">
-                    <code>{resolveDisplayPath(citation)}</code>
-                    <span>score: {citation.score}</span>
-                  </div>
-                  <p>{citation.excerpt}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <p className="empty-state">
-            {isTauriRuntime()
-              ? "尚未执行 Query。输入问题后点击“执行 Query”查看本地检索结果。"
-              : "浏览器预览模式下不连接后端，无法生成真实问答结果。"}
-          </p>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="section-head">
-          <h2>Lint 面板</h2>
-          <span className="section-head__hint">
-            {isTauriRuntime() ? "可调用 run_lint" : "浏览器预览"}
-          </span>
-        </div>
-        <div className="lint-panel__actions">
-          <button
-            type="button"
-            className="dev-panel__button dev-panel__button--accent"
-            onClick={() => void handleRunLint()}
-            disabled={lintRunning}
-          >
-            {lintRunning ? "运行中..." : "运行 Lint"}
-          </button>
-          <p className="lint-panel__note">
-            {isTauriRuntime()
-              ? "按钮会调用本地 run_lint 命令并刷新摘要、时间与问题列表。"
-              : "浏览器预览模式下可查看界面结构，点击仅更新状态提示。"}
-          </p>
-          <button
-            type="button"
-            className="dev-panel__button"
-            onClick={handleClearLintFilters}
-            disabled={!lintFilterStateLoaded}
-          >
-            清空筛选
-          </button>
-          <button
-            type="button"
-            className="dev-panel__button dev-panel__button--accent"
-            onClick={() => void handlePreviewLintPatches()}
-            disabled={!isTauriRuntime() || lintPatchPreviewLoading || !lintReport}
-          >
-            {lintPatchPreviewLoading ? "生成中..." : "生成补丁建议"}
-          </button>
-        </div>
-        <div className="dev-panel">
-          <div className="dev-panel__field">
-            <label className="dev-panel__label" htmlFor="lint-code-keyword">
-              code 关键词
-            </label>
-            <input
-              id="lint-code-keyword"
-              className="dev-panel__input"
-              type="text"
-              value={lintCodeKeyword}
-              onChange={(event) => setLintCodeKeyword(event.target.value)}
-              placeholder="按 code 关键词筛选"
-              spellCheck={false}
-            />
-          </div>
-          <div className="dev-panel__field">
-            <label className="dev-panel__label" htmlFor="lint-path-keyword">
-              path 关键词
-            </label>
-            <input
-              id="lint-path-keyword"
-              className="dev-panel__input"
-              type="text"
-              value={lintPathKeyword}
-              onChange={(event) => setLintPathKeyword(event.target.value)}
-              placeholder="按 path 关键词筛选"
-              spellCheck={false}
-            />
-          </div>
-          <div className="dev-panel__field">
-            <label className="dev-panel__label" htmlFor="lint-suggestion-keyword">
-              suggestion 关键词
-            </label>
-            <input
-              id="lint-suggestion-keyword"
-              className="dev-panel__input"
-              type="text"
-              value={lintSuggestionKeyword}
-              onChange={(event) => setLintSuggestionKeyword(event.target.value)}
-              placeholder="按 suggestion 关键词筛选"
-              spellCheck={false}
-            />
-          </div>
-        </div>
-        <div className="runtime-banner lint-panel__summary">
-          <div className="runtime-banner__item">
-            <span>报告摘要</span>
-            <strong>{lintReport?.summary ?? "尚未运行 Lint"}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>检查时间</span>
-            <strong>{lintReport ? formatLintCheckedAt(lintReport.checked_at) : "尚未运行 Lint"}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>问题数量</span>
-            <strong>{lintReport ? lintReport.issues.length : 0}</strong>
-          </div>
-          <div className="runtime-banner__item">
-            <span>严重级别</span>
-            <strong>
-              {`错误 ${lintSeverityStats.error} · 警告 ${lintSeverityStats.warning} · 信息 ${lintSeverityStats.info}`}
-            </strong>
-          </div>
-        </div>
-        {lintReport ? (
-          <div className="lint-panel__actions" aria-label="lint 严重级别筛选">
-            {(["all", "error", "warning", "info"] as LintSeverityFilter[]).map((severity) => {
-              const active = lintSeverityFilter === severity;
-              const count =
-                severity === "all"
-                  ? lintIssues.length
-                  : severity === "error"
-                    ? lintSeverityStats.error
-                    : severity === "warning"
-                      ? lintSeverityStats.warning
-                      : lintSeverityStats.info;
-
-              return (
-                <button
-                  key={severity}
-                  type="button"
-                  className={`dev-panel__button ${active ? "dev-panel__button--accent" : ""}`}
-                  onClick={() => setLintSeverityFilter(severity)}
-                >
-                  {lintSeverityFilterLabels[severity]} ({count})
-                </button>
-              );
-            })}
           </div>
         ) : null}
-        {lintReport ? (
-          filteredLintIssues.length ? (
-            <div className="lint-issue-list">
-              {filteredLintIssues.map((issue) => {
-                const severity = normalizeLintSeverity(issue.severity);
 
-                return (
-                  <article key={`${issue.code}-${issue.path ?? "global"}`} className={`lint-issue lint-issue--${severity}`}>
-                    <div className="lint-issue__head">
-                      <div className="lint-issue__code">{issue.code}</div>
-                      <span className={`pill pill--lint pill--lint-${severity}`}>{severity}</span>
-                    </div>
-                    <p className="lint-issue__message">{issue.message}</p>
-                    <div className="lint-issue__field">
-                      <span>路径</span>
-                      <code>{issue.path ?? "全局"}</code>
-                    </div>
-                    <div className="lint-issue__field">
-                      <span>建议</span>
-                      <p className="lint-issue__suggestion">{issue.suggestion}</p>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="empty-state">{lintFilterEmptyText}</p>
-          )
-        ) : (
-          <p className="empty-state">
-            {isTauriRuntime()
-              ? "尚未运行 Lint。点击按钮后会在此展示报告摘要、检查时间和问题列表。"
-              : "浏览器预览模式下不连接后端，无法生成真实 lint 报告。"}
-          </p>
-        )}
-        <div className="dev-panel lint-patch-history">
-          <div className="section-head">
-            <h3>最近补丁应用记录</h3>
-            <span className="section-head__hint">
-              {recentLintPatchEvents.length ? `最近 ${recentLintPatchEvents.length} 条` : "暂无记录"}
-            </span>
-          </div>
-          {recentLintPatchEvents.length ? (
-            <div className="lint-patch-history__list">
-              {recentLintPatchEvents.map((event) => (
-                <article
-                  key={`${event.issue_code}-${event.path ?? "global"}-${event.created_at}`}
-                  className={`lint-patch-history__item ${
-                    event.applied ? "lint-patch-history__item--applied" : "lint-patch-history__item--skipped"
-                  }`}
-                >
-                  <div className="lint-patch-history__meta">
-                    <span className="lint-patch-history__code">{event.issue_code}</span>
-                    <span className={`pill ${event.applied ? "pill--ok" : "pill--danger"}`}>
-                      {event.applied ? "已应用" : "未应用"}
+        <div className="module-viewport">
+          {/* ---- 概览模块 ---- */}
+          {activeModule === "inbox" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">概览</h1>
+                <p className="module-header__sub">应用状态、Vault 操作与最近日志</p>
+              </div>
+
+              {/* 统计行 */}
+              {overview ? (
+                <div className="stats-row">
+                  <div className="stat-card">
+                    <div className="stat-card__value">{pages.length}</div>
+                    <div className="stat-card__label">Wiki 页面</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-card__value">{overview.recent_log_count}</div>
+                    <div className="stat-card__label">最近日志</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-card__value">{overview.pending_tasks}</div>
+                    <div className="stat-card__label">待处理任务</div>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* 运行模式 */}
+              <section className="panel">
+                <div className="section-head">
+                  <h2>运行模式</h2>
+                  <span className="section-head__hint">
+                    {overview ? overview.supported_modes.map(formatBackendMode).join(" / ") : "浏览器预览"}
+                  </span>
+                </div>
+                <div className="runtime-banner">
+                  <div>
+                    <span className="runtime-banner__mode">
+                      {overview ? formatBackendMode(overview.mode) : "Browser Preview"}
+                      <span className="runtime-banner__badge">
+                        {overview ? backendModeToModeId[overview.mode] : "—"}
+                      </span>
                     </span>
+                    <p className="runtime-banner__description">
+                      {overview
+                        ? modeIdDescriptions[backendModeToModeId[overview.mode]]
+                        : "浏览器预览模式下不可切换运行策略。"}
+                    </p>
                   </div>
-                  <div className="lint-patch-history__field">
-                    <span>path</span>
-                    <code>{event.path ?? "全局"}</code>
+                  <div className="dev-panel__actions">
+                    {(["hybrid", "strict-local"] as ModeId[]).map((modeId) => (
+                      <button
+                        key={modeId}
+                        type="button"
+                        className={`mode-option${overview && backendModeToModeId[overview.mode] === modeId ? " mode-option--active" : ""}`}
+                        onClick={() => void handleModeSelect(modeId)}
+                        disabled={!isTauriRuntime() || !overview || switchingMode !== null}
+                      >
+                        <span className="mode-option__name">
+                          {modeIdLabels[modeId]}
+                          {switchingMode === modeId ? (
+                            <span className="mode-option__badge">切换中...</span>
+                          ) : overview && backendModeToModeId[overview.mode] === modeId ? (
+                            <span className="mode-option__badge">当前</span>
+                          ) : null}
+                        </span>
+                      </button>
+                    ))}
                   </div>
-                  <div className="lint-patch-history__field">
-                    <span>message</span>
-                    <p className="lint-patch-history__message">{event.message || "无"}</p>
+                </div>
+                {/* LLM 状态卡片 */}
+                <div className="llm-status-grid">
+                  <div className="llm-status-card">
+                    <div className="llm-status-card__label">LLM 状态</div>
+                    <div className="llm-status-card__value">{llmAvailabilityText}</div>
                   </div>
-                  <div className="lint-patch-history__field">
-                    <span>created_at</span>
-                    <time dateTime={event.created_at}>{formatLintCheckedAt(event.created_at)}</time>
+                  <div className="llm-status-card">
+                    <div className="llm-status-card__label">模型</div>
+                    <div className="llm-status-card__value">{llmModelText}</div>
                   </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-state">
-              {isTauriRuntime()
-                ? "尚无补丁应用记录。应用补丁后会在这里显示最近历史。"
-                : "浏览器预览模式下不加载补丁应用记录。"}
-            </p>
-          )}
-        </div>
-        <div className="dev-panel">
-          <div className="section-head">
-            <h3>补丁建议</h3>
-            <span className="section-head__hint">
-              {lintPatchPreviewItems.length ? `最近 ${lintPatchPreviewItems.length} 项` : "暂无建议"}
-            </span>
-          </div>
-          <div className="lint-patch-panel__actions">
-            <button
-              type="button"
-              className="dev-panel__button dev-panel__button--accent"
-              onClick={() => void handleApplyLintPatchesBatch()}
-              disabled={!isTauriRuntime() || lintPatchBatchApplying || lintPatchPreviewItems.length === 0}
-            >
-              {lintPatchBatchApplying ? "批量应用中..." : "批量应用可应用项"}
-            </button>
-            {lintPatchBatchSummary ? (
-              <p className="lint-patch-panel__summary">
-                {lintPatchBatchSummary.summary?.trim() ||
-                  `成功 ${lintPatchBatchSummary.success_count} · 失败 ${lintPatchBatchSummary.failure_count} · 跳过 ${lintPatchBatchSummary.skipped_count}`}
-              </p>
-            ) : null}
-          </div>
-          {lintPatchPreviewError ? <p className="runtime-status">{lintPatchPreviewError}</p> : null}
-          {lintPatchPreviewItems.length ? (
-            <div className="lint-issue-list">
-              {lintPatchPreviewItems.map((item) => (
-                <article key={`${item.issue_code}-${item.path ?? "global"}`} className="lint-issue">
-                  <div className="lint-issue__head">
-                    <div className="lint-issue__code">{item.issue_code}</div>
-                    <span className="pill pill--lint pill--lint-info">suggestion</span>
+                  <div className="llm-status-card">
+                    <div className="llm-status-card__label">地址</div>
+                    <div className="llm-status-card__value">{llmAddressText}</div>
                   </div>
-                  <p className="lint-issue__message">{item.title}</p>
-                  <div className="lint-issue__field">
-                    <span>建议动作</span>
-                    <p className="lint-issue__suggestion">{item.proposed_action}</p>
+                  <div className="llm-status-card">
+                    <div className="llm-status-card__label">提示</div>
+                    <div className="llm-status-card__value">{llmHintText}</div>
                   </div>
-                  <div className="lint-issue__field">
-                    <span>路径</span>
-                    <code>{item.path ?? "全局"}</code>
+                </div>
+              </section>
+
+              {/* Vault 操作 */}
+              <section className="panel">
+                <div className="section-head">
+                  <h2>Vault 操作</h2>
+                  <span className="section-head__hint">
+                    {isTauriRuntime() ? "Tauri 可用" : "浏览器预览"}
+                  </span>
+                </div>
+                <div className="dev-panel">
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="vault-path">
+                      Vault 路径
+                    </label>
+                    <input
+                      id="vault-path"
+                      className="dev-panel__input"
+                      type="text"
+                      value={vaultPath}
+                      onChange={(event) => setVaultPath(event.target.value)}
+                      placeholder={defaultVaultPath}
+                      spellCheck={false}
+                    />
                   </div>
-                  <div className="lint-issue__field">
-                    <span>补丁预览</span>
-                    <pre className="wiki-preview__content">{item.patch_preview}</pre>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ingest-source-path">
+                      示例摄入文件
+                    </label>
+                    <input
+                      id="ingest-source-path"
+                      className="dev-panel__input"
+                      type="text"
+                      value={ingestSourcePath}
+                      onChange={(event) => setIngestSourcePath(event.target.value)}
+                      placeholder={defaultIngestSourcePath}
+                      spellCheck={false}
+                    />
                   </div>
-                  <div className="lint-issue__actions">
+                  <div className="dev-panel__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => void handleInitVault()}
+                      disabled={!isTauriRuntime() || devAction !== null}
+                    >
+                      {devAction === "init_vault" ? "初始化中..." : "初始化 Vault"}
+                    </button>
                     <button
                       type="button"
                       className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handleApplyLintPatch(item)}
-                      disabled={!isTauriRuntime() || lintPatchApplyingKey !== null}
+                      onClick={() => void handleDemoIngest()}
+                      disabled={!isTauriRuntime() || devAction !== null}
                     >
-                      {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
-                        ? "应用中..."
-                        : "应用建议"}
+                      {devAction === "ingest_markdown" ? "摄入中..." : "示例摄入"}
                     </button>
                   </div>
-                </article>
-              ))}
-            </div>
-          ) : lintPatchPreviewLoading ? (
-            <p className="runtime-hint">正在生成补丁建议...</p>
-          ) : (
-            <p className="empty-state">
-              {lintReport ? "点击“生成补丁建议”后在此查看候选补丁预览。" : "请先运行 Lint，再生成补丁建议。"}
-            </p>
+                  <p className="dev-panel__hint">
+                    {isTauriRuntime()
+                      ? "按钮会调用本地 Tauri 命令，成功后自动刷新运行概览和最近日志。"
+                      : "浏览器预览模式下按钮保持禁用，仅用于界面预览。"}
+                  </p>
+                </div>
+              </section>
+
+              {/* 最近日志 */}
+              <section className="panel">
+                <div className="section-head">
+                  <h2>最近日志</h2>
+                  <span className="section-head__hint">
+                    {logs.length ? `最近 ${logs.length} 条` : "暂无日志"}
+                  </span>
+                </div>
+                {logs.length ? (
+                  <div className="log-list">
+                    {logs.map((log) => (
+                      <article
+                        key={log.id}
+                        className={`log-item log-item--${log.level.toLowerCase()}`}
+                      >
+                        <div className="log-item__head">
+                          <span className="log-item__level">{formatLogLevel(log.level)}</span>
+                          <time dateTime={log.created_at}>{log.created_at}</time>
+                        </div>
+                        <p>{log.message}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    {isTauriRuntime()
+                      ? "后端尚未返回最近日志。"
+                      : "浏览器预览模式下不加载 Tauri 日志。"}
+                  </p>
+                )}
+              </section>
+            </>
           )}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="section-head">
-          <h2>最近日志</h2>
-          <span className="section-head__hint">{logs.length ? `最近 ${logs.length} 条` : "暂无日志"}</span>
-        </div>
-        {logs.length ? (
-          <div className="log-list">
-            {logs.map((log) => (
-              <article key={log.id} className={`log-item log-item--${log.level.toLowerCase()}`}>
-                <div className="log-item__head">
-                  <span className="log-item__level">{formatLogLevel(log.level)}</span>
-                  <time dateTime={log.created_at}>{log.created_at}</time>
-                </div>
-                <p>{log.message}</p>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p className="empty-state">
-            {isTauriRuntime()
-              ? "后端尚未返回最近日志。"
-              : "浏览器预览模式下不加载 Tauri 日志。"}
-          </p>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="section-head">
-          <h2>Wiki 页面</h2>
-          <span className="section-head__hint">{pages.length ? `最近 ${pages.length} 页` : "暂无页面"}</span>
-        </div>
-        <div className="dev-panel">
-          <div className="dev-panel__field">
-            <label className="dev-panel__label" htmlFor="wiki-keyword">
-              关键字
-            </label>
-            <input
-              id="wiki-keyword"
-              className="dev-panel__input"
-              type="text"
-              value={wikiKeyword}
-              onChange={(event) => setWikiKeyword(event.target.value)}
-              placeholder="按标题、摘要、路径搜索"
-              spellCheck={false}
-            />
-          </div>
-          <div className="dev-panel__actions">
-            <button
-              type="button"
-              className="dev-panel__button dev-panel__button--accent"
-              onClick={() => void handleSearchWikiPages()}
-              disabled={!isTauriRuntime() || wikiSearching}
-            >
-              {wikiSearching ? "搜索中..." : "搜索 Wiki"}
-            </button>
-            <button
-              type="button"
-              className="dev-panel__button"
-              onClick={() => void handleResetWikiPages()}
-              disabled={wikiSearching}
-            >
-              恢复最近
-            </button>
-          </div>
-        </div>
-        {pages.length ? (
-          <div className="ask-result__citations">
-            {pages.map((page) => (
-              <article key={page.path} className="ask-citation">
-                <div className="ask-citation__top">
-                  <code>{page.title}</code>
-                  <span>{formatLintCheckedAt(page.updated_at)}</span>
-                </div>
-                <p>{page.summary}</p>
-                <div className="wiki-card__footer">
-                  <code>{resolveDisplayPath(page)}</code>
-                  <button
-                    type="button"
-                    className="dev-panel__button wiki-card__button"
-                    onClick={() => void handleOpenWikiPage(page.path)}
-                    disabled={!isTauriRuntime() || wikiPageDetailLoading}
-                  >
-                    查看内容
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p className="empty-state">
-            {isTauriRuntime()
-              ? "当前没有可展示的 wiki 页面。先执行示例摄入或保存 Query 结果。"
-              : "浏览器预览模式下不加载后端 wiki 页面列表。"}
-          </p>
-        )}
-        {wikiPageDetail ? (
-          <article className="wiki-preview">
-            <div className="wiki-preview__head">
-              <div className="wiki-preview__title">
-                <h3>{wikiPageDetail.title}</h3>
-                <p>
-                  <code>{resolveDisplayPath(wikiPageDetail)}</code>
-                </p>
+          {/* ---- Wiki 模块 ---- */}
+          {activeModule === "wiki" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">Wiki</h1>
+                <p className="module-header__sub">浏览、搜索和查看 Markdown Vault 页面</p>
               </div>
-              <div className="wiki-preview__actions">
-                <span>{formatLintCheckedAt(wikiPageDetail.updated_at)}</span>
-                <button
-                  type="button"
-                  className="dev-panel__button"
-                  onClick={handleCloseWikiPreview}
-                >
-                  关闭预览
-                </button>
-              </div>
-            </div>
-            <pre className="wiki-preview__content">{wikiPageDetail.content}</pre>
-            <div className="wiki-preview__citations">
-              <div className="section-head wiki-preview__citations-head">
-                <h3>页面引用</h3>
-                <span className="section-head__hint">
-                  {wikiPageCitations.length ? `${wikiPageCitations.length} 条` : "暂无引用"}
-                </span>
-              </div>
-              {wikiPageCitationsError ? <p className="runtime-status">{wikiPageCitationsError}</p> : null}
-              {wikiPageCitationsLoading ? <p className="runtime-hint">正在读取页面引用...</p> : null}
-              {wikiPageCitations.length ? (
-                <div className="wiki-citation-list">
-                  {wikiPageCitations.map((citation) => (
-                    <article key={`${citation.cited_page_path}-${citation.score}`} className="wiki-citation">
-                      <div className="wiki-citation__top">
-                        <code>{resolveDisplayPath(citation)}</code>
-                        <span className={`pill ${citation.target_exists ? "pill--ok" : "pill--danger"}`}>
-                          {citation.target_exists ? "目标存在" : "目标缺失"}
-                        </span>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>Wiki 页面</h2>
+                  <span className="section-head__hint">{pages.length ? `最近 ${pages.length} 页` : "暂无页面"}</span>
+                </div>
+                <div className="dev-panel">
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="wiki-keyword">关键字</label>
+                    <input
+                      id="wiki-keyword"
+                      className="dev-panel__input"
+                      type="text"
+                      value={wikiKeyword}
+                      onChange={(event) => setWikiKeyword(event.target.value)}
+                      placeholder="按标题、摘要、路径搜索"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="dev-panel__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handleSearchWikiPages()}
+                      disabled={!isTauriRuntime() || wikiSearching}
+                    >
+                      {wikiSearching ? "搜索中..." : "搜索 Wiki"}
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => void handleResetWikiPages()}
+                      disabled={wikiSearching}
+                    >
+                      恢复最近
+                    </button>
+                  </div>
+                </div>
+                {pages.length ? (
+                  <div className="ask-result__citations">
+                    {pages.map((page) => (
+                      <article key={page.path} className="ask-citation">
+                        <div className="ask-citation__top">
+                          <code>{page.title}</code>
+                          <span>{formatLintCheckedAt(page.updated_at)}</span>
+                        </div>
+                        <p>{page.summary}</p>
+                        <div className="wiki-card__footer">
+                          <code>{resolveDisplayPath(page)}</code>
+                          <button
+                            type="button"
+                            className="dev-panel__button wiki-card__button"
+                            onClick={() => void handleOpenWikiPage(page.path)}
+                            disabled={!isTauriRuntime() || wikiPageDetailLoading}
+                          >
+                            查看内容
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    {isTauriRuntime()
+                      ? "当前没有可展示的 wiki 页面。先执行示例摄入或保存 Query 结果。"
+                      : "浏览器预览模式下不加载后端 wiki 页面列表。"}
+                  </p>
+                )}
+                {wikiPageDetail ? (
+                  <article className="wiki-preview">
+                    <div className="wiki-preview__head">
+                      <div className="wiki-preview__title">
+                        <h3>{wikiPageDetail.title}</h3>
+                        <p><code>{resolveDisplayPath(wikiPageDetail)}</code></p>
                       </div>
-                      <div className="wiki-citation__meta">
-                        <span>score: {citation.score}</span>
-                      </div>
-                      <p>{citation.excerpt}</p>
-                      <div className="wiki-citation__actions">
-                        <button
-                          type="button"
-                          className="dev-panel__button wiki-citation__button"
-                          onClick={() => void handleOpenWikiPage(citation.cited_page_path)}
-                          disabled={!isTauriRuntime() || !citation.target_exists || wikiPageDetailLoading}
-                        >
-                          {citation.target_exists ? "查看被引页面" : "目标页面缺失"}
+                      <div className="wiki-preview__actions">
+                        <span>{formatLintCheckedAt(wikiPageDetail.updated_at)}</span>
+                        <button type="button" className="dev-panel__button" onClick={handleCloseWikiPreview}>
+                          关闭预览
                         </button>
                       </div>
-                    </article>
-                  ))}
+                    </div>
+                    <pre className="wiki-preview__content">{wikiPageDetail.content}</pre>
+                    <div className="wiki-preview__citations">
+                      <div className="section-head wiki-preview__citations-head">
+                        <h3>页面引用</h3>
+                        <span className="section-head__hint">
+                          {wikiPageCitations.length ? `${wikiPageCitations.length} 条` : "暂无引用"}
+                        </span>
+                      </div>
+                      {wikiPageCitationsError ? <p className="runtime-status">{wikiPageCitationsError}</p> : null}
+                      {wikiPageCitationsLoading ? <p className="runtime-hint">正在读取页面引用...</p> : null}
+                      {wikiPageCitations.length ? (
+                        <div className="wiki-citation-list">
+                          {wikiPageCitations.map((citation) => (
+                            <article key={`${citation.cited_page_path}-${citation.score}`} className="wiki-citation">
+                              <div className="wiki-citation__top">
+                                <code>{resolveDisplayPath(citation)}</code>
+                                <span className={`pill ${citation.target_exists ? "pill--ok" : "pill--danger"}`}>
+                                  {citation.target_exists ? "目标存在" : "目标缺失"}
+                                </span>
+                              </div>
+                              <div className="wiki-citation__meta">score: {citation.score}</div>
+                              <p>{citation.excerpt}</p>
+                              <div className="wiki-citation__actions">
+                                <button
+                                  type="button"
+                                  className="dev-panel__button wiki-citation__button"
+                                  onClick={() => void handleOpenWikiPage(citation.cited_page_path)}
+                                  disabled={!isTauriRuntime() || !citation.target_exists || wikiPageDetailLoading}
+                                >
+                                  {citation.target_exists ? "查看被引页面" : "目标页面缺失"}
+                                </button>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="empty-state">当前页面没有可展示的引用。</p>
+                      )}
+                    </div>
+                  </article>
+                ) : wikiPageDetailError ? (
+                  <p className="runtime-status">{wikiPageDetailError}</p>
+                ) : wikiPageDetailLoading ? (
+                  <p className="runtime-hint">正在读取页面内容...</p>
+                ) : null}
+              </section>
+            </>
+          )}
+
+          {/* ---- Ask 模块 ---- */}
+          {activeModule === "ask" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">Ask</h1>
+                <p className="module-header__sub">基于索引与引用证据的 LLM 问答</p>
+              </div>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>Ask 面板</h2>
+                  <span className="section-head__hint">
+                    {isTauriRuntime() ? "可调用 query_ask" : "浏览器预览"}
+                  </span>
                 </div>
-              ) : (
-                <p className="empty-state">当前页面没有可展示的引用。</p>
-              )}
-            </div>
-          </article>
-        ) : wikiPageDetailError ? (
-          <p className="runtime-status">{wikiPageDetailError}</p>
-        ) : wikiPageDetailLoading ? (
-          <p className="runtime-hint">正在读取页面内容...</p>
-        ) : null}
-      </section>
+                <div className="ask-panel">
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ask-question">问题</label>
+                    <textarea
+                      id="ask-question"
+                      className="dev-panel__input ask-panel__textarea"
+                      value={queryQuestion}
+                      onChange={(event) => setQueryQuestion(event.target.value)}
+                      placeholder="输入你要检索的问题"
+                      rows={3}
+                    />
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ask-top-k">
+                      TopK（{queryTopKMin}–{queryTopKMax}）
+                    </label>
+                    <input
+                      id="ask-top-k"
+                      className="dev-panel__input"
+                      type="number"
+                      min={queryTopKMin}
+                      max={queryTopKMax}
+                      step={1}
+                      value={queryTopK}
+                      onChange={(event) => setQueryTopK(Number(event.target.value))}
+                      style={{ width: "100px" }}
+                    />
+                  </div>
+                  <div className="dev-panel__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => void handleSaveQuerySettings()}
+                      disabled={!isTauriRuntime() || querySettingsSaving}
+                    >
+                      {querySettingsSaving ? "保存中..." : "保存参数"}
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handleQueryAsk()}
+                      disabled={!isTauriRuntime() || queryRunning}
+                    >
+                      {queryRunning ? "检索中..." : "执行 Query"}
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => void handleSaveQueryResult()}
+                      disabled={!isTauriRuntime() || queryResultSaving || !queryResult}
+                    >
+                      {queryResultSaving ? "保存中..." : "保存回答到 Wiki"}
+                    </button>
+                  </div>
+                </div>
+                {queryResult ? (
+                  <div className="ask-result">
+                    <div className="ask-result__meta">
+                      <span className="pill pill--info">模式：{formatBackendMode(queryResult.mode)}</span>
+                      <span className="pill pill--lint">检索：{formatQuerySearchStrategyLabel(queryResult.search_strategy)}</span>
+                      <span className="pill pill--lint">策略：{formatQueryAnswerStrategyLabel(queryResult.answer_strategy)}</span>
+                      <span className="pill">TopK：{queryTopK}</span>
+                      <span className="pill">命中：{queryResult.matched_pages.length}</span>
+                    </div>
+                    <pre className="ask-result__answer">{queryResult.answer}</pre>
+                    <div className="ask-result__citations">
+                      {queryResult.citations.map((citation) => (
+                        <article key={`${citation.page_path}-${citation.score}`} className="ask-citation">
+                          <div className="ask-citation__top">
+                            <code>{resolveDisplayPath(citation)}</code>
+                            <span>score: {citation.score}</span>
+                          </div>
+                          <p>{citation.excerpt}</p>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    {isTauriRuntime()
+                      ? '尚未执行 Query。输入问题后点击\u201c执行 Query\u201d查看本地检索结果。'
+                      : "浏览器预览模式下不连接后端，无法生成真实问答结果。"}
+                  </p>
+                )}
+              </section>
+            </>
+          )}
 
-      <section className="panel">
-        <div className="section-head">
-          <h2>核心模块</h2>
-          <span className="section-head__hint">功能占位</span>
-        </div>
-        <div className="module-grid">
-          {modules.map((module) => (
-            <article key={module.id} className="module-card">
-              <div className="module-card__index">{module.id.toUpperCase()}</div>
-              <h3>{module.name}</h3>
-              <p>{module.description}</p>
-            </article>
-          ))}
-        </div>
-      </section>
+          {/* ---- Lint 模块 ---- */}
+          {activeModule === "lint" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">Lint</h1>
+                <p className="module-header__sub">一致性检查、孤儿页与过期结论扫描</p>
+              </div>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>Lint 面板</h2>
+                  <span className="section-head__hint">
+                    {lintReport
+                      ? `${formatLintCheckedAt(lintReport.checked_at)} · ${lintReport.issues.length} 个问题`
+                      : "尚未运行"}
+                  </span>
+                </div>
+                <div className="dev-panel__actions" style={{ marginBottom: "16px" }}>
+                  <button
+                    type="button"
+                    className="dev-panel__button dev-panel__button--accent"
+                    onClick={() => void handleRunLint()}
+                    disabled={lintRunning}
+                  >
+                    {lintRunning ? "运行中..." : "运行 Lint"}
+                  </button>
+                  <button
+                    type="button"
+                    className="dev-panel__button"
+                    onClick={handleClearLintFilters}
+                    disabled={!lintFilterStateLoaded}
+                  >
+                    清空筛选
+                  </button>
+                  <button
+                    type="button"
+                    className="dev-panel__button dev-panel__button--accent"
+                    onClick={() => void handlePreviewLintPatches()}
+                    disabled={!isTauriRuntime() || lintPatchPreviewLoading || !lintReport}
+                  >
+                    {lintPatchPreviewLoading ? "生成中..." : "生成补丁建议"}
+                  </button>
+                </div>
+                {lintReport ? (
+                  <div className="lint-stats-row">
+                    <span className="lint-stat lint-stat--error">错误 {lintSeverityStats.error}</span>
+                    <span className="lint-stat lint-stat--warning">警告 {lintSeverityStats.warning}</span>
+                    <span className="lint-stat lint-stat--info">信息 {lintSeverityStats.info}</span>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)", alignSelf: "center" }}>
+                      {lintReport.summary}
+                    </span>
+                  </div>
+                ) : null}
+                {lintReport ? (
+                  <div className="lint-severity-tabs">
+                    {(["all", "error", "warning", "info"] as LintSeverityFilter[]).map((severity) => {
+                      const count =
+                        severity === "all" ? lintIssues.length
+                        : severity === "error" ? lintSeverityStats.error
+                        : severity === "warning" ? lintSeverityStats.warning
+                        : lintSeverityStats.info;
+                      return (
+                        <button
+                          key={severity}
+                          type="button"
+                          className={`lint-severity-tab${lintSeverityFilter === severity ? " lint-severity-tab--active" : ""}`}
+                          onClick={() => setLintSeverityFilter(severity)}
+                        >
+                          {lintSeverityFilterLabels[severity]} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <div className="lint-filter-row">
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="lint-code-keyword">code 关键词</label>
+                    <input
+                      id="lint-code-keyword"
+                      className="dev-panel__input"
+                      type="text"
+                      value={lintCodeKeyword}
+                      onChange={(event) => setLintCodeKeyword(event.target.value)}
+                      placeholder="按 code 筛选"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="lint-path-keyword">path 关键词</label>
+                    <input
+                      id="lint-path-keyword"
+                      className="dev-panel__input"
+                      type="text"
+                      value={lintPathKeyword}
+                      onChange={(event) => setLintPathKeyword(event.target.value)}
+                      placeholder="按 path 筛选"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="lint-suggestion-keyword">suggestion 关键词</label>
+                    <input
+                      id="lint-suggestion-keyword"
+                      className="dev-panel__input"
+                      type="text"
+                      value={lintSuggestionKeyword}
+                      onChange={(event) => setLintSuggestionKeyword(event.target.value)}
+                      placeholder="按 suggestion 筛选"
+                      spellCheck={false}
+                    />
+                  </div>
+                </div>
+                {lintReport ? (
+                  filteredLintIssues.length ? (
+                    <div className="lint-issue-list">
+                      {filteredLintIssues.map((issue) => {
+                        const severity = normalizeLintSeverity(issue.severity);
+                        return (
+                          <article
+                            key={`${issue.code}-${issue.path ?? "global"}`}
+                            className={`lint-issue lint-issue--${severity}`}
+                          >
+                            <div className="lint-issue__head">
+                              <div className="lint-issue__code">{issue.code}</div>
+                              <span className={`pill pill--lint pill--lint-${severity}`}>{severity}</span>
+                            </div>
+                            <p className="lint-issue__message">{issue.message}</p>
+                            <div className="lint-issue__field">
+                              <span>路径</span>
+                              <code>{issue.path ?? "全局"}</code>
+                            </div>
+                            <div className="lint-issue__field">
+                              <span>建议</span>
+                              <p className="lint-issue__suggestion">{issue.suggestion}</p>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="empty-state">{lintFilterEmptyText}</p>
+                  )
+                ) : (
+                  <p className="empty-state">
+                    {isTauriRuntime()
+                      ? "尚未运行 Lint。点击按钮后会在此展示报告摘要、检查时间和问题列表。"
+                      : "浏览器预览模式下不连接后端，无法生成真实 lint 报告。"}
+                  </p>
+                )}
+              </section>
 
-      <section className="panel">
-        <div className="section-head">
-          <h2>Settings</h2>
-          <span className="section-head__hint">
-            {isTauriRuntime() ? "模式、Provider 与本地配置" : "浏览器预览"}
-          </span>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>最近补丁记录</h2>
+                  <span className="section-head__hint">
+                    {recentLintPatchEvents.length ? `最近 ${recentLintPatchEvents.length} 条` : "暂无记录"}
+                  </span>
+                </div>
+                {recentLintPatchEvents.length ? (
+                  <div className="lint-patch-events">
+                    {recentLintPatchEvents.map((event) => (
+                      <article
+                        key={`${event.issue_code}-${event.path ?? "global"}-${event.created_at}`}
+                        className="lint-patch-event"
+                      >
+                        <div className="lint-patch-event__head">
+                          <span className="lint-patch-event__code">{event.issue_code}</span>
+                          <span className={`pill ${event.applied ? "pill--ok" : "pill--danger"}`}>
+                            {event.applied ? "已应用" : "未应用"}
+                          </span>
+                          <time dateTime={event.created_at}>{formatLintCheckedAt(event.created_at)}</time>
+                        </div>
+                        <div className="lint-issue__field">
+                          <span>path</span>
+                          <code>{event.path ?? "全局"}</code>
+                        </div>
+                        <div className="lint-issue__field">
+                          <span>message</span>
+                          <p>{event.message || "无"}</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    {isTauriRuntime()
+                      ? "尚无补丁应用记录。应用补丁后会在这里显示最近历史。"
+                      : "浏览器预览模式下不加载补丁应用记录。"}
+                  </p>
+                )}
+              </section>
+
+              <section className="panel">
+                <div className="section-head">
+                  <h2>补丁建议</h2>
+                  <span className="section-head__hint">
+                    {lintPatchPreviewItems.length ? `${lintPatchPreviewItems.length} 项` : "暂无建议"}
+                  </span>
+                </div>
+                <div className="dev-panel__actions" style={{ marginBottom: "12px" }}>
+                  <button
+                    type="button"
+                    className="dev-panel__button dev-panel__button--accent"
+                    onClick={() => void handleApplyLintPatchesBatch()}
+                    disabled={!isTauriRuntime() || lintPatchBatchApplying || lintPatchPreviewItems.length === 0}
+                  >
+                    {lintPatchBatchApplying ? "批量应用中..." : "批量应用可应用项"}
+                  </button>
+                  {lintPatchBatchSummary ? (
+                    <span className="pill pill--ok">
+                      {lintPatchBatchSummary.summary?.trim() ||
+                        `成功 ${lintPatchBatchSummary.success_count} · 失败 ${lintPatchBatchSummary.failure_count} · 跳过 ${lintPatchBatchSummary.skipped_count}`}
+                    </span>
+                  ) : null}
+                </div>
+                {lintPatchPreviewError ? <p className="runtime-status">{lintPatchPreviewError}</p> : null}
+                {lintPatchPreviewItems.length ? (
+                  <div className="lint-issue-list">
+                    {lintPatchPreviewItems.map((item) => (
+                      <article key={`${item.issue_code}-${item.path ?? "global"}`} className="lint-issue">
+                        <div className="lint-issue__head">
+                          <div className="lint-issue__code">{item.issue_code}</div>
+                          <span className="pill pill--lint pill--lint-info">suggestion</span>
+                        </div>
+                        <p className="lint-issue__message">{item.title}</p>
+                        <div className="lint-issue__field">
+                          <span>建议动作</span>
+                          <p className="lint-issue__suggestion">{item.proposed_action}</p>
+                        </div>
+                        <div className="lint-issue__field">
+                          <span>路径</span>
+                          <code>{item.path ?? "全局"}</code>
+                        </div>
+                        <div className="lint-issue__field">
+                          <span>补丁预览</span>
+                          <pre className="wiki-preview__content">{item.patch_preview}</pre>
+                        </div>
+                        <div className="lint-issue__actions">
+                          <button
+                            type="button"
+                            className="dev-panel__button dev-panel__button--accent"
+                            onClick={() => void handleApplyLintPatch(item)}
+                            disabled={!isTauriRuntime() || lintPatchApplyingKey !== null}
+                          >
+                            {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
+                              ? "应用中..."
+                              : "应用建议"}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : lintPatchPreviewLoading ? (
+                  <p className="runtime-hint">正在生成补丁建议...</p>
+                ) : (
+                  <p className="empty-state">
+                    {lintReport ? '点击\u201c生成补丁建议\u201d后在此查看候选补丁预览。' : "请先运行 Lint，再生成补丁建议。"}
+                  </p>
+                )}
+              </section>
+            </>
+          )}
+
+          {/* ---- Settings 模块 ---- */}
+          {activeModule === "settings" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">设置</h1>
+                <p className="module-header__sub">Provider 配置与运行策略</p>
+              </div>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>LLM Provider 配置</h2>
+                  <span className="section-head__hint">
+                    {isTauriRuntime() ? "本地配置文件" : "浏览器预览"}
+                  </span>
+                </div>
+                <div className="settings-panel">
+                  <p className="dev-panel__hint settings-panel__status">
+                    当前活跃 Provider：
+                    <strong>
+                      {llmConfig
+                        ? llmConfig.active_provider === "cloud"
+                          ? `${llmConfig.cloud_provider_name || "云端 Provider"}（${llmConfig.cloud_model || defaultCloudModel}）`
+                          : "本地 Ollama"
+                        : "加载中..."}
+                    </strong>
+                  </p>
+                  <div className="settings-panel__presets">
+                    <button type="button" className="dev-panel__button" onClick={() => void handleApplyCloudPreset("deepseek")}>
+                      DeepSeek 预设
+                    </button>
+                    <button type="button" className="dev-panel__button" onClick={() => void handleApplyCloudPreset("glm")}>
+                      GLM 预设
+                    </button>
+                    <button type="button" className="dev-panel__button" onClick={() => void handleApplyCloudPreset("minimax")}>
+                      MiniMax 预设
+                    </button>
+                  </div>
+                  <div className="settings-panel__fields">
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="active-provider">活跃 Provider</label>
+                      <select
+                        id="active-provider"
+                        className="dev-panel__input"
+                        value={llmConfigActiveProvider}
+                        onChange={(event) =>
+                          setLlmConfigActiveProvider(event.target.value === "cloud" ? "cloud" : "ollama")
+                        }
+                      >
+                        <option value="ollama">ollama（本地）</option>
+                        <option value="cloud">cloud（云端）</option>
+                      </select>
+                    </div>
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="cloud-provider-name">云端 Provider 名称</label>
+                      <input
+                        id="cloud-provider-name"
+                        className="dev-panel__input"
+                        type="text"
+                        value={llmConfigCloudProviderName}
+                        onChange={(event) => setLlmConfigCloudProviderName(event.target.value)}
+                        placeholder={`${defaultCloudProviderName}（可改为 OpenAI / DeepSeek / GLM / MiniMax）`}
+                        spellCheck={false}
+                      />
+                    </div>
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="cloud-api-key">云端 API Key（OpenAI-compatible）</label>
+                      <input
+                        id="cloud-api-key"
+                        className="dev-panel__input"
+                        type="password"
+                        value={llmConfigCloudApiKey}
+                        onChange={(event) => setLlmConfigCloudApiKey(event.target.value)}
+                        placeholder="sk-...（选择 cloud 时必填）"
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="cloud-base-url">云端 Base URL</label>
+                      <input
+                        id="cloud-base-url"
+                        className="dev-panel__input"
+                        type="text"
+                        value={llmConfigCloudBaseUrl}
+                        onChange={(event) => setLlmConfigCloudBaseUrl(event.target.value)}
+                        placeholder={defaultCloudBaseUrl}
+                        spellCheck={false}
+                      />
+                    </div>
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="cloud-model">云端模型名</label>
+                      <input
+                        id="cloud-model"
+                        className="dev-panel__input"
+                        type="text"
+                        value={llmConfigCloudModel}
+                        onChange={(event) => setLlmConfigCloudModel(event.target.value)}
+                        placeholder={defaultCloudModel}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </div>
+                  <div className="settings-panel__save">
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handleSaveLlmConfig()}
+                      disabled={!isTauriRuntime() || llmConfigSaving}
+                    >
+                      {llmConfigSaving ? "保存中..." : "保存 LLM 配置"}
+                    </button>
+                  </div>
+                  <p className="settings-panel__hint">
+                    {isTauriRuntime()
+                      ? "云端配置仅保存在本地配置文件中，不会提交到仓库。可用 DeepSeek、GLM、MiniMax 三家预设，也可自由编辑为任意 OpenAI-compatible Provider。StrictLocal 模式下云 Provider 将被忽略。"
+                      : "浏览器预览模式下无法保存配置。"}
+                  </p>
+                </div>
+              </section>
+            </>
+          )}
         </div>
-        <div className="dev-panel settings-panel">
-          <p className="dev-panel__hint settings-panel__status">
-            当前活跃 Provider：
-            <strong>
-              {llmConfig
-                ? llmConfig.active_provider === "cloud"
-                  ? `${llmConfig.cloud_provider_name || "云端 Provider"}（${llmConfig.cloud_model || defaultCloudModel}）`
-                  : "本地 Ollama"
-                : "加载中..."}
-            </strong>
-          </p>
-          <div className="dev-panel__actions settings-panel__presets">
-            <button
-              type="button"
-              className="dev-panel__button"
-              onClick={() => void handleApplyCloudPreset("deepseek")}
-            >
-              DeepSeek 预设
-            </button>
-            <button
-              type="button"
-              className="dev-panel__button"
-              onClick={() => void handleApplyCloudPreset("glm")}
-            >
-              GLM 预设
-            </button>
-            <button
-              type="button"
-              className="dev-panel__button"
-              onClick={() => void handleApplyCloudPreset("minimax")}
-            >
-              MiniMax 预设
-            </button>
-          </div>
-          <div className="settings-panel__fields">
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="active-provider">
-                活跃 Provider
-              </label>
-              <select
-                id="active-provider"
-                className="dev-panel__input"
-                value={llmConfigActiveProvider}
-                onChange={(event) =>
-                  setLlmConfigActiveProvider(event.target.value === "cloud" ? "cloud" : "ollama")
-                }
-              >
-                <option value="ollama">ollama（本地）</option>
-                <option value="cloud">cloud（云端）</option>
-              </select>
-            </div>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="cloud-provider-name">
-                云端 Provider 名称
-              </label>
-              <input
-                id="cloud-provider-name"
-                className="dev-panel__input"
-                type="text"
-                value={llmConfigCloudProviderName}
-                onChange={(event) => setLlmConfigCloudProviderName(event.target.value)}
-                placeholder={`${defaultCloudProviderName}（可改为 OpenAI / DeepSeek / GLM / MiniMax）`}
-                spellCheck={false}
-              />
-            </div>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="cloud-api-key">
-                云端 API Key（OpenAI-compatible）
-              </label>
-              <input
-                id="cloud-api-key"
-                className="dev-panel__input"
-                type="password"
-                value={llmConfigCloudApiKey}
-                onChange={(event) => setLlmConfigCloudApiKey(event.target.value)}
-                placeholder="sk-...（选择 cloud 时必填）"
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </div>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="cloud-base-url">
-                云端 Base URL（OpenAI-compatible）
-              </label>
-              <input
-                id="cloud-base-url"
-                className="dev-panel__input"
-                type="text"
-                value={llmConfigCloudBaseUrl}
-                onChange={(event) => setLlmConfigCloudBaseUrl(event.target.value)}
-                placeholder={defaultCloudBaseUrl}
-                spellCheck={false}
-              />
-            </div>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="cloud-model">
-                云端模型名
-              </label>
-              <input
-                id="cloud-model"
-                className="dev-panel__input"
-                type="text"
-                value={llmConfigCloudModel}
-                onChange={(event) => setLlmConfigCloudModel(event.target.value)}
-                placeholder={defaultCloudModel}
-                spellCheck={false}
-              />
-            </div>
-          </div>
-          <div className="dev-panel__actions settings-panel__save">
-            <button
-              type="button"
-              className="dev-panel__button dev-panel__button--accent"
-              onClick={() => void handleSaveLlmConfig()}
-              disabled={!isTauriRuntime() || llmConfigSaving}
-            >
-              {llmConfigSaving ? "保存中..." : "保存 LLM 配置"}
-            </button>
-          </div>
-          <p className="dev-panel__hint settings-panel__hint">
-            {isTauriRuntime()
-              ? "云端配置仅保存在本地配置文件中，不会提交到仓库。可用 DeepSeek、GLM、MiniMax 三家预设，也可自由编辑为任意 OpenAI-compatible Provider。StrictLocal 模式下云 Provider 将被忽略。"
-              : "浏览器预览模式下无法保存配置。"}
-          </p>
-        </div>
-      </section>
-    </main>
+      </div>
+    </div>
   );
 }
