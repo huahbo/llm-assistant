@@ -509,11 +509,16 @@ impl AppState {
     }
 
     pub fn set_mode(&self, mode: AppMode) -> ModeChangeResult {
-        let mut guard = self.inner.lock().expect("状态锁已被污染");
-        let previous_mode = guard.mode;
-        let expected_snapshot = guard.config_snapshot.clone();
-        let vault_path = guard.vault_path.clone();
-        let query_top_k = guard.query_top_k;
+        // 先读取快照，再释放锁；避免 persist_config 内部二次加锁导致死锁。
+        let (previous_mode, expected_snapshot, vault_path, query_top_k) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (
+                guard.mode,
+                guard.config_snapshot.clone(),
+                guard.vault_path.clone(),
+                guard.query_top_k,
+            )
+        };
 
         match self.persist_config(
             mode,
@@ -522,6 +527,7 @@ impl AppState {
             expected_snapshot.as_deref(),
         ) {
             Ok(serialized) => {
+                let mut guard = self.inner.lock().expect("状态锁已被污染");
                 guard.mode = mode;
                 guard.config_snapshot = Some(serialized);
                 guard.push_log(
@@ -537,6 +543,7 @@ impl AppState {
                 }
             }
             Err(err) => {
+                let mut guard = self.inner.lock().expect("状态锁已被污染");
                 guard.push_log(
                     LogLevel::Warn,
                     format!("模式持久化失败: {}", err),
