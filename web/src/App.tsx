@@ -45,6 +45,7 @@ import type {
   BackendAppMode,
   LlmProviderConfig,
   LlmStatus,
+  LintIssue,
   LintReport,
   LintPatchBatchResult,
   LintPatchEvent,
@@ -354,7 +355,8 @@ export const shouldAutoDismissStatusMessage = (message: string) => {
   return true;
 };
 
-const wikiSummaryPreviewChars = 140;
+// 摘要折叠阈值：超过此行数时才显示展开按钮
+const wikiSummaryPreviewLines = 3;
 
 export const tokenizeWikiKeyword = (keyword: string) => {
   const tokens = keyword
@@ -371,9 +373,11 @@ export const tokenizeWikiKeyword = (keyword: string) => {
   });
 };
 
-export const buildWikiSummaryDisplay = (summary: string, expanded: boolean, maxChars = wikiSummaryPreviewChars) => {
+// 按行数截断摘要，比按字符截断更符合阅读习惯
+export const buildWikiSummaryDisplay = (summary: string, expanded: boolean, maxLines = wikiSummaryPreviewLines) => {
   const normalized = summary.trim();
-  if (expanded || normalized.length <= maxChars) {
+  const lines = normalized.split('\n');
+  if (expanded || lines.length <= maxLines) {
     return {
       text: normalized,
       isTruncated: false,
@@ -381,7 +385,7 @@ export const buildWikiSummaryDisplay = (summary: string, expanded: boolean, maxC
   }
 
   return {
-    text: `${normalized.slice(0, maxChars)}...`,
+    text: `${lines.slice(0, maxLines).join('\n')}...`,
     isTruncated: true,
   };
 };
@@ -491,6 +495,23 @@ export const sortWikiPages = (pages: WikiPageItem[], mode: WikiSortMode) => {
   return next;
 };
 
+// Lint 问题按页面路径分组，用于分组折叠展示
+export type LintIssueGroup = { path: string; issues: LintIssue[] };
+
+export const groupLintIssuesByPath = (issues: LintIssue[]): LintIssueGroup[] => {
+  const map = new Map<string, LintIssue[]>();
+  for (const issue of issues) {
+    const key = issue.path ?? "全局";
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(issue);
+    } else {
+      map.set(key, [issue]);
+    }
+  }
+  return Array.from(map.entries()).map(([path, items]) => ({ path, issues: items }));
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -545,6 +566,8 @@ export default function App() {
     null,
   );
   const [recentLintPatchEvents, setRecentLintPatchEvents] = useState<LintPatchEvent[]>([]);
+  // 折叠的 lint 分组路径集合，默认全部展开
+  const [lintCollapsedGroups, setLintCollapsedGroups] = useState<Set<string>>(new Set());
   const [queryResult, setQueryResult] = useState<QueryAnswerResult | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [switchingMode, setSwitchingMode] = useState<ModeId | null>(null);
@@ -1015,6 +1038,9 @@ export default function App() {
 
       await refreshAppData();
       setStatusMessage(`${result.message}：${result.wiki_path}`);
+      // 保存成功后跳转到 Wiki 模块并打开对应页面
+      setActiveModule("wiki");
+      await handleOpenWikiPage(result.wiki_path);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
@@ -1201,6 +1227,8 @@ export default function App() {
     ),
     lintSuggestionKeywordNormalized,
   );
+  // 过滤后的问题按路径分组
+  const groupedLintIssues = groupLintIssuesByPath(filteredLintIssues);
   const lintHasSeverityHit = lintSeverityFilteredIssues.length > 0;
   const lintHasCodeHit = lintCodeFilteredIssues.length > 0;
   const lintHasPathHit = lintPathFilteredIssues.length > 0;
@@ -1252,13 +1280,6 @@ export default function App() {
             <h4>Frontmatter</h4>
             <div className="wiki-preview__meta-head-actions">
               <span>{wikiFrontmatterDisplay.totalCount} 项</span>
-              <button
-                type="button"
-                className="dev-panel__button wiki-preview__meta-toggle"
-                onClick={() => setWikiDebugInfoVisible((value) => !value)}
-              >
-                {wikiDebugInfoVisible ? "隐藏调试" : "调试信息"}
-              </button>
               <button
                 type="button"
                 className="dev-panel__button wiki-preview__meta-toggle"
@@ -1321,28 +1342,39 @@ export default function App() {
           )}
         </div>
       ) : null}
-      {wikiDebugInfoVisible ? (
-        <div className="wiki-preview__debug">
-          <div className="wiki-preview__debug-head">
-            <h4>调试信息</h4>
-          </div>
-          {wikiImportedAtDebugRaw ? (
-            <div className="wiki-preview__debug-grid">
-              <div className="wiki-preview__debug-item">
-                <span>imported_at（展示）</span>
-                <code>{wikiImportedAtDebugDisplay}</code>
-              </div>
-              <div className="wiki-preview__debug-item">
-                <span>imported_at（原始）</span>
-                <code>{wikiImportedAtDebugRaw}</code>
-              </div>
-            </div>
-          ) : (
-            <p className="runtime-hint">当前页面未检测到 imported_at 元数据。</p>
-          )}
-        </div>
-      ) : null}
       <pre className="wiki-preview__content">{wikiPageDetail?.content ?? ""}</pre>
+      {/* 独立调试面板：与 frontmatter 解耦，仅开发/诊断用 */}
+      <div className="wiki-preview__debug-section">
+        <button
+          type="button"
+          className="wiki-preview__debug-toggle"
+          onClick={() => setWikiDebugInfoVisible((value) => !value)}
+        >
+          <span>{wikiDebugInfoVisible ? "▾" : "▸"}</span>
+          {wikiDebugInfoVisible ? "隐藏调试信息" : "调试信息"}
+        </button>
+        {wikiDebugInfoVisible ? (
+          <div className="wiki-preview__debug">
+            <div className="wiki-preview__debug-head">
+              <h4>诊断数据</h4>
+            </div>
+            {wikiImportedAtDebugRaw ? (
+              <div className="wiki-preview__debug-grid">
+                <div className="wiki-preview__debug-item">
+                  <span>imported_at（展示）</span>
+                  <code>{wikiImportedAtDebugDisplay}</code>
+                </div>
+                <div className="wiki-preview__debug-item">
+                  <span>imported_at（原始）</span>
+                  <code>{wikiImportedAtDebugRaw}</code>
+                </div>
+              </div>
+            ) : (
+              <p className="runtime-hint">当前页面未检测到 imported_at 元数据。</p>
+            )}
+          </div>
+        ) : null}
+      </div>
       <div className="wiki-preview__citations">
         <div className="section-head wiki-preview__citations-head">
           <h3>页面引用</h3>
@@ -1838,7 +1870,7 @@ export default function App() {
                       const isSummaryExpanded = wikiExpandedPaths.some((path) =>
                         isSameWikiPagePath(path, page.path),
                       );
-                      const canToggleSummary = page.summary.trim().length > wikiSummaryPreviewChars;
+                      const canToggleSummary = page.summary.trim().split('\n').length > wikiSummaryPreviewLines;
                       const summaryDisplay = buildWikiSummaryDisplay(page.summary, isSummaryExpanded);
                       const summarySegments = buildWikiHighlightSegments(
                         summaryDisplay.text,
@@ -2139,27 +2171,54 @@ export default function App() {
                 {lintReport ? (
                   filteredLintIssues.length ? (
                     <div className="lint-issue-list">
-                      {filteredLintIssues.map((issue) => {
-                        const severity = normalizeLintSeverity(issue.severity);
+                      {groupedLintIssues.map((group) => {
+                        const isCollapsed = lintCollapsedGroups.has(group.path);
                         return (
-                          <article
-                            key={`${issue.code}-${issue.path ?? "global"}`}
-                            className={`lint-issue lint-issue--${severity}`}
-                          >
-                            <div className="lint-issue__head">
-                              <div className="lint-issue__code">{issue.code}</div>
-                              <span className={`pill pill--lint pill--lint-${severity}`}>{severity}</span>
-                            </div>
-                            <p className="lint-issue__message">{issue.message}</p>
-                            <div className="lint-issue__field">
-                              <span>路径</span>
-                              <code>{issue.path ?? "全局"}</code>
-                            </div>
-                            <div className="lint-issue__field">
-                              <span>建议</span>
-                              <p className="lint-issue__suggestion">{issue.suggestion}</p>
-                            </div>
-                          </article>
+                          <div key={group.path} className="lint-group">
+                            {/* 分组标题行：路径 + 问题数 + 折叠切换 */}
+                            <button
+                              type="button"
+                              className="lint-group__header"
+                              onClick={() =>
+                                setLintCollapsedGroups((prev) => {
+                                  const next = new Set(prev);
+                                  if (isCollapsed) {
+                                    next.delete(group.path);
+                                  } else {
+                                    next.add(group.path);
+                                  }
+                                  return next;
+                                })
+                              }
+                            >
+                              <span className="lint-group__arrow">{isCollapsed ? "▸" : "▾"}</span>
+                              <code className="lint-group__path">{group.path}</code>
+                              <span className="lint-group__count">{group.issues.length} 个问题</span>
+                            </button>
+                            {!isCollapsed && (
+                              <div className="lint-group__body">
+                                {group.issues.map((issue) => {
+                                  const severity = normalizeLintSeverity(issue.severity);
+                                  return (
+                                    <article
+                                      key={`${issue.code}-${issue.path ?? "global"}`}
+                                      className={`lint-issue lint-issue--${severity}`}
+                                    >
+                                      <div className="lint-issue__head">
+                                        <div className="lint-issue__code">{issue.code}</div>
+                                        <span className={`pill pill--lint pill--lint-${severity}`}>{severity}</span>
+                                      </div>
+                                      <p className="lint-issue__message">{issue.message}</p>
+                                      <div className="lint-issue__field">
+                                        <span>建议</span>
+                                        <p className="lint-issue__suggestion">{issue.suggestion}</p>
+                                      </div>
+                                    </article>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
                         );
                       })}
                     </div>

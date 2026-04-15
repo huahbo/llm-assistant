@@ -22,6 +22,7 @@ import {
   resolveNextActiveProvider,
   shouldAutoDismissStatusMessage,
   writeWikiSortModeToStorage,
+  groupLintIssuesByPath,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -203,21 +204,22 @@ describe("Wiki 摘要展示与高亮", () => {
     expect(tokenizeWikiKeyword("Rust rust, a, qa, 本地, 本地")).toEqual(["rust", "qa", "本地"]);
   });
 
-  it("摘要折叠时按长度截断", () => {
-    const result = buildWikiSummaryDisplay("a".repeat(30), false, 10);
+  it("摘要折叠时按行数截断", () => {
+    const multiLine = "第一行\n第二行\n第三行\n第四行\n第五行";
+    const result = buildWikiSummaryDisplay(multiLine, false, 3);
     expect(result).toEqual({
-      text: "aaaaaaaaaa...",
+      text: "第一行\n第二行\n第三行...",
       isTruncated: true,
     });
   });
 
-  it("摘要展开或较短时不截断", () => {
-    expect(buildWikiSummaryDisplay("short text", false, 20)).toEqual({
-      text: "short text",
+  it("摘要展开或行数未超限时不截断", () => {
+    expect(buildWikiSummaryDisplay("单行摘要", false, 3)).toEqual({
+      text: "单行摘要",
       isTruncated: false,
     });
-    expect(buildWikiSummaryDisplay("long text", true, 4)).toEqual({
-      text: "long text",
+    expect(buildWikiSummaryDisplay("第一行\n第二行\n第三行", true, 3)).toEqual({
+      text: "第一行\n第二行\n第三行",
       isTruncated: false,
     });
   });
@@ -1200,5 +1202,48 @@ describe("Query 结果策略展示", () => {
     expect(formatQuerySearchStrategyLabel(undefined)).toBe("未知");
     expect(formatQuerySearchStrategyLabel(null)).toBe("未知");
     expect(formatQuerySearchStrategyLabel("custom_strategy")).toBe("未知");
+  });
+});
+
+describe("Lint 问题分组", () => {
+  it("空列表返回空分组", () => {
+    expect(groupLintIssuesByPath([])).toEqual([]);
+  });
+
+  it("全局问题（无 path）归入全局分组", () => {
+    const issues = [
+      { code: "W001", severity: "warning", message: "m1", path: null, suggestion: "s1" },
+      { code: "W002", severity: "warning", message: "m2", path: undefined, suggestion: "s2" },
+    ];
+    const groups = groupLintIssuesByPath(issues);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].path).toBe("全局");
+    expect(groups[0].issues).toHaveLength(2);
+  });
+
+  it("按路径分组并保留顺序", () => {
+    const issues = [
+      { code: "E001", severity: "error", message: "m1", path: "vault/a.md", suggestion: "s1" },
+      { code: "E002", severity: "error", message: "m2", path: "vault/b.md", suggestion: "s2" },
+      { code: "W001", severity: "warning", message: "m3", path: "vault/a.md", suggestion: "s3" },
+    ];
+    const groups = groupLintIssuesByPath(issues);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].path).toBe("vault/a.md");
+    expect(groups[0].issues).toHaveLength(2);
+    expect(groups[1].path).toBe("vault/b.md");
+    expect(groups[1].issues).toHaveLength(1);
+  });
+
+  it("混合有路径与无路径问题", () => {
+    const issues = [
+      { code: "E001", severity: "error", message: "m1", path: "vault/a.md", suggestion: "s1" },
+      { code: "I001", severity: "info", message: "m2", path: null, suggestion: "s2" },
+    ];
+    const groups = groupLintIssuesByPath(issues);
+    expect(groups).toHaveLength(2);
+    const paths = groups.map((g) => g.path);
+    expect(paths).toContain("vault/a.md");
+    expect(paths).toContain("全局");
   });
 });
