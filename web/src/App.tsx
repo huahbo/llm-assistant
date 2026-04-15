@@ -348,6 +348,74 @@ export const shouldAutoDismissStatusMessage = (message: string) => {
   return true;
 };
 
+const wikiSummaryPreviewChars = 140;
+
+export const tokenizeWikiKeyword = (keyword: string) => {
+  const tokens = keyword
+    .split(/[\s,，。;；、|/]+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  const unique = Array.from(new Set(tokens));
+
+  return unique.filter((token) => {
+    if (/^[a-z0-9_-]+$/i.test(token)) {
+      return token.length >= 2;
+    }
+    return true;
+  });
+};
+
+export const buildWikiSummaryDisplay = (summary: string, expanded: boolean, maxChars = wikiSummaryPreviewChars) => {
+  const normalized = summary.trim();
+  if (expanded || normalized.length <= maxChars) {
+    return {
+      text: normalized,
+      isTruncated: false,
+    };
+  }
+
+  return {
+    text: `${normalized.slice(0, maxChars)}...`,
+    isTruncated: true,
+  };
+};
+
+const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export type WikiHighlightSegment = {
+  text: string;
+  matched: boolean;
+};
+
+export const buildWikiHighlightSegments = (text: string, keywords: string[]): WikiHighlightSegment[] => {
+  if (!text) {
+    return [];
+  }
+  if (!keywords.length) {
+    return [{ text, matched: false }];
+  }
+
+  const normalizedKeywords = Array.from(
+    new Set(
+      keywords
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => right.length - left.length);
+
+  if (!normalizedKeywords.length) {
+    return [{ text, matched: false }];
+  }
+
+  const regex = new RegExp(`(${normalizedKeywords.map(escapeRegex).join("|")})`, "ig");
+  const parts = text.split(regex).filter((part) => part.length > 0);
+
+  return parts.map((part) => ({
+    text: part,
+    matched: normalizedKeywords.includes(part.toLowerCase()),
+  }));
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -418,6 +486,7 @@ export default function App() {
   const [queryResultSaving, setQueryResultSaving] = useState(false);
   const [wikiKeyword, setWikiKeyword] = useState("");
   const [wikiSearching, setWikiSearching] = useState(false);
+  const [wikiExpandedPaths, setWikiExpandedPaths] = useState<string[]>([]);
   const [wikiPageDetail, setWikiPageDetail] = useState<WikiPageDetail | null>(null);
   const [wikiPageCitations, setWikiPageCitations] = useState<WikiPageCitation[]>([]);
   const [wikiPageDetailLoading, setWikiPageDetailLoading] = useState(false);
@@ -522,6 +591,12 @@ export default function App() {
       globalThis.clearTimeout(timerId);
     };
   }, [statusMessage]);
+
+  useEffect(() => {
+    setWikiExpandedPaths((prev) =>
+      prev.filter((path) => pages.some((page) => isSameWikiPagePath(page.path, path))),
+    );
+  }, [pages]);
 
   const refreshAppData = async () => {
     const data = await loadAppData();
@@ -896,6 +971,7 @@ export default function App() {
 
   const handleResetWikiPages = async () => {
     setWikiKeyword("");
+    setWikiExpandedPaths([]);
     await refreshAppData();
     setStatusMessage("已恢复显示最近 Wiki 页面。");
   };
@@ -984,6 +1060,16 @@ export default function App() {
     }
   };
 
+  const handleToggleWikiSummary = (pagePath: string) => {
+    setWikiExpandedPaths((prev) => {
+      const exists = prev.some((path) => isSameWikiPagePath(path, pagePath));
+      if (exists) {
+        return prev.filter((path) => !isSameWikiPagePath(path, pagePath));
+      }
+      return [...prev, pagePath];
+    });
+  };
+
   const llmStatusSummary = llmStatus ? formatLlmStatusSummary(llmStatus) : null;
   const llmAvailabilityText = !isTauriRuntime()
     ? "浏览器预览"
@@ -1045,6 +1131,7 @@ export default function App() {
   const wikiImportedAtDebugDisplay = wikiImportedAtDebugRaw
     ? formatLintCheckedAt(wikiImportedAtDebugRaw)
     : "";
+  const wikiHighlightKeywords = tokenizeWikiKeyword(wikiKeyword);
   const isActiveWikiDetailInList = Boolean(
     wikiActivePagePath
     && pages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
@@ -1637,6 +1724,14 @@ export default function App() {
                       const isDetailForCard = Boolean(
                         wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
                       );
+                      const isSummaryExpanded = wikiExpandedPaths.some((path) =>
+                        isSameWikiPagePath(path, page.path),
+                      );
+                      const summaryDisplay = buildWikiSummaryDisplay(page.summary, isSummaryExpanded);
+                      const summarySegments = buildWikiHighlightSegments(
+                        summaryDisplay.text,
+                        wikiHighlightKeywords,
+                      );
 
                       return (
                         <article key={page.path} className="ask-citation">
@@ -1644,7 +1739,28 @@ export default function App() {
                             <code>{page.title}</code>
                             <span>{formatLintCheckedAt(page.updated_at)}</span>
                           </div>
-                          <p>{page.summary}</p>
+                          <div className="wiki-summary">
+                            <p className="wiki-summary__text">
+                              {summarySegments.map((segment, index) =>
+                                segment.matched ? (
+                                  <mark key={`${page.path}-summary-${index}`} className="wiki-summary__mark">
+                                    {segment.text}
+                                  </mark>
+                                ) : (
+                                  <span key={`${page.path}-summary-${index}`}>{segment.text}</span>
+                                ),
+                              )}
+                            </p>
+                            {summaryDisplay.isTruncated ? (
+                              <button
+                                type="button"
+                                className="dev-panel__button wiki-summary__toggle"
+                                onClick={() => handleToggleWikiSummary(page.path)}
+                              >
+                                {isSummaryExpanded ? "收起摘要" : "展开摘要"}
+                              </button>
+                            ) : null}
+                          </div>
                           <div className="wiki-card__footer">
                             <code>{resolveDisplayPath(page)}</code>
                             <button

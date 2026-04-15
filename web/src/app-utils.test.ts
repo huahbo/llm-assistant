@@ -7,6 +7,9 @@ import {
   cloudProviderPresets,
   formatQueryAnswerStrategyLabel,
   formatQuerySearchStrategyLabel,
+  buildWikiSummaryDisplay,
+  buildWikiHighlightSegments,
+  tokenizeWikiKeyword,
   parseLegacyImportedAtFromContent,
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
@@ -187,6 +190,39 @@ describe("Wiki frontmatter 展示构建", () => {
       },
     ]);
     expect(result.hasMeta).toBe(true);
+  });
+});
+
+describe("Wiki 摘要展示与高亮", () => {
+  it("关键词分词去重并过滤短英文噪声", () => {
+    expect(tokenizeWikiKeyword("Rust rust, a, qa, 本地, 本地")).toEqual(["rust", "qa", "本地"]);
+  });
+
+  it("摘要折叠时按长度截断", () => {
+    const result = buildWikiSummaryDisplay("a".repeat(30), false, 10);
+    expect(result).toEqual({
+      text: "aaaaaaaaaa...",
+      isTruncated: true,
+    });
+  });
+
+  it("摘要展开或较短时不截断", () => {
+    expect(buildWikiSummaryDisplay("short text", false, 20)).toEqual({
+      text: "short text",
+      isTruncated: false,
+    });
+    expect(buildWikiSummaryDisplay("long text", true, 4)).toEqual({
+      text: "long text",
+      isTruncated: false,
+    });
+  });
+
+  it("按关键词生成高亮片段", () => {
+    expect(buildWikiHighlightSegments("Rust + SQLite + 本地", ["rust", "本地"])).toEqual([
+      { text: "Rust", matched: true },
+      { text: " + SQLite + ", matched: false },
+      { text: "本地", matched: true },
+    ]);
   });
 });
 

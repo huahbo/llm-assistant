@@ -922,6 +922,31 @@ input, select, textarea { font: inherit; }
   font-size: 12px;
 }
 
+.wiki-summary {
+  margin-top: 6px;
+}
+
+.wiki-summary__text {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wiki-summary__mark {
+  background: #fef08a;
+  color: #1f2937;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+.wiki-summary__toggle {
+  margin-top: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
 .wiki-inline-status {
   margin-top: 10px;
 }
