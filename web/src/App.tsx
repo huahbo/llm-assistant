@@ -12,6 +12,7 @@ import {
   fetchWikiPageCitations,
   initVault,
   ingestMarkdown,
+  ingestPdf,
   ingestUrl,
   isTauriRuntime,
   queryAskWithOptions,
@@ -65,6 +66,7 @@ import type {
 
 const defaultVaultPath = "vault";
 const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
+const defaultIngestPdfPath = "E:\\llm-wiki\\test.pdf";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
@@ -357,6 +359,18 @@ export const shouldAutoDismissStatusMessage = (message: string) => {
   return true;
 };
 
+// 编辑态下内容与原文不一致时，视为存在未保存改动。
+export const hasUnsavedWikiEditChanges = (
+  wikiEditMode: boolean,
+  wikiEditContent: string,
+  detailContent: string | null | undefined,
+) => {
+  if (!wikiEditMode) {
+    return false;
+  }
+  return wikiEditContent !== (detailContent ?? "");
+};
+
 // 摘要折叠阈值：超过此行数时才显示展开按钮
 const wikiSummaryPreviewLines = 3;
 
@@ -537,7 +551,7 @@ const modules: ModuleItem[] = [
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
 ];
 
-type DevAction = "init_vault" | "ingest_markdown" | "ingest_url";
+type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_url";
 
 type LoadResult = {
   overview: AppOverview | null;
@@ -595,6 +609,7 @@ export default function App() {
   const [queryRunning, setQueryRunning] = useState(false);
   const [vaultPath, setVaultPath] = useState(defaultVaultPath);
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
+  const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
   // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
   const [ingestUrlInput, setIngestUrlInput] = useState("");
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
@@ -913,6 +928,61 @@ export default function App() {
     }
   };
 
+  const handlePdfIngest = async () => {
+    setStatusMessage("收到 PDF 摄入请求，正在调用后端...");
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法执行 PDF 摄入。");
+      return;
+    }
+
+    const trimmedPath = ingestPdfPath.trim();
+    if (!trimmedPath) {
+      setStatusMessage("请输入 PDF 文件路径。");
+      return;
+    }
+
+    setDevAction("ingest_pdf");
+    setStatusMessage("摄入中...");
+    let unlisten: (() => void) | null = null;
+
+    try {
+      // 进度订阅失败不应阻塞主流程，避免按钮状态无法复位。
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行 PDF 摄入流程。", error);
+      }
+
+      const result = await ingestPdf(trimmedPath);
+      if (!result) {
+        setStatusMessage("当前环境不支持 PDF 摄入。");
+        return;
+      }
+
+      await refreshAppData();
+      const entitiesMsg =
+        result.entities && result.entities.length > 0
+          ? `\n提取实体：${result.entities.join("、")}`
+          : "";
+      const updatedMsg =
+        result.updated_pages && result.updated_pages.length > 0
+          ? `\n更新相关页面：${result.updated_pages.length} 个`
+          : "";
+      setStatusMessage(`${result.message || `已处理 ${trimmedPath}`}${entitiesMsg}${updatedMsg}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`PDF 摄入失败：${message}`);
+    } finally {
+      if (unlisten) {
+        unlisten();
+      }
+      setDevAction(null);
+    }
+  };
+
   const handleRunLint = async (): Promise<boolean> => {
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法运行 Lint。");
@@ -1183,6 +1253,14 @@ export default function App() {
       setStatusMessage("浏览器预览模式下无法查看 Wiki 页面内容。");
       return;
     }
+    const currentPath = wikiPageDetail?.path ?? wikiActivePagePath;
+    const isSwitchingPage = currentPath && !isSameWikiPagePath(currentPath, pagePath);
+    if (isSwitchingPage) {
+      const shouldSwitch = confirmDiscardWikiPreview("switch");
+      if (!shouldSwitch) {
+        return;
+      }
+    }
 
     setWikiActivePagePath(pagePath);
     setWikiPageDetailLoading(true);
@@ -1235,6 +1313,11 @@ export default function App() {
   };
 
   const handleCloseWikiPreview = () => {
+    const shouldClose = confirmDiscardWikiPreview("close");
+    if (!shouldClose) {
+      return;
+    }
+
     setWikiActivePagePath("");
     setWikiPageDetail(null);
     setWikiPageCitations([]);
@@ -1409,10 +1492,35 @@ export default function App() {
     : "";
   const wikiHighlightKeywords = tokenizeWikiKeyword(wikiKeyword);
   const sortedWikiPages = sortWikiPages(pages, wikiSortMode);
+  const wikiHasUnsavedChanges = hasUnsavedWikiEditChanges(
+    wikiEditMode,
+    wikiEditContent,
+    wikiPageDetail?.content,
+  );
   const isActiveWikiDetailInList = Boolean(
     wikiActivePagePath
     && sortedWikiPages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
   );
+  function confirmDiscardWikiPreview(reason: "close" | "switch") {
+    if (!wikiHasUnsavedChanges) {
+      return true;
+    }
+
+    const confirmMessage =
+      reason === "close"
+        ? "当前页面有未保存改动，确认关闭预览吗？"
+        : "当前页面有未保存改动，确认切换到其他页面吗？";
+    const confirmFn = globalThis.confirm;
+    if (typeof confirmFn !== "function") {
+      setStatusMessage("当前环境不支持确认弹窗，已保留未保存改动。");
+      return false;
+    }
+    const confirmed = confirmFn(confirmMessage);
+    if (!confirmed) {
+      setStatusMessage("已取消操作，保留未保存改动。");
+    }
+    return confirmed;
+  }
 
   const renderWikiPreview = () => (
     <article className="wiki-preview">
@@ -1984,6 +2092,30 @@ export default function App() {
                       disabled={!isTauriRuntime() || devAction !== null}
                     >
                       {devAction === "ingest_url" ? "摄入中..." : "URL 摄入"}
+                    </button>
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ingest-pdf-path">
+                      PDF 摄入
+                    </label>
+                    <input
+                      id="ingest-pdf-path"
+                      className="dev-panel__input"
+                      type="text"
+                      value={ingestPdfPath}
+                      onChange={(event) => setIngestPdfPath(event.target.value)}
+                      placeholder={defaultIngestPdfPath}
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="dev-panel__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handlePdfIngest()}
+                      disabled={!isTauriRuntime() || devAction !== null}
+                    >
+                      {devAction === "ingest_pdf" ? "摄入中..." : "PDF 摄入"}
                     </button>
                   </div>
                   <p className="dev-panel__hint">

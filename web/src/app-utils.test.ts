@@ -20,6 +20,7 @@ import {
   readWikiSortModeFromStorage,
   resolveWikiImportedAtDebugValue,
   resolveNextActiveProvider,
+  hasUnsavedWikiEditChanges,
   shouldAutoDismissStatusMessage,
   writeWikiSortModeToStorage,
   groupLintIssuesByPath,
@@ -28,6 +29,7 @@ import {
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
   createIngestMarkdownArgs,
+  createIngestPdfArgs,
   createIngestUrlArgs,
   createQueryAskArgs,
   createQueryAskWithOptionsArgs,
@@ -44,6 +46,7 @@ import {
   createVaultInitArgs,
   formatLlmStatusSummary,
   isTauriRuntime,
+  ingestPdf,
   applyLintPatch,
   applyLintPatchesBatch,
   fetchRecentLintPatchEvents,
@@ -607,6 +610,19 @@ describe("Tauri 运行时与参数映射", () => {
     expect(createIngestUrlArgs("https://example.com")).toEqual({ url: "https://example.com" });
   });
 
+  it("createIngestPdfArgs 生成正确参数", () => {
+    expect(createIngestPdfArgs("E:\\llm-wiki\\docs\\sample.pdf")).toEqual({
+      sourcePath: "E:\\llm-wiki\\docs\\sample.pdf",
+      source_path: "E:\\llm-wiki\\docs\\sample.pdf",
+    });
+  });
+
+  it("浏览器预览模式下 ingestPdf 直接回退为 null", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+
+    await expect(ingestPdf("E:\\llm-wiki\\docs\\sample.pdf")).resolves.toBeNull();
+  });
+
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {
     Reflect.deleteProperty(globalThis, "window");
 
@@ -730,6 +746,15 @@ describe("云端 Provider 配置辅助函数", () => {
       activeProvider: "ollama",
       fallbackMessage: "",
     });
+  });
+});
+
+describe("Wiki 编辑未保存判断", () => {
+  it("仅在编辑态且内容变化时提示未保存", () => {
+    expect(hasUnsavedWikiEditChanges(false, "A", "B")).toBe(false);
+    expect(hasUnsavedWikiEditChanges(true, "A", "A")).toBe(false);
+    expect(hasUnsavedWikiEditChanges(true, "A", "B")).toBe(true);
+    expect(hasUnsavedWikiEditChanges(true, "A", null)).toBe(true);
   });
 });
 

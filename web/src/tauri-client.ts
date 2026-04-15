@@ -271,6 +271,12 @@ export const createIngestMarkdownArgs = (sourcePath: string) => ({
   source_path: sourcePath,
 });
 
+/** 构造 ingest_pdf 命令参数（用于测试） */
+export const createIngestPdfArgs = (sourcePath: string) => ({
+  sourcePath,
+  source_path: sourcePath,
+});
+
 /** 构造 ingest_url 命令参数（用于测试） */
 export const createIngestUrlArgs = (url: string) => ({ url });
 
@@ -692,6 +698,19 @@ export async function ingestMarkdown(sourcePath: string): Promise<IngestResult |
   return withTimeout(
     invoke<IngestResult>("ingest_markdown", {
       ...createIngestMarkdownArgs(sourcePath),
+    }),
+  );
+}
+
+export async function ingestPdf(sourcePath: string): Promise<IngestResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<IngestResult>("ingest_pdf", {
+      ...createIngestPdfArgs(sourcePath),
     }),
   );
 }

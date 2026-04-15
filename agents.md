@@ -221,13 +221,15 @@
 | P6 后端 | `save_wiki_page` 命令（写回 vault + 更新 FTS） | ✅ `vault.rs` + `state.rs` + `commands.rs`（70 测试） |
 | P7 前端 | Wiki 内联编辑器 UI（编辑/保存/取消，调用 `save_wiki_page`） | ✅ `web/src/App.tsx` + `tauri-client.ts` + `types.ts`（87 测试） |
 | P7 后端 | PDF 摄入命令 `ingest_pdf`（提取文本后复用 ingest 流程） | ✅ `src-tauri/src/state.rs` + `commands.rs` + `main.rs`（73 cargo 测试） |
+| P8 前端 | Inbox 增加 PDF 摄入入口 + 编辑器未保存离开提示 | ✅ `web/src/App.tsx` + `tauri-client.ts`（90 测试） |
+| P8 后端 | PDF 摄入错误可读性增强 + `.PDF`/伪 PDF 回归测试 | ✅ `src-tauri/src/state.rs`（75 cargo 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P8：PDF 摄入入口与编辑体验收口**
-- **前端子任务**：Inbox 增加“PDF 摄入”显式入口（调用 `ingest_pdf`），补充错误态提示与成功态文案。
-- **后端子任务**：补充至少一个“可提取文本 PDF”的 ingest 测试样例（或可替代的抽象层测试），提高回归可靠性。
-- **交互收口**：Wiki 内联编辑器补充“未保存离开提示/脏状态提示”。
+**P9：多格式摄入扩展设计与实现（Word/PPT/图片）**
+- **前端子任务**：摄入入口升级为“按文件类型路由”的统一表单（md/pdf/docx/pptx/img）。
+- **后端子任务**：新增多格式提取适配层（文档解析 + OCR + 错误分层），统一复用 ingest 主流程。
+- **测试任务**：为每类格式补最小可重复回归样例和失败场景用例。
 
 ### 18.3 当前代码快照
 
@@ -247,16 +249,16 @@ src-tauri/src/
 
 web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
-  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage）
+  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage/ingestPdf）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（87 个）
+  app-utils.test.ts # 前端单元测试（90 个）
 ```
 
 ### 18.4 验证基线
 
 - `cargo check`（src-tauri/）：**通过（2026-04-15，2 个 dead_code 警告）**
-- `cargo test`（src-tauri/）：**73 通过，0 失败（2026-04-15）**
-- `npm run test -- --run`（web/）：**87 通过，0 失败（2026-04-15）**
+- `cargo test`（src-tauri/）：**75 通过，0 失败（2026-04-15）**
+- `npm run test -- --run`（web/）：**90 通过，0 失败（2026-04-15）**
 - `npm run typecheck`（web/）：**零错误（2026-04-15）**
 - `npm run build`（web/）：**通过（2026-04-15）**
 

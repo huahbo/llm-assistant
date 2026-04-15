@@ -2106,8 +2106,8 @@ fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
 }
 
 fn extract_text_from_pdf(source_path: &Path) -> Result<String, String> {
-    let document =
-        lopdf::Document::load(source_path).map_err(|err| format!("读取 PDF 失败：{err}"))?;
+    let document = lopdf::Document::load(source_path)
+        .map_err(|err| format!("读取 PDF 失败，文件内容可能不是有效 PDF：{err}"))?;
     let page_numbers: Vec<u32> = document.get_pages().keys().copied().collect();
 
     if page_numbers.is_empty() {
@@ -3298,6 +3298,33 @@ mod tests {
         let _guard = TempDirGuard(dir.clone());
         let err = validate_pdf_source_path(&dir).expect_err("目录路径应报错");
         assert!(err.contains("不是文件"));
+    }
+
+    #[test]
+    fn validate_pdf_source_path_accepts_uppercase_pdf_extension() {
+        let dir = make_temp_dir("llm-wiki-pdf-validate-uppercase");
+        let _guard = TempDirGuard(dir.clone());
+        let upper_pdf_path = dir.join("note.PDF");
+        fs::write(&upper_pdf_path, "placeholder").expect("写入测试文件失败");
+
+        let result = validate_pdf_source_path(&upper_pdf_path);
+        assert!(result.is_ok(), "大写扩展名 .PDF 应通过校验");
+    }
+
+    #[tokio::test]
+    async fn ingest_pdf_impl_rejects_invalid_pdf_content_with_readable_error() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-pdf-invalid");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let invalid_pdf_path = vault_dir.join("invalid.pdf");
+        fs::write(&invalid_pdf_path, "this is not a real pdf").expect("写入伪 PDF 文件失败");
+
+        let err = state
+            .ingest_pdf_impl(invalid_pdf_path.to_string_lossy().as_ref())
+            .await
+            .expect_err("非法 PDF 内容应返回错误");
+        assert!(err.contains("读取 PDF 失败"));
+        assert!(err.contains("有效 PDF"));
     }
 
     #[test]
