@@ -12,6 +12,7 @@ import {
   fetchWikiPageCitations,
   initVault,
   ingestMarkdown,
+  ingestUrl,
   isTauriRuntime,
   queryAskWithOptions,
   runLint,
@@ -535,7 +536,7 @@ const modules: ModuleItem[] = [
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
 ];
 
-type DevAction = "init_vault" | "ingest_markdown";
+type DevAction = "init_vault" | "ingest_markdown" | "ingest_url";
 
 type LoadResult = {
   overview: AppOverview | null;
@@ -593,6 +594,8 @@ export default function App() {
   const [queryRunning, setQueryRunning] = useState(false);
   const [vaultPath, setVaultPath] = useState(defaultVaultPath);
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
+  // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
+  const [ingestUrlInput, setIngestUrlInput] = useState("");
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
   const [queryTopK, setQueryTopK] = useState(defaultQueryTopK);
   const [queryTopKMin, setQueryTopKMin] = useState(defaultQueryTopKMin);
@@ -840,6 +843,63 @@ export default function App() {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
       setStatusMessage(`示例摄入失败：${message}`);
+    } finally {
+      if (unlisten) {
+        unlisten();
+      }
+      setDevAction(null);
+    }
+  };
+
+  const handleUrlIngest = async () => {
+    setStatusMessage("收到 URL 摄入请求，正在调用后端...");
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法执行 URL 摄入。");
+      return;
+    }
+
+    const trimmedUrl = ingestUrlInput.trim();
+    if (!trimmedUrl) {
+      setStatusMessage("请输入有效的 URL。");
+      return;
+    }
+
+    setDevAction("ingest_url");
+    setStatusMessage("摄入中...");
+    let unlisten: (() => void) | null = null;
+
+    try {
+      // 进度订阅失败不应阻塞主流程，避免按钮状态无法复位。
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行 URL 摄入流程。", error);
+      }
+
+      const result = await ingestUrl(trimmedUrl);
+      if (!result) {
+        setStatusMessage("当前环境不支持 URL 摄入。");
+        return;
+      }
+
+      await refreshAppData();
+      const entitiesMsg =
+        result.entities && result.entities.length > 0
+          ? `\n提取实体：${result.entities.join("、")}`
+          : "";
+      const updatedMsg =
+        result.updated_pages && result.updated_pages.length > 0
+          ? `\n更新相关页面：${result.updated_pages.length} 个`
+          : "";
+      setStatusMessage(
+        `${result.message || `已处理 ${trimmedUrl}`}${entitiesMsg}${updatedMsg}`
+      );
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`URL 摄入失败：${message}`);
     } finally {
       if (unlisten) {
         unlisten();
@@ -1774,6 +1834,30 @@ export default function App() {
                       disabled={!isTauriRuntime() || devAction !== null}
                     >
                       {devAction === "ingest_markdown" ? "摄入中..." : "示例摄入"}
+                    </button>
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ingest-url-input">
+                      URL 摄入
+                    </label>
+                    <input
+                      id="ingest-url-input"
+                      className="dev-panel__input"
+                      type="url"
+                      value={ingestUrlInput}
+                      onChange={(event) => setIngestUrlInput(event.target.value)}
+                      placeholder="https://example.com/article"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="dev-panel__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handleUrlIngest()}
+                      disabled={!isTauriRuntime() || devAction !== null}
+                    >
+                      {devAction === "ingest_url" ? "摄入中..." : "URL 摄入"}
                     </button>
                   </div>
                   <p className="dev-panel__hint">

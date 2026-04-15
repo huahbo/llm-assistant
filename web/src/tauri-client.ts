@@ -270,6 +270,9 @@ export const createIngestMarkdownArgs = (sourcePath: string) => ({
   source_path: sourcePath,
 });
 
+/** 构造 ingest_url 命令参数（用于测试） */
+export const createIngestUrlArgs = (url: string) => ({ url });
+
 export const createQueryAskArgs = (question: string) => ({
   question,
 });
@@ -683,6 +686,20 @@ export async function ingestMarkdown(sourcePath: string): Promise<IngestResult |
   return withTimeout(
     invoke<IngestResult>("ingest_markdown", {
       ...createIngestMarkdownArgs(sourcePath),
+    }),
+  );
+}
+
+/** 通过 URL 摄入网页内容，与 ingestMarkdown 共用返回结构 */
+export async function ingestUrl(url: string): Promise<IngestResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<IngestResult>("ingest_url", {
+      ...createIngestUrlArgs(url),
     }),
   );
 }

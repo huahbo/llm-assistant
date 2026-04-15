@@ -28,6 +28,7 @@ import {
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
   createIngestMarkdownArgs,
+  createIngestUrlArgs,
   createQueryAskArgs,
   createQueryAskWithOptionsArgs,
   createPreviewLintPatchesArgs,
@@ -591,6 +592,10 @@ describe("Tauri 运行时与参数映射", () => {
         },
       ],
     });
+  });
+
+  it("createIngestUrlArgs 生成正确参数", () => {
+    expect(createIngestUrlArgs("https://example.com")).toEqual({ url: "https://example.com" });
   });
 
   it("按 query/list/citation 对象的优先级顺序解析友好路径", () => {
