@@ -23,6 +23,7 @@ import {
   shouldAutoDismissStatusMessage,
   writeWikiSortModeToStorage,
   groupLintIssuesByPath,
+  groupPatchPreviewItemsByPath,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -1241,6 +1242,49 @@ describe("Lint 问题分组", () => {
       { code: "I001", severity: "info", message: "m2", path: null, suggestion: "s2" },
     ];
     const groups = groupLintIssuesByPath(issues);
+    expect(groups).toHaveLength(2);
+    const paths = groups.map((g) => g.path);
+    expect(paths).toContain("vault/a.md");
+    expect(paths).toContain("全局");
+  });
+});
+
+describe("补丁建议分组", () => {
+  it("空列表返回空分组", () => {
+    expect(groupPatchPreviewItemsByPath([])).toEqual([]);
+  });
+
+  it("无路径的补丁建议归入全局分组", () => {
+    const items = [
+      { issue_code: "W001", title: "t1", proposed_action: "a1", patch_preview: "p1", path: null },
+      { issue_code: "W002", title: "t2", proposed_action: "a2", patch_preview: "p2", path: undefined },
+    ];
+    const groups = groupPatchPreviewItemsByPath(items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].path).toBe("全局");
+    expect(groups[0].items).toHaveLength(2);
+  });
+
+  it("多路径建议按路径分组并保留顺序", () => {
+    const items = [
+      { issue_code: "E001", title: "t1", proposed_action: "a1", patch_preview: "p1", path: "vault/a.md" },
+      { issue_code: "E002", title: "t2", proposed_action: "a2", patch_preview: "p2", path: "vault/b.md" },
+      { issue_code: "W001", title: "t3", proposed_action: "a3", patch_preview: "p3", path: "vault/a.md" },
+    ];
+    const groups = groupPatchPreviewItemsByPath(items);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].path).toBe("vault/a.md");
+    expect(groups[0].items).toHaveLength(2);
+    expect(groups[1].path).toBe("vault/b.md");
+    expect(groups[1].items).toHaveLength(1);
+  });
+
+  it("混合有路径与无路径的建议", () => {
+    const items = [
+      { issue_code: "E001", title: "t1", proposed_action: "a1", patch_preview: "p1", path: "vault/a.md" },
+      { issue_code: "I001", title: "t2", proposed_action: "a2", patch_preview: "p2", path: null },
+    ];
+    const groups = groupPatchPreviewItemsByPath(items);
     expect(groups).toHaveLength(2);
     const paths = groups.map((g) => g.path);
     expect(paths).toContain("vault/a.md");

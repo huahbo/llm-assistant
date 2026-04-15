@@ -512,6 +512,21 @@ export const groupLintIssuesByPath = (issues: LintIssue[]): LintIssueGroup[] => 
   return Array.from(map.entries()).map(([path, items]) => ({ path, issues: items }));
 };
 
+// 补丁建议按路径分组，用于折叠展示
+export const groupPatchPreviewItemsByPath = (items: LintPatchPreviewItem[]): { path: string; items: LintPatchPreviewItem[] }[] => {
+  const map = new Map<string, LintPatchPreviewItem[]>();
+  for (const item of items) {
+    const key = item.path ?? "全局";
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(item);
+    } else {
+      map.set(key, [item]);
+    }
+  }
+  return Array.from(map.entries()).map(([path, items]) => ({ path, items }));
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -568,6 +583,8 @@ export default function App() {
   const [recentLintPatchEvents, setRecentLintPatchEvents] = useState<LintPatchEvent[]>([]);
   // 折叠的 lint 分组路径集合，默认全部展开
   const [lintCollapsedGroups, setLintCollapsedGroups] = useState<Set<string>>(new Set());
+  // 折叠的补丁建议分组路径集合，默认全部展开
+  const [patchPreviewCollapsedGroups, setPatchPreviewCollapsedGroups] = useState<Set<string>>(new Set());
   const [queryResult, setQueryResult] = useState<QueryAnswerResult | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [switchingMode, setSwitchingMode] = useState<ModeId | null>(null);
@@ -2301,39 +2318,83 @@ export default function App() {
                 {lintPatchPreviewError ? <p className="runtime-status">{lintPatchPreviewError}</p> : null}
                 {lintPatchPreviewItems.length ? (
                   <div className="lint-issue-list">
-                    {lintPatchPreviewItems.map((item) => (
-                      <article key={`${item.issue_code}-${item.path ?? "global"}`} className="lint-issue">
-                        <div className="lint-issue__head">
-                          <div className="lint-issue__code">{item.issue_code}</div>
-                          <span className="pill pill--lint pill--lint-info">suggestion</span>
-                        </div>
-                        <p className="lint-issue__message">{item.title}</p>
-                        <div className="lint-issue__field">
-                          <span>建议动作</span>
-                          <p className="lint-issue__suggestion">{item.proposed_action}</p>
-                        </div>
-                        <div className="lint-issue__field">
-                          <span>路径</span>
-                          <code>{item.path ?? "全局"}</code>
-                        </div>
-                        <div className="lint-issue__field">
-                          <span>补丁预览</span>
-                          <pre className="wiki-preview__content">{item.patch_preview}</pre>
-                        </div>
-                        <div className="lint-issue__actions">
+                    {groupPatchPreviewItemsByPath(lintPatchPreviewItems).map((group) => {
+                      const isCollapsed = patchPreviewCollapsedGroups.has(group.path);
+                      return (
+                        <div key={group.path} className="lint-group">
+                          {/* 分组标题行：路径 + 补丁数 + 折叠切换 */}
                           <button
                             type="button"
-                            className="dev-panel__button dev-panel__button--accent"
-                            onClick={() => void handleApplyLintPatch(item)}
-                            disabled={!isTauriRuntime() || lintPatchApplyingKey !== null}
+                            className="lint-group__header"
+                            onClick={() =>
+                              setPatchPreviewCollapsedGroups((prev) => {
+                                const next = new Set(prev);
+                                if (isCollapsed) {
+                                  next.delete(group.path);
+                                } else {
+                                  next.add(group.path);
+                                }
+                                return next;
+                              })
+                            }
                           >
-                            {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
-                              ? "应用中..."
-                              : "应用建议"}
+                            <span className="lint-group__arrow">{isCollapsed ? "▸" : "▾"}</span>
+                            <code className="lint-group__path">{group.path}</code>
+                            <span className="lint-group__count">{group.items.length} 个建议</span>
                           </button>
+                          {!isCollapsed && (
+                            <div className="lint-group__body">
+                              {group.items.map((item) => (
+                                <article key={`${item.issue_code}-${item.path ?? "global"}`} className="lint-issue">
+                                  <div className="lint-issue__head">
+                                    <div className="lint-issue__code">{item.issue_code}</div>
+                                    <span className="pill pill--lint pill--lint-info">suggestion</span>
+                                  </div>
+                                  <p className="lint-issue__message">{item.title}</p>
+                                  <div className="lint-issue__field">
+                                    <span>建议动作</span>
+                                    <p className="lint-issue__suggestion">{item.proposed_action}</p>
+                                  </div>
+                                  <div className="lint-issue__field">
+                                    <span>路径</span>
+                                    <code>{item.path ?? "全局"}</code>
+                                  </div>
+                                  <div className="lint-issue__field">
+                                    <span>补丁预览</span>
+                                    <pre className="wiki-preview__content">{item.patch_preview}</pre>
+                                  </div>
+                                  <div className="lint-issue__actions">
+                                    <button
+                                      type="button"
+                                      className="dev-panel__button dev-panel__button--accent"
+                                      onClick={() => void handleApplyLintPatch(item)}
+                                      disabled={!isTauriRuntime() || lintPatchApplyingKey !== null}
+                                    >
+                                      {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
+                                        ? "应用中..."
+                                        : "应用建议"}
+                                    </button>
+                                    {/* 当补丁建议有关联路径时，显示打开页面按钮 */}
+                                    {item.path != null && (
+                                      <button
+                                        type="button"
+                                        className="dev-panel__button"
+                                        onClick={() => {
+                                          setActiveModule("wiki");
+                                          void handleOpenWikiPage(item.path!);
+                                        }}
+                                      >
+                                        打开页面
+                                      </button>
+                                    )}
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      </article>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : lintPatchPreviewLoading ? (
                   <p className="runtime-hint">正在生成补丁建议...</p>
