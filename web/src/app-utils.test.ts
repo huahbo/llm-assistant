@@ -620,10 +620,12 @@ describe("Tauri 运行时与参数映射", () => {
     });
   });
 
-  it("createIngestFileArgs 生成正确参数", () => {
-    expect(createIngestFileArgs("E:\\llm-wiki\\docs\\sample.docx")).toEqual({
+  it("createIngestFileArgs 生成正确参数（含 OCR Provider 映射）", () => {
+    expect(createIngestFileArgs("E:\\llm-wiki\\docs\\sample.docx", "paddle")).toEqual({
       sourcePath: "E:\\llm-wiki\\docs\\sample.docx",
       source_path: "E:\\llm-wiki\\docs\\sample.docx",
+      ocrProvider: "paddle",
+      ocr_provider: "paddle",
     });
   });
 
@@ -636,7 +638,7 @@ describe("Tauri 运行时与参数映射", () => {
   it("浏览器预览模式下 ingestFile 直接回退为 null", async () => {
     Reflect.deleteProperty(globalThis, "window");
 
-    await expect(ingestFile("E:\\llm-wiki\\docs\\sample.docx")).resolves.toBeNull();
+    await expect(ingestFile("E:\\llm-wiki\\docs\\sample.docx", "tesseract")).resolves.toBeNull();
   });
 
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {

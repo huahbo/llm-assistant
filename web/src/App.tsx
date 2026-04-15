@@ -30,6 +30,7 @@ import {
   formatLlmStatusSummary,
   resolveDisplayPath,
   listenProgress,
+  type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -69,6 +70,7 @@ const defaultVaultPath = "vault";
 const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultIngestPdfPath = "E:\\llm-wiki\\test.pdf";
 const defaultIngestFilePath = "E:\\llm-wiki\\test.docx";
+const defaultIngestFileOcrProvider: OcrProvider = "tesseract";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
@@ -117,6 +119,11 @@ const wikiSortModeLabels: Record<WikiSortMode, string> = {
   updated_desc: "更新时间（新到旧）",
   updated_asc: "更新时间（旧到新）",
   title_asc: "标题（A-Z）",
+};
+
+const ocrProviderLabels: Record<OcrProvider, string> = {
+  tesseract: "tesseract（本地默认）",
+  paddle: "paddle（高精度）",
 };
 
 export const defaultCloudProviderName = "DeepSeek";
@@ -645,6 +652,9 @@ export default function App() {
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
   const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
   const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
+  const [ingestFileOcrProvider, setIngestFileOcrProvider] = useState<OcrProvider>(
+    defaultIngestFileOcrProvider,
+  );
   // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
   const [ingestUrlInput, setIngestUrlInput] = useState("");
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
@@ -1044,7 +1054,7 @@ export default function App() {
         console.warn("订阅 ingest 进度事件失败，继续执行通用文件摄入流程。", error);
       }
 
-      const result = await ingestFile(trimmedPath);
+      const result = await ingestFile(trimmedPath, ingestFileOcrProvider);
       if (!result) {
         setStatusMessage("当前环境不支持通用文件摄入。");
         return;
@@ -2221,6 +2231,24 @@ export default function App() {
                       spellCheck={false}
                     />
                   </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ingest-file-ocr-provider">
+                      OCR Provider
+                    </label>
+                    <select
+                      id="ingest-file-ocr-provider"
+                      className="dev-panel__input"
+                      value={ingestFileOcrProvider}
+                      onChange={(event) =>
+                        setIngestFileOcrProvider(
+                          event.target.value === "paddle" ? "paddle" : "tesseract",
+                        )
+                      }
+                    >
+                      <option value="tesseract">{ocrProviderLabels.tesseract}</option>
+                      <option value="paddle">{ocrProviderLabels.paddle}</option>
+                    </select>
+                  </div>
                   <div className="dev-panel__actions">
                     <button
                       type="button"
@@ -2233,7 +2261,7 @@ export default function App() {
                   </div>
                   <p className="dev-panel__hint">
                     {isTauriRuntime()
-                      ? "按钮会调用本地 Tauri 命令，成功后自动刷新运行概览和最近日志。"
+                      ? "按钮会调用本地 Tauri 命令，默认本地优先（tesseract），失败会自动尝试另一 provider（可用时）。成功后自动刷新运行概览和最近日志。"
                       : "浏览器预览模式下按钮保持禁用，仅用于界面预览。"}
                   </p>
                 </div>

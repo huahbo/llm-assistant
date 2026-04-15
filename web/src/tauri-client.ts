@@ -277,11 +277,23 @@ export const createIngestPdfArgs = (sourcePath: string) => ({
   source_path: sourcePath,
 });
 
+export type OcrProvider = "tesseract" | "paddle";
+
 /** 构造 ingest_file 命令参数（用于测试） */
-export const createIngestFileArgs = (sourcePath: string) => ({
-  sourcePath,
-  source_path: sourcePath,
-});
+export const createIngestFileArgs = (sourcePath: string, ocrProvider?: OcrProvider) => {
+  const providerArgs = ocrProvider
+    ? {
+        ocrProvider,
+        ocr_provider: ocrProvider,
+      }
+    : {};
+
+  return {
+    sourcePath,
+    source_path: sourcePath,
+    ...providerArgs,
+  };
+};
 
 /** 构造 ingest_url 命令参数（用于测试） */
 export const createIngestUrlArgs = (url: string) => ({ url });
@@ -721,7 +733,10 @@ export async function ingestPdf(sourcePath: string): Promise<IngestResult | null
   );
 }
 
-export async function ingestFile(sourcePath: string): Promise<IngestResult | null> {
+export async function ingestFile(
+  sourcePath: string,
+  ocrProvider?: OcrProvider,
+): Promise<IngestResult | null> {
   if (!isTauriRuntime()) {
     return null;
   }
@@ -729,7 +744,7 @@ export async function ingestFile(sourcePath: string): Promise<IngestResult | nul
   const { invoke } = await import("@tauri-apps/api/core");
   return withTimeout(
     invoke<IngestResult>("ingest_file", {
-      ...createIngestFileArgs(sourcePath),
+      ...createIngestFileArgs(sourcePath, ocrProvider),
     }),
   );
 }
