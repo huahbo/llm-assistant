@@ -36,6 +36,7 @@ fn main() {
             commands::get_llm_status,
             commands::init_vault,
             commands::ingest_markdown,
+            commands::ingest_url,
             commands::query_ask,
             commands::query_ask_with_options,
             commands::set_query_top_k,

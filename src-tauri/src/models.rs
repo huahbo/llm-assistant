@@ -389,3 +389,9 @@ pub struct WikiPageCitationItem {
     pub excerpt: String,
     pub target_exists: bool,
 }
+
+/// URL ingest 输入
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct IngestUrlInput {
+    pub url: String,
+}

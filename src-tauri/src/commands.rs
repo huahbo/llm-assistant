@@ -186,6 +186,16 @@ pub fn save_query_answer(
     state.save_query_answer(input)
 }
 
+/// 拉取 URL 内容并执行 ingest，与 ingest_markdown 共享返回结构。
+#[tauri::command]
+pub async fn ingest_url(
+    state: tauri::State<'_, AppState>,
+    url: String,
+) -> Result<crate::models::IngestResult, String> {
+    eprintln!("[ingest_url] called with url={}", url);
+    state.ingest_url_impl(&url).await
+}
+
 /// 读取云端 Provider 配置（Settings 页面用）。
 #[tauri::command]
 pub fn get_llm_config(state: State<'_, AppState>) -> LlmProviderConfig {

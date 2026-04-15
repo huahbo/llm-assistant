@@ -666,6 +666,53 @@ impl AppState {
         Ok(result)
     }
 
+    /// 拉取 URL 文本内容后走现有 ingest 流程
+    pub async fn ingest_url_impl(
+        &self,
+        url: &str,
+    ) -> Result<crate::models::IngestResult, String> {
+        // 1. 用 reqwest 拉取 URL 文本（超时 30s）
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))?;
+
+        let response = client
+            .get(url)
+            .header("User-Agent", "llm-wiki/1.0")
+            .send()
+            .await
+            .map_err(|e| format!("拉取 URL 失败：{e}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("URL 请求失败，HTTP {status}"));
+        }
+
+        let text = response
+            .text()
+            .await
+            .map_err(|e| format!("读取响应内容失败：{e}"))?;
+
+        if text.trim().is_empty() {
+            return Err("URL 返回内容为空".to_string());
+        }
+
+        // 2. 将文本写入临时 Markdown 文件，复用 ingest_markdown
+        let tmp_path = std::env::temp_dir()
+            .join(format!("llm_wiki_url_{}.md", uuid_v4_short()));
+        tokio::fs::write(&tmp_path, &text)
+            .await
+            .map_err(|e| format!("写入临时文件失败：{e}"))?;
+
+        let result = self.ingest_markdown(tmp_path.clone()).await;
+
+        // 3. 清理临时文件（忽略错误）
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
+        result
+    }
+
     /// 用 LLM 从文档内容中提取关键实体（LLM 不可用时返回空列表）。
     async fn extract_entities(&self, content: &str) -> Vec<String> {
         let provider = match self.get_llm_provider() {
@@ -1905,6 +1952,15 @@ Wiki 页面：\n{}",
             );
         }
     }
+}
+
+/// 生成基于微秒时间戳的短唯一字符串，用于临时文件命名。
+fn uuid_v4_short() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros().to_string())
+        .unwrap_or_else(|_| "tmp".to_string())
 }
 
 fn collect_wiki_page_paths(wiki_dir: &Path) -> BTreeSet<String> {
