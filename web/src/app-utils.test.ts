@@ -10,6 +10,7 @@ import {
   buildWikiSummaryDisplay,
   buildWikiHighlightSegments,
   tokenizeWikiKeyword,
+  sortWikiPages,
   parseLegacyImportedAtFromContent,
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
@@ -222,6 +223,53 @@ describe("Wiki 摘要展示与高亮", () => {
       { text: "Rust", matched: true },
       { text: " + SQLite + ", matched: false },
       { text: "本地", matched: true },
+    ]);
+  });
+});
+
+describe("Wiki 列表排序", () => {
+  const source = [
+    {
+      title: "zeta",
+      path: "wiki/z.md",
+      summary: "z",
+      updated_at: "1000",
+    },
+    {
+      title: "alpha",
+      path: "wiki/a.md",
+      summary: "a",
+      updated_at: "2000",
+    },
+    {
+      title: "beta",
+      path: "wiki/b.md",
+      summary: "b",
+      updated_at: "1500",
+    },
+  ];
+
+  it("按更新时间新到旧排序", () => {
+    expect(sortWikiPages(source, "updated_desc").map((item) => item.title)).toEqual([
+      "alpha",
+      "beta",
+      "zeta",
+    ]);
+  });
+
+  it("按更新时间旧到新排序", () => {
+    expect(sortWikiPages(source, "updated_asc").map((item) => item.title)).toEqual([
+      "zeta",
+      "beta",
+      "alpha",
+    ]);
+  });
+
+  it("按标题排序", () => {
+    expect(sortWikiPages(source, "title_asc").map((item) => item.title)).toEqual([
+      "alpha",
+      "beta",
+      "zeta",
     ]);
   });
 });

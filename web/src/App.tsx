@@ -106,6 +106,12 @@ const searchStrategyLabels: Record<string, string> = {
   empty: "空结果",
 };
 
+const wikiSortModeLabels: Record<WikiSortMode, string> = {
+  updated_desc: "更新时间（新到旧）",
+  updated_asc: "更新时间（旧到新）",
+  title_asc: "标题（A-Z）",
+};
+
 export const defaultCloudProviderName = "DeepSeek";
 export const defaultCloudBaseUrl = "https://api.deepseek.com/v1";
 export const defaultCloudModel = "deepseek-chat";
@@ -416,6 +422,43 @@ export const buildWikiHighlightSegments = (text: string, keywords: string[]): Wi
   }));
 };
 
+export type WikiSortMode = "updated_desc" | "updated_asc" | "title_asc";
+
+const parseWikiUpdatedAt = (value: string) => {
+  const normalized = value.trim();
+  if (!normalized) {
+    return 0;
+  }
+  if (/^\d+$/.test(normalized)) {
+    return Number(normalized) || 0;
+  }
+  const parsed = Date.parse(normalized);
+  if (Number.isNaN(parsed)) {
+    return 0;
+  }
+  return parsed;
+};
+
+export const sortWikiPages = (pages: WikiPageItem[], mode: WikiSortMode) => {
+  const next = pages.slice();
+  next.sort((left, right) => {
+    if (mode === "title_asc") {
+      return left.title.localeCompare(right.title, "zh-CN", { sensitivity: "base" });
+    }
+
+    const leftUpdatedAt = parseWikiUpdatedAt(left.updated_at);
+    const rightUpdatedAt = parseWikiUpdatedAt(right.updated_at);
+    if (leftUpdatedAt === rightUpdatedAt) {
+      return left.title.localeCompare(right.title, "zh-CN", { sensitivity: "base" });
+    }
+    if (mode === "updated_asc") {
+      return leftUpdatedAt - rightUpdatedAt;
+    }
+    return rightUpdatedAt - leftUpdatedAt;
+  });
+  return next;
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -486,6 +529,7 @@ export default function App() {
   const [queryResultSaving, setQueryResultSaving] = useState(false);
   const [wikiKeyword, setWikiKeyword] = useState("");
   const [wikiSearching, setWikiSearching] = useState(false);
+  const [wikiSortMode, setWikiSortMode] = useState<WikiSortMode>("updated_desc");
   const [wikiExpandedPaths, setWikiExpandedPaths] = useState<string[]>([]);
   const [wikiPageDetail, setWikiPageDetail] = useState<WikiPageDetail | null>(null);
   const [wikiPageCitations, setWikiPageCitations] = useState<WikiPageCitation[]>([]);
@@ -1132,9 +1176,10 @@ export default function App() {
     ? formatLintCheckedAt(wikiImportedAtDebugRaw)
     : "";
   const wikiHighlightKeywords = tokenizeWikiKeyword(wikiKeyword);
+  const sortedWikiPages = sortWikiPages(pages, wikiSortMode);
   const isActiveWikiDetailInList = Boolean(
     wikiActivePagePath
-    && pages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
+    && sortedWikiPages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
   );
 
   const renderWikiPreview = () => (
@@ -1683,7 +1728,9 @@ export default function App() {
               <section className="panel">
                 <div className="section-head">
                   <h2>Wiki 页面</h2>
-                  <span className="section-head__hint">{pages.length ? `最近 ${pages.length} 页` : "暂无页面"}</span>
+                  <span className="section-head__hint">
+                    {sortedWikiPages.length ? `${sortedWikiPages.length} 页 · ${wikiSortModeLabels[wikiSortMode]}` : "暂无页面"}
+                  </span>
                 </div>
                 <div className="dev-panel">
                   <div className="dev-panel__field">
@@ -1697,6 +1744,19 @@ export default function App() {
                       placeholder="按标题、摘要、路径搜索"
                       spellCheck={false}
                     />
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="wiki-sort-mode">排序</label>
+                    <select
+                      id="wiki-sort-mode"
+                      className="dev-panel__input"
+                      value={wikiSortMode}
+                      onChange={(event) => setWikiSortMode(event.target.value as WikiSortMode)}
+                    >
+                      <option value="updated_desc">{wikiSortModeLabels.updated_desc}</option>
+                      <option value="updated_asc">{wikiSortModeLabels.updated_asc}</option>
+                      <option value="title_asc">{wikiSortModeLabels.title_asc}</option>
+                    </select>
                   </div>
                   <div className="dev-panel__actions">
                     <button
@@ -1717,9 +1777,9 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {pages.length ? (
+                {sortedWikiPages.length ? (
                   <div className="ask-result__citations">
-                    {pages.map((page) => {
+                    {sortedWikiPages.map((page) => {
                       const isActiveCard = isSameWikiPagePath(page.path, wikiActivePagePath);
                       const isDetailForCard = Boolean(
                         wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
