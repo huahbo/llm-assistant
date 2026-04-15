@@ -17,6 +17,7 @@ import {
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
   parseLegacyWikiMetadataFromContent,
+  formatPdfIngestErrorMessage,
   readWikiSortModeFromStorage,
   resolveWikiImportedAtDebugValue,
   resolveNextActiveProvider,
@@ -755,6 +756,29 @@ describe("Wiki 编辑未保存判断", () => {
     expect(hasUnsavedWikiEditChanges(true, "A", "A")).toBe(false);
     expect(hasUnsavedWikiEditChanges(true, "A", "B")).toBe(true);
     expect(hasUnsavedWikiEditChanges(true, "A", null)).toBe(true);
+  });
+});
+
+describe("PDF 摄入错误文案映射", () => {
+  it("ToUnicode/CMap 错误映射为易懂提示并保留短原因", () => {
+    const result = formatPdfIngestErrorMessage(
+      "ToUnicode CMap error: Could not parse ToUnicodeCMap: Error!",
+    );
+    expect(result).toContain("PDF 字体映射解析失败");
+    expect(result).toContain("（原因：");
+  });
+
+  it("无文本或扫描件错误映射为 OCR 提示", () => {
+    const result = formatPdfIngestErrorMessage("PDF 文件未提取到任何文本内容，可能是扫描件或图片型 PDF。");
+    expect(result).toContain("可能是扫描件或图片型文档，建议先做 OCR");
+  });
+
+  it("未知错误仅附短片段而非整段直出", () => {
+    const raw = `底层异常:${"x".repeat(120)}`;
+    const result = formatPdfIngestErrorMessage(raw);
+    expect(result).toContain("PDF 摄入失败：读取 PDF 失败");
+    expect(result).toContain("...");
+    expect(result).not.toContain(raw);
   });
 });
 

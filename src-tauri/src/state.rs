@@ -2107,23 +2107,100 @@ fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
 
 fn extract_text_from_pdf(source_path: &Path) -> Result<String, String> {
     let document = lopdf::Document::load(source_path)
-        .map_err(|err| format!("读取 PDF 失败，文件内容可能不是有效 PDF：{err}"))?;
-    let page_numbers: Vec<u32> = document.get_pages().keys().copied().collect();
+        .map_err(|_| "读取 PDF 失败，文件内容可能不是有效 PDF".to_string())?;
+    let pages = document.get_pages();
+    let page_numbers: Vec<u32> = pages.keys().copied().collect();
 
     if page_numbers.is_empty() {
         return Err("PDF 不包含可读取页面".to_string());
     }
 
-    let text = document
-        .extract_text(&page_numbers)
-        .map_err(|err| format!("提取 PDF 文本失败：{err}"))?;
-    let normalized = text.replace('\u{0}', "").trim().to_string();
-
-    if normalized.is_empty() {
-        return Err("PDF 文本为空，可能是扫描件或图片型 PDF".to_string());
+    // 优先使用 lopdf 内置提取；失败时再走操作符降级解析。
+    if let Ok(text) = document.extract_text(&page_numbers) {
+        if let Some(normalized) = normalize_extracted_pdf_text(&text) {
+            return Ok(normalized);
+        }
     }
 
-    Ok(normalized)
+    if let Some(text) = extract_text_from_pdf_fallback_ops(&document, &pages) {
+        return Ok(text);
+    }
+
+    Err("提取 PDF 文本失败：未识别到可用文本，可能是扫描件或字体编码不兼容".to_string())
+}
+
+fn normalize_extracted_pdf_text(text: &str) -> Option<String> {
+    let normalized = text.replace('\u{0}', "").trim().to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn extract_text_from_pdf_fallback_ops(
+    document: &lopdf::Document,
+    pages: &std::collections::BTreeMap<u32, lopdf::ObjectId>,
+) -> Option<String> {
+    let mut all_pages_text = Vec::new();
+
+    for page_id in pages.values() {
+        let Ok(content_bytes) = document.get_page_content(*page_id) else {
+            continue;
+        };
+        let Ok(content) = lopdf::content::Content::decode(&content_bytes) else {
+            continue;
+        };
+        let page_text = extract_text_from_pdf_operations(&content.operations);
+        if let Some(normalized) = normalize_extracted_pdf_text(&page_text) {
+            all_pages_text.push(normalized);
+        }
+    }
+
+    if all_pages_text.is_empty() {
+        None
+    } else {
+        normalize_extracted_pdf_text(&all_pages_text.join("\n\n"))
+    }
+}
+
+fn extract_text_from_pdf_operations(operations: &[lopdf::content::Operation]) -> String {
+    let mut extracted = String::new();
+
+    for operation in operations {
+        match operation.operator.as_str() {
+            "Tj" | "'" => {
+                if let Some(value) = operation.operands.first() {
+                    append_pdf_text_object(value, &mut extracted);
+                    extracted.push('\n');
+                }
+            }
+            "\"" => {
+                if let Some(value) = operation.operands.last() {
+                    append_pdf_text_object(value, &mut extracted);
+                    extracted.push('\n');
+                }
+            }
+            "TJ" => {
+                if let Some(lopdf::Object::Array(items)) = operation.operands.first() {
+                    for item in items {
+                        append_pdf_text_object(item, &mut extracted);
+                    }
+                    extracted.push('\n');
+                }
+            }
+            "T*" => extracted.push('\n'),
+            _ => {}
+        }
+    }
+
+    extracted
+}
+
+fn append_pdf_text_object(value: &lopdf::Object, output: &mut String) {
+    if let lopdf::Object::String(bytes, _) = value {
+        output.push_str(&String::from_utf8_lossy(bytes));
+    }
 }
 
 /// 生成基于微秒时间戳的短唯一字符串，用于临时文件命名。
@@ -3309,6 +3386,43 @@ mod tests {
 
         let result = validate_pdf_source_path(&upper_pdf_path);
         assert!(result.is_ok(), "大写扩展名 .PDF 应通过校验");
+    }
+
+    #[test]
+    fn extract_text_from_pdf_operations_extracts_simple_text() {
+        let content = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("BT", vec![]),
+                lopdf::content::Operation::new(
+                    "Tj",
+                    vec![lopdf::Object::String(
+                        b"Hello PDF".to_vec(),
+                        lopdf::StringFormat::Literal,
+                    )],
+                ),
+                lopdf::content::Operation::new(
+                    "TJ",
+                    vec![lopdf::Object::Array(vec![
+                        lopdf::Object::String(
+                            b"Fallback ".to_vec(),
+                            lopdf::StringFormat::Literal,
+                        ),
+                        lopdf::Object::Integer(-120),
+                        lopdf::Object::String(
+                            b"Works".to_vec(),
+                            lopdf::StringFormat::Literal,
+                        ),
+                    ])],
+                ),
+                lopdf::content::Operation::new("ET", vec![]),
+            ],
+        };
+        let encoded = content.encode().expect("编码 PDF 操作失败");
+        let decoded = lopdf::content::Content::decode(&encoded).expect("解码 PDF 操作失败");
+
+        let extracted = extract_text_from_pdf_operations(&decoded.operations);
+        assert!(extracted.contains("Hello PDF"));
+        assert!(extracted.contains("Fallback Works"));
     }
 
     #[tokio::test]

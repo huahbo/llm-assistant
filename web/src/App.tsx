@@ -359,6 +359,38 @@ export const shouldAutoDismissStatusMessage = (message: string) => {
   return true;
 };
 
+export const formatPdfIngestErrorMessage = (error: unknown) => {
+  const rawMessage = error instanceof Error ? error.message : String(error ?? "");
+  const compactRaw = rawMessage.replace(/\s+/g, " ").trim();
+  const normalized = compactRaw.toLowerCase();
+
+  let friendlyReason = "读取 PDF 失败，请确认文件可访问且内容有效。";
+  if (normalized.includes("tounicode") || normalized.includes("cmap")) {
+    friendlyReason = "PDF 字体映射解析失败，建议先用 PDF 工具另存为新文件后重试。";
+  } else if (
+    normalized.includes("未提取到任何文本")
+    || normalized.includes("未提取到可用文本")
+    || normalized.includes("empty text")
+    || normalized.includes("no text")
+    || normalized.includes("扫描件")
+  ) {
+    friendlyReason = "PDF 中没有可提取文本，可能是扫描件或图片型文档，建议先做 OCR。";
+  } else if (normalized.includes("is not a pdf") || normalized.includes("不是 pdf")) {
+    friendlyReason = "文件类型不是有效的 PDF，请检查路径或文件格式。";
+  }
+
+  if (!compactRaw) {
+    return `PDF 摄入失败：${friendlyReason}`;
+  }
+
+  // 原始原因仅保留短片段，避免整段底层错误直接透出。
+  const rawSnippetMaxLength = 60;
+  const rawSnippet = compactRaw.length > rawSnippetMaxLength
+    ? `${compactRaw.slice(0, rawSnippetMaxLength)}...`
+    : compactRaw;
+  return `PDF 摄入失败：${friendlyReason}（原因：${rawSnippet}）`;
+};
+
 // 编辑态下内容与原文不一致时，视为存在未保存改动。
 export const hasUnsavedWikiEditChanges = (
   wikiEditMode: boolean,
@@ -973,8 +1005,7 @@ export default function App() {
       setStatusMessage(`${result.message || `已处理 ${trimmedPath}`}${entitiesMsg}${updatedMsg}`);
     } catch (error) {
       console.error(error);
-      const message = error instanceof Error ? error.message : String(error);
-      setStatusMessage(`PDF 摄入失败：${message}`);
+      setStatusMessage(formatPdfIngestErrorMessage(error));
     } finally {
       if (unlisten) {
         unlisten();

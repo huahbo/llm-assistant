@@ -223,6 +223,7 @@
 | P7 后端 | PDF 摄入命令 `ingest_pdf`（提取文本后复用 ingest 流程） | ✅ `src-tauri/src/state.rs` + `commands.rs` + `main.rs`（73 cargo 测试） |
 | P8 前端 | Inbox 增加 PDF 摄入入口 + 编辑器未保存离开提示 | ✅ `web/src/App.tsx` + `tauri-client.ts`（90 测试） |
 | P8 后端 | PDF 摄入错误可读性增强 + `.PDF`/伪 PDF 回归测试 | ✅ `src-tauri/src/state.rs`（75 cargo 测试） |
+| P8 修复 | PDF `ToUnicode CMap` 失败回退提取 + 前端错误映射 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（93/76 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
@@ -251,14 +252,14 @@ web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
   tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage/ingestPdf）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（90 个）
+  app-utils.test.ts # 前端单元测试（93 个）
 ```
 
 ### 18.4 验证基线
 
 - `cargo check`（src-tauri/）：**通过（2026-04-15，2 个 dead_code 警告）**
-- `cargo test`（src-tauri/）：**75 通过，0 失败（2026-04-15）**
-- `npm run test -- --run`（web/）：**90 通过，0 失败（2026-04-15）**
+- `cargo test`（src-tauri/）：**76 通过，0 失败（2026-04-15）**
+- `npm run test -- --run`（web/）：**93 通过，0 失败（2026-04-15）**
 - `npm run typecheck`（web/）：**零错误（2026-04-15）**
 - `npm run build`（web/）：**通过（2026-04-15）**
 
