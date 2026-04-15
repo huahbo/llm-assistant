@@ -213,13 +213,15 @@
 | P3-B | Cloud Provider（OpenAI-compatible + Hybrid 路由 + Settings UI） | ✅ `src-tauri/src/llm/openai.rs` + `get_llm_config/set_llm_config` |
 | P3-C | Ingest 实体写入 frontmatter（`title/source/raw/imported_at/entities`） | ✅ `vault.rs::build_wiki_frontmatter` + `state.rs::ingest_markdown` |
 | P4-A | Frontmatter 读取与 UI 展示（详情页元数据区） | ✅ `state.rs::wiki_page_detail` + `web/src/App.tsx` |
+| P4-B | 摘要折叠按行数 + 调试面板独立化 + 文档对齐 | ✅ `web/src/App.tsx` + `styles.css` + `app-utils.test.ts` |
+| P5-A | Lint 分组折叠（按路径） + Query 保存后自动跳转 Wiki | ✅ `web/src/App.tsx` + `styles.css` + `app-utils.test.ts` |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P4-B：前端信息架构收尾与一致性清理**
-- 对 Wiki 详情区新增 frontmatter 元数据块做交互收尾（可读性、复制与折叠策略）。
-- 清理 `AGENTS.md` 与实施记录中历史描述不一致项（如 P4-B 状态、测试条目数）。
-- 约束：仅做展示层/文档一致性优化，不改变既有后端命令契约。
+**P5-B：功能深化（并行任务）**
+- **前端子任务**：Lint 补丁建议 UI 增强（关联 Wiki 跳转、批量预览改进）。
+- **后端子任务**：Ingest 支持 PDF / URL 输入（需后端命令扩展）。
+- 约束：前端子任务不依赖后端变更，可并行开发。
 
 ### 18.3 当前代码快照
 
@@ -247,9 +249,9 @@ web/src/
 ### 18.4 验证基线
 
 - `cargo test`（src-tauri/）：**最近一次已知 61 通过，0 失败（2026-04-13）**
-- `npm run test`（web/）：**77 通过，0 失败（2026-04-15）**
+- `npm run test`（web/）：**77 通过，0 失败（2026-04-13）**
 - `cargo check`：**当前 WSL 环境缺少 `cargo`（需在 Windows PowerShell 复核）**
-- TypeScript 类型检查：**零错误（2026-04-15）**
+- TypeScript 类型检查：**零错误（2026-04-13）**
 
 ### 18.5 关键约束提醒
 
