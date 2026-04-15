@@ -215,13 +215,17 @@
 | P4-A | Frontmatter 读取与 UI 展示（详情页元数据区） | ✅ `state.rs::wiki_page_detail` + `web/src/App.tsx` |
 | P4-B | 摘要折叠按行数 + 调试面板独立化 + 文档对齐 | ✅ `web/src/App.tsx` + `styles.css` + `app-utils.test.ts` |
 | P5-A | Lint 分组折叠（按路径） + Query 保存后自动跳转 Wiki | ✅ `web/src/App.tsx` + `styles.css` + `app-utils.test.ts` |
+| P5-B 前端 | Lint 补丁建议分组折叠 + "打开页面"按钮 | ✅ `web/src/App.tsx`（85→85 测试） |
+| P5-B 后端 | `ingest_url` 命令（reqwest 拉取 + 复用 ingest） | ✅ `src-tauri/src/state.rs` + `commands.rs`（68 测试） |
+| P6 前端 | URL 摄入 UI + `ingestUrl` tauri-client 封装 | ✅ `web/src/tauri-client.ts` + `App.tsx`（86 测试） |
+| P6 后端 | `save_wiki_page` 命令（写回 vault + 更新 FTS） | ✅ `vault.rs` + `state.rs` + `commands.rs`（70 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P5-B：功能深化（并行任务）**
-- **前端子任务**：Lint 补丁建议 UI 增强（关联 Wiki 跳转、批量预览改进）。
-- **后端子任务**：Ingest 支持 PDF / URL 输入（需后端命令扩展）。
-- 约束：前端子任务不依赖后端变更，可并行开发。
+**P7：Wiki 编辑器 + PDF 摄入（并行）**
+- **前端子任务**：Wiki 内联编辑器 UI（调用 `save_wiki_page`，显示在详情页，支持编辑/保存/取消）。
+- **后端子任务**：Ingest 支持 PDF 输入（需引入 `pdf-extract` 或等效 crate 读取 PDF 文本）。
+- 约束：前端编辑器依赖 `save_wiki_page` 命令（已完成），可立即开展。
 
 ### 18.3 当前代码快照
 
