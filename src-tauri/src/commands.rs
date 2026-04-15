@@ -147,6 +147,16 @@ pub async fn ingest_markdown(
         .await
 }
 
+/// 导入任意支持格式文件（按扩展名自动路由）。
+#[tauri::command]
+pub async fn ingest_file(
+    source_path: String,
+    state: State<'_, AppState>,
+) -> Result<IngestResult, String> {
+    eprintln!("[ingest_file] called with source_path={}", source_path);
+    state.ingest_file_impl(&source_path).await
+}
+
 /// 导入 PDF（提取文本后复用 Markdown ingest 流程）。
 #[tauri::command]
 pub async fn ingest_pdf(

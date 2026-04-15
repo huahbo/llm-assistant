@@ -277,6 +277,12 @@ export const createIngestPdfArgs = (sourcePath: string) => ({
   source_path: sourcePath,
 });
 
+/** 构造 ingest_file 命令参数（用于测试） */
+export const createIngestFileArgs = (sourcePath: string) => ({
+  sourcePath,
+  source_path: sourcePath,
+});
+
 /** 构造 ingest_url 命令参数（用于测试） */
 export const createIngestUrlArgs = (url: string) => ({ url });
 
@@ -711,6 +717,19 @@ export async function ingestPdf(sourcePath: string): Promise<IngestResult | null
   return withTimeout(
     invoke<IngestResult>("ingest_pdf", {
       ...createIngestPdfArgs(sourcePath),
+    }),
+  );
+}
+
+export async function ingestFile(sourcePath: string): Promise<IngestResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<IngestResult>("ingest_file", {
+      ...createIngestFileArgs(sourcePath),
     }),
   );
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashSet},
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -695,6 +696,56 @@ impl AppState {
         Ok(result)
     }
 
+    /// 导入任意支持格式文件（按扩展名自动路由）。
+    pub async fn ingest_file_impl(
+        &self,
+        source_path: &str,
+    ) -> Result<crate::models::IngestResult, String> {
+        let source_path_buf = PathBuf::from(source_path);
+        validate_ingest_source_path(&source_path_buf)?;
+
+        let extension = source_path_buf
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        match extension.as_str() {
+            "md" | "markdown" => self.ingest_markdown(source_path_buf).await,
+            "pdf" => self.ingest_pdf_impl(source_path).await,
+            "txt" => {
+                let content_bytes = fs::read(&source_path_buf)
+                    .map_err(|err| format!("读取文本文件失败：{}", err))?;
+                let content = String::from_utf8_lossy(&content_bytes).to_string();
+                self.ingest_text_via_temp_markdown(&source_path_buf, content, "txt")
+                    .await
+            }
+            "docx" => {
+                let content = extract_text_from_docx(&source_path_buf)?;
+                self.ingest_text_via_temp_markdown(&source_path_buf, content, "docx")
+                    .await
+            }
+            "pptx" => {
+                let content = extract_text_from_pptx(&source_path_buf)?;
+                self.ingest_text_via_temp_markdown(&source_path_buf, content, "pptx")
+                    .await
+            }
+            ext if is_supported_image_extension(ext) => {
+                let content = extract_text_from_image_with_tesseract(&source_path_buf)?;
+                self.ingest_text_via_temp_markdown(&source_path_buf, content, "ocr")
+                    .await
+            }
+            _ => Err(format!(
+                "不支持的文件扩展名：{}。当前支持 md/markdown/pdf/docx/pptx/txt/png/jpg/jpeg/bmp/webp/tif/tiff/gif",
+                if extension.is_empty() {
+                    "(无扩展名)"
+                } else {
+                    extension.as_str()
+                }
+            )),
+        }
+    }
+
     /// 读取 PDF 文本后复用现有 Markdown ingest 流程。
     pub async fn ingest_pdf_impl(
         &self,
@@ -704,8 +755,28 @@ impl AppState {
         validate_pdf_source_path(&source_path_buf)?;
 
         let extracted_text = extract_text_from_pdf(&source_path_buf)?;
-        let tmp_path = std::env::temp_dir().join(format!("llm_wiki_pdf_{}.md", uuid_v4_short()));
-        tokio::fs::write(&tmp_path, extracted_text)
+        self.ingest_text_via_temp_markdown(&source_path_buf, extracted_text, "pdf")
+            .await
+    }
+
+    /// 将提取后的纯文本写入临时 Markdown，再复用 ingest_markdown。
+    async fn ingest_text_via_temp_markdown(
+        &self,
+        source_path: &Path,
+        content: String,
+        route_tag: &str,
+    ) -> Result<crate::models::IngestResult, String> {
+        let normalized = content.replace('\u{0}', "").trim().to_string();
+        if normalized.is_empty() {
+            return Err(format!(
+                "{} 提取结果为空，请确认文件内容可读取",
+                route_tag.to_uppercase()
+            ));
+        }
+
+        let tmp_path =
+            std::env::temp_dir().join(format!("llm_wiki_{}_{}.md", route_tag, uuid_v4_short()));
+        tokio::fs::write(&tmp_path, normalized)
             .await
             .map_err(|e| format!("写入临时 Markdown 失败：{e}"))?;
 
@@ -715,9 +786,10 @@ impl AppState {
         let _ = tokio::fs::remove_file(&tmp_path).await;
 
         if let Ok(inner) = &mut result {
-            inner.source_path = source_path_buf.to_string_lossy().to_string();
+            let source_display = source_path.to_string_lossy().to_string();
             let tmp_display = tmp_path.to_string_lossy().to_string();
-            inner.message = inner.message.replace(&tmp_display, source_path);
+            inner.source_path = source_display.clone();
+            inner.message = inner.message.replace(&tmp_display, &source_display);
         }
 
         result
@@ -2078,6 +2150,25 @@ Wiki 页面：\n{}",
     }
 }
 
+fn validate_ingest_source_path(source_path: &Path) -> Result<(), String> {
+    if !source_path.exists() {
+        return Err(format!("文件不存在：{}", source_path.to_string_lossy()));
+    }
+
+    if !source_path.is_file() {
+        return Err(format!("路径不是文件：{}", source_path.to_string_lossy()));
+    }
+
+    Ok(())
+}
+
+fn is_supported_image_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "png" | "jpg" | "jpeg" | "bmp" | "webp" | "tif" | "tiff" | "gif"
+    )
+}
+
 fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
     if !source_path.exists() {
         return Err(format!("PDF 文件不存在：{}", source_path.to_string_lossy()));
@@ -2103,6 +2194,208 @@ fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn extract_text_from_docx(source_path: &Path) -> Result<String, String> {
+    let mut archive = open_zip_archive(source_path, "DOCX")?;
+    let xml = read_zip_entry_utf8_lossy(&mut archive, "word/document.xml", "DOCX")?
+        .ok_or_else(|| "DOCX 缺少 word/document.xml，无法提取正文".to_string())?;
+
+    let text = extract_xml_text_by_tag(&xml, "w:t");
+    normalize_extracted_doc_text(text, "DOCX")
+}
+
+fn extract_text_from_pptx(source_path: &Path) -> Result<String, String> {
+    let mut archive = open_zip_archive(source_path, "PPTX")?;
+    let mut slide_entries: Vec<(String, String)> = Vec::new();
+
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|err| format!("读取 PPTX 条目失败：{}", err))?;
+        let name = file.name().to_string();
+        if !is_pptx_slide_xml_entry(&name) {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|err| format!("读取 PPTX 页面内容失败：{}", err))?;
+        slide_entries.push((name, String::from_utf8_lossy(&bytes).to_string()));
+    }
+
+    if slide_entries.is_empty() {
+        return Err("PPTX 未检测到可读取幻灯片页面".to_string());
+    }
+
+    slide_entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut pages = Vec::new();
+    for (_, xml) in slide_entries {
+        let text = extract_xml_text_by_tag(&xml, "a:t");
+        if !text.is_empty() {
+            pages.push(text);
+        }
+    }
+
+    normalize_extracted_doc_text(pages.join("\n\n"), "PPTX")
+}
+
+fn extract_text_from_image_with_tesseract(source_path: &Path) -> Result<String, String> {
+    let output = run_tesseract_ocr_command(source_path)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let short_reason = shorten_error_snippet(stderr.trim(), 80);
+        if short_reason.is_empty() {
+            return Err("图片 OCR 失败，请确认图片可读且已安装中文/英文语言包".to_string());
+        }
+        return Err(format!("图片 OCR 失败：{}", short_reason));
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    normalize_extracted_doc_text(text, "图片 OCR")
+}
+
+fn run_tesseract_ocr_command(source_path: &Path) -> Result<std::process::Output, String> {
+    std::process::Command::new("tesseract")
+        .arg(source_path)
+        .arg("stdout")
+        .arg("-l")
+        .arg("chi_sim+eng")
+        .output()
+        .map_err(|err| format_tesseract_spawn_error(&err))
+}
+
+fn format_tesseract_spawn_error(err: &io::Error) -> String {
+    if err.kind() == io::ErrorKind::NotFound {
+        "未检测到 tesseract 命令，请先安装 Tesseract OCR 并加入 PATH".to_string()
+    } else {
+        format!("调用 tesseract 失败：{}", err)
+    }
+}
+
+fn normalize_extracted_doc_text(text: String, source_type: &str) -> Result<String, String> {
+    let normalized = text.replace('\u{0}', "").trim().to_string();
+    if normalized.is_empty() {
+        Err(format!(
+            "{} 提取结果为空，可能是扫描件、图片型内容或文档受保护",
+            source_type
+        ))
+    } else {
+        Ok(normalized)
+    }
+}
+
+fn open_zip_archive(
+    source_path: &Path,
+    source_type: &str,
+) -> Result<zip::ZipArchive<fs::File>, String> {
+    let file = fs::File::open(source_path)
+        .map_err(|err| format!("打开 {} 文件失败：{}", source_type, err))?;
+    zip::ZipArchive::new(file).map_err(|err| format!("解析 {} 压缩结构失败：{}", source_type, err))
+}
+
+fn read_zip_entry_utf8_lossy<R: io::Read + io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    entry_name: &str,
+    source_type: &str,
+) -> Result<Option<String>, String> {
+    match archive.by_name(entry_name) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|err| {
+                format!("读取 {} 条目失败（{}）：{}", source_type, entry_name, err)
+            })?;
+            Ok(Some(String::from_utf8_lossy(&bytes).to_string()))
+        }
+        Err(zip::result::ZipError::FileNotFound) => Ok(None),
+        Err(err) => Err(format!(
+            "读取 {} 条目失败（{}）：{}",
+            source_type, entry_name, err
+        )),
+    }
+}
+
+fn is_pptx_slide_xml_entry(entry_name: &str) -> bool {
+    entry_name.starts_with("ppt/slides/slide") && entry_name.ends_with(".xml")
+}
+
+fn extract_xml_text_by_tag(xml: &str, tag_name: &str) -> String {
+    let open_tag = format!("<{}", tag_name);
+    let close_tag = format!("</{}>", tag_name);
+    let mut values = Vec::new();
+    let mut offset = 0usize;
+
+    while let Some(start_rel) = xml[offset..].find(&open_tag) {
+        let start_idx = offset + start_rel;
+        let Some(open_end_rel) = xml[start_idx..].find('>') else {
+            break;
+        };
+        let content_start = start_idx + open_end_rel + 1;
+        let Some(close_rel) = xml[content_start..].find(&close_tag) else {
+            break;
+        };
+        let content_end = content_start + close_rel;
+        let decoded = decode_xml_entities(&xml[content_start..content_end]);
+        let trimmed = decoded.trim();
+        if !trimmed.is_empty() {
+            values.push(trimmed.to_string());
+        }
+        offset = content_end + close_tag.len();
+    }
+
+    values.join("\n")
+}
+
+fn decode_xml_entities(raw_text: &str) -> String {
+    let chars: Vec<char> = raw_text.chars().collect();
+    let mut decoded = String::new();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] == '&' {
+            let mut end = index + 1;
+            while end < chars.len() && chars[end] != ';' {
+                end += 1;
+            }
+
+            if end < chars.len() && chars[end] == ';' {
+                let entity: String = chars[index + 1..end].iter().collect();
+                if let Some(value) = decode_xml_entity(&entity) {
+                    decoded.push_str(&value);
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        decoded.push(chars[index]);
+        index += 1;
+    }
+
+    decoded
+}
+
+fn decode_xml_entity(entity: &str) -> Option<String> {
+    let decoded = match entity {
+        "amp" => "&".to_string(),
+        "lt" => "<".to_string(),
+        "gt" => ">".to_string(),
+        "quot" => "\"".to_string(),
+        "apos" => "'".to_string(),
+        _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+            let code = u32::from_str_radix(&entity[2..], 16).ok()?;
+            char::from_u32(code)?.to_string()
+        }
+        _ if entity.starts_with('#') => {
+            let code: u32 = entity[1..].parse().ok()?;
+            char::from_u32(code)?.to_string()
+        }
+        _ => return None,
+    };
+    Some(decoded)
+}
+
+fn shorten_error_snippet(message: &str, max_chars: usize) -> String {
+    message.chars().take(max_chars).collect()
 }
 
 fn extract_text_from_pdf(source_path: &Path) -> Result<String, String> {
@@ -3388,6 +3681,62 @@ mod tests {
         assert!(result.is_ok(), "大写扩展名 .PDF 应通过校验");
     }
 
+    #[tokio::test]
+    async fn ingest_file_impl_rejects_unsupported_extension() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-file-unsupported");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let unsupported = vault_dir.join("sample.xyz");
+        fs::write(&unsupported, "unsupported").expect("写入测试文件失败");
+
+        let err = state
+            .ingest_file_impl(unsupported.to_string_lossy().as_ref())
+            .await
+            .expect_err("不支持扩展名应返回错误");
+        assert!(err.contains("不支持的文件扩展名"));
+        assert!(err.contains("md/markdown/pdf/docx/pptx/txt"));
+    }
+
+    #[test]
+    fn extract_xml_text_by_tag_reads_docx_minimal_sample() {
+        let xml = r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>你好&amp;Rust</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">  Wiki  </w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"#;
+
+        let text = extract_xml_text_by_tag(xml, "w:t");
+        assert!(text.contains("你好&Rust"));
+        assert!(text.contains("Wiki"));
+    }
+
+    #[test]
+    fn extract_xml_text_by_tag_reads_pptx_minimal_sample() {
+        let xml = r#"
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <a:t>Hello</a:t>
+    <a:t>Slide&#32;1</a:t>
+  </p:cSld>
+</p:sld>
+"#;
+
+        let text = extract_xml_text_by_tag(xml, "a:t");
+        assert!(text.contains("Hello"));
+        assert!(text.contains("Slide 1"));
+    }
+
+    #[test]
+    fn format_tesseract_spawn_error_returns_readable_message_when_missing() {
+        let error = io::Error::new(io::ErrorKind::NotFound, "not found");
+        let message = format_tesseract_spawn_error(&error);
+        assert!(message.contains("未检测到 tesseract"));
+        assert!(message.contains("PATH"));
+    }
+
     #[test]
     fn extract_text_from_pdf_operations_extracts_simple_text() {
         let content = lopdf::content::Content {
@@ -3403,15 +3752,9 @@ mod tests {
                 lopdf::content::Operation::new(
                     "TJ",
                     vec![lopdf::Object::Array(vec![
-                        lopdf::Object::String(
-                            b"Fallback ".to_vec(),
-                            lopdf::StringFormat::Literal,
-                        ),
+                        lopdf::Object::String(b"Fallback ".to_vec(), lopdf::StringFormat::Literal),
                         lopdf::Object::Integer(-120),
-                        lopdf::Object::String(
-                            b"Works".to_vec(),
-                            lopdf::StringFormat::Literal,
-                        ),
+                        lopdf::Object::String(b"Works".to_vec(), lopdf::StringFormat::Literal),
                     ])],
                 ),
                 lopdf::content::Operation::new("ET", vec![]),

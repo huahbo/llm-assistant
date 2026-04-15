@@ -224,13 +224,14 @@
 | P8 前端 | Inbox 增加 PDF 摄入入口 + 编辑器未保存离开提示 | ✅ `web/src/App.tsx` + `tauri-client.ts`（90 测试） |
 | P8 后端 | PDF 摄入错误可读性增强 + `.PDF`/伪 PDF 回归测试 | ✅ `src-tauri/src/state.rs`（75 cargo 测试） |
 | P8 修复 | PDF `ToUnicode CMap` 失败回退提取 + 前端错误映射 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（93/76 测试） |
+| P9-A | 统一 `ingest_file` 路由 + 通用文件摄入入口（含 docx/pptx/txt/图片 OCR） | ✅ `state.rs` + `commands.rs` + `main.rs` + `App.tsx`（95/80 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P9：多格式摄入扩展设计与实现（Word/PPT/图片）**
-- **前端子任务**：摄入入口升级为“按文件类型路由”的统一表单（md/pdf/docx/pptx/img）。
-- **后端子任务**：新增多格式提取适配层（文档解析 + OCR + 错误分层），统一复用 ingest 主流程。
-- **测试任务**：为每类格式补最小可重复回归样例和失败场景用例。
+**P9-B：多格式摄入精度与可用性增强**
+- **前端子任务**：增加 OCR 依赖检测提示（Tesseract 未安装时给安装指引）与格式说明文档入口。
+- **后端子任务**：提升 docx/pptx 提取质量（段落/标题/表格与幻灯片顺序优化），并补充异常文件容错。
+- **测试任务**：补充真实样本回归（含中文文档、复杂版式、扫描图像 OCR）。
 
 ### 18.3 当前代码快照
 
@@ -241,25 +242,25 @@ src-tauri/src/
     provider.rs     # LlmProvider trait, LlmError
     ollama.rs       # OllamaProvider (health_check, complete, summarize)
     openai.rs       # OpenAiProvider (OpenAI-compatible Chat Completions API, Hybrid 模式)
-  commands.rs       # 所有 Tauri 命令（含 get_llm_config/set_llm_config、ingest_pdf、save_wiki_page）
+  commands.rs       # 所有 Tauri 命令（含 get_llm_config/set_llm_config、ingest_pdf、ingest_file、save_wiki_page）
   db.rs             # SQLite 操作
   main.rs           # Tauri app 入口（含 setup hook 注入 AppHandle）
   models.rs         # 全部数据模型（AppConfig 含 cloud_* 字段并兼容 openai_* 旧字段，LlmProviderConfig）
-  state.rs          # AppState 核心逻辑（含 provider 路由、get_llm_config/set_llm_config）
+  state.rs          # AppState 核心逻辑（含 provider 路由、get_llm_config/set_llm_config、多格式 ingest_file 路由）
   vault.rs          # 文件系统操作（含 append_see_also_link）
 
 web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
-  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage/ingestPdf）
+  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage/ingestPdf/ingestFile）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（93 个）
+  app-utils.test.ts # 前端单元测试（95 个）
 ```
 
 ### 18.4 验证基线
 
 - `cargo check`（src-tauri/）：**通过（2026-04-15，2 个 dead_code 警告）**
-- `cargo test`（src-tauri/）：**76 通过，0 失败（2026-04-15）**
-- `npm run test -- --run`（web/）：**93 通过，0 失败（2026-04-15）**
+- `cargo test`（src-tauri/）：**80 通过，0 失败（2026-04-15）**
+- `npm run test -- --run`（web/）：**95 通过，0 失败（2026-04-15）**
 - `npm run typecheck`（web/）：**零错误（2026-04-15）**
 - `npm run build`（web/）：**通过（2026-04-15）**
 

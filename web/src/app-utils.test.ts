@@ -29,6 +29,7 @@ import {
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
+  createIngestFileArgs,
   createIngestMarkdownArgs,
   createIngestPdfArgs,
   createIngestUrlArgs,
@@ -47,6 +48,7 @@ import {
   createVaultInitArgs,
   formatLlmStatusSummary,
   isTauriRuntime,
+  ingestFile,
   ingestPdf,
   applyLintPatch,
   applyLintPatchesBatch,
@@ -618,10 +620,23 @@ describe("Tauri 运行时与参数映射", () => {
     });
   });
 
+  it("createIngestFileArgs 生成正确参数", () => {
+    expect(createIngestFileArgs("E:\\llm-wiki\\docs\\sample.docx")).toEqual({
+      sourcePath: "E:\\llm-wiki\\docs\\sample.docx",
+      source_path: "E:\\llm-wiki\\docs\\sample.docx",
+    });
+  });
+
   it("浏览器预览模式下 ingestPdf 直接回退为 null", async () => {
     Reflect.deleteProperty(globalThis, "window");
 
     await expect(ingestPdf("E:\\llm-wiki\\docs\\sample.pdf")).resolves.toBeNull();
+  });
+
+  it("浏览器预览模式下 ingestFile 直接回退为 null", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+
+    await expect(ingestFile("E:\\llm-wiki\\docs\\sample.docx")).resolves.toBeNull();
   });
 
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {

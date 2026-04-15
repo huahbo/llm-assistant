@@ -12,6 +12,7 @@ import {
   fetchWikiPageCitations,
   initVault,
   ingestMarkdown,
+  ingestFile,
   ingestPdf,
   ingestUrl,
   isTauriRuntime,
@@ -67,6 +68,7 @@ import type {
 const defaultVaultPath = "vault";
 const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultIngestPdfPath = "E:\\llm-wiki\\test.pdf";
+const defaultIngestFilePath = "E:\\llm-wiki\\test.docx";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
@@ -583,7 +585,7 @@ const modules: ModuleItem[] = [
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
 ];
 
-type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_url";
+type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";
 
 type LoadResult = {
   overview: AppOverview | null;
@@ -642,6 +644,7 @@ export default function App() {
   const [vaultPath, setVaultPath] = useState(defaultVaultPath);
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
   const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
+  const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
   // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
   const [ingestUrlInput, setIngestUrlInput] = useState("");
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
@@ -1006,6 +1009,61 @@ export default function App() {
     } catch (error) {
       console.error(error);
       setStatusMessage(formatPdfIngestErrorMessage(error));
+    } finally {
+      if (unlisten) {
+        unlisten();
+      }
+      setDevAction(null);
+    }
+  };
+
+  const handleFileIngest = async () => {
+    setStatusMessage("收到通用文件摄入请求，正在调用后端...");
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法执行通用文件摄入。");
+      return;
+    }
+
+    const trimmedPath = ingestFilePath.trim();
+    if (!trimmedPath) {
+      setStatusMessage("请输入要摄入的文件路径（支持 md/pdf/docx/pptx/txt/图片）。");
+      return;
+    }
+
+    setDevAction("ingest_file");
+    setStatusMessage("摄入中...");
+    let unlisten: (() => void) | null = null;
+
+    try {
+      // 进度订阅失败不应阻塞主流程，避免按钮状态无法复位。
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行通用文件摄入流程。", error);
+      }
+
+      const result = await ingestFile(trimmedPath);
+      if (!result) {
+        setStatusMessage("当前环境不支持通用文件摄入。");
+        return;
+      }
+
+      await refreshAppData();
+      const entitiesMsg =
+        result.entities && result.entities.length > 0
+          ? `\n提取实体：${result.entities.join("、")}`
+          : "";
+      const updatedMsg =
+        result.updated_pages && result.updated_pages.length > 0
+          ? `\n更新相关页面：${result.updated_pages.length} 个`
+          : "";
+      setStatusMessage(`${result.message || `已处理 ${trimmedPath}`}${entitiesMsg}${updatedMsg}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`通用文件摄入失败：${message}`);
     } finally {
       if (unlisten) {
         unlisten();
@@ -2147,6 +2205,30 @@ export default function App() {
                       disabled={!isTauriRuntime() || devAction !== null}
                     >
                       {devAction === "ingest_pdf" ? "摄入中..." : "PDF 摄入"}
+                    </button>
+                  </div>
+                  <div className="dev-panel__field">
+                    <label className="dev-panel__label" htmlFor="ingest-file-path">
+                      通用文件摄入
+                    </label>
+                    <input
+                      id="ingest-file-path"
+                      className="dev-panel__input"
+                      type="text"
+                      value={ingestFilePath}
+                      onChange={(event) => setIngestFilePath(event.target.value)}
+                      placeholder={defaultIngestFilePath}
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="dev-panel__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => void handleFileIngest()}
+                      disabled={!isTauriRuntime() || devAction !== null}
+                    >
+                      {devAction === "ingest_file" ? "摄入中..." : "通用文件摄入"}
                     </button>
                   </div>
                   <p className="dev-panel__hint">
