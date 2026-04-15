@@ -7,10 +7,13 @@ import {
   cloudProviderPresets,
   formatQueryAnswerStrategyLabel,
   formatQuerySearchStrategyLabel,
+  parseLegacyImportedAtFromContent,
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
   parseLegacyWikiMetadataFromContent,
+  resolveWikiImportedAtDebugValue,
   resolveNextActiveProvider,
+  shouldAutoDismissStatusMessage,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -91,6 +94,15 @@ describe("Wiki frontmatter 展示构建", () => {
     });
   });
 
+  it("从旧格式元数据段落提取 imported_at", () => {
+    expect(
+      parseLegacyImportedAtFromContent(`
+- Source: \`E:\\llm-wiki\\test-llm.md\`
+- Imported at: 1775811471352
+`),
+    ).toBe("1775811471352");
+  });
+
   it("过滤空字段并统计实体", () => {
     const result = buildWikiFrontmatterDisplay({
       title: "Page A",
@@ -114,6 +126,34 @@ describe("Wiki frontmatter 展示构建", () => {
     expect(result.entities).toEqual(["Rust", "SQLite"]);
     expect(result.totalCount).toBe(3);
     expect(result.hasMeta).toBe(true);
+  });
+
+  it("调试信息优先取 frontmatter 的 imported_at", () => {
+    expect(
+      resolveWikiImportedAtDebugValue({
+        title: "Page A",
+        path: "wiki/a.md",
+        display_path: "wiki/a.md",
+        content: "- Imported at: 111",
+        updated_at: "1",
+        frontmatter: {
+          imported_at: "222",
+        },
+      }),
+    ).toBe("222");
+  });
+
+  it("无 frontmatter 时调试信息回退旧格式 imported_at", () => {
+    expect(
+      resolveWikiImportedAtDebugValue({
+        title: "Legacy Page",
+        path: "wiki/legacy.md",
+        display_path: "wiki/legacy.md",
+        content: "- Imported at: 1775811471352",
+        updated_at: "1",
+        frontmatter: null,
+      }),
+    ).toBe("1775811471352");
   });
 
   it("在缺少 YAML frontmatter 时回退解析旧格式元数据并可展示", () => {
@@ -177,6 +217,22 @@ describe("Wiki 路径比较", () => {
 
   it("空路径不视为同一路径", () => {
     expect(isSameWikiPagePath("", "")).toBe(false);
+  });
+});
+
+describe("状态提示自动收起策略", () => {
+  it("成功类消息可自动收起", () => {
+    expect(shouldAutoDismissStatusMessage("已打开页面：ingest-1")).toBe(true);
+  });
+
+  it("失败/错误类消息不自动收起", () => {
+    expect(shouldAutoDismissStatusMessage("读取页面失败：xxx")).toBe(false);
+    expect(shouldAutoDismissStatusMessage("Error: xxx")).toBe(false);
+  });
+
+  it("进行中消息不自动收起", () => {
+    expect(shouldAutoDismissStatusMessage("查询中...")).toBe(false);
+    expect(shouldAutoDismissStatusMessage("正在处理中")).toBe(false);
   });
 });
 

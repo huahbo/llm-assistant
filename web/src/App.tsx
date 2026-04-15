@@ -249,6 +249,32 @@ export const parseLegacyWikiMetadataFromContent = (content: string | null | unde
   return result;
 };
 
+export const parseLegacyImportedAtFromContent = (content: string | null | undefined) => {
+  const importedAtPattern = /^-\s*imported\s+at:\s*(.+)$/i;
+  const stripMarkdownCode = (value: string) => value.trim().replace(/^`/, "").replace(/`$/, "");
+
+  for (const line of (content ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const importedMatched = trimmed.match(importedAtPattern);
+    if (importedMatched) {
+      return stripMarkdownCode(importedMatched[1] ?? "");
+    }
+  }
+
+  return "";
+};
+
+export const resolveWikiImportedAtDebugValue = (detail: WikiPageDetail | null | undefined) => {
+  const frontmatterValue = detail?.frontmatter?.imported_at?.trim() ?? "";
+  if (frontmatterValue) {
+    return frontmatterValue;
+  }
+  return parseLegacyImportedAtFromContent(detail?.content);
+};
+
 export const buildWikiFrontmatterDisplay = (detail: WikiPageDetail | null | undefined) => {
   const frontmatter = detail?.frontmatter ?? null;
   const legacyMetadata = parseLegacyWikiMetadataFromContent(detail?.content);
@@ -301,6 +327,25 @@ export const isSameWikiPagePath = (left: string | null | undefined, right: strin
   const normalizedLeft = normalizeWikiPathForCompare(left);
   const normalizedRight = normalizeWikiPathForCompare(right);
   return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
+};
+
+export const shouldAutoDismissStatusMessage = (message: string) => {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const stickyKeywords = ["失败", "错误", "error", "failed", "warning", "告警"];
+  if (stickyKeywords.some((keyword) => normalized.includes(keyword))) {
+    return false;
+  }
+
+  const progressKeywords = ["中...", "加载中", "切换中", "running", "处理中"];
+  if (progressKeywords.some((keyword) => normalized.includes(keyword))) {
+    return false;
+  }
+
+  return true;
 };
 
 const modules: ModuleItem[] = [
@@ -382,6 +427,7 @@ export default function App() {
   const [wikiActivePagePath, setWikiActivePagePath] = useState("");
   const [wikiFrontmatterCollapsed, setWikiFrontmatterCollapsed] = useState(false);
   const [wikiFrontmatterCopiedKey, setWikiFrontmatterCopiedKey] = useState("");
+  const [wikiDebugInfoVisible, setWikiDebugInfoVisible] = useState(false);
   // LLM Provider 配置（Settings 面板）
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
   const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
@@ -462,6 +508,20 @@ export default function App() {
       suggestionKeyword: lintSuggestionKeyword,
     });
   }, [lintCodeKeyword, lintFilterStateLoaded, lintPathKeyword, lintSeverityFilter, lintSuggestionKeyword]);
+
+  useEffect(() => {
+    if (!statusMessage || !shouldAutoDismissStatusMessage(statusMessage)) {
+      return;
+    }
+
+    const timerId = globalThis.setTimeout(() => {
+      setStatusMessage("");
+    }, 4500);
+
+    return () => {
+      globalThis.clearTimeout(timerId);
+    };
+  }, [statusMessage]);
 
   const refreshAppData = async () => {
     const data = await loadAppData();
@@ -853,6 +913,7 @@ export default function App() {
     setWikiPageCitationsError("");
     setWikiFrontmatterCopiedKey("");
     setWikiFrontmatterCollapsed(false);
+    setWikiDebugInfoVisible(false);
     setStatusMessage("");
 
     try {
@@ -895,6 +956,7 @@ export default function App() {
     setWikiPageCitationsError("");
     setWikiFrontmatterCopiedKey("");
     setWikiFrontmatterCollapsed(false);
+    setWikiDebugInfoVisible(false);
     setStatusMessage("已关闭页面预览。");
   };
 
@@ -979,6 +1041,10 @@ export default function App() {
   const wikiFrontmatterDisplay = buildWikiFrontmatterDisplay(wikiPageDetail);
   const wikiFrontmatterRows = wikiFrontmatterDisplay.rows;
   const wikiFrontmatterEntities = wikiFrontmatterDisplay.entities;
+  const wikiImportedAtDebugRaw = resolveWikiImportedAtDebugValue(wikiPageDetail);
+  const wikiImportedAtDebugDisplay = wikiImportedAtDebugRaw
+    ? formatLintCheckedAt(wikiImportedAtDebugRaw)
+    : "";
   const isActiveWikiDetailInList = Boolean(
     wikiActivePagePath
     && pages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
@@ -1004,6 +1070,13 @@ export default function App() {
             <h4>Frontmatter</h4>
             <div className="wiki-preview__meta-head-actions">
               <span>{wikiFrontmatterDisplay.totalCount} 项</span>
+              <button
+                type="button"
+                className="dev-panel__button wiki-preview__meta-toggle"
+                onClick={() => setWikiDebugInfoVisible((value) => !value)}
+              >
+                {wikiDebugInfoVisible ? "隐藏调试" : "调试信息"}
+              </button>
               <button
                 type="button"
                 className="dev-panel__button wiki-preview__meta-toggle"
@@ -1063,6 +1136,27 @@ export default function App() {
                 </div>
               ) : null}
             </>
+          )}
+        </div>
+      ) : null}
+      {wikiDebugInfoVisible ? (
+        <div className="wiki-preview__debug">
+          <div className="wiki-preview__debug-head">
+            <h4>调试信息</h4>
+          </div>
+          {wikiImportedAtDebugRaw ? (
+            <div className="wiki-preview__debug-grid">
+              <div className="wiki-preview__debug-item">
+                <span>imported_at（展示）</span>
+                <code>{wikiImportedAtDebugDisplay}</code>
+              </div>
+              <div className="wiki-preview__debug-item">
+                <span>imported_at（原始）</span>
+                <code>{wikiImportedAtDebugRaw}</code>
+              </div>
+            </div>
+          ) : (
+            <p className="runtime-hint">当前页面未检测到 imported_at 元数据。</p>
           )}
         </div>
       ) : null}

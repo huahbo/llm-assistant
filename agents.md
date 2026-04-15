@@ -241,13 +241,13 @@ web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
   tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（59 个）
+  app-utils.test.ts # 前端单元测试（65 个）
 ```
 
 ### 18.4 验证基线
 
 - `cargo test`（src-tauri/）：**最近一次已知 61 通过，0 失败（2026-04-13）**
-- `npm run test`（web/）：**59 通过，0 失败（2026-04-15）**
+- `npm run test`（web/）：**65 通过，0 失败（2026-04-15）**
 - `cargo check`：**当前 WSL 环境缺少 `cargo`（需在 Windows PowerShell 复核）**
 - TypeScript 类型检查：**零错误（2026-04-15）**
 
