@@ -11,13 +11,17 @@ import {
   buildWikiHighlightSegments,
   tokenizeWikiKeyword,
   sortWikiPages,
+  WIKI_SORT_MODE_STORAGE_KEY,
+  isWikiSortMode,
   parseLegacyImportedAtFromContent,
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
   parseLegacyWikiMetadataFromContent,
+  readWikiSortModeFromStorage,
   resolveWikiImportedAtDebugValue,
   resolveNextActiveProvider,
   shouldAutoDismissStatusMessage,
+  writeWikiSortModeToStorage,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -271,6 +275,67 @@ describe("Wiki 列表排序", () => {
       "beta",
       "zeta",
     ]);
+  });
+});
+
+describe("Wiki 排序偏好持久化", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const localStorageMock = {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: localStorageMock,
+    });
+
+    return { store };
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  it("识别合法排序值", () => {
+    expect(isWikiSortMode("updated_desc")).toBe(true);
+    expect(isWikiSortMode("updated_asc")).toBe(true);
+    expect(isWikiSortMode("title_asc")).toBe(true);
+    expect(isWikiSortMode("invalid")).toBe(false);
+  });
+
+  it("默认读取为 updated_desc", () => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+    expect(readWikiSortModeFromStorage()).toBe("updated_desc");
+  });
+
+  it("读取存储中的合法值", () => {
+    installLocalStorageMock({
+      [WIKI_SORT_MODE_STORAGE_KEY]: "title_asc",
+    });
+    expect(readWikiSortModeFromStorage()).toBe("title_asc");
+  });
+
+  it("存储非法值时回退默认", () => {
+    installLocalStorageMock({
+      [WIKI_SORT_MODE_STORAGE_KEY]: "unknown_sort_mode",
+    });
+    expect(readWikiSortModeFromStorage()).toBe("updated_desc");
+  });
+
+  it("可写入排序偏好", () => {
+    const { store } = installLocalStorageMock();
+    writeWikiSortModeToStorage("updated_asc");
+    expect(store.get(WIKI_SORT_MODE_STORAGE_KEY)).toBe("updated_asc");
   });
 });
 

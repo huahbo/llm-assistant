@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
   fetchAppOverview,
   fetchDefaultPaths,
@@ -423,6 +423,38 @@ export const buildWikiHighlightSegments = (text: string, keywords: string[]): Wi
 };
 
 export type WikiSortMode = "updated_desc" | "updated_asc" | "title_asc";
+export const WIKI_SORT_MODE_STORAGE_KEY = "llm_wiki_wiki_sort_mode_v1";
+
+export const isWikiSortMode = (value: string): value is WikiSortMode =>
+  value === "updated_desc" || value === "updated_asc" || value === "title_asc";
+
+export const readWikiSortModeFromStorage = (): WikiSortMode => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return "updated_desc";
+    }
+    const raw = storage.getItem(WIKI_SORT_MODE_STORAGE_KEY);
+    if (!raw) {
+      return "updated_desc";
+    }
+    return isWikiSortMode(raw) ? raw : "updated_desc";
+  } catch {
+    return "updated_desc";
+  }
+};
+
+export const writeWikiSortModeToStorage = (mode: WikiSortMode) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(WIKI_SORT_MODE_STORAGE_KEY, mode);
+  } catch {
+    // 本地存储不可用时静默降级，避免影响主流程。
+  }
+};
 
 const parseWikiUpdatedAt = (value: string) => {
   const normalized = value.trim();
@@ -529,7 +561,7 @@ export default function App() {
   const [queryResultSaving, setQueryResultSaving] = useState(false);
   const [wikiKeyword, setWikiKeyword] = useState("");
   const [wikiSearching, setWikiSearching] = useState(false);
-  const [wikiSortMode, setWikiSortMode] = useState<WikiSortMode>("updated_desc");
+  const [wikiSortMode, setWikiSortMode] = useState<WikiSortMode>(() => readWikiSortModeFromStorage());
   const [wikiExpandedPaths, setWikiExpandedPaths] = useState<string[]>([]);
   const [wikiPageDetail, setWikiPageDetail] = useState<WikiPageDetail | null>(null);
   const [wikiPageCitations, setWikiPageCitations] = useState<WikiPageCitation[]>([]);
@@ -641,6 +673,10 @@ export default function App() {
       prev.filter((path) => pages.some((page) => isSameWikiPagePath(page.path, path))),
     );
   }, [pages]);
+
+  useEffect(() => {
+    writeWikiSortModeToStorage(wikiSortMode);
+  }, [wikiSortMode]);
 
   const refreshAppData = async () => {
     const data = await loadAppData();
@@ -1011,6 +1047,20 @@ export default function App() {
     } finally {
       setWikiSearching(false);
     }
+  };
+
+  const handleWikiKeywordKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    if (wikiSearching) {
+      return;
+    }
+    void handleSearchWikiPages();
   };
 
   const handleResetWikiPages = async () => {
@@ -1741,6 +1791,7 @@ export default function App() {
                       type="text"
                       value={wikiKeyword}
                       onChange={(event) => setWikiKeyword(event.target.value)}
+                      onKeyDown={handleWikiKeywordKeyDown}
                       placeholder="按标题、摘要、路径搜索"
                       spellCheck={false}
                     />
