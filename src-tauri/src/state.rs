@@ -1781,6 +1781,57 @@ Wiki 页面：\n{}",
         }
     }
 
+    /// 将编辑后的内容写回 vault 文件，并同步更新 SQLite FTS 索引。
+    pub async fn save_wiki_page_impl(
+        &self,
+        path: &str,
+        content: &str,
+    ) -> Result<crate::models::SaveWikiPageResult, String> {
+        // 1. 写入文件
+        let changed = crate::vault::write_wiki_page(path, content)?;
+
+        if !changed {
+            return Ok(crate::models::SaveWikiPageResult {
+                path: path.to_string(),
+                message: "内容未变化，跳过写入".to_string(),
+            });
+        }
+
+        // 2. 更新 SQLite FTS 索引（复用已有逻辑）
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+
+        if let Some(vault_path) = vault_path {
+            let db_path = vault_path.join(".app").join("meta.db");
+            if db_path.exists() {
+                // 提取标题（取第一个 # 标题，或用文件名）
+                let title = content
+                    .lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l.trim_start_matches("# ").trim().to_string())
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(path)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(path)
+                            .to_string()
+                    });
+                let body = content.to_string();
+                // 更新 FTS 索引（失败时仅记录警告，不阻断主流程）
+                if let Err(err) = db::upsert_fts_page(&db_path, std::path::Path::new(path), &title, &body) {
+                    self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）：{err}"));
+                }
+            }
+        }
+
+        Ok(crate::models::SaveWikiPageResult {
+            path: path.to_string(),
+            message: format!("已保存并更新索引：{path}"),
+        })
+    }
+
     fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
         let (mode, query_top_k, expected_snapshot) = {
             let guard = self.inner.lock().expect("状态锁已被污染");

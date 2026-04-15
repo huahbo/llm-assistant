@@ -42,7 +42,8 @@ fn main() {
             commands::set_query_top_k,
             commands::save_query_answer,
             commands::get_llm_config,
-            commands::set_llm_config
+            commands::set_llm_config,
+            commands::save_wiki_page
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

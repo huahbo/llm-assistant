@@ -321,6 +321,22 @@ pub struct SaveQueryAnswerResult {
     pub message: String,
 }
 
+/// Wiki 页面保存请求。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SaveWikiPageInput {
+    /// vault 内的相对路径（如 "vault/foo.md"）或绝对路径
+    pub path: String,
+    /// 新的 Markdown 内容
+    pub content: String,
+}
+
+/// Wiki 页面保存结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SaveWikiPageResult {
+    pub path: String,
+    pub message: String,
+}
+
 /// 长时间操作的进度事件载荷（Tauri emit 用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressPayload {

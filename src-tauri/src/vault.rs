@@ -639,6 +639,44 @@ fn read_snapshot(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// 将内容安全写入 vault 文件。
+///
+/// - 写入前做内容比较（如文件已存在且内容相同，则跳过写入）
+/// - 路径必须是 `.md` 文件，父目录必须存在
+///
+/// # 返回
+/// - `Ok(true)`: 已写入新内容
+/// - `Ok(false)`: 内容未变化，跳过写入
+pub fn write_wiki_page(path: &str, content: &str) -> Result<bool, String> {
+    let path_buf = std::path::Path::new(path);
+
+    // 路径必须是 .md 文件
+    match path_buf.extension().and_then(|e| e.to_str()) {
+        Some("md") => {}
+        _ => return Err(format!("路径必须是 .md 文件：{path}")),
+    }
+
+    // 父目录必须存在
+    if let Some(parent) = path_buf.parent() {
+        if !parent.exists() {
+            return Err(format!("父目录不存在：{}", parent.display()));
+        }
+    }
+
+    // 如文件已存在且内容相同则跳过
+    if path_buf.exists() {
+        let existing = fs::read_to_string(path_buf)
+            .map_err(|e| format!("读取现有文件失败：{e}"))?;
+        if existing == content {
+            return Ok(false); // 无变化
+        }
+    }
+
+    fs::write(path_buf, content)
+        .map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(true) // 已写入
+}
+
 fn current_timestamp_ms() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -881,5 +919,23 @@ mod tests {
         let citations = db::list_citations(&db_path).expect("读取 citations 失败");
         assert_eq!(citations.len(), 1);
         assert_eq!(citations[0].page_path, result.wiki_path);
+    }
+
+    #[test]
+    fn test_write_wiki_page_rejects_non_md() {
+        let result = write_wiki_page("/tmp/test.txt", "content");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".md"));
+    }
+
+    #[test]
+    fn test_write_wiki_page_skips_unchanged() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_write_unchanged.md");
+        let content = "# Test\n\nContent.";
+        fs::write(&path, content).unwrap();
+        let result = write_wiki_page(path.to_str().unwrap(), content);
+        assert_eq!(result.unwrap(), false);
+        fs::remove_file(&path).unwrap();
     }
 }

@@ -215,3 +215,14 @@ pub fn set_llm_config(
     );
     state.set_llm_config(config)
 }
+
+/// 将编辑后的 Markdown 内容写回 vault 文件并更新 FTS 索引。
+#[tauri::command]
+pub async fn save_wiki_page(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    content: String,
+) -> Result<crate::models::SaveWikiPageResult, String> {
+    eprintln!("[save_wiki_page] called with path={}", path);
+    state.save_wiki_page_impl(&path, &content).await
+}
