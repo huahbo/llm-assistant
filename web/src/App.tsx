@@ -1727,6 +1727,7 @@ export default function App() {
                       const isSummaryExpanded = wikiExpandedPaths.some((path) =>
                         isSameWikiPagePath(path, page.path),
                       );
+                      const canToggleSummary = page.summary.trim().length > wikiSummaryPreviewChars;
                       const summaryDisplay = buildWikiSummaryDisplay(page.summary, isSummaryExpanded);
                       const summarySegments = buildWikiHighlightSegments(
                         summaryDisplay.text,
@@ -1751,7 +1752,7 @@ export default function App() {
                                 ),
                               )}
                             </p>
-                            {summaryDisplay.isTruncated ? (
+                            {canToggleSummary ? (
                               <button
                                 type="button"
                                 className="dev-panel__button wiki-summary__toggle"
