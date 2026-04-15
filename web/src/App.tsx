@@ -20,6 +20,7 @@ import {
   applyLintPatchesBatch,
   previewLintPatches,
   saveLlmConfig,
+  saveWikiPage,
   searchWikiPages,
   saveQueryAnswer,
   setBackendMode,
@@ -616,6 +617,10 @@ export default function App() {
   const [wikiFrontmatterCollapsed, setWikiFrontmatterCollapsed] = useState(false);
   const [wikiFrontmatterCopiedKey, setWikiFrontmatterCopiedKey] = useState("");
   const [wikiDebugInfoVisible, setWikiDebugInfoVisible] = useState(false);
+  const [wikiEditMode, setWikiEditMode] = useState(false);
+  const [wikiEditContent, setWikiEditContent] = useState("");
+  const [wikiSaveRunning, setWikiSaveRunning] = useState(false);
+  const [wikiSaveError, setWikiSaveError] = useState("");
   // LLM Provider 配置（Settings 面板）
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
   const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
@@ -1187,6 +1192,10 @@ export default function App() {
     setWikiFrontmatterCopiedKey("");
     setWikiFrontmatterCollapsed(false);
     setWikiDebugInfoVisible(false);
+    setWikiEditMode(false);
+    setWikiEditContent("");
+    setWikiSaveRunning(false);
+    setWikiSaveError("");
     setStatusMessage("");
 
     try {
@@ -1203,6 +1212,10 @@ export default function App() {
       }
 
       setWikiPageDetail(detail);
+      setWikiEditContent(detail.content ?? "");
+      setWikiEditMode(false);
+      setWikiSaveRunning(false);
+      setWikiSaveError("");
       setWikiPageCitations(citations ?? []);
       if (citations === null) {
         setWikiPageCitationsError("当前环境不支持读取页面引用。");
@@ -1230,7 +1243,71 @@ export default function App() {
     setWikiFrontmatterCopiedKey("");
     setWikiFrontmatterCollapsed(false);
     setWikiDebugInfoVisible(false);
+    setWikiEditMode(false);
+    setWikiEditContent("");
+    setWikiSaveRunning(false);
+    setWikiSaveError("");
     setStatusMessage("已关闭页面预览。");
+  };
+
+  const handleStartWikiEdit = () => {
+    if (!wikiPageDetail) {
+      return;
+    }
+    if (!isTauriRuntime()) {
+      setWikiSaveError("浏览器预览模式下不支持编辑保存，请在桌面应用中操作。");
+      setStatusMessage("浏览器预览模式下无法保存 Wiki 页面。");
+      return;
+    }
+
+    setWikiSaveError("");
+    setWikiEditContent(wikiPageDetail.content ?? "");
+    setWikiEditMode(true);
+  };
+
+  const handleCancelWikiEdit = () => {
+    setWikiEditMode(false);
+    setWikiSaveError("");
+    setWikiEditContent(wikiPageDetail?.content ?? "");
+  };
+
+  const handleSaveWikiPage = async () => {
+    if (!wikiPageDetail) {
+      return;
+    }
+
+    if (!isTauriRuntime()) {
+      setWikiSaveError("浏览器预览模式下不支持编辑保存，请在桌面应用中操作。");
+      setStatusMessage("浏览器预览模式下无法保存 Wiki 页面。");
+      return;
+    }
+
+    const targetPath = wikiPageDetail.path;
+
+    setWikiSaveRunning(true);
+    setWikiSaveError("");
+    setStatusMessage("");
+
+    try {
+      const result = await saveWikiPage(targetPath, wikiEditContent);
+      if (!result) {
+        setWikiSaveError("当前环境不支持保存页面。请检查 Tauri 后端是否可用。");
+        return;
+      }
+
+      setWikiEditMode(false);
+      await refreshAppData();
+      await handleOpenWikiPage(targetPath);
+      setStatusMessage(result.message || `已保存页面：${targetPath}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      const errorMessage = `保存页面失败：${message}`;
+      setWikiSaveError(errorMessage);
+      setStatusMessage(errorMessage);
+    } finally {
+      setWikiSaveRunning(false);
+    }
   };
 
   const handleCopyFrontmatterValue = async (field: string, value: string) => {
@@ -1346,11 +1423,47 @@ export default function App() {
         </div>
         <div className="wiki-preview__actions">
           {wikiPageDetail ? <span>{formatLintCheckedAt(wikiPageDetail.updated_at)}</span> : null}
+          {wikiPageDetail ? (
+            wikiEditMode ? (
+              <>
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--accent"
+                  onClick={() => void handleSaveWikiPage()}
+                  disabled={wikiSaveRunning || !isTauriRuntime()}
+                >
+                  {wikiSaveRunning ? "保存中..." : "保存"}
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={handleCancelWikiEdit}
+                  disabled={wikiSaveRunning}
+                >
+                  取消
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="dev-panel__button"
+                onClick={handleStartWikiEdit}
+                disabled={wikiSaveRunning || !isTauriRuntime()}
+                title={isTauriRuntime() ? "编辑当前页面内容" : "浏览器预览模式下不可编辑"}
+              >
+                编辑内容
+              </button>
+            )
+          ) : null}
           <button type="button" className="dev-panel__button" onClick={handleCloseWikiPreview}>
             关闭预览
           </button>
         </div>
       </div>
+      {!isTauriRuntime() ? (
+        <p className="runtime-hint wiki-preview__editor-hint">浏览器预览模式下仅支持查看，不支持编辑保存。</p>
+      ) : null}
+      {wikiSaveError ? <p className="runtime-status wiki-preview__save-error">{wikiSaveError}</p> : null}
       {wikiFrontmatterDisplay.hasMeta ? (
         <div className="wiki-preview__meta">
           <div className="wiki-preview__meta-head">
@@ -1419,7 +1532,20 @@ export default function App() {
           )}
         </div>
       ) : null}
-      <pre className="wiki-preview__content">{wikiPageDetail?.content ?? ""}</pre>
+      {wikiEditMode ? (
+        <div className="wiki-preview__editor-wrap">
+          <textarea
+            className="wiki-preview__editor"
+            value={wikiEditContent}
+            onChange={(event) => setWikiEditContent(event.target.value)}
+            disabled={wikiSaveRunning}
+            spellCheck={false}
+            rows={16}
+          />
+        </div>
+      ) : (
+        <pre className="wiki-preview__content">{wikiPageDetail?.content ?? ""}</pre>
+      )}
       {/* 独立调试面板：与 frontmatter 解耦，仅开发/诊断用 */}
       <div className="wiki-preview__debug-section">
         <button

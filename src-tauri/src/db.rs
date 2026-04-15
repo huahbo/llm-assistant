@@ -638,7 +638,8 @@ pub fn replace_citations_for_page(
         .map_err(|err| format!("写入 citations 失败: {}", err))?;
     }
 
-    tx.commit().map_err(|err| format!("提交引用记录失败: {}", err))
+    tx.commit()
+        .map_err(|err| format!("提交引用记录失败: {}", err))
 }
 
 /// 将页面内容写入 FTS 索引。
@@ -702,8 +703,7 @@ pub fn search_fts_page_paths(
 
 fn open_connection(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("创建数据库目录失败: {}", err))?;
+        std::fs::create_dir_all(parent).map_err(|err| format!("创建数据库目录失败: {}", err))?;
     }
 
     let conn = Connection::open(db_path).map_err(|err| format!("打开数据库失败: {}", err))?;
@@ -829,7 +829,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), unique));
+        let dir =
+            std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), unique));
         fs::create_dir_all(&dir).expect("创建临时目录失败");
         dir
     }
@@ -850,8 +851,8 @@ mod tests {
         )
         .expect("写入 fts 索引失败");
 
-        let results = search_fts_page_paths(&db_path, &[String::from("rust")], 5)
-            .expect("执行 fts 查询失败");
+        let results =
+            search_fts_page_paths(&db_path, &[String::from("rust")], 5).expect("执行 fts 查询失败");
         assert!(results
             .iter()
             .any(|path| path == &wiki_path.to_string_lossy().to_string()));
@@ -1022,8 +1023,8 @@ mod tests {
         )
         .expect("第二次写入 lint_patch_events 失败");
 
-        let events = list_recent_lint_patch_events(&db_path, 10)
-            .expect("读取 lint_patch_events 失败");
+        let events =
+            list_recent_lint_patch_events(&db_path, 10).expect("读取 lint_patch_events 失败");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].issue_code, "MISSING_INDEX_ENTRY");
         assert_eq!(events[0].path, None);

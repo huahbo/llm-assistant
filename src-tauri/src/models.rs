@@ -30,16 +30,32 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query_top_k: Option<usize>,
     /// 云端 API Key（仅存本地，不入仓库）
-    #[serde(alias = "openai_api_key", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "openai_api_key",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cloud_api_key: Option<String>,
     /// 云端基础地址，兼容 OpenAI / DeepSeek 等 OpenAI-compatible Provider
-    #[serde(alias = "openai_base_url", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "openai_base_url",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cloud_base_url: Option<String>,
     /// 云端模型名
-    #[serde(alias = "openai_model", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "openai_model",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cloud_model: Option<String>,
     /// 云端 Provider 名称
-    #[serde(alias = "openai_provider_name", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "openai_provider_name",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cloud_provider_name: Option<String>,
     /// 当前活跃 Provider
     #[serde(default, skip_serializing_if = "Option::is_none")]

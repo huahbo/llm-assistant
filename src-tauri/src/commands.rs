@@ -2,10 +2,10 @@ use tauri::State;
 
 use crate::models::{
     AppMode, AppOverview, DefaultPaths, IngestResult, LintPatchApplyInput, LintPatchApplyResult,
-    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport,
-    LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, QueryAnswerResult, QueryAskOptions,
-    QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
-    WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
+    LlmStatus, LogEntry, ModeChangeResult, QueryAnswerResult, QueryAskOptions, QuerySettings,
+    SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem,
+    WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -142,7 +142,19 @@ pub async fn ingest_markdown(
     state: State<'_, AppState>,
 ) -> Result<IngestResult, String> {
     eprintln!("[ingest_markdown] called with source_path={}", source_path);
-    state.ingest_markdown(std::path::PathBuf::from(source_path)).await
+    state
+        .ingest_markdown(std::path::PathBuf::from(source_path))
+        .await
+}
+
+/// 导入 PDF（提取文本后复用 Markdown ingest 流程）。
+#[tauri::command]
+pub async fn ingest_pdf(
+    source_path: String,
+    state: State<'_, AppState>,
+) -> Result<IngestResult, String> {
+    eprintln!("[ingest_pdf] called with source_path={}", source_path);
+    state.ingest_pdf_impl(&source_path).await
 }
 
 /// 问答查询。
@@ -163,15 +175,14 @@ pub async fn query_ask_with_options(
     state: State<'_, AppState>,
 ) -> Result<QueryAnswerResult, String> {
     eprintln!("[query_ask_with_options] called with question={}", question);
-    state.query_ask_with_options(question, options.unwrap_or_default()).await
+    state
+        .query_ask_with_options(question, options.unwrap_or_default())
+        .await
 }
 
 /// 保存 Query TopK 配置。
 #[tauri::command]
-pub fn set_query_top_k(
-    top_k: usize,
-    state: State<'_, AppState>,
-) -> Result<QuerySettings, String> {
+pub fn set_query_top_k(top_k: usize, state: State<'_, AppState>) -> Result<QuerySettings, String> {
     eprintln!("[set_query_top_k] called with top_k={}", top_k);
     state.set_query_top_k(top_k)
 }
@@ -210,8 +221,7 @@ pub fn set_llm_config(
 ) -> Result<LlmProviderConfig, String> {
     eprintln!(
         "[set_llm_config] called with active_provider={}, cloud_provider_name={}",
-        config.active_provider,
-        config.cloud_provider_name
+        config.active_provider, config.cloud_provider_name
     );
     state.set_llm_config(config)
 }

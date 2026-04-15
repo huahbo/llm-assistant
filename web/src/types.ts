@@ -108,6 +108,11 @@ export interface SaveQueryAnswerResult {
   message: string;
 }
 
+export interface SaveWikiPageResult {
+  path: string;
+  message: string;
+}
+
 export interface WikiPageItem {
   title: string;
   path: string;

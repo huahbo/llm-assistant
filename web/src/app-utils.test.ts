@@ -36,6 +36,7 @@ import {
   createApplyLintPatchArgs,
   createApplyLintPatchesBatchArgs,
   createSaveQueryAnswerArgs,
+  createSaveWikiPageArgs,
   createSearchWikiPagesArgs,
   createWikiPageCitationsArgs,
   createWikiPageDetailArgs,
@@ -50,6 +51,7 @@ import {
   normalizeLlmStatus,
   normalizeLlmProviderConfig,
   saveLlmConfig,
+  saveWikiPage,
   resolveDisplayPath,
 } from "./tauri-client";
 import {
@@ -478,6 +480,13 @@ describe("Tauri 运行时与参数映射", () => {
       page_path: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
     });
 
+    expect(
+      createSaveWikiPageArgs("E:\\llm-wiki\\vault\\wiki\\ingest-1.md", "# Updated"),
+    ).toEqual({
+      path: "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+      content: "# Updated",
+    });
+
     expect(createPreviewLintPatchesArgs()).toEqual({});
     expect(createFetchRecentLintPatchEventsArgs()).toEqual({});
 
@@ -596,6 +605,14 @@ describe("Tauri 运行时与参数映射", () => {
 
   it("createIngestUrlArgs 生成正确参数", () => {
     expect(createIngestUrlArgs("https://example.com")).toEqual({ url: "https://example.com" });
+  });
+
+  it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+
+    await expect(
+      saveWikiPage("E:\\llm-wiki\\vault\\wiki\\ingest-1.md", "# Updated"),
+    ).resolves.toBeNull();
   });
 
   it("按 query/list/citation 对象的优先级顺序解析友好路径", () => {

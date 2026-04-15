@@ -123,9 +123,10 @@ impl OllamaProvider {
             .map_err(|e| LlmError::InvalidResponse(format!("解析响应失败: {}", e)))?;
 
         // 检查模型是否存在（模型名称可能带有版本标签，如 "llama3.2:latest"）
-        let exists = tags.models.iter().any(|m| {
-            m.name == model_name || m.name.starts_with(&format!("{}:", model_name))
-        });
+        let exists = tags
+            .models
+            .iter()
+            .any(|m| m.name == model_name || m.name.starts_with(&format!("{}:", model_name)));
 
         Ok(exists)
     }

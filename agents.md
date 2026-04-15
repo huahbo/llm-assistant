@@ -219,13 +219,15 @@
 | P5-B 后端 | `ingest_url` 命令（reqwest 拉取 + 复用 ingest） | ✅ `src-tauri/src/state.rs` + `commands.rs`（68 测试） |
 | P6 前端 | URL 摄入 UI + `ingestUrl` tauri-client 封装 | ✅ `web/src/tauri-client.ts` + `App.tsx`（86 测试） |
 | P6 后端 | `save_wiki_page` 命令（写回 vault + 更新 FTS） | ✅ `vault.rs` + `state.rs` + `commands.rs`（70 测试） |
+| P7 前端 | Wiki 内联编辑器 UI（编辑/保存/取消，调用 `save_wiki_page`） | ✅ `web/src/App.tsx` + `tauri-client.ts` + `types.ts`（87 测试） |
+| P7 后端 | PDF 摄入命令 `ingest_pdf`（提取文本后复用 ingest 流程） | ✅ `src-tauri/src/state.rs` + `commands.rs` + `main.rs`（73 cargo 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P7：Wiki 编辑器 + PDF 摄入（并行）**
-- **前端子任务**：Wiki 内联编辑器 UI（调用 `save_wiki_page`，显示在详情页，支持编辑/保存/取消）。
-- **后端子任务**：Ingest 支持 PDF 输入（需引入 `pdf-extract` 或等效 crate 读取 PDF 文本）。
-- 约束：前端编辑器依赖 `save_wiki_page` 命令（已完成），可立即开展。
+**P8：PDF 摄入入口与编辑体验收口**
+- **前端子任务**：Inbox 增加“PDF 摄入”显式入口（调用 `ingest_pdf`），补充错误态提示与成功态文案。
+- **后端子任务**：补充至少一个“可提取文本 PDF”的 ingest 测试样例（或可替代的抽象层测试），提高回归可靠性。
+- **交互收口**：Wiki 内联编辑器补充“未保存离开提示/脏状态提示”。
 
 ### 18.3 当前代码快照
 
@@ -236,7 +238,7 @@ src-tauri/src/
     provider.rs     # LlmProvider trait, LlmError
     ollama.rs       # OllamaProvider (health_check, complete, summarize)
     openai.rs       # OpenAiProvider (OpenAI-compatible Chat Completions API, Hybrid 模式)
-  commands.rs       # 所有 Tauri 命令（含 get_llm_config/set_llm_config）
+  commands.rs       # 所有 Tauri 命令（含 get_llm_config/set_llm_config、ingest_pdf、save_wiki_page）
   db.rs             # SQLite 操作
   main.rs           # Tauri app 入口（含 setup hook 注入 AppHandle）
   models.rs         # 全部数据模型（AppConfig 含 cloud_* 字段并兼容 openai_* 旧字段，LlmProviderConfig）
@@ -245,17 +247,18 @@ src-tauri/src/
 
 web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
-  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig）
+  tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（77 个）
+  app-utils.test.ts # 前端单元测试（87 个）
 ```
 
 ### 18.4 验证基线
 
-- `cargo test`（src-tauri/）：**最近一次已知 61 通过，0 失败（2026-04-13）**
-- `npm run test`（web/）：**77 通过，0 失败（2026-04-13）**
-- `cargo check`：**当前 WSL 环境缺少 `cargo`（需在 Windows PowerShell 复核）**
-- TypeScript 类型检查：**零错误（2026-04-13）**
+- `cargo check`（src-tauri/）：**通过（2026-04-15，2 个 dead_code 警告）**
+- `cargo test`（src-tauri/）：**73 通过，0 失败（2026-04-15）**
+- `npm run test -- --run`（web/）：**87 通过，0 失败（2026-04-15）**
+- `npm run typecheck`（web/）：**零错误（2026-04-15）**
+- `npm run build`（web/）：**通过（2026-04-15）**
 
 ### 18.5 关键约束提醒
 

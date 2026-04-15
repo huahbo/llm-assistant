@@ -20,6 +20,7 @@ import type {
   QuerySettings,
   SaveQueryAnswerInput,
   SaveQueryAnswerResult,
+  SaveWikiPageResult,
   VaultInitResult,
   WikiPageDetail,
   WikiPageCitation,
@@ -302,6 +303,11 @@ export const createSaveQueryAnswerArgs = (input: SaveQueryAnswerInput) => ({
     citations: input.citations,
     title: input.title,
   },
+});
+
+export const createSaveWikiPageArgs = (path: string, content: string) => ({
+  path,
+  content,
 });
 
 export const createSearchWikiPagesArgs = (keyword: string) => ({
@@ -867,6 +873,22 @@ export async function saveQueryAnswer(
   } catch {
     return null;
   }
+}
+
+export async function saveWikiPage(
+  path: string,
+  content: string,
+): Promise<SaveWikiPageResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<SaveWikiPageResult>("save_wiki_page", {
+      ...createSaveWikiPageArgs(path, content),
+    }),
+  );
 }
 
 /** 读取 LLM Provider 配置（Settings 页面初始化时调用） */

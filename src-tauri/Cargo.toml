@@ -6,6 +6,7 @@ build = "build.rs"
 
 [dependencies]
 async-trait = "0.1"
+lopdf = "0.34"
 reqwest = { version = "0.12", features = ["json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

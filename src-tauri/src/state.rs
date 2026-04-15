@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeSet, HashSet},
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -15,12 +14,12 @@ use crate::{
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AppConfig, AppMode, AppOverview, DefaultPaths, IngestResult, LintIssue, LintReport,
-        LintPatchApplyInput, LintPatchApplyResult, LintPatchPreview, LintPatchSuggestion,
-        LintPatchBatchApplyItemResult, LintPatchBatchApplyResult, LintPatchBatchApplyStatus,
-        LintPatchEventItem, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
-        ModeChangeResult, ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation,
-        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
+        AppConfig, AppMode, AppOverview, DefaultPaths, IngestResult, LintIssue,
+        LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyItemResult,
+        LintPatchBatchApplyResult, LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview,
+        LintPatchSuggestion, LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry,
+        LogLevel, ModeChangeResult, ProgressPayload, QueryAnswerResult, QueryAskOptions,
+        QueryCitation, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
         WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
     },
     vault,
@@ -145,10 +144,13 @@ impl AppState {
     /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。
     fn emit_progress(&self, event: &str, step: &str, message: &str) {
         if let Some(handle) = self.app_handle.get() {
-            let _ = handle.emit(event, ProgressPayload {
-                step: step.to_string(),
-                message: message.to_string(),
-            });
+            let _ = handle.emit(
+                event,
+                ProgressPayload {
+                    step: step.to_string(),
+                    message: message.to_string(),
+                },
+            );
         }
     }
 
@@ -168,7 +170,14 @@ impl AppState {
     /// - StrictLocal → 仅 Ollama
     /// - Hybrid → 优先使用 active_provider（仅 cloud/ollama），并在无 key 时安全回退到 ollama
     fn get_llm_provider(&self) -> Option<Arc<dyn LlmProvider>> {
-        let (mode, cloud_api_key, cloud_base_url, cloud_model, cloud_provider_name, active_provider) = {
+        let (
+            mode,
+            cloud_api_key,
+            cloud_base_url,
+            cloud_model,
+            cloud_provider_name,
+            active_provider,
+        ) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             (
                 guard.mode,
@@ -241,10 +250,7 @@ impl AppState {
             Ok(summary) => {
                 let summary = summary.trim().to_string();
                 if summary.is_empty() {
-                    self.push_log(
-                        LogLevel::Warn,
-                        "LLM 返回空摘要，回退到截断摘要".to_string(),
-                    );
+                    self.push_log(LogLevel::Warn, "LLM 返回空摘要，回退到截断摘要".to_string());
                     vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS)
                 } else {
                     self.push_log(
@@ -268,8 +274,20 @@ impl AppState {
     /// 返回 (mode, cloud_config_if_active, ollama_provider_if_active)
     fn llm_status_input(
         &self,
-    ) -> (AppMode, Option<String>, Option<OpenAiConfig>, Option<Arc<OllamaProvider>>) {
-        let (mode, cloud_api_key, cloud_base_url, cloud_model, cloud_provider_name, active_provider) = {
+    ) -> (
+        AppMode,
+        Option<String>,
+        Option<OpenAiConfig>,
+        Option<Arc<OllamaProvider>>,
+    ) {
+        let (
+            mode,
+            cloud_api_key,
+            cloud_base_url,
+            cloud_model,
+            cloud_provider_name,
+            active_provider,
+        ) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             (
                 guard.mode,
@@ -375,7 +393,8 @@ impl AppState {
                             &model,
                             mode,
                             false,
-                            "本地 Ollama 健康检查未通过，请确认服务已启动且模型已准备好".to_string(),
+                            "本地 Ollama 健康检查未通过，请确认服务已启动且模型已准备好"
+                                .to_string(),
                         ),
                         Err(err) => build_llm_status(
                             "ollama",
@@ -403,9 +422,14 @@ impl AppState {
     }
 
     /// 返回可在异步命令中安全等待的 LLM 状态查询 Future。
-    pub fn llm_status_future(&self) -> impl std::future::Future<Output = LlmStatus> + Send + 'static {
+    pub fn llm_status_future(
+        &self,
+    ) -> impl std::future::Future<Output = LlmStatus> + Send + 'static {
         let (mode, cloud_provider_name, cloud_config, ollama_provider) = self.llm_status_input();
-        async move { Self::llm_status_from_input(mode, cloud_provider_name, cloud_config, ollama_provider).await }
+        async move {
+            Self::llm_status_from_input(mode, cloud_provider_name, cloud_config, ollama_provider)
+                .await
+        }
     }
 
     /// 获取当前 LLM Provider 配置（供 Settings 页面读取）。
@@ -415,21 +439,19 @@ impl AppState {
         let cloud_api_key = guard.cloud_api_key.clone().unwrap_or_default();
         let normalized_provider_name =
             normalize_cloud_provider_name(guard.cloud_provider_name.as_deref());
-        let cloud_base_url =
-            normalize_cloud_base_url(normalized_provider_name.as_deref(), guard.cloud_base_url.as_deref())
-                .unwrap_or_default();
+        let cloud_base_url = normalize_cloud_base_url(
+            normalized_provider_name.as_deref(),
+            guard.cloud_base_url.as_deref(),
+        )
+        .unwrap_or_default();
         let cloud_model = guard.cloud_model.clone().unwrap_or_default();
         let cloud_provider_name = normalized_provider_name
             .as_deref()
             .map(display_cloud_provider_name)
             .unwrap_or_else(|| "openai-compatible".to_string());
         let has_cloud_key = !cloud_api_key.trim().is_empty();
-        let active_provider = resolve_active_provider(
-            mode,
-            guard.active_provider.as_deref(),
-            has_cloud_key,
-            None,
-        );
+        let active_provider =
+            resolve_active_provider(mode, guard.active_provider.as_deref(), has_cloud_key, None);
 
         LlmProviderConfig {
             cloud_api_key,
@@ -458,7 +480,8 @@ impl AppState {
         } else {
             Some(config.cloud_api_key.trim().to_string())
         };
-        let cloud_provider_name = normalize_cloud_provider_name(Some(config.cloud_provider_name.as_str()));
+        let cloud_provider_name =
+            normalize_cloud_provider_name(Some(config.cloud_provider_name.as_str()));
         let cloud_base_url = normalize_cloud_base_url(
             cloud_provider_name.as_deref(),
             Some(config.cloud_base_url.as_str()),
@@ -489,7 +512,12 @@ impl AppState {
             guard.active_provider = Some(active_provider);
         }
 
-        match self.persist_config(mode, vault_path.as_deref(), query_top_k, expected_snapshot.as_deref()) {
+        match self.persist_config(
+            mode,
+            vault_path.as_deref(),
+            query_top_k,
+            expected_snapshot.as_deref(),
+        ) {
             Ok(serialized) => {
                 let mut guard = self.inner.lock().expect("状态锁已被污染");
                 guard.config_snapshot = Some(serialized);
@@ -502,7 +530,10 @@ impl AppState {
                 Ok(self.get_llm_config())
             }
             Err(err) => {
-                self.push_log(LogLevel::Warn, format!("云端 Provider 配置持久化失败: {}", err));
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("云端 Provider 配置持久化失败: {}", err),
+                );
                 Err(err)
             }
         }
@@ -568,10 +599,7 @@ impl AppState {
         let mut result = match vault::initialize_vault(&vault_path, mode) {
             Ok(result) => result,
             Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("Vault 初始化失败: {}", err),
-                );
+                self.push_log(LogLevel::Warn, format!("Vault 初始化失败: {}", err));
                 return Err(err);
             }
         };
@@ -603,15 +631,19 @@ impl AppState {
         };
 
         // 读取源文件内容以生成 LLM 摘要
-        let source_content = fs::read_to_string(&source_path)
-            .map_err(|err| format!("读取源文件失败: {}", err))?;
+        let source_content =
+            fs::read_to_string(&source_path).map_err(|err| format!("读取源文件失败: {}", err))?;
 
         // 步骤1：LLM 摘要生成
         self.emit_progress("ingest_progress", "summarizing", "正在生成摘要（LLM）...");
         let llm_summary = self.generate_summary(&source_content).await;
 
         // 步骤2：LLM 实体提取（写入前完成，确保可持久化到 frontmatter）
-        self.emit_progress("ingest_progress", "extracting_entities", "正在提取关键实体（LLM）...");
+        self.emit_progress(
+            "ingest_progress",
+            "extracting_entities",
+            "正在提取关键实体（LLM）...",
+        );
         let entities = self.extract_entities(&source_content).await;
 
         // 步骤3：写入 Wiki 页面（含 frontmatter entities）
@@ -634,10 +666,7 @@ impl AppState {
                 result
             }
             Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("Markdown 导入失败: {}", err),
-                );
+                self.push_log(LogLevel::Warn, format!("Markdown 导入失败: {}", err));
                 return Err(err);
             }
         };
@@ -666,11 +695,36 @@ impl AppState {
         Ok(result)
     }
 
-    /// 拉取 URL 文本内容后走现有 ingest 流程
-    pub async fn ingest_url_impl(
+    /// 读取 PDF 文本后复用现有 Markdown ingest 流程。
+    pub async fn ingest_pdf_impl(
         &self,
-        url: &str,
+        source_path: &str,
     ) -> Result<crate::models::IngestResult, String> {
+        let source_path_buf = PathBuf::from(source_path);
+        validate_pdf_source_path(&source_path_buf)?;
+
+        let extracted_text = extract_text_from_pdf(&source_path_buf)?;
+        let tmp_path = std::env::temp_dir().join(format!("llm_wiki_pdf_{}.md", uuid_v4_short()));
+        tokio::fs::write(&tmp_path, extracted_text)
+            .await
+            .map_err(|e| format!("写入临时 Markdown 失败：{e}"))?;
+
+        let mut result = self.ingest_markdown(tmp_path.clone()).await;
+
+        // 无论 ingest 成功或失败都尝试清理临时文件。
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
+        if let Ok(inner) = &mut result {
+            inner.source_path = source_path_buf.to_string_lossy().to_string();
+            let tmp_display = tmp_path.to_string_lossy().to_string();
+            inner.message = inner.message.replace(&tmp_display, source_path);
+        }
+
+        result
+    }
+
+    /// 拉取 URL 文本内容后走现有 ingest 流程
+    pub async fn ingest_url_impl(&self, url: &str) -> Result<crate::models::IngestResult, String> {
         // 1. 用 reqwest 拉取 URL 文本（超时 30s）
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -699,8 +753,7 @@ impl AppState {
         }
 
         // 2. 将文本写入临时 Markdown 文件，复用 ingest_markdown
-        let tmp_path = std::env::temp_dir()
-            .join(format!("llm_wiki_url_{}.md", uuid_v4_short()));
+        let tmp_path = std::env::temp_dir().join(format!("llm_wiki_url_{}.md", uuid_v4_short()));
         tokio::fs::write(&tmp_path, &text)
             .await
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
@@ -746,10 +799,7 @@ impl AppState {
                 entities
             }
             Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("实体提取失败，跳过: {}", err),
-                );
+                self.push_log(LogLevel::Warn, format!("实体提取失败，跳过: {}", err));
                 Vec::new()
             }
         }
@@ -837,7 +887,12 @@ impl AppState {
                     updated.push(related_abs.clone());
                     // 更新该相关页面的 FTS 索引
                     if let Ok(content) = fs::read_to_string(&related_path) {
-                        let _ = db::upsert_fts_page(db_path, Path::new(related_abs), &related_title, &content);
+                        let _ = db::upsert_fts_page(
+                            db_path,
+                            Path::new(related_abs),
+                            &related_title,
+                            &content,
+                        );
                     }
                 }
                 Ok(false) => {} // 链接已存在，跳过
@@ -864,7 +919,12 @@ impl AppState {
         // 更新新页的 FTS 索引（包含追加的 See Also 内容）
         if !updated.is_empty() {
             if let Ok(content) = fs::read_to_string(new_wiki_abs_path) {
-                let _ = db::upsert_fts_page(db_path, Path::new(new_wiki_abs_path), new_wiki_title, &content);
+                let _ = db::upsert_fts_page(
+                    db_path,
+                    Path::new(new_wiki_abs_path),
+                    new_wiki_title,
+                    &content,
+                );
             }
             self.push_log(
                 LogLevel::Info,
@@ -920,10 +980,7 @@ impl AppState {
             Err(err) => {
                 self.push_log(
                     LogLevel::Warn,
-                    format!(
-                        "本地 LLM Query 合成失败: {}，已回退到规则回答",
-                        err
-                    ),
+                    format!("本地 LLM Query 合成失败: {}，已回退到规则回答", err),
                 );
                 fallback()
             }
@@ -957,7 +1014,9 @@ impl AppState {
         let root = Self::project_root();
         DefaultPaths {
             vault_path: root.join("vault").to_string_lossy().to_string(),
-            ingest_source_path: Self::default_ingest_source_path(root).to_string_lossy().to_string(),
+            ingest_source_path: Self::default_ingest_source_path(root)
+                .to_string_lossy()
+                .to_string(),
         }
     }
 
@@ -1030,7 +1089,11 @@ impl AppState {
         db::list_recent_lint_patch_events(&db_path, limit)
     }
 
-    pub fn search_wiki_pages(&self, keyword: String, limit: usize) -> Result<Vec<WikiPageItem>, String> {
+    pub fn search_wiki_pages(
+        &self,
+        keyword: String,
+        limit: usize,
+    ) -> Result<Vec<WikiPageItem>, String> {
         let vault_path = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             guard
@@ -1070,8 +1133,8 @@ impl AppState {
             return Err("仅支持读取 Markdown 页面".to_string());
         }
 
-        let content = fs::read_to_string(&target_path)
-            .map_err(|err| format!("读取页面失败: {}", err))?;
+        let content =
+            fs::read_to_string(&target_path).map_err(|err| format!("读取页面失败: {}", err))?;
         let title = extract_title_from_markdown(&content, &target_path);
         let frontmatter = parse_wiki_frontmatter(&content);
         let updated_at = file_modified_timestamp_ms(&target_path);
@@ -1225,10 +1288,7 @@ impl AppState {
                             issues.push(LintIssue {
                                 code: "BROKEN_CITING_PAGE".to_string(),
                                 severity: "warning".to_string(),
-                                message: format!(
-                                    "引用记录所属页面不存在: {}",
-                                    citation.page_path
-                                ),
+                                message: format!("引用记录所属页面不存在: {}", citation.page_path),
                                 path: Some(citation.page_path.clone()),
                                 suggestion: "移除失效引用记录或恢复对应页面".to_string(),
                             });
@@ -1340,7 +1400,11 @@ impl AppState {
             });
         }
 
-        build_lint_report(mode, format!("已返回 {} 条 lint 问题", issues.len()), issues)
+        build_lint_report(
+            mode,
+            format!("已返回 {} 条 lint 问题", issues.len()),
+            issues,
+        )
     }
 
     pub fn preview_lint_patches(&self) -> LintPatchPreview {
@@ -1516,7 +1580,11 @@ Wiki 页面：\n{}",
                 } else {
                     "index.md 已存在，未作修改".to_string()
                 };
-                (created, message, vec![index_path.to_string_lossy().to_string()])
+                (
+                    created,
+                    message,
+                    vec![index_path.to_string_lossy().to_string()],
+                )
             }
             "LOG_MISSING" => {
                 let log_path = vault_path.join("log.md");
@@ -1532,7 +1600,11 @@ Wiki 页面：\n{}",
                 } else {
                     "log.md 已存在，未作修改".to_string()
                 };
-                (created, message, vec![log_path.to_string_lossy().to_string()])
+                (
+                    created,
+                    message,
+                    vec![log_path.to_string_lossy().to_string()],
+                )
             }
             _ => {
                 return Err("暂不支持自动应用，请手动处理".to_string());
@@ -1634,7 +1706,8 @@ Wiki 页面：\n{}",
     }
 
     pub async fn query_ask(&self, question: String) -> Result<QueryAnswerResult, String> {
-        self.query_ask_with_options(question, QueryAskOptions::default()).await
+        self.query_ask_with_options(question, QueryAskOptions::default())
+            .await
     }
 
     pub async fn query_ask_with_options(
@@ -1652,7 +1725,8 @@ Wiki 页面：\n{}",
             (guard.mode, guard.vault_path.clone(), guard.query_top_k)
         };
 
-        let vault_path = vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let vault_path =
+            vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
         let wiki_dir = vault_path.join("wiki");
         let db_path = vault_path.join(".app").join("meta.db");
         let tokens = tokenize_query(&normalized_question);
@@ -1660,8 +1734,13 @@ Wiki 页面：\n{}",
 
         // 步骤1：FTS 检索
         self.emit_progress("query_progress", "searching", "FTS 检索中...");
-        let (matches, search_strategy, fts_error) =
-            search_wiki_matches_with_fts(&db_path, &wiki_dir, &tokens, &normalized_question, top_k)?;
+        let (matches, search_strategy, fts_error) = search_wiki_matches_with_fts(
+            &db_path,
+            &wiki_dir,
+            &tokens,
+            &normalized_question,
+            top_k,
+        )?;
 
         if let Some(err) = fts_error {
             self.push_log(
@@ -1723,7 +1802,11 @@ Wiki 页面：\n{}",
         let normalized_top_k = normalize_top_k(Some(top_k));
         let (mode, vault_path, expected_snapshot) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
-            (guard.mode, guard.vault_path.clone(), guard.config_snapshot.clone())
+            (
+                guard.mode,
+                guard.vault_path.clone(),
+                guard.config_snapshot.clone(),
+            )
         };
 
         match self.persist_config(
@@ -1820,7 +1903,9 @@ Wiki 页面：\n{}",
                     });
                 let body = content.to_string();
                 // 更新 FTS 索引（失败时仅记录警告，不阻断主流程）
-                if let Err(err) = db::upsert_fts_page(&db_path, std::path::Path::new(path), &title, &body) {
+                if let Err(err) =
+                    db::upsert_fts_page(&db_path, std::path::Path::new(path), &title, &body)
+                {
                     self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）：{err}"));
                 }
             }
@@ -1874,25 +1959,20 @@ Wiki 页面：\n{}",
         root.join(".runtime").join("app-config.json")
     }
 
-    fn load_config(
-        config_path: &Path,
-    ) -> (AppConfig, Option<String>) {
+    fn load_config(config_path: &Path) -> (AppConfig, Option<String>) {
         match fs::read_to_string(config_path) {
             Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
                 Ok(config) => (config, Some(raw)),
                 Err(_) => (AppConfig::default(), Some(raw)),
             },
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                (AppConfig::default(), None)
-            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => (AppConfig::default(), None),
             Err(_) => (AppConfig::default(), None),
         }
     }
 
     /// 将运行时配置序列化为新字段格式。
     fn serialize_config_full(config: &AppConfig) -> String {
-        serde_json::to_string_pretty(config)
-            .expect("配置序列化失败")
+        serde_json::to_string_pretty(config).expect("配置序列化失败")
     }
 
     fn persist_config(
@@ -1919,8 +1999,7 @@ Wiki 页面：\n{}",
         let serialized = Self::serialize_config_full(&config);
 
         if let Some(parent) = self.config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("创建配置目录失败: {}", err))?;
+            fs::create_dir_all(parent).map_err(|err| format!("创建配置目录失败: {}", err))?;
         }
 
         let current_snapshot = match fs::read_to_string(&self.config_path) {
@@ -1952,8 +2031,7 @@ Wiki 页面：\n{}",
         expected_snapshot: Option<&str>,
     ) -> Result<(), String> {
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("创建配置目录失败: {}", err))?;
+            fs::create_dir_all(parent).map_err(|err| format!("创建配置目录失败: {}", err))?;
         }
 
         let current_snapshot = match fs::read_to_string(config_path) {
@@ -1989,20 +2067,63 @@ Wiki 页面：\n{}",
         let db_path = vault_path.join(".app").join("meta.db");
         let timestamp_ms = current_timestamp_ms();
 
-        if let Err(err) = db::insert_lint_patch_event(
-            &db_path,
-            issue_code,
-            path,
-            applied,
-            message,
-            &timestamp_ms,
-        ) {
+        if let Err(err) =
+            db::insert_lint_patch_event(&db_path, issue_code, path, applied, message, &timestamp_ms)
+        {
             self.push_log(
                 LogLevel::Warn,
                 format!("写入 lint_patch_events 失败: {}", err),
             );
         }
     }
+}
+
+fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
+    if !source_path.exists() {
+        return Err(format!("PDF 文件不存在：{}", source_path.to_string_lossy()));
+    }
+
+    if !source_path.is_file() {
+        return Err(format!(
+            "PDF 路径不是文件：{}",
+            source_path.to_string_lossy()
+        ));
+    }
+
+    let ext = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext != "pdf" {
+        return Err(format!(
+            "文件扩展名错误，仅支持 .pdf：{}",
+            source_path.to_string_lossy()
+        ));
+    }
+
+    Ok(())
+}
+
+fn extract_text_from_pdf(source_path: &Path) -> Result<String, String> {
+    let document =
+        lopdf::Document::load(source_path).map_err(|err| format!("读取 PDF 失败：{err}"))?;
+    let page_numbers: Vec<u32> = document.get_pages().keys().copied().collect();
+
+    if page_numbers.is_empty() {
+        return Err("PDF 不包含可读取页面".to_string());
+    }
+
+    let text = document
+        .extract_text(&page_numbers)
+        .map_err(|err| format!("提取 PDF 文本失败：{err}"))?;
+    let normalized = text.replace('\u{0}', "").trim().to_string();
+
+    if normalized.is_empty() {
+        return Err("PDF 文本为空，可能是扫描件或图片型 PDF".to_string());
+    }
+
+    Ok(normalized)
 }
 
 /// 生成基于微秒时间戳的短唯一字符串，用于临时文件命名。
@@ -2121,7 +2242,13 @@ fn resolve_wiki_link_target(vault_path: &Path, raw_target: &str) -> Option<Strin
         format!("{}.md", relative)
     };
 
-    Some(vault_path.join("wiki").join(relative).to_string_lossy().to_string())
+    Some(
+        vault_path
+            .join("wiki")
+            .join(relative)
+            .to_string_lossy()
+            .to_string(),
+    )
 }
 
 fn is_stale_pending_task(task: &db::PendingTaskRecord, checked_at_ms: u128) -> bool {
@@ -2202,7 +2329,11 @@ fn parse_semantic_lint_response(response: &str) -> Vec<LintIssue> {
                 code: code.to_string(),
                 severity: severity.to_string(),
                 message: message.to_string(),
-                path: if path.is_empty() { None } else { Some(path.to_string()) },
+                path: if path.is_empty() {
+                    None
+                } else {
+                    Some(path.to_string())
+                },
                 suggestion: suggestion.to_string(),
             })
         })
@@ -2459,8 +2590,8 @@ fn is_existing_wiki_page_target(vault_path: &Path, raw_path: &str) -> bool {
 fn wiki_link_target_from_path(vault_path: &Path, page_path: &Path) -> Result<String, String> {
     let wiki_root = fs::canonicalize(vault_path.join("wiki"))
         .map_err(|err| format!("解析 wiki 根目录失败: {}", err))?;
-    let canonical_page = fs::canonicalize(page_path)
-        .map_err(|err| format!("解析页面路径失败: {}", err))?;
+    let canonical_page =
+        fs::canonicalize(page_path).map_err(|err| format!("解析页面路径失败: {}", err))?;
     let relative = canonical_page
         .strip_prefix(&wiki_root)
         .map_err(|_| "页面不在 vault/wiki 目录下".to_string())?;
@@ -2484,8 +2615,8 @@ fn append_index_link_if_missing(
     link_target: &str,
     label: &str,
 ) -> Result<bool, String> {
-    let existing = fs::read_to_string(index_path)
-        .map_err(|err| format!("读取 index.md 失败: {}", err))?;
+    let existing =
+        fs::read_to_string(index_path).map_err(|err| format!("读取 index.md 失败: {}", err))?;
     let link = format!("[[{}|{}]]", link_target, label);
     if existing.contains(&link) {
         return Ok(false);
@@ -2575,7 +2706,9 @@ fn is_cjk(ch: char) -> bool {
 }
 
 fn is_stopword(token: &str) -> bool {
-    const ZH_STOPWORDS: &[&str] = &["的", "了", "是", "吗", "呢", "和", "与", "及", "在", "对", "把", "将"];
+    const ZH_STOPWORDS: &[&str] = &[
+        "的", "了", "是", "吗", "呢", "和", "与", "及", "在", "对", "把", "将",
+    ];
     const EN_STOPWORDS: &[&str] = &["the", "is", "are", "a", "an", "of", "to", "for"];
 
     ZH_STOPWORDS.contains(&token) || EN_STOPWORDS.contains(&token)
@@ -2951,10 +3084,7 @@ fn build_query_answer(question: &str, matches: &[WikiMatch]) -> String {
     ];
 
     for item in matches {
-        lines.push(format!(
-            "- {}（相关度：{}）",
-            item.page_path, item.score
-        ));
+        lines.push(format!("- {}（相关度：{}）", item.page_path, item.score));
     }
     lines.push("以上为本地规则检索结果（未调用云模型）。".to_string());
     lines.join("\n")
@@ -3021,8 +3151,8 @@ fn resolve_active_provider(
         return "ollama".to_string();
     }
 
-    let preferred = normalize_active_provider(preferred)
-        .or_else(|| normalize_active_provider(fallback));
+    let preferred =
+        normalize_active_provider(preferred).or_else(|| normalize_active_provider(fallback));
 
     match preferred {
         Some("cloud") if has_cloud_key => "cloud".to_string(),
@@ -3145,6 +3275,32 @@ mod tests {
     }
 
     #[test]
+    fn validate_pdf_source_path_rejects_missing_file() {
+        let missing = std::env::temp_dir().join(format!("missing-{}.pdf", uuid_v4_short()));
+        let err = validate_pdf_source_path(&missing).expect_err("缺失文件应报错");
+        assert!(err.contains("PDF 文件不存在"));
+    }
+
+    #[test]
+    fn validate_pdf_source_path_rejects_non_pdf_extension() {
+        let dir = make_temp_dir("llm-wiki-pdf-validate-ext");
+        let _guard = TempDirGuard(dir.clone());
+        let txt_path = dir.join("note.txt");
+        fs::write(&txt_path, "plain text").expect("写入测试文件失败");
+
+        let err = validate_pdf_source_path(&txt_path).expect_err("非 PDF 扩展名应报错");
+        assert!(err.contains("仅支持 .pdf"));
+    }
+
+    #[test]
+    fn validate_pdf_source_path_rejects_directory() {
+        let dir = make_temp_dir("llm-wiki-pdf-validate-dir");
+        let _guard = TempDirGuard(dir.clone());
+        let err = validate_pdf_source_path(&dir).expect_err("目录路径应报错");
+        assert!(err.contains("不是文件"));
+    }
+
+    #[test]
     fn default_paths_point_to_project_root_targets() {
         let vault_dir = make_temp_dir("llm-wiki-default-paths");
         let _guard = TempDirGuard(vault_dir.clone());
@@ -3211,7 +3367,9 @@ mod tests {
         let vault_dir = make_temp_dir("llm-wiki-lint-apply-orphan");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let orphan_path = vault_dir.join("wiki").join("orphan.md");
         let orphan_path_str = orphan_path.to_string_lossy().to_string();
@@ -3227,7 +3385,10 @@ mod tests {
         assert!(result.applied);
         assert_eq!(result.issue_code, "ORPHAN_WIKI_PAGE");
         assert_eq!(result.path.as_deref(), Some(orphan_path_str.as_str()));
-        assert!(result.touched_paths.iter().any(|path| path.ends_with("index.md")));
+        assert!(result
+            .touched_paths
+            .iter()
+            .any(|path| path.ends_with("index.md")));
 
         let index_content =
             fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
@@ -3243,7 +3404,9 @@ mod tests {
         let vault_dir = make_temp_dir("llm-wiki-lint-apply-missing-index");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let page_path = vault_dir.join("wiki").join("standalone.md");
         fs::write(&page_path, "# Standalone\n\n页面内容。").expect("写入页面失败");
@@ -3272,7 +3435,9 @@ mod tests {
         let vault_dir = make_temp_dir("llm-wiki-lint-apply-event");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let orphan_path = vault_dir.join("wiki").join("event-note.md");
         let orphan_path_str = orphan_path.to_string_lossy().to_string();
@@ -3303,7 +3468,9 @@ mod tests {
         let vault_dir = make_temp_dir("llm-wiki-lint-apply-batch");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let success_path = vault_dir.join("wiki").join("batch-note.md");
         fs::write(&success_path, "# Batch Note\n\n页面内容。").expect("写入页面失败");
@@ -3352,7 +3519,9 @@ mod tests {
         let vault_dir = make_temp_dir("llm-wiki-lint-apply-unsupported");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let result = state.apply_lint_patch(LintPatchApplyInput {
             issue_code: "TASK_QUERY_FAILED".to_string(),
@@ -3759,7 +3928,10 @@ entities:
                 .as_deref()
                 .expect("缺少显示路径"),
         );
-        assert_eq!(citations[1].cited_page_path, outside_cited_path.to_string_lossy());
+        assert_eq!(
+            citations[1].cited_page_path,
+            outside_cited_path.to_string_lossy()
+        );
     }
 
     #[test]
@@ -3837,10 +4009,16 @@ entities:
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
         let prompt_log = Arc::new(Mutex::new(Vec::new()));
-        let provider: Arc<dyn LlmProvider> =
-            Arc::new(MockQueryProvider::new("本地 LLM 合成回答", prompt_log.clone()));
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockQueryProvider::new(
+            "本地 LLM 合成回答",
+            prompt_log.clone(),
+        ));
         let matches = vec![WikiMatch {
-            page_path: vault_dir.join("wiki").join("prompt.md").to_string_lossy().to_string(),
+            page_path: vault_dir
+                .join("wiki")
+                .join("prompt.md")
+                .to_string_lossy()
+                .to_string(),
             score: 7,
             excerpt: "核心证据片段".to_string(),
         }];
@@ -3868,9 +4046,14 @@ entities:
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
         let prompt_log = Arc::new(Mutex::new(Vec::new()));
-        let provider: Arc<dyn LlmProvider> = Arc::new(MockQueryProvider::new("   ", prompt_log.clone()));
+        let provider: Arc<dyn LlmProvider> =
+            Arc::new(MockQueryProvider::new("   ", prompt_log.clone()));
         let matches = vec![WikiMatch {
-            page_path: vault_dir.join("wiki").join("fallback.md").to_string_lossy().to_string(),
+            page_path: vault_dir
+                .join("wiki")
+                .join("fallback.md")
+                .to_string_lossy()
+                .to_string(),
             score: 3,
             excerpt: "回退证据".to_string(),
         }];
@@ -3942,14 +4125,19 @@ entities:
 
         let (config, snapshot) = AppState::load_config(&config_path);
 
-        assert_eq!(snapshot.as_deref().map(str::trim), Some(r#"{
+        assert_eq!(
+            snapshot.as_deref().map(str::trim),
+            Some(
+                r#"{
   "mode": "Hybrid",
   "vault_path": "C:/wiki",
   "query_top_k": 5,
   "openai_api_key": "sk-legacy",
   "openai_provider_name": "DeepSeek",
   "openai_model": "deepseek-chat"
-}"#));
+}"#
+            )
+        );
         assert_eq!(config.mode, AppMode::Hybrid);
         assert_eq!(config.vault_path.as_deref(), Some("C:/wiki"));
         assert_eq!(config.query_top_k, Some(5));
@@ -3983,22 +4171,10 @@ entities:
         assert_eq!(display_cloud_provider_name("minimax"), "MiniMax");
 
         let cases = [
-            (
-                "deepseek",
-                Some("https://api.deepseek.com/v1"),
-            ),
-            (
-                "glm",
-                Some("https://open.bigmodel.cn/api/paas/v4"),
-            ),
-            (
-                "zhipu",
-                Some("https://open.bigmodel.cn/api/paas/v4"),
-            ),
-            (
-                "minimax",
-                Some("https://api.minimax.chat/v1"),
-            ),
+            ("deepseek", Some("https://api.deepseek.com/v1")),
+            ("glm", Some("https://open.bigmodel.cn/api/paas/v4")),
+            ("zhipu", Some("https://open.bigmodel.cn/api/paas/v4")),
+            ("minimax", Some("https://api.minimax.chat/v1")),
         ];
 
         for (provider_name, expected_base_url) in cases {
@@ -4071,14 +4247,9 @@ entities:
         db::upsert_fts_page(&db_path, &wiki_path, "fts-hit", content).expect("写入 fts 索引失败");
 
         let tokens = tokenize_query("Rust backend");
-        let (matches, strategy, fts_error) = search_wiki_matches_with_fts(
-            &db_path,
-            &wiki_dir,
-            &tokens,
-            "Rust backend",
-            3,
-        )
-        .expect("执行检索失败");
+        let (matches, strategy, fts_error) =
+            search_wiki_matches_with_fts(&db_path, &wiki_dir, &tokens, "Rust backend", 3)
+                .expect("执行检索失败");
 
         assert!(fts_error.is_none());
         assert_eq!(strategy, "fts");
@@ -4126,8 +4297,13 @@ entities:
             )
             .expect("写入测试页面失败");
             let db_path = vault_dir.join(".app").join("meta.db");
-            db::upsert_fts_page(&db_path, &page_path, &format!("page-{}", idx), "这个项目的核心目标是什么。")
-                .expect("写入 fts 索引失败");
+            db::upsert_fts_page(
+                &db_path,
+                &page_path,
+                &format!("page-{}", idx),
+                "这个项目的核心目标是什么。",
+            )
+            .expect("写入 fts 索引失败");
         }
 
         let result = state
@@ -4139,7 +4315,10 @@ entities:
             .expect("query_ask_with_options 应返回成功");
         assert_eq!(result.matched_pages.len(), 1);
         assert_eq!(result.search_strategy, "fts");
-        assert!(result.citations.iter().all(|item| item.display_path.is_some()));
+        assert!(result
+            .citations
+            .iter()
+            .all(|item| item.display_path.is_some()));
 
         let result = state
             .query_ask_with_options(
@@ -4150,7 +4329,10 @@ entities:
             .expect("query_ask_with_options 应返回成功");
         assert!(result.matched_pages.len() <= QUERY_TOP_K_MAX);
         assert_eq!(result.search_strategy, "fts");
-        assert!(result.citations.iter().all(|item| item.display_path.is_some()));
+        assert!(result
+            .citations
+            .iter()
+            .all(|item| item.display_path.is_some()));
     }
 
     #[test]
@@ -4182,9 +4364,14 @@ entities:
         state.set_query_top_k(2).expect("设置 top_k 失败");
 
         for idx in 0..4 {
-            let page_path = vault_dir.join("wiki").join(format!("topk-default-{}.md", idx));
-            fs::write(&page_path, format!("# 页面{}\nquery default topk 测试。\n", idx))
-                .expect("写入测试页面失败");
+            let page_path = vault_dir
+                .join("wiki")
+                .join(format!("topk-default-{}.md", idx));
+            fs::write(
+                &page_path,
+                format!("# 页面{}\nquery default topk 测试。\n", idx),
+            )
+            .expect("写入测试页面失败");
             let db_path = vault_dir.join(".app").join("meta.db");
             db::upsert_fts_page(
                 &db_path,
@@ -4196,10 +4383,7 @@ entities:
         }
 
         let result = state
-            .query_ask_with_options(
-                "query default topk".to_string(),
-                QueryAskOptions::default(),
-            )
+            .query_ask_with_options("query default topk".to_string(), QueryAskOptions::default())
             .await
             .expect("query_ask_with_options 应返回成功");
         assert_eq!(result.matched_pages.len(), 2);
@@ -4276,11 +4460,8 @@ entities:
             "# 核心目标\n这个项目的核心目标是什么 这是完整短语。\n",
         )
         .expect("写入 high.md 失败");
-        fs::write(
-            &low_path,
-            "# 其他说明\n这个 项目 核心 目标 分散出现。\n",
-        )
-        .expect("写入 low.md 失败");
+        fs::write(&low_path, "# 其他说明\n这个 项目 核心 目标 分散出现。\n")
+            .expect("写入 low.md 失败");
 
         let page_paths = vec![
             high_path.to_string_lossy().to_string(),
@@ -4303,7 +4484,9 @@ entities:
         let _guard = TempDirGuard(vault_dir.clone());
 
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let present_path = vault_dir.join("wiki").join("present.md");
         let orphan_path = vault_dir.join("wiki").join("orphan.md");
@@ -4354,7 +4537,11 @@ entities:
         .expect("写入 citations 失败");
 
         let report = state.lint_report();
-        let codes: BTreeSet<_> = report.issues.iter().map(|issue| issue.code.as_str()).collect();
+        let codes: BTreeSet<_> = report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect();
 
         assert!(codes.contains("MISSING_INDEX_ENTRY"));
         assert!(codes.contains("ORPHAN_WIKI_PAGE"));
@@ -4372,7 +4559,9 @@ entities:
         let _guard = TempDirGuard(vault_dir.clone());
 
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let present_path = vault_dir.join("wiki").join("present.md");
         let orphan_path = vault_dir.join("wiki").join("orphan.md");
@@ -4443,7 +4632,9 @@ entities:
         let _guard = TempDirGuard(vault_dir.clone());
 
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
         let db_path = vault_dir.join(".app").join("meta.db");
         let conn = Connection::open(&db_path).expect("打开数据库失败");
@@ -4496,7 +4687,8 @@ entities:
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), unique));
+        let dir =
+            std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), unique));
         fs::create_dir_all(&dir).expect("创建临时目录失败");
         dir
     }
@@ -4529,11 +4721,9 @@ entities:
         let actual_canonical = fs::canonicalize(Path::new(actual)).expect("规范化实际路径失败");
 
         assert_eq!(
-            actual_canonical,
-            expected_canonical,
+            actual_canonical, expected_canonical,
             "路径语义不一致：expected={:?}, actual={:?}",
-            expected,
-            actual
+            expected, actual
         );
     }
 
@@ -4590,7 +4780,11 @@ entities:
             checked_at: "0".to_string(),
             summary: "初始".to_string(),
             issues: vec![],
-            severity_stats: LintSeverityStats { error: 0, warning: 1, info: 0 },
+            severity_stats: LintSeverityStats {
+                error: 0,
+                warning: 1,
+                info: 0,
+            },
         };
         let semantic = vec![LintIssue {
             code: "SEMANTIC_STALE".to_string(),

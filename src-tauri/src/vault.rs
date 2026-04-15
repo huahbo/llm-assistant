@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -81,8 +80,8 @@ pub fn ingest_markdown(
         return Err("Vault 不存在，请先执行 init_vault".to_string());
     }
 
-    let source_content = fs::read_to_string(source_path)
-        .map_err(|err| format!("读取源 Markdown 失败: {}", err))?;
+    let source_content =
+        fs::read_to_string(source_path).map_err(|err| format!("读取源 Markdown 失败: {}", err))?;
 
     let content_hash = stable_hash_hex(source_content.as_bytes());
     let timestamp_ms = current_timestamp_ms();
@@ -171,10 +170,7 @@ pub fn ingest_markdown(
         .unwrap_or_else(|| fallback_summarize(&source_content, 80));
     let index_entry = format!(
         "- [[wiki/{}|{}]]\n  - Source file: `{}`\n  - Summary: {}\n",
-        wiki_file_name,
-        wiki_title,
-        raw_file_name,
-        short_summary
+        wiki_file_name, wiki_title, raw_file_name, short_summary
     );
     if let Err(err) = append_markdown_entry(&index_path, INDEX_SEED, &index_entry) {
         finalize_failed_task(&db_path, task.task_id, &timestamp_ms, &err);
@@ -274,7 +270,13 @@ pub fn save_query_answer(
     let page_title = build_query_page_title(input.title.as_deref(), question);
     let wiki_file_name = format!("query-{}.md", timestamp_ns);
     let wiki_path = vault_path.join("wiki").join(&wiki_file_name);
-    let body = build_query_wiki_body(&page_title, question, answer, &timestamp_ms, &input.citations);
+    let body = build_query_wiki_body(
+        &page_title,
+        question,
+        answer,
+        &timestamp_ms,
+        &input.citations,
+    );
     write_or_verify_same(&wiki_path, &body)?;
 
     let index_path = vault_path.join("index.md");
@@ -506,7 +508,11 @@ fn normalize_raw_filename(source_stem: &str, content_hash: &str) -> String {
     }
 
     let cleaned = cleaned.trim_matches('_');
-    let cleaned = if cleaned.is_empty() { "source" } else { cleaned };
+    let cleaned = if cleaned.is_empty() {
+        "source"
+    } else {
+        cleaned
+    };
     let hash_prefix_len = content_hash.len().min(8);
     let hash_prefix = &content_hash[..hash_prefix_len];
     format!("{}-{}.md", cleaned, hash_prefix)
@@ -665,15 +671,14 @@ pub fn write_wiki_page(path: &str, content: &str) -> Result<bool, String> {
 
     // 如文件已存在且内容相同则跳过
     if path_buf.exists() {
-        let existing = fs::read_to_string(path_buf)
-            .map_err(|e| format!("读取现有文件失败：{e}"))?;
+        let existing =
+            fs::read_to_string(path_buf).map_err(|e| format!("读取现有文件失败：{e}"))?;
         if existing == content {
             return Ok(false); // 无变化
         }
     }
 
-    fs::write(path_buf, content)
-        .map_err(|e| format!("写入文件失败：{e}"))?;
+    fs::write(path_buf, content).map_err(|e| format!("写入文件失败：{e}"))?;
     Ok(true) // 已写入
 }
 
@@ -716,7 +721,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), unique));
+        let dir =
+            std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), unique));
         fs::create_dir_all(&dir).expect("创建临时目录失败");
         dir
     }
@@ -743,7 +749,8 @@ mod tests {
         assert!(vault_dir.join(".app").join("config.json").is_file());
         assert!(vault_dir.join(".app").join("meta.db").is_file());
 
-        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
         let log_content = fs::read_to_string(vault_dir.join("log.md")).expect("读取 log.md 失败");
         assert!(index_content.contains("## Imported Pages"));
         assert!(log_content.contains("## Event Log"));
@@ -759,14 +766,16 @@ mod tests {
         let source_content = "# Source Title\n\nA short note for ingest.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let result = ingest_markdown(&vault_dir, &source_path, None, &[]).expect("导入 Markdown 失败");
+        let result =
+            ingest_markdown(&vault_dir, &source_path, None, &[]).expect("导入 Markdown 失败");
 
         assert!(Path::new(&result.raw_path).is_file());
         assert!(Path::new(&result.wiki_path).is_file());
 
         let raw_content = fs::read_to_string(&result.raw_path).expect("读取 raw 文件失败");
         let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
-        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
         let log_content = fs::read_to_string(vault_dir.join("log.md")).expect("读取 log.md 失败");
 
         assert_eq!(raw_content, source_content);
@@ -818,8 +827,17 @@ mod tests {
         assert_eq!(first.raw_path, second.raw_path);
         assert!(second.message.contains("重复内容"));
 
-        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
-        let link_count = index_content.matches(&format!("[[wiki/{}|", Path::new(&first.wiki_path).file_name().and_then(|x| x.to_str()).unwrap_or_default())).count();
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        let link_count = index_content
+            .matches(&format!(
+                "[[wiki/{}|",
+                Path::new(&first.wiki_path)
+                    .file_name()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or_default()
+            ))
+            .count();
         assert_eq!(link_count, 1);
 
         let db_path = vault_dir.join(".app").join("meta.db");
@@ -841,8 +859,7 @@ mod tests {
         initialize_vault(&vault_dir, AppMode::Hybrid).expect("初始化 Vault 失败");
 
         let source_path = vault_dir.join("source-frontmatter.md");
-        fs::write(&source_path, "# Note\n\nFrontmatter regression test.")
-            .expect("写入源文件失败");
+        fs::write(&source_path, "# Note\n\nFrontmatter regression test.").expect("写入源文件失败");
 
         let entities = vec!["Rust".to_string(), "SQLite".to_string()];
         let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &entities)
@@ -906,7 +923,8 @@ mod tests {
 
         assert!(Path::new(&result.wiki_path).is_file());
         let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
-        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
         let log_content = fs::read_to_string(vault_dir.join("log.md")).expect("读取 log.md 失败");
         assert!(wiki_content.contains("## Answer"));
         assert!(wiki_content.contains("## Citations"));
