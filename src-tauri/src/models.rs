@@ -358,8 +358,25 @@ pub struct WikiPageDetail {
     pub title: String,
     pub path: String,
     pub display_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontmatter: Option<WikiPageFrontmatter>,
     pub content: String,
     pub updated_at: String,
+}
+
+/// Wiki 页面 frontmatter 结构化信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageFrontmatter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<String>,
 }
 
 /// Wiki 页面引用项。

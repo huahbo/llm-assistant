@@ -21,7 +21,7 @@ use crate::{
         LintPatchEventItem, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
         ModeChangeResult, ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation,
         QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
-        WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+        WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
     },
     vault,
 };
@@ -1026,12 +1026,14 @@ impl AppState {
         let content = fs::read_to_string(&target_path)
             .map_err(|err| format!("读取页面失败: {}", err))?;
         let title = extract_title_from_markdown(&content, &target_path);
+        let frontmatter = parse_wiki_frontmatter(&content);
         let updated_at = file_modified_timestamp_ms(&target_path);
 
         Ok(WikiPageDetail {
             title,
             path: target_path.to_string_lossy().to_string(),
             display_path: friendly_display_path(&target_path),
+            frontmatter,
             content,
             updated_at,
         })
@@ -2602,6 +2604,141 @@ fn search_wiki_matches_from_paths(
     Ok(results)
 }
 
+fn parse_wiki_frontmatter(content: &str) -> Option<WikiPageFrontmatter> {
+    let block = extract_frontmatter_block(content)?;
+    let mut frontmatter = WikiPageFrontmatter {
+        title: None,
+        source: None,
+        raw: None,
+        imported_at: None,
+        entities: Vec::new(),
+    };
+    let mut lines = block.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("title:") {
+            frontmatter.title = parse_frontmatter_scalar(value);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("source:") {
+            frontmatter.source = parse_frontmatter_scalar(value);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("raw:") {
+            frontmatter.raw = parse_frontmatter_scalar(value);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("imported_at:") {
+            frontmatter.imported_at = parse_frontmatter_scalar(value);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("entities:") {
+            let inline = value.trim();
+            if inline == "[]" {
+                continue;
+            }
+            if !inline.is_empty() {
+                if let Some(entity) = parse_frontmatter_scalar(inline) {
+                    if !entity.is_empty() {
+                        frontmatter.entities.push(entity);
+                    }
+                }
+                continue;
+            }
+
+            while let Some(next_line) = lines.peek().copied() {
+                let next_trimmed = next_line.trim();
+                if next_trimmed.is_empty() {
+                    lines.next();
+                    continue;
+                }
+
+                if let Some(entity) = next_trimmed.strip_prefix("- ") {
+                    if let Some(entity_value) = parse_frontmatter_scalar(entity) {
+                        if !entity_value.is_empty() {
+                            frontmatter.entities.push(entity_value);
+                        }
+                    }
+                    lines.next();
+                    continue;
+                }
+
+                break;
+            }
+        }
+    }
+
+    let has_scalar_fields = frontmatter.title.is_some()
+        || frontmatter.source.is_some()
+        || frontmatter.raw.is_some()
+        || frontmatter.imported_at.is_some();
+    if has_scalar_fields || !frontmatter.entities.is_empty() {
+        Some(frontmatter)
+    } else {
+        None
+    }
+}
+
+fn extract_frontmatter_block(content: &str) -> Option<String> {
+    let normalized = content.replace("\r\n", "\n");
+    let mut lines = normalized.lines();
+
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    let mut block_lines = Vec::new();
+    for line in lines {
+        if line.trim() == "---" {
+            return Some(block_lines.join("\n"));
+        }
+        block_lines.push(line.to_string());
+    }
+
+    None
+}
+
+fn parse_frontmatter_scalar(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        let body = &trimmed[1..trimmed.len() - 1];
+        return Some(unescape_yaml_double_quoted(body));
+    }
+
+    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        let body = &trimmed[1..trimmed.len() - 1];
+        return Some(body.to_string());
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn unescape_yaml_double_quoted(value: &str) -> String {
+    let mut output = String::new();
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                output.push(next);
+            } else {
+                output.push('\\');
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
 fn extract_title_from_markdown(content: &str, path: &Path) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
@@ -3316,8 +3453,57 @@ mod tests {
             .expect("读取页面详情失败");
         assert_eq!(detail.title, "Detail Title");
         assert!(detail.content.contains("正文内容"));
+        assert!(detail.frontmatter.is_none());
         assert_paths_semantically_equal(&page_path, &detail.path);
         assert_paths_semantically_equal(&page_path, &detail.display_path);
+    }
+
+    #[test]
+    fn wiki_page_detail_parses_frontmatter_fields() {
+        let vault_dir = make_temp_dir("llm-wiki-page-detail-frontmatter");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("detail-frontmatter.md");
+        fs::write(
+            &page_path,
+            r#"---
+title: "Detail Title"
+source: "E:\\llm-wiki\\source\\detail.md"
+raw: "raw/detail.md"
+imported_at: "2026-04-13T18:00:00+08:00"
+entities:
+  - "Rust"
+  - "SQLite"
+---
+# Detail Title
+
+正文内容。
+"#,
+        )
+        .expect("写入页面失败");
+
+        let detail = state
+            .wiki_page_detail(page_path.to_string_lossy().to_string())
+            .expect("读取页面详情失败");
+        let frontmatter = detail.frontmatter.expect("未解析到 frontmatter");
+        assert_eq!(frontmatter.title.as_deref(), Some("Detail Title"));
+        assert_eq!(
+            frontmatter.source.as_deref(),
+            Some(r"E:\llm-wiki\source\detail.md")
+        );
+        assert_eq!(frontmatter.raw.as_deref(), Some("raw/detail.md"));
+        assert_eq!(
+            frontmatter.imported_at.as_deref(),
+            Some("2026-04-13T18:00:00+08:00")
+        );
+        assert_eq!(
+            frontmatter.entities,
+            vec!["Rust".to_string(), "SQLite".to_string()]
+        );
     }
 
     #[test]

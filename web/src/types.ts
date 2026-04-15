@@ -122,8 +122,17 @@ export interface WikiPageDetail {
   path: string;
   display_path?: string | null;
   displayPath?: string | null;
+  frontmatter?: WikiPageFrontmatter | null;
   content: string;
   updated_at: string;
+}
+
+export interface WikiPageFrontmatter {
+  title?: string | null;
+  source?: string | null;
+  raw?: string | null;
+  imported_at?: string | null;
+  entities?: string[];
 }
 
 export interface WikiPageCitation {

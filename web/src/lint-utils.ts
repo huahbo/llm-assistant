@@ -181,16 +181,46 @@ export const resolveLintSeverityStats = (
 };
 
 export const formatLintCheckedAt = (checkedAt: string) => {
-  const timestamp = Number(checkedAt);
-
-  if (!Number.isFinite(timestamp)) {
+  const normalized = checkedAt.trim();
+  if (!normalized) {
     return checkedAt;
   }
 
-  const date = new Date(timestamp);
+  let date: Date;
+  if (/^\d+$/.test(normalized)) {
+    const numericValue = Number(normalized);
+    if (!Number.isFinite(numericValue)) {
+      return checkedAt;
+    }
+    const timestamp = normalized.length === 10 ? numericValue * 1000 : numericValue;
+    date = new Date(timestamp);
+  } else {
+    date = new Date(normalized);
+  }
+
   if (Number.isNaN(date.getTime())) {
     return checkedAt;
   }
 
-  return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+  // 统一使用北京时间（Asia/Shanghai）显示，避免 UTC 给用户造成时差理解负担。
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const partValue = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+
+  const year = partValue("year");
+  const month = partValue("month");
+  const day = partValue("day");
+  const hour = partValue("hour");
+  const minute = partValue("minute");
+
+  return `${year}-${month}-${day} ${hour}:${minute} 北京时间`;
 };

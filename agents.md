@@ -196,7 +196,7 @@
 
 > 本节由每轮结束的主控 Agent 维护，是下一轮开发的起点。
 
-### 18.1 已完成（截至 2026-04-13）
+### 18.1 已完成（截至 2026-04-15）
 
 | 优先级 | 功能 | 状态 |
 |--------|------|------|
@@ -212,17 +212,14 @@
 | P3-A | 进度反馈（Tauri emit + 前端 listenProgress） | ✅ `state.rs::emit_progress` + `tauri-client.ts::listenProgress` |
 | P3-B | Cloud Provider（OpenAI-compatible + Hybrid 路由 + Settings UI） | ✅ `src-tauri/src/llm/openai.rs` + `get_llm_config/set_llm_config` |
 | P3-C | Ingest 实体写入 frontmatter（`title/source/raw/imported_at/entities`） | ✅ `vault.rs::build_wiki_frontmatter` + `state.rs::ingest_markdown` |
+| P4-A | Frontmatter 读取与 UI 展示（详情页元数据区） | ✅ `state.rs::wiki_page_detail` + `web/src/App.tsx` |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P4-A：Frontmatter 读取与 UI 展示**
-- 目前 entities 已写入 Wiki frontmatter，但前端页面详情尚未结构化展示 frontmatter 字段。
-- 可在 `get_wiki_page_detail` 增加 frontmatter 解析结果，并在 UI 详情区新增元数据展示块。
-
-**P4-B：前端整体布局重构（收尾阶段）**
-- 在全部核心功能完成并测试通过后，再执行一次 UI 信息架构重排。
-- 目标形态：更接近日常桌面 App，采用“侧边栏 + 主内容区”布局，减少当前长页面滚动。
-- 约束：仅做展示层重构，不改变现有后端接口契约与业务行为。
+**P4-B：前端信息架构收尾与一致性清理**
+- 对 Wiki 详情区新增 frontmatter 元数据块做交互收尾（可读性、复制与折叠策略）。
+- 清理 `AGENTS.md` 与实施记录中历史描述不一致项（如 P4-B 状态、测试条目数）。
+- 约束：仅做展示层/文档一致性优化，不改变既有后端命令契约。
 
 ### 18.3 当前代码快照
 
@@ -244,15 +241,15 @@ web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
   tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（43 个）
+  app-utils.test.ts # 前端单元测试（59 个）
 ```
 
 ### 18.4 验证基线
 
-- `cargo test`（src-tauri/）：**61 通过，0 失败**
-- `npm run test`（web/）：**43 通过，0 失败**
-- `cargo check`：**零错误（2 个 dead_code 警告，已知不影响功能）**
-- TypeScript 类型检查：**零错误**
+- `cargo test`（src-tauri/）：**最近一次已知 61 通过，0 失败（2026-04-13）**
+- `npm run test`（web/）：**59 通过，0 失败（2026-04-15）**
+- `cargo check`：**当前 WSL 环境缺少 `cargo`（需在 Windows PowerShell 复核）**
+- TypeScript 类型检查：**零错误（2026-04-15）**
 
 ### 18.5 关键约束提醒
 

@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildFrontmatterCopyText,
   buildLlmProviderConfig,
   buildCloudProviderPresetConfig,
+  buildWikiFrontmatterDisplay,
   cloudProviderPresets,
   formatQueryAnswerStrategyLabel,
   formatQuerySearchStrategyLabel,
+  isSameWikiPagePath,
+  normalizeWikiPathForCompare,
+  parseLegacyWikiMetadataFromContent,
   resolveNextActiveProvider,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -55,6 +60,123 @@ describe("格式化函数", () => {
     expect(formatLogLevel("Info")).toBe("Info");
     expect(formatLogLevel("Warn")).toBe("Warn");
     expect(formatLogLevel("Error")).toBe("Error");
+  });
+});
+
+describe("Wiki frontmatter 展示构建", () => {
+  it("生成 frontmatter 复制文本", () => {
+    expect(buildFrontmatterCopyText("source", "wiki/source.md")).toBe("source: wiki/source.md");
+  });
+
+  it("在无详情时返回空结构", () => {
+    expect(buildWikiFrontmatterDisplay(null)).toEqual({
+      frontmatter: null,
+      rows: [],
+      entities: [],
+      totalCount: 0,
+      hasMeta: false,
+    });
+  });
+
+  it("从旧格式元数据段落提取 source/raw", () => {
+    expect(
+      parseLegacyWikiMetadataFromContent(`
+- Source: \`E:\\llm-wiki\\test-llm.md\`
+- Raw: \`E:\\llm-wiki\\vault\\raw\\test.md\`
+- Imported at: 1775811471352
+`),
+    ).toEqual({
+      source: "E:\\llm-wiki\\test-llm.md",
+      raw: "E:\\llm-wiki\\vault\\raw\\test.md",
+    });
+  });
+
+  it("过滤空字段并统计实体", () => {
+    const result = buildWikiFrontmatterDisplay({
+      title: "Page A",
+      path: "wiki/a.md",
+      display_path: "wiki/a.md",
+      content: "# A",
+      updated_at: "1",
+      frontmatter: {
+        title: "  ",
+        source: "source/a.md",
+        raw: "raw/a.md",
+        imported_at: "2026-04-15T10:00:00+08:00",
+        entities: ["Rust", " ", "SQLite"],
+      },
+    });
+
+    expect(result.rows).toEqual([
+      { key: "source", label: "source", value: "source/a.md", displayValue: "source/a.md" },
+      { key: "raw", label: "raw", value: "raw/a.md", displayValue: "raw/a.md" },
+    ]);
+    expect(result.entities).toEqual(["Rust", "SQLite"]);
+    expect(result.totalCount).toBe(3);
+    expect(result.hasMeta).toBe(true);
+  });
+
+  it("在缺少 YAML frontmatter 时回退解析旧格式元数据并可展示", () => {
+    const result = buildWikiFrontmatterDisplay({
+      title: "Legacy Page",
+      path: "wiki/legacy.md",
+      display_path: "wiki/legacy.md",
+      content: `
+# Legacy Page
+
+- Source: \`E:\\llm-wiki\\legacy.md\`
+- Raw: \`E:\\llm-wiki\\vault\\raw\\legacy.md\`
+- Imported at: 1775811471352
+`,
+      updated_at: "1",
+      frontmatter: null,
+    });
+
+    expect(result.rows).toEqual([
+      {
+        key: "source",
+        label: "source",
+        value: "E:\\llm-wiki\\legacy.md",
+        displayValue: "E:\\llm-wiki\\legacy.md",
+      },
+      {
+        key: "raw",
+        label: "raw",
+        value: "E:\\llm-wiki\\vault\\raw\\legacy.md",
+        displayValue: "E:\\llm-wiki\\vault\\raw\\legacy.md",
+      },
+    ]);
+    expect(result.hasMeta).toBe(true);
+  });
+});
+
+describe("Wiki 路径比较", () => {
+  it("统一路径分隔符与大小写用于比较", () => {
+    expect(normalizeWikiPathForCompare("E:\\LLM-Wiki\\vault\\wiki\\A.md")).toBe(
+      "e:/llm-wiki/vault/wiki/a.md",
+    );
+  });
+
+  it("识别同一路径（Windows 反斜杠与大小写差异）", () => {
+    expect(
+      isSameWikiPagePath(
+        "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+        "e:/LLM-WIKI/vault/wiki/ingest-1.md",
+      ),
+    ).toBe(true);
+  });
+
+  it("识别同一路径（Windows 规范路径前缀差异）", () => {
+    expect(
+      isSameWikiPagePath(
+        "E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+        "\\\\?\\E:\\llm-wiki\\vault\\wiki\\ingest-1.md",
+      ),
+    ).toBe(true);
+  });
+
+  it("空路径不视为同一路径", () => {
+    expect(isSameWikiPagePath("", "")).toBe(false);
   });
 });
 
@@ -390,10 +512,14 @@ describe("Lint 展示辅助函数", () => {
     { severity: "info", code: null, path: null, suggestion: null },
   ];
 
-  it("将 lint 时间戳格式化为 UTC 字符串", () => {
+  it("将 lint 时间戳格式化为北京时间字符串（精度到分钟）", () => {
     expect(formatLintCheckedAt(String(Date.UTC(2026, 3, 8, 9, 10, 11)))).toBe(
-      "2026-04-08 09:10:11 UTC",
+      "2026-04-08 17:10 北京时间",
     );
+  });
+
+  it("支持 ISO 时间字符串并格式化到分钟", () => {
+    expect(formatLintCheckedAt("2026-04-08T09:10:11Z")).toBe("2026-04-08 17:10 北京时间");
   });
 
   it("对非法时间戳回退原始字符串", () => {

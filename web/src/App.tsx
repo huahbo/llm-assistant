@@ -217,6 +217,92 @@ export const formatQuerySearchStrategyLabel = (searchStrategy?: string | null) =
   return searchStrategyLabels[normalizedStrategy] ?? "未知";
 };
 
+export const buildFrontmatterCopyText = (field: string, value: string) => `${field}: ${value}`;
+
+export const parseLegacyWikiMetadataFromContent = (content: string | null | undefined) => {
+  const sourcePattern = /^-\s*source:\s*(.+)$/i;
+  const rawPattern = /^-\s*raw:\s*(.+)$/i;
+  const stripMarkdownCode = (value: string) => value.trim().replace(/^`/, "").replace(/`$/, "");
+  const result: {
+    source?: string;
+    raw?: string;
+  } = {};
+
+  for (const line of (content ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const sourceMatched = trimmed.match(sourcePattern);
+    if (sourceMatched) {
+      result.source = stripMarkdownCode(sourceMatched[1] ?? "");
+      continue;
+    }
+
+    const rawMatched = trimmed.match(rawPattern);
+    if (rawMatched) {
+      result.raw = stripMarkdownCode(rawMatched[1] ?? "");
+    }
+  }
+
+  return result;
+};
+
+export const buildWikiFrontmatterDisplay = (detail: WikiPageDetail | null | undefined) => {
+  const frontmatter = detail?.frontmatter ?? null;
+  const legacyMetadata = parseLegacyWikiMetadataFromContent(detail?.content);
+  const sourceRaw = frontmatter?.source ?? legacyMetadata.source ?? "";
+  const rawRaw = frontmatter?.raw ?? legacyMetadata.raw ?? "";
+  const rows = [
+    {
+      key: "title",
+      label: "title",
+      value: frontmatter?.title ?? "",
+      displayValue: (frontmatter?.title ?? "").trim(),
+    },
+    {
+      key: "source",
+      label: "source",
+      value: sourceRaw,
+      displayValue: sourceRaw.trim(),
+    },
+    {
+      key: "raw",
+      label: "raw",
+      value: rawRaw,
+      displayValue: rawRaw.trim(),
+    },
+  ].filter((item) => item.value.trim().length > 0);
+  const entities = (frontmatter?.entities ?? [])
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  const hasMeta = rows.length > 0 || entities.length > 0;
+
+  return {
+    frontmatter,
+    rows,
+    entities,
+    totalCount: rows.length + (entities.length ? 1 : 0),
+    hasMeta,
+  };
+};
+
+export const normalizeWikiPathForCompare = (path: string | null | undefined) =>
+  (path ?? "")
+    .trim()
+    // Windows 规范路径前缀：\\?\C:\... 或 \\?\UNC\server\share\...
+    .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+    .replace(/^\\\\\?\\/i, "")
+    .replaceAll("\\", "/")
+    .toLowerCase();
+
+export const isSameWikiPagePath = (left: string | null | undefined, right: string | null | undefined) => {
+  const normalizedLeft = normalizeWikiPathForCompare(left);
+  const normalizedRight = normalizeWikiPathForCompare(right);
+  return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -293,6 +379,9 @@ export default function App() {
   const [wikiPageCitationsLoading, setWikiPageCitationsLoading] = useState(false);
   const [wikiPageDetailError, setWikiPageDetailError] = useState("");
   const [wikiPageCitationsError, setWikiPageCitationsError] = useState("");
+  const [wikiActivePagePath, setWikiActivePagePath] = useState("");
+  const [wikiFrontmatterCollapsed, setWikiFrontmatterCollapsed] = useState(false);
+  const [wikiFrontmatterCopiedKey, setWikiFrontmatterCopiedKey] = useState("");
   // LLM Provider 配置（Settings 面板）
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
   const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
@@ -757,10 +846,13 @@ export default function App() {
       return;
     }
 
+    setWikiActivePagePath(pagePath);
     setWikiPageDetailLoading(true);
     setWikiPageCitationsLoading(true);
     setWikiPageDetailError("");
     setWikiPageCitationsError("");
+    setWikiFrontmatterCopiedKey("");
+    setWikiFrontmatterCollapsed(false);
     setStatusMessage("");
 
     try {
@@ -796,11 +888,38 @@ export default function App() {
   };
 
   const handleCloseWikiPreview = () => {
+    setWikiActivePagePath("");
     setWikiPageDetail(null);
     setWikiPageCitations([]);
     setWikiPageDetailError("");
     setWikiPageCitationsError("");
+    setWikiFrontmatterCopiedKey("");
+    setWikiFrontmatterCollapsed(false);
     setStatusMessage("已关闭页面预览。");
+  };
+
+  const handleCopyFrontmatterValue = async (field: string, value: string) => {
+    const normalized = value.trim();
+    if (!normalized) {
+      setStatusMessage(`字段 ${field} 为空，已跳过复制。`);
+      return;
+    }
+
+    const clipboard = globalThis.navigator?.clipboard;
+    if (!clipboard?.writeText) {
+      setStatusMessage("当前环境不支持复制到剪贴板。");
+      return;
+    }
+
+    try {
+      await clipboard.writeText(buildFrontmatterCopyText(field, normalized));
+      setWikiFrontmatterCopiedKey(field);
+      setStatusMessage(`已复制 ${field}。`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`复制失败：${message}`);
+    }
   };
 
   const llmStatusSummary = llmStatus ? formatLlmStatusSummary(llmStatus) : null;
@@ -857,6 +976,137 @@ export default function App() {
       : lintEmptyFilterLabels.length > 1
         ? `当前筛选的${lintEmptyFilterLabels.join("、")}组合后没有命中任何问题。`
         : "当前筛选条件没有命中任何问题。";
+  const wikiFrontmatterDisplay = buildWikiFrontmatterDisplay(wikiPageDetail);
+  const wikiFrontmatterRows = wikiFrontmatterDisplay.rows;
+  const wikiFrontmatterEntities = wikiFrontmatterDisplay.entities;
+  const isActiveWikiDetailInList = Boolean(
+    wikiActivePagePath
+    && pages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
+  );
+
+  const renderWikiPreview = () => (
+    <article className="wiki-preview">
+      <div className="wiki-preview__head">
+        <div className="wiki-preview__title">
+          <h3>{wikiPageDetail?.title ?? "页面详情"}</h3>
+          {wikiPageDetail ? <p><code>{resolveDisplayPath(wikiPageDetail)}</code></p> : null}
+        </div>
+        <div className="wiki-preview__actions">
+          {wikiPageDetail ? <span>{formatLintCheckedAt(wikiPageDetail.updated_at)}</span> : null}
+          <button type="button" className="dev-panel__button" onClick={handleCloseWikiPreview}>
+            关闭预览
+          </button>
+        </div>
+      </div>
+      {wikiFrontmatterDisplay.hasMeta ? (
+        <div className="wiki-preview__meta">
+          <div className="wiki-preview__meta-head">
+            <h4>Frontmatter</h4>
+            <div className="wiki-preview__meta-head-actions">
+              <span>{wikiFrontmatterDisplay.totalCount} 项</span>
+              <button
+                type="button"
+                className="dev-panel__button wiki-preview__meta-toggle"
+                onClick={() => setWikiFrontmatterCollapsed((value) => !value)}
+              >
+                {wikiFrontmatterCollapsed ? "展开" : "折叠"}
+              </button>
+            </div>
+          </div>
+          {wikiFrontmatterCollapsed ? (
+            <p className="runtime-hint">Frontmatter 已折叠，点击“展开”查看详情。</p>
+          ) : (
+            <>
+              {wikiFrontmatterRows.length ? (
+                <div className="wiki-preview__meta-grid">
+                  {wikiFrontmatterRows.map((item) => (
+                    <div key={item.key} className="wiki-preview__meta-item">
+                      <div className="wiki-preview__meta-item-head">
+                        <span>{item.label}</span>
+                        <button
+                          type="button"
+                          className="dev-panel__button wiki-preview__meta-copy"
+                          onClick={() => void handleCopyFrontmatterValue(item.key, item.value)}
+                        >
+                          {wikiFrontmatterCopiedKey === item.key ? "已复制" : "复制"}
+                        </button>
+                      </div>
+                      <code>{item.displayValue}</code>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="runtime-hint">未解析出可展示的 frontmatter 标量字段。</p>
+              )}
+              {wikiFrontmatterEntities.length ? (
+                <div className="wiki-preview__meta-item wiki-preview__meta-item--entities">
+                  <div className="wiki-preview__meta-item-head">
+                    <span>entities</span>
+                    <button
+                      type="button"
+                      className="dev-panel__button wiki-preview__meta-copy"
+                      onClick={() =>
+                        void handleCopyFrontmatterValue(
+                          "entities",
+                          wikiFrontmatterEntities.join(", "),
+                        )
+                      }
+                    >
+                      {wikiFrontmatterCopiedKey === "entities" ? "已复制" : "复制"}
+                    </button>
+                  </div>
+                  <div className="wiki-preview__entity-list">
+                    {wikiFrontmatterEntities.map((entity, index) => (
+                      <code key={`${entity}-${index}`}>{entity}</code>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
+      <pre className="wiki-preview__content">{wikiPageDetail?.content ?? ""}</pre>
+      <div className="wiki-preview__citations">
+        <div className="section-head wiki-preview__citations-head">
+          <h3>页面引用</h3>
+          <span className="section-head__hint">
+            {wikiPageCitations.length ? `${wikiPageCitations.length} 条` : "暂无引用"}
+          </span>
+        </div>
+        {wikiPageCitationsError ? <p className="runtime-status">{wikiPageCitationsError}</p> : null}
+        {wikiPageCitationsLoading ? <p className="runtime-hint">正在读取页面引用...</p> : null}
+        {wikiPageCitations.length ? (
+          <div className="wiki-citation-list">
+            {wikiPageCitations.map((citation) => (
+              <article key={`${citation.cited_page_path}-${citation.score}`} className="wiki-citation">
+                <div className="wiki-citation__top">
+                  <code>{resolveDisplayPath(citation)}</code>
+                  <span className={`pill ${citation.target_exists ? "pill--ok" : "pill--danger"}`}>
+                    {citation.target_exists ? "目标存在" : "目标缺失"}
+                  </span>
+                </div>
+                <div className="wiki-citation__meta">score: {citation.score}</div>
+                <p>{citation.excerpt}</p>
+                <div className="wiki-citation__actions">
+                  <button
+                    type="button"
+                    className="dev-panel__button wiki-citation__button"
+                    onClick={() => void handleOpenWikiPage(citation.cited_page_path)}
+                    disabled={!isTauriRuntime() || !citation.target_exists || wikiPageDetailLoading}
+                  >
+                    {citation.target_exists ? "查看被引页面" : "目标页面缺失"}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-state">当前页面没有可展示的引用。</p>
+        )}
+      </div>
+    </article>
+  );
 
   const handleClearLintFilters = () => {
     setLintSeverityFilter("all");
@@ -1226,7 +1476,7 @@ export default function App() {
                       >
                         <div className="log-item__head">
                           <span className="log-item__level">{formatLogLevel(log.level)}</span>
-                          <time dateTime={log.created_at}>{log.created_at}</time>
+                          <time dateTime={log.created_at}>{formatLintCheckedAt(log.created_at)}</time>
                         </div>
                         <p>{log.message}</p>
                       </article>
@@ -1288,26 +1538,48 @@ export default function App() {
                 </div>
                 {pages.length ? (
                   <div className="ask-result__citations">
-                    {pages.map((page) => (
-                      <article key={page.path} className="ask-citation">
-                        <div className="ask-citation__top">
-                          <code>{page.title}</code>
-                          <span>{formatLintCheckedAt(page.updated_at)}</span>
-                        </div>
-                        <p>{page.summary}</p>
-                        <div className="wiki-card__footer">
-                          <code>{resolveDisplayPath(page)}</code>
-                          <button
-                            type="button"
-                            className="dev-panel__button wiki-card__button"
-                            onClick={() => void handleOpenWikiPage(page.path)}
-                            disabled={!isTauriRuntime() || wikiPageDetailLoading}
-                          >
-                            查看内容
-                          </button>
-                        </div>
-                      </article>
-                    ))}
+                    {pages.map((page) => {
+                      const isActiveCard = isSameWikiPagePath(page.path, wikiActivePagePath);
+                      const isDetailForCard = Boolean(
+                        wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
+                      );
+
+                      return (
+                        <article key={page.path} className="ask-citation">
+                          <div className="ask-citation__top">
+                            <code>{page.title}</code>
+                            <span>{formatLintCheckedAt(page.updated_at)}</span>
+                          </div>
+                          <p>{page.summary}</p>
+                          <div className="wiki-card__footer">
+                            <code>{resolveDisplayPath(page)}</code>
+                            <button
+                              type="button"
+                              className="dev-panel__button wiki-card__button"
+                              onClick={() => {
+                                if (isActiveCard && !wikiPageDetailLoading) {
+                                  handleCloseWikiPreview();
+                                  return;
+                                }
+                                void handleOpenWikiPage(page.path);
+                              }}
+                              disabled={!isTauriRuntime() || wikiPageDetailLoading}
+                            >
+                              {isActiveCard && isDetailForCard ? "收起内容" : "查看内容"}
+                            </button>
+                          </div>
+                          {isActiveCard ? (
+                            wikiPageDetailLoading ? (
+                              <p className="runtime-hint wiki-inline-status">正在读取页面内容...</p>
+                            ) : wikiPageDetailError ? (
+                              <p className="runtime-status wiki-inline-status">{wikiPageDetailError}</p>
+                            ) : isDetailForCard ? (
+                              <div className="wiki-inline-preview">{renderWikiPreview()}</div>
+                            ) : null
+                          ) : null}
+                        </article>
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="empty-state">
@@ -1316,64 +1588,14 @@ export default function App() {
                       : "浏览器预览模式下不加载后端 wiki 页面列表。"}
                   </p>
                 )}
-                {wikiPageDetail ? (
-                  <article className="wiki-preview">
-                    <div className="wiki-preview__head">
-                      <div className="wiki-preview__title">
-                        <h3>{wikiPageDetail.title}</h3>
-                        <p><code>{resolveDisplayPath(wikiPageDetail)}</code></p>
-                      </div>
-                      <div className="wiki-preview__actions">
-                        <span>{formatLintCheckedAt(wikiPageDetail.updated_at)}</span>
-                        <button type="button" className="dev-panel__button" onClick={handleCloseWikiPreview}>
-                          关闭预览
-                        </button>
-                      </div>
-                    </div>
-                    <pre className="wiki-preview__content">{wikiPageDetail.content}</pre>
-                    <div className="wiki-preview__citations">
-                      <div className="section-head wiki-preview__citations-head">
-                        <h3>页面引用</h3>
-                        <span className="section-head__hint">
-                          {wikiPageCitations.length ? `${wikiPageCitations.length} 条` : "暂无引用"}
-                        </span>
-                      </div>
-                      {wikiPageCitationsError ? <p className="runtime-status">{wikiPageCitationsError}</p> : null}
-                      {wikiPageCitationsLoading ? <p className="runtime-hint">正在读取页面引用...</p> : null}
-                      {wikiPageCitations.length ? (
-                        <div className="wiki-citation-list">
-                          {wikiPageCitations.map((citation) => (
-                            <article key={`${citation.cited_page_path}-${citation.score}`} className="wiki-citation">
-                              <div className="wiki-citation__top">
-                                <code>{resolveDisplayPath(citation)}</code>
-                                <span className={`pill ${citation.target_exists ? "pill--ok" : "pill--danger"}`}>
-                                  {citation.target_exists ? "目标存在" : "目标缺失"}
-                                </span>
-                              </div>
-                              <div className="wiki-citation__meta">score: {citation.score}</div>
-                              <p>{citation.excerpt}</p>
-                              <div className="wiki-citation__actions">
-                                <button
-                                  type="button"
-                                  className="dev-panel__button wiki-citation__button"
-                                  onClick={() => void handleOpenWikiPage(citation.cited_page_path)}
-                                  disabled={!isTauriRuntime() || !citation.target_exists || wikiPageDetailLoading}
-                                >
-                                  {citation.target_exists ? "查看被引页面" : "目标页面缺失"}
-                                </button>
-                              </div>
-                            </article>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="empty-state">当前页面没有可展示的引用。</p>
-                      )}
-                    </div>
-                  </article>
-                ) : wikiPageDetailError ? (
-                  <p className="runtime-status">{wikiPageDetailError}</p>
-                ) : wikiPageDetailLoading ? (
-                  <p className="runtime-hint">正在读取页面内容...</p>
+                {!isActiveWikiDetailInList && wikiActivePagePath ? (
+                  wikiPageDetailLoading ? (
+                    <p className="runtime-hint wiki-inline-status">正在读取页面内容...</p>
+                  ) : wikiPageDetailError ? (
+                    <p className="runtime-status wiki-inline-status">{wikiPageDetailError}</p>
+                  ) : wikiPageDetail ? (
+                    <div className="wiki-inline-preview wiki-inline-preview--floating">{renderWikiPreview()}</div>
+                  ) : null
                 ) : null}
               </section>
             </>
