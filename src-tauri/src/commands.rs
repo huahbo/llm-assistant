@@ -151,10 +151,17 @@ pub async fn ingest_markdown(
 #[tauri::command]
 pub async fn ingest_file(
     source_path: String,
+    ocr_provider: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<IngestResult, String> {
-    eprintln!("[ingest_file] called with source_path={}", source_path);
-    state.ingest_file_impl(&source_path).await
+    eprintln!(
+        "[ingest_file] called with source_path={}, ocr_provider={}",
+        source_path,
+        ocr_provider.as_deref().unwrap_or("tesseract")
+    );
+    state
+        .ingest_file_impl(&source_path, ocr_provider.as_deref())
+        .await
 }
 
 /// 导入 PDF（提取文本后复用 Markdown ingest 流程）。

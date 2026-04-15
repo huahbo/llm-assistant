@@ -700,6 +700,7 @@ impl AppState {
     pub async fn ingest_file_impl(
         &self,
         source_path: &str,
+        ocr_provider: Option<&str>,
     ) -> Result<crate::models::IngestResult, String> {
         let source_path_buf = PathBuf::from(source_path);
         validate_ingest_source_path(&source_path_buf)?;
@@ -731,7 +732,11 @@ impl AppState {
                     .await
             }
             ext if is_supported_image_extension(ext) => {
-                let content = extract_text_from_image_with_tesseract(&source_path_buf)?;
+                let resolved_provider = normalize_ocr_provider(ocr_provider);
+                let content = extract_text_from_image_with_fallback(
+                    &source_path_buf,
+                    resolved_provider,
+                )?;
                 self.ingest_text_via_temp_markdown(&source_path_buf, content, "ocr")
                     .await
             }
@@ -2239,19 +2244,110 @@ fn extract_text_from_pptx(source_path: &Path) -> Result<String, String> {
     normalize_extracted_doc_text(pages.join("\n\n"), "PPTX")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrProvider {
+    Tesseract,
+    Paddle,
+}
+
+impl OcrProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            OcrProvider::Tesseract => "tesseract",
+            OcrProvider::Paddle => "paddle",
+        }
+    }
+}
+
+/// 归一化 OCR provider：非法值统一回退到 tesseract。
+fn normalize_ocr_provider(provider: Option<&str>) -> OcrProvider {
+    let normalized = provider
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("tesseract")
+        .to_ascii_lowercase();
+
+    match normalized.as_str() {
+        "paddle" => OcrProvider::Paddle,
+        _ => OcrProvider::Tesseract,
+    }
+}
+
+/// 根据首选 provider 生成执行顺序（主用失败后自动回退）。
+fn resolve_ocr_provider_order(primary: OcrProvider) -> [OcrProvider; 2] {
+    match primary {
+        OcrProvider::Tesseract => [OcrProvider::Tesseract, OcrProvider::Paddle],
+        OcrProvider::Paddle => [OcrProvider::Paddle, OcrProvider::Tesseract],
+    }
+}
+
+fn extract_text_from_image_with_fallback(
+    source_path: &Path,
+    primary_provider: OcrProvider,
+) -> Result<String, String> {
+    let provider_order = resolve_ocr_provider_order(primary_provider);
+    let mut provider_errors = Vec::new();
+
+    for provider in provider_order {
+        match extract_text_from_image_with_provider(source_path, provider) {
+            Ok(text) => return Ok(text),
+            Err(err) => {
+                provider_errors.push(format!(
+                    "{}：{}",
+                    provider.as_str(),
+                    shorten_error_snippet(err.trim(), 60)
+                ));
+            }
+        }
+    }
+
+    Err(format!(
+        "图片 OCR 失败，已按顺序尝试 {} -> {}。{}",
+        provider_order[0].as_str(),
+        provider_order[1].as_str(),
+        provider_errors.join("；")
+    ))
+}
+
+fn extract_text_from_image_with_provider(
+    source_path: &Path,
+    provider: OcrProvider,
+) -> Result<String, String> {
+    match provider {
+        OcrProvider::Tesseract => extract_text_from_image_with_tesseract(source_path),
+        OcrProvider::Paddle => extract_text_from_image_with_paddle(source_path),
+    }
+}
+
 fn extract_text_from_image_with_tesseract(source_path: &Path) -> Result<String, String> {
     let output = run_tesseract_ocr_command(source_path)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let short_reason = shorten_error_snippet(stderr.trim(), 80);
         if short_reason.is_empty() {
-            return Err("图片 OCR 失败，请确认图片可读且已安装中文/英文语言包".to_string());
+            return Err("Tesseract OCR 失败，请确认图片可读且已安装中文/英文语言包".to_string());
         }
-        return Err(format!("图片 OCR 失败：{}", short_reason));
+        return Err(format!("Tesseract OCR 失败：{}", short_reason));
     }
 
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     normalize_extracted_doc_text(text, "图片 OCR")
+}
+
+fn extract_text_from_image_with_paddle(source_path: &Path) -> Result<String, String> {
+    let output = run_paddle_ocr_command(source_path)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let short_reason = shorten_error_snippet(stderr.trim(), 80);
+        if short_reason.is_empty() {
+            return Err("Paddle OCR 失败，请确认命令可用且模型已安装".to_string());
+        }
+        return Err(format!("Paddle OCR 失败：{}", short_reason));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let extracted_text = parse_paddle_ocr_stdout(&stdout);
+    normalize_extracted_doc_text(extracted_text, "图片 OCR")
 }
 
 fn run_tesseract_ocr_command(source_path: &Path) -> Result<std::process::Output, String> {
@@ -2264,11 +2360,37 @@ fn run_tesseract_ocr_command(source_path: &Path) -> Result<std::process::Output,
         .map_err(|err| format_tesseract_spawn_error(&err))
 }
 
+fn run_paddle_ocr_command(source_path: &Path) -> Result<std::process::Output, String> {
+    std::process::Command::new("paddleocr")
+        .arg("--image_dir")
+        .arg(source_path)
+        .arg("--use_angle_cls")
+        .arg("true")
+        .arg("--lang")
+        .arg("ch")
+        .output()
+        .map_err(|err| format_paddle_spawn_error(&err))
+}
+
 fn format_tesseract_spawn_error(err: &io::Error) -> String {
     if err.kind() == io::ErrorKind::NotFound {
         "未检测到 tesseract 命令，请先安装 Tesseract OCR 并加入 PATH".to_string()
     } else {
-        format!("调用 tesseract 失败：{}", err)
+        format!(
+            "调用 tesseract 失败：{}",
+            shorten_error_snippet(&err.to_string(), 60)
+        )
+    }
+}
+
+fn format_paddle_spawn_error(err: &io::Error) -> String {
+    if err.kind() == io::ErrorKind::NotFound {
+        "未检测到 paddleocr 命令，请先安装 PaddleOCR 并加入 PATH".to_string()
+    } else {
+        format!(
+            "调用 paddleocr 失败：{}",
+            shorten_error_snippet(&err.to_string(), 60)
+        )
     }
 }
 
@@ -2316,6 +2438,73 @@ fn read_zip_entry_utf8_lossy<R: io::Read + io::Seek>(
 
 fn is_pptx_slide_xml_entry(entry_name: &str) -> bool {
     entry_name.starts_with("ppt/slides/slide") && entry_name.ends_with(".xml")
+}
+
+/// 提取 PaddleOCR 输出中的识别文本，优先抓取引号内容。
+fn parse_paddle_ocr_stdout(stdout: &str) -> String {
+    let mut collected = Vec::new();
+
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut quoted_values = extract_quoted_segments(line);
+        quoted_values.retain(|value| {
+            let trimmed = value.trim();
+            !trimmed.is_empty()
+                && trimmed != "OCR"
+                && trimmed != "result"
+                && !trimmed.starts_with("http://")
+                && !trimmed.starts_with("https://")
+        });
+
+        if !quoted_values.is_empty() {
+            collected.extend(quoted_values);
+            continue;
+        }
+
+        if line.starts_with('[') || line.contains("INFO") || line.contains("DEBUG") {
+            continue;
+        }
+        collected.push(line.to_string());
+    }
+
+    collected.join("\n")
+}
+
+fn extract_quoted_segments(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0usize;
+    let mut results = Vec::new();
+
+    while index < chars.len() {
+        let quote = chars[index];
+        if quote != '\'' && quote != '"' {
+            index += 1;
+            continue;
+        }
+
+        let mut end = index + 1;
+        while end < chars.len() {
+            if chars[end] == quote && chars[end.saturating_sub(1)] != '\\' {
+                let value: String = chars[index + 1..end].iter().collect();
+                if value
+                    .chars()
+                    .any(|ch| ch.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&ch))
+                {
+                    results.push(value);
+                }
+                break;
+            }
+            end += 1;
+        }
+
+        index = end.saturating_add(1);
+    }
+
+    results
 }
 
 fn extract_xml_text_by_tag(xml: &str, tag_name: &str) -> String {
@@ -3690,11 +3879,38 @@ mod tests {
         fs::write(&unsupported, "unsupported").expect("写入测试文件失败");
 
         let err = state
-            .ingest_file_impl(unsupported.to_string_lossy().as_ref())
+            .ingest_file_impl(unsupported.to_string_lossy().as_ref(), None)
             .await
             .expect_err("不支持扩展名应返回错误");
         assert!(err.contains("不支持的文件扩展名"));
         assert!(err.contains("md/markdown/pdf/docx/pptx/txt"));
+    }
+
+    #[test]
+    fn normalize_ocr_provider_falls_back_to_tesseract_on_invalid_value() {
+        assert_eq!(normalize_ocr_provider(None), OcrProvider::Tesseract);
+        assert_eq!(normalize_ocr_provider(Some("")), OcrProvider::Tesseract);
+        assert_eq!(
+            normalize_ocr_provider(Some("invalid-provider")),
+            OcrProvider::Tesseract
+        );
+        assert_eq!(normalize_ocr_provider(Some("paddle")), OcrProvider::Paddle);
+        assert_eq!(
+            normalize_ocr_provider(Some(" TESSERACT ")),
+            OcrProvider::Tesseract
+        );
+    }
+
+    #[test]
+    fn resolve_ocr_provider_order_matches_expected_fallback_sequence() {
+        assert_eq!(
+            resolve_ocr_provider_order(OcrProvider::Tesseract),
+            [OcrProvider::Tesseract, OcrProvider::Paddle]
+        );
+        assert_eq!(
+            resolve_ocr_provider_order(OcrProvider::Paddle),
+            [OcrProvider::Paddle, OcrProvider::Tesseract]
+        );
     }
 
     #[test]
