@@ -1440,3 +1440,13 @@ describe("OCR Provider 持久化", () => {
     expect(readOcrProviderFromStorage()).toBe("paddle");
   });
 });
+
+describe("Wiki 编辑器辅助函数", () => {
+  it("字符计数格式化零值", () => {
+    expect(formatEditorCharCount(0)).toBe("0 字符");
+  });
+
+  it("字符计数格式化非零值", () => {
+    expect(formatEditorCharCount(42)).toBe("42 字符");
+  });
+});

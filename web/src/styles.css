@@ -1058,6 +1058,13 @@ input, select, textarea { font: inherit; }
 
 .wiki-preview__actions span { font-size: 12px; color: var(--text-muted); }
 
+.wiki-editor__charcount {
+  font-size: 11px;
+  color: var(--text-muted);
+  align-self: center;
+  margin-left: auto;
+}
+
 .wiki-preview__editor-hint {
   margin: 12px 20px 0;
 }
