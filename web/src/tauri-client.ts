@@ -978,3 +978,28 @@ export async function saveLlmConfig(
     return null;
   }
 }
+
+/** 从后端读取默认 OCR provider（null 表示未配置） */
+export const fetchOcrConfig = async (): Promise<string | null> => {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<string | null>("get_ocr_config");
+  } catch {
+    return null;
+  }
+};
+
+/** 保存默认 OCR provider 到后端配置文件 */
+export const saveOcrConfig = async (provider: string | null): Promise<void> => {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke<void>("set_ocr_config", { provider });
+  } catch (e) {
+    console.warn("保存 OCR 配置失败：", e);
+  }
+};
+
+/** 构造 set_ocr_config 参数（用于测试） */
+export const createSetOcrConfigArgs = (provider: string | null) => ({ provider });

@@ -4,6 +4,7 @@ import {
   fetchDefaultPaths,
   fetchLlmStatus,
   fetchLlmConfig,
+  fetchOcrConfig,
   fetchRecentLintPatchEvents,
   fetchQuerySettings,
   fetchRecentLogs,
@@ -22,6 +23,7 @@ import {
   applyLintPatchesBatch,
   previewLintPatches,
   saveLlmConfig,
+  saveOcrConfig,
   saveWikiPage,
   searchWikiPages,
   saveQueryAnswer,
@@ -412,6 +414,10 @@ export const hasUnsavedWikiEditChanges = (
   return wikiEditContent !== (detailContent ?? "");
 };
 
+/** 格式化字符计数显示文本（用于测试） */
+export const formatEditorCharCount = (count: number): string =>
+  `${count.toLocaleString()} 字符`;
+
 // 摘要折叠阈值：超过此行数时才显示展开按钮
 const wikiSummaryPreviewLines = 3;
 
@@ -725,13 +731,14 @@ export default function App() {
     let cancelled = false;
 
     const load = async () => {
-      const [data, defaultPaths, querySettings, lintPatchEvents, llmConfigResult] =
+      const [data, defaultPaths, querySettings, lintPatchEvents, llmConfigResult, backendOcrProvider] =
         await Promise.all([
           loadAppData(),
           fetchDefaultPaths(),
           fetchQuerySettings(),
           fetchRecentLintPatchEvents(),
           fetchLlmConfig(),
+          fetchOcrConfig(),
         ]);
 
       if (!cancelled) {
@@ -758,6 +765,12 @@ export default function App() {
           setLlmConfigActiveProvider(
             llmConfigResult.active_provider === "cloud" ? "cloud" : "ollama",
           );
+        }
+
+        // 优先级：后端配置 > localStorage；后端有值时覆盖本地状态并同步到 localStorage。
+        if (backendOcrProvider && isOcrProvider(backendOcrProvider)) {
+          setIngestFileOcrProvider(backendOcrProvider);
+          writeOcrProviderToStorage(backendOcrProvider);
         }
 
         setRecentLintPatchEvents(lintPatchEvents);
@@ -1696,6 +1709,9 @@ export default function App() {
                 >
                   取消
                 </button>
+                <span className="wiki-editor__charcount">
+                  {wikiEditContent.length.toLocaleString()} 字符
+                </span>
               </>
             ) : (
               <button
@@ -1792,6 +1808,15 @@ export default function App() {
             className="wiki-preview__editor"
             value={wikiEditContent}
             onChange={(event) => setWikiEditContent(event.target.value)}
+            onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+              // Ctrl+S（Windows/Linux）或 Cmd+S（macOS）触发保存
+              if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+                event.preventDefault();
+                if (!wikiSaveRunning) {
+                  void handleSaveWikiPage();
+                }
+              }
+            }}
             disabled={wikiSaveRunning}
             spellCheck={false}
             rows={16}
@@ -2294,6 +2319,7 @@ export default function App() {
                           event.target.value === "paddle" ? "paddle" : "tesseract";
                         setIngestFileOcrProvider(provider);
                         writeOcrProviderToStorage(provider);
+                        void saveOcrConfig(provider); // 异步同步到后端，失败不阻断
                       }}
                     >
                       <option value="tesseract">{ocrProviderLabels.tesseract}</option>

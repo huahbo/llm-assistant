@@ -30,6 +30,7 @@ import {
   isOcrProvider,
   readOcrProviderFromStorage,
   writeOcrProviderToStorage,
+  formatEditorCharCount,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -48,6 +49,7 @@ import {
   createSearchWikiPagesArgs,
   createWikiPageCitationsArgs,
   createWikiPageDetailArgs,
+  createSetOcrConfigArgs,
   createSetQueryTopKArgs,
   createVaultInitArgs,
   formatLlmStatusSummary,
@@ -611,6 +613,11 @@ describe("Tauri 运行时与参数映射", () => {
         },
       ],
     });
+  });
+
+  it("createSetOcrConfigArgs 生成正确参数", () => {
+    expect(createSetOcrConfigArgs("paddle")).toEqual({ provider: "paddle" });
+    expect(createSetOcrConfigArgs(null)).toEqual({ provider: null });
   });
 
   it("createIngestUrlArgs 生成正确参数", () => {
