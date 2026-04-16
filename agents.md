@@ -229,12 +229,16 @@
 | P9-C 前端 | OCR provider localStorage 持久化 + 安装引导提示 + 格式说明 | ✅ `App.tsx`（99 测试） |
 | P9-C 后端 | `default_ocr_provider` AppConfig + get/set 命令 + pptx 自然排序 + docx 段落结构 | ✅ `models.rs` + `state.rs` + `commands.rs`（84 cargo 测试） |
 
+| P10 后端 | `WikiPageDetail.content` 字段确认（已存在，补测试） | ✅ `state.rs`（85 cargo 测试） |
+| P10 前端 A | OCR 配置后端同步（`fetchOcrConfig`/`saveOcrConfig`） | ✅ `tauri-client.ts` + `App.tsx`（100 测试） |
+| P10 前端 B | Wiki 编辑器 Ctrl+S 快捷键 + 字符计数显示 | ✅ `App.tsx` + `styles.css`（102 测试） |
+
 ### 18.2 下一轮待开发（TODO）
 
-**P10：Wiki 编辑器体验 + OCR 配置前后端打通**
-- **前端子任务 A**：从后端加载 `default_ocr_provider`（调用 `get_ocr_config`），保存时调用 `set_ocr_config`，与 localStorage 双写形成跨端一致性。
-- **前端子任务 B**：Wiki 编辑器增强——编辑前显示原始 Markdown 内容（当前 `content` 字段需要后端补充）、Ctrl+S 快捷键保存、字符计数显示。
-- **后端子任务**：`wiki_page_detail` 命令返回值中补充 `content`（原始 Markdown 文本），供编辑器初始化使用。
+**P11：Query 体验增强 + Wiki 搜索精度**
+- **前端**：Ask 模块支持历史问题列表（最近 N 条 query 记录可一键重播）。
+- **前端**：Wiki 搜索结果按相关度高亮排序，搜索词命中标题时置顶。
+- **后端**：`search_wiki_pages` 结果增加 `score` 字段（FTS5 rank），供前端排序。
 
 ### 18.3 当前代码快照
 
