@@ -1199,6 +1199,7 @@ impl AppState {
                     display_path: Some(display_path),
                     summary: page.summary,
                     updated_at: page.updated_at,
+                    score: 0.0,
                 }
             })
             .collect())
@@ -1246,6 +1247,7 @@ impl AppState {
                     display_path: Some(display_path),
                     summary: page.summary,
                     updated_at: page.updated_at,
+                    score: page.score,
                 }
             })
             .collect())

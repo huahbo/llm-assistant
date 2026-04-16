@@ -1509,3 +1509,32 @@ code {
   font-family: "Cascadia Code", "Consolas", "Fira Code", monospace;
   font-size: 0.9em;
 }
+
+/* =========================================================
+   Ask 历史查询
+   ========================================================= */
+
+.ask-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ask-history__chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary, #f5f5f5);
+  color: var(--text-secondary, #666);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.15s;
+}
+.ask-history__chip:hover {
+  border-color: var(--accent, #0066cc);
+  color: var(--accent, #0066cc);
+}

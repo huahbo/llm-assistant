@@ -120,6 +120,7 @@ export interface WikiPageItem {
   displayPath?: string | null;
   summary: string;
   updated_at: string;
+  score?: number;
 }
 
 export interface WikiPageDetail {

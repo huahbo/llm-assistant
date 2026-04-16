@@ -31,6 +31,8 @@ import {
   readOcrProviderFromStorage,
   writeOcrProviderToStorage,
   formatEditorCharCount,
+  QUERY_HISTORY_STORAGE_KEY,
+  QUERY_HISTORY_MAX,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -1448,5 +1450,28 @@ describe("Wiki 编辑器辅助函数", () => {
 
   it("字符计数格式化非零值", () => {
     expect(formatEditorCharCount(42)).toBe("42 字符");
+  });
+});
+
+describe("查询历史 dedup 与存储 key", () => {
+  it("QUERY_HISTORY_STORAGE_KEY 与 QUERY_HISTORY_MAX 已导出并值合理", () => {
+    expect(typeof QUERY_HISTORY_STORAGE_KEY).toBe("string");
+    expect(QUERY_HISTORY_STORAGE_KEY.length).toBeGreaterThan(0);
+    expect(QUERY_HISTORY_MAX).toBe(10);
+  });
+
+  it("新问题插入历史头部并去重", () => {
+    const prev = ["问题A", "问题B", "问题C"];
+    const q = "问题B";
+    const next = [q, ...prev.filter(item => item !== q)].slice(0, QUERY_HISTORY_MAX);
+    expect(next).toEqual(["问题B", "问题A", "问题C"]);
+  });
+
+  it("历史超过 QUERY_HISTORY_MAX 时截断", () => {
+    const prev = Array.from({ length: QUERY_HISTORY_MAX }, (_, i) => `问题${i}`);
+    const q = "新问题";
+    const next = [q, ...prev.filter(item => item !== q)].slice(0, QUERY_HISTORY_MAX);
+    expect(next).toHaveLength(QUERY_HISTORY_MAX);
+    expect(next[0]).toBe("新问题");
   });
 });

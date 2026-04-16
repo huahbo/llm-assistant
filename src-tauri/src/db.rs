@@ -62,6 +62,7 @@ pub struct WikiPageRecord {
     pub path: String,
     pub summary: String,
     pub updated_at: String,
+    pub score: f64,
 }
 
 /// 确保元数据库与表结构存在。
@@ -305,12 +306,46 @@ pub fn list_recent_wiki_pages(db_path: &Path, limit: usize) -> Result<Vec<WikiPa
                 path: row.get(1)?,
                 summary: row.get(2)?,
                 updated_at: row.get(3)?,
+                score: 0.0,
             })
         })
         .map_err(|err| format!("读取 wiki_pages 失败: {}", err))?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("读取 wiki_pages 失败: {}", err))
+}
+
+fn try_fts_search_wiki_pages(
+    conn: &Connection,
+    fts_query: &str,
+    limit: usize,
+) -> Result<Vec<WikiPageRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT w.title, w.path, w.summary, w.updated_at,
+                   (-bm25(fts_pages)) AS score
+            FROM fts_pages
+            JOIN wiki_pages w ON w.path = fts_pages.path
+            WHERE fts_pages MATCH ?1
+            ORDER BY bm25(fts_pages) ASC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备 FTS5 wiki 搜索失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![fts_query, limit as i64], |row| {
+            Ok(WikiPageRecord {
+                title: row.get(0)?,
+                path: row.get(1)?,
+                summary: row.get(2)?,
+                updated_at: row.get(3)?,
+                score: row.get::<_, f64>(4).unwrap_or(0.0),
+            })
+        })
+        .map_err(|err| format!("FTS5 wiki 搜索失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 FTS5 搜索结果失败: {}", err))
 }
 
 /// 按关键字搜索 wiki 页面（标题/摘要/路径）。
@@ -322,22 +357,34 @@ pub fn search_wiki_pages(
     if limit == 0 {
         return Ok(Vec::new());
     }
-
     let normalized = keyword.trim();
     if normalized.is_empty() {
         return list_recent_wiki_pages(db_path, limit);
     }
-
     let conn = open_connection(db_path)?;
+    // Try FTS5 first
+    let tokens: Vec<String> = normalized.split_whitespace().map(|s| s.to_string()).collect();
+    if let Some(fts_query) = build_fts_match_query(&tokens) {
+        match try_fts_search_wiki_pages(&conn, &fts_query, limit) {
+            Ok(rows) if !rows.is_empty() => return Ok(rows),
+            _ => {}
+        }
+    }
+    // Fallback: instr-based with priority score
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT title, path, summary, updated_at
+            SELECT title, path, summary, updated_at,
+                   CASE
+                     WHEN instr(lower(title),   lower(?1)) > 0 THEN 3.0
+                     WHEN instr(lower(summary), lower(?1)) > 0 THEN 2.0
+                     ELSE 1.0
+                   END AS score
             FROM wiki_pages
-            WHERE instr(lower(title), lower(?1)) > 0
+            WHERE instr(lower(title),   lower(?1)) > 0
                OR instr(lower(summary), lower(?1)) > 0
-               OR instr(lower(path), lower(?1)) > 0
-            ORDER BY updated_at DESC, id DESC
+               OR instr(lower(path),    lower(?1)) > 0
+            ORDER BY score DESC, updated_at DESC, id DESC
             LIMIT ?2
             "#,
         )
@@ -349,6 +396,7 @@ pub fn search_wiki_pages(
                 path: row.get(1)?,
                 summary: row.get(2)?,
                 updated_at: row.get(3)?,
+                score: row.get::<_, f64>(4).unwrap_or(0.0),
             })
         })
         .map_err(|err| format!("搜索 wiki_pages 失败: {}", err))?;
@@ -991,6 +1039,7 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].title, "Rust 进阶");
         assert_eq!(matches[1].title, "Rust 页面");
+        assert!(matches[0].score >= 0.0);
 
         let all = search_wiki_pages(&db_path, "   ", 10).expect("读取最近页面失败");
         assert_eq!(all.len(), 3);

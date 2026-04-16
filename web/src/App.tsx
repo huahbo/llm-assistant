@@ -525,6 +525,9 @@ export const writeWikiSortModeToStorage = (mode: WikiSortMode) => {
 
 export const OCR_PROVIDER_STORAGE_KEY = "llm_wiki_ocr_provider_v1";
 
+export const QUERY_HISTORY_STORAGE_KEY = "llm_wiki_query_history";
+export const QUERY_HISTORY_MAX = 10;
+
 export const isOcrProvider = (value: string): value is OcrProvider =>
   value === "tesseract" || value === "paddle";
 
@@ -696,6 +699,16 @@ export default function App() {
   const [queryTopKMax, setQueryTopKMax] = useState(defaultQueryTopKMax);
   const [querySettingsSaving, setQuerySettingsSaving] = useState(false);
   const [queryResultSaving, setQueryResultSaving] = useState(false);
+  const [queryHistory, setQueryHistory] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(QUERY_HISTORY_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.slice(0, QUERY_HISTORY_MAX);
+      }
+    } catch {}
+    return [];
+  });
   const [wikiKeyword, setWikiKeyword] = useState("");
   const [wikiSearching, setWikiSearching] = useState(false);
   const [wikiSortMode, setWikiSortMode] = useState<WikiSortMode>(() => readWikiSortModeFromStorage());
@@ -1212,6 +1225,11 @@ export default function App() {
       }
 
       setQueryResult(result);
+      setQueryHistory(prev => {
+        const next = [nextQuestion, ...prev.filter(q => q !== nextQuestion)].slice(0, QUERY_HISTORY_MAX);
+        try { localStorage.setItem(QUERY_HISTORY_STORAGE_KEY, JSON.stringify(next)); } catch {}
+        return next;
+      });
       // Query 会在后端写入日志，这里主动刷新一次前端日志面板。
       await refreshAppData();
       setStatusMessage(`Query 已完成：TopK=${nextTopK}，命中 ${result.matched_pages.length} 页。`);
@@ -1651,6 +1669,15 @@ export default function App() {
     : "";
   const wikiHighlightKeywords = tokenizeWikiKeyword(wikiKeyword);
   const sortedWikiPages = sortWikiPages(pages, wikiSortMode);
+  const displayedWikiPages = wikiKeyword.trim()
+    ? [...sortedWikiPages].sort((a, b) => {
+        const kw = wikiKeyword.toLowerCase();
+        const aTitleMatch = a.title.toLowerCase().includes(kw) ? 1 : 0;
+        const bTitleMatch = b.title.toLowerCase().includes(kw) ? 1 : 0;
+        if (bTitleMatch !== aTitleMatch) return bTitleMatch - aTitleMatch;
+        return (b.score ?? 0) - (a.score ?? 0);
+      })
+    : sortedWikiPages;
   const wikiHasUnsavedChanges = hasUnsavedWikiEditChanges(
     wikiEditMode,
     wikiEditContent,
@@ -2437,9 +2464,9 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {sortedWikiPages.length ? (
+                {displayedWikiPages.length ? (
                   <div className="ask-result__citations">
-                    {sortedWikiPages.map((page) => {
+                    {displayedWikiPages.map((page) => {
                       const isActiveCard = isSameWikiPagePath(page.path, wikiActivePagePath);
                       const isDetailForCard = Boolean(
                         wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
@@ -2557,6 +2584,20 @@ export default function App() {
                       placeholder="输入你要检索的问题"
                       rows={3}
                     />
+                    {queryHistory.length > 0 && !queryResult && (
+                      <div className="ask-history">
+                        {queryHistory.map((q, i) => (
+                          <button
+                            key={i}
+                            className="ask-history__chip"
+                            onClick={() => setQueryQuestion(q)}
+                            title={q}
+                          >
+                            {q.length > 40 ? q.slice(0, 40) + "…" : q}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="dev-panel__field">
                     <label className="dev-panel__label" htmlFor="ask-top-k">

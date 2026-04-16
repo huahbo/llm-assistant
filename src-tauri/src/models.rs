@@ -386,6 +386,8 @@ pub struct WikiPageItem {
     pub display_path: Option<String>,
     pub summary: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub score: f64,
 }
 
 /// Wiki 页面详情。
