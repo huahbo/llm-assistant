@@ -26,6 +26,10 @@ import {
   writeWikiSortModeToStorage,
   groupLintIssuesByPath,
   groupPatchPreviewItemsByPath,
+  OCR_PROVIDER_STORAGE_KEY,
+  isOcrProvider,
+  readOcrProviderFromStorage,
+  writeOcrProviderToStorage,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -1377,5 +1381,55 @@ describe("补丁建议分组", () => {
     const paths = groups.map((g) => g.path);
     expect(paths).toContain("vault/a.md");
     expect(paths).toContain("全局");
+  });
+});
+
+describe("OCR Provider 持久化", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const localStorageMock = {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: localStorageMock,
+    });
+
+    return { store };
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  it("默认读取为 tesseract", () => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+    expect(readOcrProviderFromStorage()).toBe("tesseract");
+  });
+
+  it("可读取已存储的合法值", () => {
+    installLocalStorageMock({ [OCR_PROVIDER_STORAGE_KEY]: "paddle" });
+    expect(readOcrProviderFromStorage()).toBe("paddle");
+  });
+
+  it("非法值回退到 tesseract", () => {
+    installLocalStorageMock({ [OCR_PROVIDER_STORAGE_KEY]: "invalid" });
+    expect(readOcrProviderFromStorage()).toBe("tesseract");
+  });
+
+  it("可写入并读回", () => {
+    installLocalStorageMock();
+    writeOcrProviderToStorage("paddle");
+    expect(readOcrProviderFromStorage()).toBe("paddle");
   });
 });

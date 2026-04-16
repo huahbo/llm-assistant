@@ -517,6 +517,33 @@ export const writeWikiSortModeToStorage = (mode: WikiSortMode) => {
   }
 };
 
+export const OCR_PROVIDER_STORAGE_KEY = "llm_wiki_ocr_provider_v1";
+
+export const isOcrProvider = (value: string): value is OcrProvider =>
+  value === "tesseract" || value === "paddle";
+
+export const readOcrProviderFromStorage = (): OcrProvider => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return "tesseract";
+    const raw = storage.getItem(OCR_PROVIDER_STORAGE_KEY);
+    if (!raw) return "tesseract";
+    return isOcrProvider(raw) ? raw : "tesseract";
+  } catch {
+    return "tesseract";
+  }
+};
+
+export const writeOcrProviderToStorage = (provider: OcrProvider): void => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    storage.setItem(OCR_PROVIDER_STORAGE_KEY, provider);
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
 const parseWikiUpdatedAt = (value: string) => {
   const normalized = value.trim();
   if (!normalized) {
@@ -653,7 +680,7 @@ export default function App() {
   const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
   const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
   const [ingestFileOcrProvider, setIngestFileOcrProvider] = useState<OcrProvider>(
-    defaultIngestFileOcrProvider,
+    () => readOcrProviderFromStorage(),
   );
   // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
   const [ingestUrlInput, setIngestUrlInput] = useState("");
@@ -1018,6 +1045,12 @@ export default function App() {
       setStatusMessage(`${result.message || `已处理 ${trimmedPath}`}${entitiesMsg}${updatedMsg}`);
     } catch (error) {
       console.error(error);
+      const pdfErrorMessage = error instanceof Error ? error.message : String(error);
+      // PDF 摄入一般不依赖 OCR，但若后端返回"未检测到"类错误也给出友好提示
+      if (pdfErrorMessage.includes("未检测到")) {
+        setStatusMessage(`OCR 工具未找到：${pdfErrorMessage}`);
+        return;
+      }
       setStatusMessage(formatPdfIngestErrorMessage(error));
     } finally {
       if (unlisten) {
@@ -1073,6 +1106,20 @@ export default function App() {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
+      // 检测 OCR 工具未找到的特征字符串，给出安装引导提示
+      const isOcrNotFound =
+        message.includes("未检测到 tesseract") ||
+        message.includes("未检测到 paddleocr") ||
+        message.includes("not found") ||
+        message.includes("No such file");
+      if (isOcrNotFound) {
+        const guide =
+          ingestFileOcrProvider === "paddle"
+            ? "PaddleOCR 未安装，请运行：pip install paddleocr paddlepaddle"
+            : "Tesseract 未安装，请从 https://github.com/UB-Mannheim/tesseract/wiki 下载安装后加入 PATH";
+        setStatusMessage(`OCR 工具未找到：${guide}`);
+        return;
+      }
       setStatusMessage(`通用文件摄入失败：${message}`);
     } finally {
       if (unlisten) {
@@ -2230,6 +2277,9 @@ export default function App() {
                       placeholder={defaultIngestFilePath}
                       spellCheck={false}
                     />
+                    <p className="dev-panel__hint">
+                      支持格式：md / txt / pdf / docx / pptx / png / jpg / jpeg / bmp / webp / tif
+                    </p>
                   </div>
                   <div className="dev-panel__field">
                     <label className="dev-panel__label" htmlFor="ingest-file-ocr-provider">
@@ -2239,11 +2289,12 @@ export default function App() {
                       id="ingest-file-ocr-provider"
                       className="dev-panel__input"
                       value={ingestFileOcrProvider}
-                      onChange={(event) =>
-                        setIngestFileOcrProvider(
-                          event.target.value === "paddle" ? "paddle" : "tesseract",
-                        )
-                      }
+                      onChange={(event) => {
+                        const provider: OcrProvider =
+                          event.target.value === "paddle" ? "paddle" : "tesseract";
+                        setIngestFileOcrProvider(provider);
+                        writeOcrProviderToStorage(provider);
+                      }}
                     >
                       <option value="tesseract">{ocrProviderLabels.tesseract}</option>
                       <option value="paddle">{ocrProviderLabels.paddle}</option>
