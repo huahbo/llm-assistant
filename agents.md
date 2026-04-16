@@ -232,13 +232,15 @@
 | P10 后端 | `WikiPageDetail.content` 字段确认（已存在，补测试） | ✅ `state.rs`（85 cargo 测试） |
 | P10 前端 A | OCR 配置后端同步（`fetchOcrConfig`/`saveOcrConfig`） | ✅ `tauri-client.ts` + `App.tsx`（100 测试） |
 | P10 前端 B | Wiki 编辑器 Ctrl+S 快捷键 + 字符计数显示 | ✅ `App.tsx` + `styles.css`（102 测试） |
+| P11 后端 | `WikiPageItem.score` + FTS5 bm25 排序（降级 instr 优先级评分） | ✅ `db.rs` + `models.rs` + `state.rs`（85 cargo 测试） |
+| P11 前端 | Wiki 搜索按 score+标题命中排序 + Ask 历史 chip（localStorage 最多 10 条） | ✅ `App.tsx` + `types.ts` + `styles.css`（105 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P11：Query 体验增强 + Wiki 搜索精度**
-- **前端**：Ask 模块支持历史问题列表（最近 N 条 query 记录可一键重播）。
-- **前端**：Wiki 搜索结果按相关度高亮排序，搜索词命中标题时置顶。
-- **后端**：`search_wiki_pages` 结果增加 `score` 字段（FTS5 rank），供前端排序。
+**P12：搜索关键词高亮 + Wiki 页面删除**
+- **前端**：Wiki 列表搜索时高亮标题/摘要中的命中词（用 `<mark>` 或 span 包裹）。
+- **前端**：Wiki 详情页增加删除按钮（二次确认后删除）。
+- **后端**：`delete_wiki_page` 命令（删除 .md 文件、wiki_pages/citations/fts_pages DB 记录）。
 
 ### 18.3 当前代码快照
 
@@ -260,16 +262,15 @@ web/src/
   App.tsx           # 主界面（含 Settings 面板：cloud API Key + Provider/Model 配置与 DeepSeek/GLM/MiniMax 预设）
   tauri-client.ts   # Tauri invoke 封装（含 fetchLlmConfig/saveLlmConfig/saveWikiPage/ingestPdf/ingestFile(ocrProvider)）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（95 个）
+  app-utils.test.ts # 前端单元测试（105 个）
 ```
 
 ### 18.4 验证基线
 
-- `cargo check`（src-tauri/）：**通过（2026-04-15，2 个 dead_code 警告）**
-- `cargo test`（src-tauri/）：**82 通过，0 失败（2026-04-15）**
-- `npm run test -- --run`（web/）：**95 通过，0 失败（2026-04-15）**
+- `cargo check`（src-tauri/）：**通过（2026-04-15）**
+- `cargo test`（src-tauri/）：**85 通过，0 失败（2026-04-15）**
+- `npm run test -- --run`（web/）：**105 通过，0 失败（2026-04-15）**
 - `npm run typecheck`（web/）：**零错误（2026-04-15）**
-- `npm run build`（web/）：**通过（2026-04-15）**
 
 ### 18.5 关键约束提醒
 
