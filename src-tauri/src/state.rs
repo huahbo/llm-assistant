@@ -5622,4 +5622,23 @@ entities:
         // 两段之间应有段落分隔
         assert!(result.contains("\n\n") || result.lines().count() >= 2);
     }
+
+    /// 验证 WikiPageDetail.content 字段可被 serde_json 正确序列化/反序列化（round-trip）
+    #[test]
+    fn test_wiki_page_detail_content_field_roundtrip() {
+        let detail = crate::models::WikiPageDetail {
+            title: "测试页面".to_string(),
+            path: "vault/test.md".to_string(),
+            display_path: "test.md".to_string(),
+            frontmatter: None,
+            content: "# Hello\n\nWorld".to_string(),
+            updated_at: "1000000".to_string(),
+        };
+        let json = serde_json::to_string(&detail).unwrap();
+        // 确认原始内容已被序列化
+        assert!(json.contains("Hello"));
+        let restored: crate::models::WikiPageDetail = serde_json::from_str(&json).unwrap();
+        // 确认反序列化后内容与原始一致
+        assert_eq!(restored.content, "# Hello\n\nWorld");
+    }
 }
