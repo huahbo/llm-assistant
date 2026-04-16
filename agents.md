@@ -226,14 +226,15 @@
 | P8 修复 | PDF `ToUnicode CMap` 失败回退提取 + 前端错误映射 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（93/76 测试） |
 | P9-A | 统一 `ingest_file` 路由 + 通用文件摄入入口（含 docx/pptx/txt/图片 OCR） | ✅ `state.rs` + `commands.rs` + `main.rs` + `App.tsx`（95/80 测试） |
 | P9-B | OCR Provider 选择（tesseract/paddle）+ 双向失败回退 | ✅ `commands.rs` + `state.rs` + `App.tsx` + `tauri-client.ts`（95/82 测试） |
+| P9-C 前端 | OCR provider localStorage 持久化 + 安装引导提示 + 格式说明 | ✅ `App.tsx`（99 测试） |
+| P9-C 后端 | `default_ocr_provider` AppConfig + get/set 命令 + pptx 自然排序 + docx 段落结构 | ✅ `models.rs` + `state.rs` + `commands.rs`（84 cargo 测试） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P9-C：多格式摄入精度与可用性增强**
-- **前端子任务**：增加 OCR 依赖检测提示（Tesseract/Paddle 未安装时给安装指引）与格式说明文档入口。
-- **后端子任务**：提升 docx/pptx 提取质量（段落/标题/表格与幻灯片顺序优化），并补充异常文件容错。
-- **配置子任务**：增加 OCR provider 全局默认配置持久化（避免每次手动选择）。
-- **测试任务**：补充真实样本回归（含中文文档、复杂版式、扫描图像 OCR）。
+**P10：Wiki 编辑器体验 + OCR 配置前后端打通**
+- **前端子任务 A**：从后端加载 `default_ocr_provider`（调用 `get_ocr_config`），保存时调用 `set_ocr_config`，与 localStorage 双写形成跨端一致性。
+- **前端子任务 B**：Wiki 编辑器增强——编辑前显示原始 Markdown 内容（当前 `content` 字段需要后端补充）、Ctrl+S 快捷键保存、字符计数显示。
+- **后端子任务**：`wiki_page_detail` 命令返回值中补充 `content`（原始 Markdown 文本），供编辑器初始化使用。
 
 ### 18.3 当前代码快照
 
