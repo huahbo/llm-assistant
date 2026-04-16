@@ -45,6 +45,8 @@ fn main() {
             commands::save_query_answer,
             commands::get_llm_config,
             commands::set_llm_config,
+            commands::get_ocr_config,
+            commands::set_ocr_config,
             commands::save_wiki_page
         ])
         .run(tauri::generate_context!())

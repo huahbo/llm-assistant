@@ -60,6 +60,9 @@ pub struct AppConfig {
     /// 当前活跃 Provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_provider: Option<String>,
+    /// 默认 OCR provider（tesseract / paddle），未设置时回退 tesseract
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_ocr_provider: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -73,6 +76,7 @@ impl Default for AppConfig {
             cloud_model: None,
             cloud_provider_name: None,
             active_provider: None,
+            default_ocr_provider: None,
         }
     }
 }

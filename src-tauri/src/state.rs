@@ -63,6 +63,8 @@ struct AppStateData {
     cloud_provider_name: Option<String>,
     /// 当前活跃 Provider
     active_provider: Option<String>,
+    /// 默认 OCR provider（tesseract / paddle）
+    default_ocr_provider: Option<String>,
 }
 
 impl Default for AppState {
@@ -91,6 +93,7 @@ impl AppState {
             cloud_model: config.cloud_model.clone(),
             cloud_provider_name: config.cloud_provider_name.clone(),
             active_provider: config.active_provider.clone(),
+            default_ocr_provider: config.default_ocr_provider.clone(),
         });
         let mut runtime_snapshot = config_snapshot.clone();
 
@@ -130,6 +133,7 @@ impl AppState {
                 cloud_model: config.cloud_model,
                 cloud_provider_name: config.cloud_provider_name,
                 active_provider: config.active_provider,
+                default_ocr_provider: config.default_ocr_provider,
             }),
             config_path,
             llm_provider: OnceLock::new(),
@@ -534,6 +538,56 @@ impl AppState {
                 self.push_log(
                     LogLevel::Warn,
                     format!("云端 Provider 配置持久化失败: {}", err),
+                );
+                Err(err)
+            }
+        }
+    }
+
+    /// 读取默认 OCR Provider 配置。
+    pub fn get_ocr_config(&self) -> Option<String> {
+        let guard = self.inner.lock().expect("状态锁已被污染");
+        guard.default_ocr_provider.clone()
+    }
+
+    /// 保存默认 OCR Provider 配置并持久化到磁盘。
+    pub fn set_ocr_config(&self, provider: Option<String>) -> Result<(), String> {
+        let (mode, vault_path, query_top_k, expected_snapshot) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (
+                guard.mode,
+                guard.vault_path.clone(),
+                guard.query_top_k,
+                guard.config_snapshot.clone(),
+            )
+        };
+
+        // 更新内存状态
+        {
+            let mut guard = self.inner.lock().expect("状态锁已被污染");
+            guard.default_ocr_provider = provider;
+        }
+
+        match self.persist_config(
+            mode,
+            vault_path.as_deref(),
+            query_top_k,
+            expected_snapshot.as_deref(),
+        ) {
+            Ok(serialized) => {
+                let mut guard = self.inner.lock().expect("状态锁已被污染");
+                guard.config_snapshot = Some(serialized);
+                guard.push_log(
+                    LogLevel::Info,
+                    "OCR Provider 配置已保存".to_string(),
+                    current_timestamp_ms(),
+                );
+                Ok(())
+            }
+            Err(err) => {
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("OCR Provider 配置持久化失败: {}", err),
                 );
                 Err(err)
             }
@@ -2059,7 +2113,7 @@ Wiki 页面：\n{}",
         query_top_k: usize,
         expected_snapshot: Option<&str>,
     ) -> Result<String, String> {
-        // 从当前 guard 读取云端字段，确保不丢失已保存的配置
+        // 从当前 guard 读取云端字段及 OCR 字段，确保不丢失已保存的配置
         let config = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             AppConfig {
@@ -2071,6 +2125,7 @@ Wiki 页面：\n{}",
                 cloud_model: guard.cloud_model.clone(),
                 cloud_provider_name: guard.cloud_provider_name.clone(),
                 active_provider: guard.active_provider.clone(),
+                default_ocr_provider: guard.default_ocr_provider.clone(),
             }
         };
         let serialized = Self::serialize_config_full(&config);
@@ -2206,8 +2261,37 @@ fn extract_text_from_docx(source_path: &Path) -> Result<String, String> {
     let xml = read_zip_entry_utf8_lossy(&mut archive, "word/document.xml", "DOCX")?
         .ok_or_else(|| "DOCX 缺少 word/document.xml，无法提取正文".to_string())?;
 
-    let text = extract_xml_text_by_tag(&xml, "w:t");
+    let text = extract_docx_paragraphs(&xml);
     normalize_extracted_doc_text(text, "DOCX")
+}
+
+/// 按段落（<w:p>）提取 DOCX 文本，段落间用空行分隔，段内 <w:t> 拼接。
+fn extract_docx_paragraphs(xml: &str) -> String {
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut offset = 0usize;
+
+    while let Some(para_start_rel) = xml[offset..].find("<w:p") {
+        let para_start = offset + para_start_rel;
+        // 找到段落结束标记 </w:p>
+        let Some(para_end_rel) = xml[para_start..].find("</w:p>") else {
+            break;
+        };
+        let para_end = para_start + para_end_rel + "</w:p>".len();
+        let para_xml = &xml[para_start..para_end];
+
+        // 提取段落内所有 <w:t> 文本并拼接（段内不加换行）
+        let text = extract_xml_text_by_tag(para_xml, "w:t")
+            .lines()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            paragraphs.push(trimmed);
+        }
+        offset = para_end;
+    }
+
+    paragraphs.join("\n\n")
 }
 
 fn extract_text_from_pptx(source_path: &Path) -> Result<String, String> {
@@ -2232,7 +2316,7 @@ fn extract_text_from_pptx(source_path: &Path) -> Result<String, String> {
         return Err("PPTX 未检测到可读取幻灯片页面".to_string());
     }
 
-    slide_entries.sort_by(|left, right| left.0.cmp(&right.0));
+    slide_entries.sort_by_key(|(name, _)| extract_slide_number(name));
     let mut pages = Vec::new();
     for (_, xml) in slide_entries {
         let text = extract_xml_text_by_tag(&xml, "a:t");
@@ -2242,6 +2326,19 @@ fn extract_text_from_pptx(source_path: &Path) -> Result<String, String> {
     }
 
     normalize_extracted_doc_text(pages.join("\n\n"), "PPTX")
+}
+
+/// 从路径中提取幻灯片编号数字，用于自然数排序。
+/// 例如 "ppt/slides/slide12.xml" -> 12，未匹配时返回 0。
+fn extract_slide_number(name: &str) -> u32 {
+    // 匹配 "slide" 后面的数字，例如 "ppt/slides/slide12.xml" -> 12
+    name.rfind("slide")
+        .and_then(|pos| {
+            let after = &name[pos + 5..]; // "slide" 长度 = 5
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u32>().ok()
+        })
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5408,6 +5505,7 @@ entities:
                 cloud_model: None,
                 cloud_provider_name: None,
                 active_provider: None,
+                default_ocr_provider: None,
             }),
             config_path: vault_dir.join(".runtime").join("app-config.json"),
             llm_provider: OnceLock::new(),
@@ -5497,5 +5595,31 @@ entities:
         assert_eq!(merged.issues.len(), 1);
         assert_eq!(merged.severity_stats.warning, 2); // 原1 + 新增1
         assert!(merged.summary.contains("1 个问题"));
+    }
+
+    #[test]
+    fn test_extract_slide_number_natural_sort() {
+        assert_eq!(extract_slide_number("ppt/slides/slide1.xml"), 1);
+        assert_eq!(extract_slide_number("ppt/slides/slide10.xml"), 10);
+        assert_eq!(extract_slide_number("ppt/slides/slide2.xml"), 2);
+        // 确保 slide10 > slide2（自然数顺序）
+        assert!(
+            extract_slide_number("ppt/slides/slide10.xml")
+                > extract_slide_number("ppt/slides/slide2.xml")
+        );
+    }
+
+    #[test]
+    fn test_extract_docx_paragraphs_preserves_paragraph_breaks() {
+        let xml = r#"<w:body>
+        <w:p><w:r><w:t>第一段</w:t></w:r></w:p>
+        <w:p><w:r><w:t>第二段</w:t></w:r><w:r><w:t>续文</w:t></w:r></w:p>
+        <w:p></w:p>
+    </w:body>"#;
+        let result = extract_docx_paragraphs(xml);
+        assert!(result.contains("第一段"));
+        assert!(result.contains("第二段"));
+        // 两段之间应有段落分隔
+        assert!(result.contains("\n\n") || result.lines().count() >= 2);
     }
 }

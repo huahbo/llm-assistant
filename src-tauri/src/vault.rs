@@ -46,6 +46,7 @@ pub fn initialize_vault(vault_path: &Path, mode: AppMode) -> Result<VaultInitRes
         cloud_model: None,
         cloud_provider_name: None,
         active_provider: None,
+        default_ocr_provider: None,
     })
     .map_err(|err| format!("序列化 Vault 配置失败: {}", err))?;
     create_file_if_missing(&config_path, &config_content, &mut created_paths)?;

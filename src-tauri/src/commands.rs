@@ -243,6 +243,25 @@ pub fn set_llm_config(
     state.set_llm_config(config)
 }
 
+/// 读取默认 OCR Provider 配置。
+#[tauri::command]
+pub fn get_ocr_config(state: State<'_, AppState>) -> Option<String> {
+    state.get_ocr_config()
+}
+
+/// 保存默认 OCR Provider 配置。
+#[tauri::command]
+pub fn set_ocr_config(
+    state: State<'_, AppState>,
+    provider: Option<String>,
+) -> Result<(), String> {
+    eprintln!(
+        "[set_ocr_config] called with provider={}",
+        provider.as_deref().unwrap_or("None")
+    );
+    state.set_ocr_config(provider)
+}
+
 /// 将编辑后的 Markdown 内容写回 vault 文件并更新 FTS 索引。
 #[tauri::command]
 pub async fn save_wiki_page(
