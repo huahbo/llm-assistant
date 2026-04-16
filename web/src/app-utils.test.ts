@@ -11,6 +11,7 @@ import {
   buildWikiHighlightSegments,
   tokenizeWikiKeyword,
   sortWikiPages,
+  buildWikiTreeNodes,
   WIKI_SORT_MODE_STORAGE_KEY,
   isWikiSortMode,
   parseLegacyImportedAtFromContent,
@@ -33,6 +34,11 @@ import {
   formatEditorCharCount,
   QUERY_HISTORY_STORAGE_KEY,
   QUERY_HISTORY_MAX,
+  parseQueryProgressPayload,
+  normalizeQueryHistory,
+  mergeQueryHistory,
+  readQueryHistoryFromStorage,
+  writeQueryHistoryToStorage,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -295,6 +301,64 @@ describe("Wiki 列表排序", () => {
       "beta",
       "zeta",
     ]);
+  });
+});
+
+describe("Wiki 文件树构建", () => {
+  it("按目录层级构建树并保持文件在目录后排序", () => {
+    const tree = buildWikiTreeNodes([
+      {
+        title: "Rust",
+        path: "C:/vault/wiki/rust/intro.md",
+        display_path: "wiki/rust/intro.md",
+        summary: "",
+        updated_at: "1",
+      },
+      {
+        title: "SQLite",
+        path: "C:/vault/wiki/rust/sqlite.md",
+        display_path: "wiki/rust/sqlite.md",
+        summary: "",
+        updated_at: "1",
+      },
+      {
+        title: "Index",
+        path: "C:/vault/wiki/index.md",
+        display_path: "wiki/index.md",
+        summary: "",
+        updated_at: "1",
+      },
+    ]);
+
+    expect(tree.map((node) => node.name)).toEqual(["wiki"]);
+    const wikiNode = tree[0];
+    expect(wikiNode.kind).toBe("folder");
+    expect(wikiNode.children.map((node) => node.name)).toEqual(["rust", "index.md"]);
+    expect(wikiNode.children[0].children.map((node) => node.name)).toEqual([
+      "intro.md",
+      "sqlite.md",
+    ]);
+  });
+
+  it("无 display_path 时兼容反斜杠路径", () => {
+    const tree = buildWikiTreeNodes([
+      {
+        title: "A",
+        path: "E:\\vault\\wiki\\topic\\a.md",
+        summary: "",
+        updated_at: "1",
+      },
+      {
+        title: "B",
+        path: "E:\\vault\\wiki\\topic\\sub\\b.md",
+        summary: "",
+        updated_at: "1",
+      },
+    ]);
+
+    expect(tree[0].name.toLowerCase()).toContain("e:");
+    expect(tree[0].children[0].name).toBe("vault");
+    expect(tree[0].children[0].children[0].name).toBe("wiki");
   });
 });
 
@@ -1453,25 +1517,84 @@ describe("Wiki 编辑器辅助函数", () => {
   });
 });
 
+describe("Query 进度事件解析", () => {
+  it("answer_chunk 解析为分片更新", () => {
+    const update = parseQueryProgressPayload({
+      step: "answer_chunk",
+      message: "这是分片",
+    });
+    expect(update).toEqual({ kind: "chunk", text: "这是分片" });
+  });
+
+  it("非分片步骤解析为状态更新", () => {
+    const update = parseQueryProgressPayload({
+      step: "generating",
+      message: "正在合成回答（LLM）...",
+    });
+    expect(update).toEqual({ kind: "status", text: "正在合成回答（LLM）..." });
+  });
+});
+
 describe("查询历史 dedup 与存储 key", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const localStorageMock = {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: localStorageMock,
+    });
+
+    return { store };
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
   it("QUERY_HISTORY_STORAGE_KEY 与 QUERY_HISTORY_MAX 已导出并值合理", () => {
     expect(typeof QUERY_HISTORY_STORAGE_KEY).toBe("string");
     expect(QUERY_HISTORY_STORAGE_KEY.length).toBeGreaterThan(0);
-    expect(QUERY_HISTORY_MAX).toBe(10);
+    expect(QUERY_HISTORY_MAX).toBe(30);
   });
 
-  it("新问题插入历史头部并去重", () => {
+  it("normalizeQueryHistory 会去重、去空白并按上限截断", () => {
+    const source = ["  问题A  ", "问题B", "", "问题A", "问题C", "问题D"];
+    expect(normalizeQueryHistory(source, 3)).toEqual(["问题A", "问题B", "问题C"]);
+  });
+
+  it("mergeQueryHistory 新问题插入头部并去重", () => {
     const prev = ["问题A", "问题B", "问题C"];
-    const q = "问题B";
-    const next = [q, ...prev.filter(item => item !== q)].slice(0, QUERY_HISTORY_MAX);
+    const next = mergeQueryHistory(prev, "问题B");
     expect(next).toEqual(["问题B", "问题A", "问题C"]);
   });
 
-  it("历史超过 QUERY_HISTORY_MAX 时截断", () => {
+  it("mergeQueryHistory 超过 QUERY_HISTORY_MAX 时截断", () => {
     const prev = Array.from({ length: QUERY_HISTORY_MAX }, (_, i) => `问题${i}`);
-    const q = "新问题";
-    const next = [q, ...prev.filter(item => item !== q)].slice(0, QUERY_HISTORY_MAX);
+    const next = mergeQueryHistory(prev, "新问题");
     expect(next).toHaveLength(QUERY_HISTORY_MAX);
     expect(next[0]).toBe("新问题");
+  });
+
+  it("read/writeQueryHistoryToStorage 可读写并保持去重结果", () => {
+    installLocalStorageMock();
+    writeQueryHistoryToStorage(["问题A", "问题B", "问题A", "   "], QUERY_HISTORY_MAX);
+    expect(readQueryHistoryFromStorage()).toEqual(["问题A", "问题B"]);
+  });
+
+  it("readQueryHistoryFromStorage 在非法 JSON 时安全回退为空", () => {
+    installLocalStorageMock({ [QUERY_HISTORY_STORAGE_KEY]: "{invalid-json" });
+    expect(readQueryHistoryFromStorage()).toEqual([]);
   });
 });

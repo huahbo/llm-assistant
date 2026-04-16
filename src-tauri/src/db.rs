@@ -4,6 +4,9 @@ use rusqlite::{params, Connection};
 
 use crate::models::LintPatchEventItem;
 
+/// Ask 历史最大保留条数，防止无限增长。
+pub const ASK_HISTORY_MAX_ENTRIES: usize = 200;
+
 /// 导入任务的基础输入。
 pub struct IngestTaskInput<'a> {
     pub source_path: &'a Path,
@@ -63,6 +66,14 @@ pub struct WikiPageRecord {
     pub summary: String,
     pub updated_at: String,
     pub score: f64,
+}
+
+/// Ask 历史记录。
+#[derive(Debug, Clone)]
+pub struct AskHistoryRecord {
+    pub id: i64,
+    pub question: String,
+    pub created_at: String,
 }
 
 /// 确保元数据库与表结构存在。
@@ -715,6 +726,85 @@ pub fn upsert_fts_page(
     Ok(())
 }
 
+/// 从数据库中删除 Wiki 页面的所有相关记录（wiki_pages / citations / fts_pages）。
+pub fn delete_wiki_page_from_db(db_path: &Path, page_path: &Path) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    let path_str = page_path.to_string_lossy();
+
+    // 删除 FTS 索引
+    conn.execute(
+        "DELETE FROM fts_pages WHERE path = ?1",
+        params![path_str],
+    )
+    .map_err(|err| format!("删除 fts_pages 记录失败: {}", err))?;
+
+    // 删除引用（作为引用方或被引用方均清理）
+    conn.execute(
+        "DELETE FROM citations WHERE page_path = ?1 OR cited_page_path = ?1",
+        params![path_str],
+    )
+    .map_err(|err| format!("删除 citations 记录失败: {}", err))?;
+
+    // 删除主记录
+    conn.execute(
+        "DELETE FROM wiki_pages WHERE path = ?1",
+        params![path_str],
+    )
+    .map_err(|err| format!("删除 wiki_pages 记录失败: {}", err))?;
+
+    Ok(())
+}
+
+/// 将数据库中所有引用 old_path 的记录更新为 new_path。
+/// 涉及：wiki_pages.path、citations.page_path、citations.cited_page_path、fts_pages.path。
+pub fn rename_wiki_page_in_db(
+    db_path: &Path,
+    old_path: &Path,
+    new_path: &Path,
+    new_title: &str,
+    new_body: &str,
+) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    let old_str = old_path.to_string_lossy();
+    let new_str = new_path.to_string_lossy();
+
+    // wiki_pages 主记录
+    conn.execute(
+        "UPDATE wiki_pages SET path = ?1 WHERE path = ?2",
+        params![new_str, old_str],
+    )
+    .map_err(|err| format!("更新 wiki_pages.path 失败: {}", err))?;
+
+    // citations：作为引用方
+    conn.execute(
+        "UPDATE citations SET page_path = ?1 WHERE page_path = ?2",
+        params![new_str, old_str],
+    )
+    .map_err(|err| format!("更新 citations.page_path 失败: {}", err))?;
+
+    // citations：作为被引用方
+    conn.execute(
+        "UPDATE citations SET cited_page_path = ?1 WHERE cited_page_path = ?2",
+        params![new_str, old_str],
+    )
+    .map_err(|err| format!("更新 citations.cited_page_path 失败: {}", err))?;
+
+    // fts_pages：删旧插新
+    conn.execute(
+        "DELETE FROM fts_pages WHERE path = ?1",
+        params![old_str],
+    )
+    .map_err(|err| format!("删除旧 fts_pages 记录失败: {}", err))?;
+
+    conn.execute(
+        "INSERT INTO fts_pages(path, title, body) VALUES (?1, ?2, ?3)",
+        params![new_str, new_title, new_body],
+    )
+    .map_err(|err| format!("写入新 fts_pages 记录失败: {}", err))?;
+
+    Ok(())
+}
+
 /// 基于 FTS5 返回候选页面路径。
 pub fn search_fts_page_paths(
     db_path: &Path,
@@ -827,6 +917,15 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_lint_patch_events_created_at
             ON lint_patch_events(created_at);
+
+        CREATE TABLE IF NOT EXISTS ask_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ask_history_created_at
+            ON ask_history(created_at);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -837,7 +936,192 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         [],
     );
 
+    ensure_ask_history_quality(conn)?;
+
     Ok(())
+}
+
+/// 归一化问题文本：裁剪首尾空白、压缩连续空白，并统一小写用于去重。
+fn normalize_ask_question(question: &str) -> String {
+    question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Ask 历史表质量保障：补列、回填、去重、索引。
+fn ensure_ask_history_quality(conn: &Connection) -> Result<(), String> {
+    let mut has_question_norm = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(ask_history)")
+        .map_err(|err| format!("读取 ask_history 表结构失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("读取 ask_history 字段失败: {}", err))?;
+    for row in rows {
+        let name = row.map_err(|err| format!("读取 ask_history 字段失败: {}", err))?;
+        if name == "question_norm" {
+            has_question_norm = true;
+            break;
+        }
+    }
+
+    if !has_question_norm {
+        conn.execute("ALTER TABLE ask_history ADD COLUMN question_norm TEXT", [])
+            .map_err(|err| format!("升级 ask_history 结构失败: {}", err))?;
+    }
+
+    // 清洗旧数据，避免空白问题和历史重复占用容量。
+    conn.execute(
+        "UPDATE ask_history SET question = trim(question) WHERE question <> trim(question)",
+        [],
+    )
+    .map_err(|err| format!("清洗 ask_history 问题文本失败: {}", err))?;
+
+    {
+        let mut select_stmt = conn
+            .prepare("SELECT id, question FROM ask_history")
+            .map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
+        let rows = select_stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
+
+        for row in rows {
+            let (id, question) = row.map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
+            let norm = normalize_ask_question(question.trim());
+            conn.execute(
+                "UPDATE ask_history SET question_norm = ?1 WHERE id = ?2",
+                params![norm, id],
+            )
+            .map_err(|err| format!("回填 ask_history 归一化字段失败: {}", err))?;
+        }
+    }
+
+    conn.execute(
+        "DELETE FROM ask_history WHERE question_norm IS NULL OR question_norm = ''",
+        [],
+    )
+    .map_err(|err| format!("清理 ask_history 空问题失败: {}", err))?;
+
+    conn.execute(
+        r#"
+        DELETE FROM ask_history
+        WHERE id NOT IN (
+            SELECT MAX(id)
+            FROM ask_history
+            GROUP BY question_norm
+        )
+        "#,
+        [],
+    )
+    .map_err(|err| format!("清理 ask_history 重复问题失败: {}", err))?;
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_history_question_norm_unique ON ask_history(question_norm)",
+        [],
+    )
+    .map_err(|err| format!("创建 ask_history 去重索引失败: {}", err))?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ask_history_created_at_id ON ask_history(created_at, id)",
+        [],
+    )
+    .map_err(|err| format!("创建 ask_history 时间索引失败: {}", err))?;
+
+    Ok(())
+}
+
+/// 裁剪 Ask 历史总量，按时间和 id 保留最新 N 条。
+fn prune_ask_history(conn: &Connection, max_entries: usize) -> Result<(), String> {
+    conn.execute(
+        r#"
+        DELETE FROM ask_history
+        WHERE id IN (
+            SELECT id
+            FROM ask_history
+            ORDER BY CAST(created_at AS INTEGER) DESC, id DESC
+            LIMIT -1 OFFSET ?1
+        )
+        "#,
+        params![max_entries as i64],
+    )
+    .map_err(|err| format!("裁剪 ask_history 失败: {}", err))?;
+    Ok(())
+}
+
+/// 保存一条 Ask 历史问题，返回插入的 id。
+pub fn save_ask_history(db_path: &Path, question: &str, created_at: &str) -> Result<i64, String> {
+    let cleaned_question = question.trim();
+    if cleaned_question.is_empty() {
+        return Ok(0);
+    }
+    let question_norm = normalize_ask_question(cleaned_question);
+
+    let mut conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开启 ask_history 事务失败: {}", err))?;
+
+    let existing_id = tx
+        .query_row(
+            "SELECT id FROM ask_history WHERE question_norm = ?1 ORDER BY id DESC LIMIT 1",
+            params![question_norm],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok();
+
+    let final_id = if let Some(id) = existing_id {
+        tx.execute(
+            "UPDATE ask_history SET question = ?1, created_at = ?2, question_norm = ?3 WHERE id = ?4",
+            params![cleaned_question, created_at, question_norm, id],
+        )
+        .map_err(|err| format!("更新 ask_history 失败: {}", err))?;
+        tx.execute(
+            "DELETE FROM ask_history WHERE question_norm = ?1 AND id <> ?2",
+            params![question_norm, id],
+        )
+        .map_err(|err| format!("清理 ask_history 重复行失败: {}", err))?;
+        id
+    } else {
+        tx.execute(
+            "INSERT INTO ask_history (question, question_norm, created_at) VALUES (?1, ?2, ?3)",
+            params![cleaned_question, question_norm, created_at],
+        )
+        .map_err(|err| format!("写入 ask_history 失败: {}", err))?;
+        tx.last_insert_rowid()
+    };
+
+    prune_ask_history(&tx, ASK_HISTORY_MAX_ENTRIES)?;
+    tx.commit()
+        .map_err(|err| format!("提交 ask_history 事务失败: {}", err))?;
+    Ok(final_id)
+}
+
+/// 读取最近的 Ask 历史，按时间倒序。
+pub fn list_ask_history(db_path: &Path, limit: usize) -> Result<Vec<AskHistoryRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, question, created_at FROM ask_history ORDER BY CAST(created_at AS INTEGER) DESC, id DESC LIMIT ?1",
+        )
+        .map_err(|err| format!("准备查询 ask_history 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(AskHistoryRecord {
+                id: row.get(0)?,
+                question: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 ask_history 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 ask_history 失败: {}", err))
 }
 
 fn build_fts_match_query(tokens: &[String]) -> Option<String> {
@@ -1081,5 +1365,228 @@ mod tests {
         assert_eq!(events[1].issue_code, "ORPHAN_WIKI_PAGE");
         assert_eq!(events[1].path.as_deref(), Some("wiki/a.md"));
         assert!(events[1].applied);
+    }
+
+    #[test]
+    fn delete_wiki_page_from_db_removes_all_related_records() {
+        let dir = make_temp_dir("llm-wiki-db-delete-wiki-page");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        // 插入 sources 记录（wiki_pages.source_id 有外键约束）
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-target", "src/target.md", "raw/target.md", "1"],
+        )
+        .expect("写入 sources 失败");
+        let source_id_target = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-other", "src/other.md", "raw/other.md", "2"],
+        )
+        .expect("写入 sources 失败");
+        let source_id_other = conn.last_insert_rowid();
+
+        // 插入 wiki_pages 记录
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id_target, "目标页面", "wiki/target.md", "摘要", "1", "1"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id_other, "其他页面", "wiki/other.md", "摘要2", "2", "2"],
+        )
+        .expect("写入 wiki_pages 失败");
+
+        // 插入 citations 记录（target 作为引用方和被引用方各一条）
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["wiki/target.md", "wiki/other.md", 1, "引用1", "1"],
+        )
+        .expect("写入 citations 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["wiki/other.md", "wiki/target.md", 2, "引用2", "2"],
+        )
+        .expect("写入 citations 失败");
+
+        // 插入 fts_pages 记录
+        upsert_fts_page(&db_path, std::path::Path::new("wiki/target.md"), "目标页面", "内容")
+            .expect("写入 fts_pages 失败");
+        upsert_fts_page(&db_path, std::path::Path::new("wiki/other.md"), "其他页面", "内容2")
+            .expect("写入 fts_pages 失败");
+
+        // 执行删除
+        delete_wiki_page_from_db(&db_path, std::path::Path::new("wiki/target.md"))
+            .expect("删除 wiki 页面失败");
+
+        // 验证 wiki_pages：target 已删，other 保留
+        let page_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wiki_pages", [], |r| r.get(0))
+            .expect("查询 wiki_pages 失败");
+        assert_eq!(page_count, 1);
+        let remaining_path: String = conn
+            .query_row("SELECT path FROM wiki_pages", [], |r| r.get(0))
+            .expect("查询 wiki_pages 失败");
+        assert_eq!(remaining_path, "wiki/other.md");
+
+        // 验证 citations：两条均删除（target 参与的全部清除）
+        let citation_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM citations", [], |r| r.get(0))
+            .expect("查询 citations 失败");
+        assert_eq!(citation_count, 0);
+
+        // 验证 fts_pages：target 已删，other 保留
+        let fts_paths = search_fts_page_paths(&db_path, &["其他".to_string()], 10)
+            .expect("FTS 查询失败");
+        assert!(!fts_paths.is_empty());
+        let fts_target = search_fts_page_paths(&db_path, &["目标".to_string()], 10)
+            .expect("FTS 查询失败");
+        assert!(fts_target.is_empty());
+    }
+
+    #[test]
+    fn rename_wiki_page_in_db_updates_all_tables() {
+        let dir = make_temp_dir("llm-wiki-db-rename-wiki-page");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        // 插入 sources
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-a", "src/a.md", "raw/a.md", "1"],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+
+        // 插入 wiki_pages：old + other
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "旧标题", "wiki/old.md", "摘要", "1", "1"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-b", "src/b.md", "raw/b.md", "2"],
+        )
+        .expect("写入 sources 失败");
+        let source_id_b = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id_b, "其他页面", "wiki/other.md", "摘要2", "2", "2"],
+        )
+        .expect("写入 wiki_pages 失败");
+
+        // 插入 citations（old 作为引用方和被引用方各一条）
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["wiki/old.md", "wiki/other.md", 1, "excerpt1", "1"],
+        )
+        .expect("写入 citations 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["wiki/other.md", "wiki/old.md", 2, "excerpt2", "2"],
+        )
+        .expect("写入 citations 失败");
+
+        // 插入 fts_pages
+        upsert_fts_page(&db_path, std::path::Path::new("wiki/old.md"), "旧标题", "旧内容")
+            .expect("写入 fts_pages 失败");
+
+        // 执行重命名
+        rename_wiki_page_in_db(
+            &db_path,
+            std::path::Path::new("wiki/old.md"),
+            std::path::Path::new("wiki/new.md"),
+            "新标题",
+            "新内容",
+        )
+        .expect("重命名数据库记录失败");
+
+        // 验证 wiki_pages
+        let new_path: String = conn
+            .query_row(
+                "SELECT path FROM wiki_pages WHERE path = 'wiki/new.md'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("未找到新路径");
+        assert_eq!(new_path, "wiki/new.md");
+        let old_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_pages WHERE path = 'wiki/old.md'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("查询失败");
+        assert_eq!(old_count, 0);
+
+        // 验证 citations
+        let c1_page: String = conn
+            .query_row(
+                "SELECT page_path FROM citations WHERE cited_page_path = 'wiki/other.md'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("未找到 citations 记录");
+        assert_eq!(c1_page, "wiki/new.md");
+
+        let c2_cited: String = conn
+            .query_row(
+                "SELECT cited_page_path FROM citations WHERE page_path = 'wiki/other.md'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("未找到 citations 记录");
+        assert_eq!(c2_cited, "wiki/new.md");
+
+        // 验证 fts_pages：新路径可搜到，旧路径搜不到
+        let found_new = search_fts_page_paths(&db_path, &["新内容".to_string()], 10)
+            .expect("FTS 查询失败");
+        assert!(!found_new.is_empty());
+        let found_old = search_fts_page_paths(&db_path, &["旧内容".to_string()], 10)
+            .expect("FTS 查询失败");
+        assert!(found_old.is_empty());
+    }
+
+    #[test]
+    fn save_ask_history_deduplicates_and_refreshes_timestamp() {
+        let dir = make_temp_dir("llm-wiki-db-ask-history-dedup");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        save_ask_history(&db_path, "  Rust FTS5 是什么  ", "100").expect("首次写入失败");
+        save_ask_history(&db_path, "rust   fts5   是什么", "200").expect("重复写入失败");
+
+        let rows = list_ask_history(&db_path, 10).expect("读取 Ask 历史失败");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].question, "rust   fts5   是什么");
+        assert_eq!(rows[0].created_at, "200");
+    }
+
+    #[test]
+    fn save_ask_history_prunes_to_max_entries() {
+        let dir = make_temp_dir("llm-wiki-db-ask-history-prune");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        let total = ASK_HISTORY_MAX_ENTRIES + 15;
+        for i in 0..total {
+            let question = format!("question-{i}");
+            let created_at = format!("{i}");
+            save_ask_history(&db_path, &question, &created_at).expect("写入 Ask 历史失败");
+        }
+
+        let rows = list_ask_history(&db_path, total).expect("读取 Ask 历史失败");
+        assert_eq!(rows.len(), ASK_HISTORY_MAX_ENTRIES);
+        assert_eq!(rows[0].question, format!("question-{}", total - 1));
+        assert_eq!(rows.last().map(|r| r.question.as_str()), Some("question-15"));
     }
 }

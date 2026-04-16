@@ -1,4 +1,6 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import {
   fetchAppOverview,
   fetchDefaultPaths,
@@ -8,6 +10,7 @@ import {
   fetchRecentLintPatchEvents,
   fetchQuerySettings,
   fetchRecentLogs,
+  fetchAskHistory,
   fetchRecentWikiPages,
   fetchWikiPageDetail,
   fetchWikiPageCitations,
@@ -17,13 +20,18 @@ import {
   ingestPdf,
   ingestUrl,
   isTauriRuntime,
+  pickFiles,
+  pickFolder,
   queryAskWithOptions,
   runLint,
   applyLintPatch,
   applyLintPatchesBatch,
   previewLintPatches,
   saveLlmConfig,
+  saveAskHistory,
   saveOcrConfig,
+  deleteWikiPage,
+  renameWikiPage,
   saveWikiPage,
   searchWikiPages,
   saveQueryAnswer,
@@ -526,7 +534,70 @@ export const writeWikiSortModeToStorage = (mode: WikiSortMode) => {
 export const OCR_PROVIDER_STORAGE_KEY = "llm_wiki_ocr_provider_v1";
 
 export const QUERY_HISTORY_STORAGE_KEY = "llm_wiki_query_history";
-export const QUERY_HISTORY_MAX = 10;
+export const QUERY_HISTORY_MAX = 30;
+
+export const normalizeQueryHistory = (
+  questions: string[],
+  max = QUERY_HISTORY_MAX,
+): string[] => {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawQuestion of questions) {
+    const question = rawQuestion.trim();
+    if (!question || seen.has(question)) {
+      continue;
+    }
+    normalized.push(question);
+    seen.add(question);
+    if (normalized.length >= max) {
+      break;
+    }
+  }
+
+  return normalized;
+};
+
+export const mergeQueryHistory = (
+  previous: string[],
+  nextQuestion: string,
+  max = QUERY_HISTORY_MAX,
+): string[] => normalizeQueryHistory([nextQuestion, ...previous], max);
+
+export const readQueryHistoryFromStorage = (): string[] => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return [];
+    }
+    const raw = storage.getItem(QUERY_HISTORY_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return normalizeQueryHistory(parsed.filter((item): item is string => typeof item === "string"));
+  } catch {
+    return [];
+  }
+};
+
+export const writeQueryHistoryToStorage = (
+  history: string[],
+  max = QUERY_HISTORY_MAX,
+): void => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(QUERY_HISTORY_STORAGE_KEY, JSON.stringify(normalizeQueryHistory(history, max)));
+  } catch {
+    // 本地存储不可用时静默降级，避免影响查询主流程。
+  }
+};
 
 export const isOcrProvider = (value: string): value is OcrProvider =>
   value === "tesseract" || value === "paddle";
@@ -588,6 +659,129 @@ export const sortWikiPages = (pages: WikiPageItem[], mode: WikiSortMode) => {
   return next;
 };
 
+export type WikiTreeNode = {
+  key: string;
+  kind: "folder" | "file";
+  name: string;
+  fullPath: string;
+  pagePath: string | null;
+  children: WikiTreeNode[];
+};
+
+type MutableWikiTreeNode = WikiTreeNode;
+
+const normalizeWikiTreeDisplayPath = (path: string) =>
+  path
+    .trim()
+    .replaceAll("\\", "/")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join("/");
+
+const resolveWikiTreeDisplayPath = (page: WikiPageItem) => {
+  const preferred = (page.display_path ?? page.displayPath ?? "").trim();
+  if (preferred) {
+    return preferred;
+  }
+  const resolved = resolveDisplayPath(page).trim();
+  if (resolved) {
+    return resolved;
+  }
+  return page.path.trim();
+};
+
+const sortWikiTreeNodes = (nodes: MutableWikiTreeNode[]) => {
+  nodes.sort((left, right) => {
+    if (left.kind !== right.kind) {
+      return left.kind === "folder" ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name, "zh-CN", { sensitivity: "base" });
+  });
+  for (const node of nodes) {
+    if (node.children.length > 0) {
+      sortWikiTreeNodes(node.children);
+    }
+  }
+};
+
+export const buildWikiTreeNodes = (pages: WikiPageItem[]): WikiTreeNode[] => {
+  const roots: MutableWikiTreeNode[] = [];
+  const folderMap = new Map<string, MutableWikiTreeNode>();
+  const fileKeySet = new Set<string>();
+
+  for (const page of pages) {
+    const normalized = normalizeWikiTreeDisplayPath(resolveWikiTreeDisplayPath(page));
+    if (!normalized) {
+      continue;
+    }
+
+    const segments = normalized.split("/").filter(Boolean);
+    if (segments.length === 0) {
+      continue;
+    }
+
+    let parentChildren = roots;
+    let currentPath = "";
+
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
+      const isFile = index === segments.length - 1;
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+
+      if (isFile) {
+        const fileKey = `file:${normalizeWikiPathForCompare(page.path)}`;
+        if (fileKeySet.has(fileKey)) {
+          continue;
+        }
+        fileKeySet.add(fileKey);
+        parentChildren.push({
+          key: fileKey,
+          kind: "file",
+          name: segment,
+          fullPath: currentPath,
+          pagePath: page.path,
+          children: [],
+        });
+        continue;
+      }
+
+      const folderKey = `folder:${currentPath.toLowerCase()}`;
+      let folderNode = folderMap.get(folderKey);
+      if (!folderNode) {
+        folderNode = {
+          key: folderKey,
+          kind: "folder",
+          name: segment,
+          fullPath: currentPath,
+          pagePath: null,
+          children: [],
+        };
+        folderMap.set(folderKey, folderNode);
+        parentChildren.push(folderNode);
+      }
+      parentChildren = folderNode.children;
+    }
+  }
+
+  sortWikiTreeNodes(roots);
+  return roots;
+};
+
+const collectWikiTreeFolderKeys = (nodes: WikiTreeNode[]) => {
+  const keys = new Set<string>();
+  const walk = (items: WikiTreeNode[]) => {
+    for (const item of items) {
+      if (item.kind === "folder") {
+        keys.add(item.key);
+        walk(item.children);
+      }
+    }
+  };
+  walk(nodes);
+  return keys;
+};
+
 // Lint 问题按页面路径分组，用于分组折叠展示
 export type LintIssueGroup = { path: string; issues: LintIssue[] };
 
@@ -620,6 +814,19 @@ export const groupPatchPreviewItemsByPath = (items: LintPatchPreviewItem[]): { p
   return Array.from(map.entries()).map(([path, items]) => ({ path, items }));
 };
 
+export type QueryProgressUpdate =
+  | { kind: "status"; text: string }
+  | { kind: "chunk"; text: string };
+
+export const parseQueryProgressPayload = (payload: ProgressPayload): QueryProgressUpdate => {
+  const step = payload.step.trim().toLowerCase();
+  const text = payload.message ?? "";
+  if (step === "answer_chunk") {
+    return { kind: "chunk", text };
+  }
+  return { kind: "status", text };
+};
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -629,6 +836,13 @@ const modules: ModuleItem[] = [
 ];
 
 type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";
+
+type AskMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  streaming?: boolean;
+};
 
 type LoadResult = {
   overview: AppOverview | null;
@@ -688,6 +902,7 @@ export default function App() {
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
   const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
   const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
+  const [ingestFilePickedPaths, setIngestFilePickedPaths] = useState<string[]>([]);
   const [ingestFileOcrProvider, setIngestFileOcrProvider] = useState<OcrProvider>(
     () => readOcrProviderFromStorage(),
   );
@@ -699,17 +914,13 @@ export default function App() {
   const [queryTopKMax, setQueryTopKMax] = useState(defaultQueryTopKMax);
   const [querySettingsSaving, setQuerySettingsSaving] = useState(false);
   const [queryResultSaving, setQueryResultSaving] = useState(false);
-  const [queryHistory, setQueryHistory] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem(QUERY_HISTORY_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed.slice(0, QUERY_HISTORY_MAX);
-      }
-    } catch {}
-    return [];
-  });
+  const [queryHistory, setQueryHistory] = useState<string[]>(() => readQueryHistoryFromStorage());
+  const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
   const [wikiKeyword, setWikiKeyword] = useState("");
+  const [wikiActiveTag, setWikiActiveTag] = useState<string | null>(null);
+  const [wikiTreeCollapsedFolders, setWikiTreeCollapsedFolders] = useState<Set<string>>(
+    new Set(),
+  );
   const [wikiSearching, setWikiSearching] = useState(false);
   const [wikiSortMode, setWikiSortMode] = useState<WikiSortMode>(() => readWikiSortModeFromStorage());
   const [wikiExpandedPaths, setWikiExpandedPaths] = useState<string[]>([]);
@@ -727,6 +938,11 @@ export default function App() {
   const [wikiEditContent, setWikiEditContent] = useState("");
   const [wikiSaveRunning, setWikiSaveRunning] = useState(false);
   const [wikiSaveError, setWikiSaveError] = useState("");
+  const [wikiDeleteRunning, setWikiDeleteRunning] = useState(false);
+  const [wikiRenameMode, setWikiRenameMode] = useState(false);
+  const [wikiRenameInput, setWikiRenameInput] = useState("");
+  const [wikiRenameRunning, setWikiRenameRunning] = useState(false);
+  const [wikiRenameError, setWikiRenameError] = useState("");
   // LLM Provider 配置（Settings 面板）
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
   const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
@@ -744,7 +960,15 @@ export default function App() {
     let cancelled = false;
 
     const load = async () => {
-      const [data, defaultPaths, querySettings, lintPatchEvents, llmConfigResult, backendOcrProvider] =
+      const [
+        data,
+        defaultPaths,
+        querySettings,
+        lintPatchEvents,
+        llmConfigResult,
+        backendOcrProvider,
+        dbAskHistory,
+      ] =
         await Promise.all([
           loadAppData(),
           fetchDefaultPaths(),
@@ -752,6 +976,7 @@ export default function App() {
           fetchRecentLintPatchEvents(),
           fetchLlmConfig(),
           fetchOcrConfig(),
+          fetchAskHistory(QUERY_HISTORY_MAX),
         ]);
 
       if (!cancelled) {
@@ -793,6 +1018,15 @@ export default function App() {
         setLintPathKeyword(lintFilterState.pathKeyword);
         setLintSuggestionKeyword(lintFilterState.suggestionKeyword);
         setLintFilterStateLoaded(true);
+
+        // Ask 历史优先读取后端 DB；后端不可用时回退到 localStorage。
+        if (dbAskHistory) {
+          const normalized = normalizeQueryHistory(dbAskHistory.map((item) => item.question));
+          setQueryHistory(normalized);
+          writeQueryHistoryToStorage(normalized);
+        } else {
+          setQueryHistory(readQueryHistoryFromStorage());
+        }
       }
     };
 
@@ -1093,9 +1327,11 @@ export default function App() {
       return;
     }
 
-    const trimmedPath = ingestFilePath.trim();
-    if (!trimmedPath) {
-      setStatusMessage("请输入要摄入的文件路径（支持 md/pdf/docx/pptx/txt/图片）。");
+    const pathsToIngest = ingestFilePickedPaths.length > 0
+      ? ingestFilePickedPaths
+      : [ingestFilePath.trim()].filter(Boolean);
+    if (pathsToIngest.length === 0) {
+      setStatusMessage("请选择或输入要摄入的文件路径（支持 md/pdf/docx/pptx/txt/图片）。");
       return;
     }
 
@@ -1113,22 +1349,33 @@ export default function App() {
         console.warn("订阅 ingest 进度事件失败，继续执行通用文件摄入流程。", error);
       }
 
-      const result = await ingestFile(trimmedPath, ingestFileOcrProvider);
-      if (!result) {
-        setStatusMessage("当前环境不支持通用文件摄入。");
-        return;
-      }
+      let successCount = 0;
+      for (const filePath of pathsToIngest) {
+        setStatusMessage(`摄入中 (${successCount + 1}/${pathsToIngest.length})：${filePath.split(/[/\\]/).pop() ?? filePath}`);
+        const result = await ingestFile(filePath, ingestFileOcrProvider);
+        if (!result) {
+          setStatusMessage("当前环境不支持通用文件摄入。");
+          return;
+        }
 
-      await refreshAppData();
-      const entitiesMsg =
-        result.entities && result.entities.length > 0
-          ? `\n提取实体：${result.entities.join("、")}`
-          : "";
-      const updatedMsg =
-        result.updated_pages && result.updated_pages.length > 0
-          ? `\n更新相关页面：${result.updated_pages.length} 个`
-          : "";
-      setStatusMessage(`${result.message || `已处理 ${trimmedPath}`}${entitiesMsg}${updatedMsg}`);
+        await refreshAppData();
+        const entitiesMsg =
+          result.entities && result.entities.length > 0
+            ? `\n提取实体：${result.entities.join("、")}`
+            : "";
+        const updatedMsg =
+          result.updated_pages && result.updated_pages.length > 0
+            ? `\n更新相关页面：${result.updated_pages.length} 个`
+            : "";
+        if (pathsToIngest.length === 1) {
+          setStatusMessage(`${result.message || `已处理 ${filePath}`}${entitiesMsg}${updatedMsg}`);
+        }
+        successCount++;
+      }
+      if (pathsToIngest.length > 1) {
+        setStatusMessage(`摄入完成：${successCount}/${pathsToIngest.length} 个文件。`);
+      }
+      setIngestFilePickedPaths([]);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
@@ -1206,13 +1453,37 @@ export default function App() {
 
     setQueryRunning(true);
     setStatusMessage("查询中...");
+    setQueryResult(null);
     let unlisten: (() => void) | null = null;
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const assistantMessageId = `assistant-${requestId}`;
+    setAskMessages((prev) => [
+      ...prev,
+      { id: `user-${requestId}`, role: "user", content: nextQuestion },
+      { id: assistantMessageId, role: "assistant", content: "", streaming: true },
+    ]);
 
     try {
       // 进度订阅失败不应阻塞查询执行，避免按钮持续处于“执行中”。
       try {
         unlisten = await listenProgress("query_progress", (payload) => {
-          setStatusMessage(payload.message);
+          const update = parseQueryProgressPayload(payload);
+          if (update.kind === "chunk") {
+            if (!update.text.trim()) {
+              return;
+            }
+            setAskMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: `${message.content}${update.text}` }
+                  : message,
+              ),
+            );
+            return;
+          }
+          if (update.text.trim()) {
+            setStatusMessage(update.text);
+          }
         });
       } catch (error) {
         console.warn("订阅 query 进度事件失败，继续执行查询流程。", error);
@@ -1225,17 +1496,36 @@ export default function App() {
       }
 
       setQueryResult(result);
-      setQueryHistory(prev => {
-        const next = [nextQuestion, ...prev.filter(q => q !== nextQuestion)].slice(0, QUERY_HISTORY_MAX);
-        try { localStorage.setItem(QUERY_HISTORY_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      setAskMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, content: result.answer, streaming: false }
+            : message,
+        ),
+      );
+      setQueryHistory((prev) => {
+        const next = mergeQueryHistory(prev, nextQuestion, QUERY_HISTORY_MAX);
+        writeQueryHistoryToStorage(next);
         return next;
       });
+      void saveAskHistory(nextQuestion); // 异步保存到 DB，不阻断
       // Query 会在后端写入日志，这里主动刷新一次前端日志面板。
       await refreshAppData();
       setStatusMessage(`Query 已完成：TopK=${nextTopK}，命中 ${result.matched_pages.length} 页。`);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
+      setAskMessages((prev) =>
+        prev.map((item) =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                content: item.content || `生成失败：${message}`,
+                streaming: false,
+              }
+            : item,
+        ),
+      );
       setStatusMessage(`Query 失败：${message}`);
     } finally {
       if (unlisten) {
@@ -1420,7 +1710,9 @@ export default function App() {
 
   const handleResetWikiPages = async () => {
     setWikiKeyword("");
+    setWikiActiveTag(null);
     setWikiExpandedPaths([]);
+    setWikiTreeCollapsedFolders(new Set());
     await refreshAppData();
     setStatusMessage("已恢复显示最近 Wiki 页面。");
   };
@@ -1570,6 +1862,101 @@ export default function App() {
     }
   };
 
+  const handleDeleteWikiPage = async () => {
+    if (!wikiPageDetail) {
+      return;
+    }
+
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法删除 Wiki 页面。");
+      return;
+    }
+
+    const confirmFn = globalThis.confirm;
+    if (typeof confirmFn !== "function") {
+      setStatusMessage("当前环境不支持确认弹窗，操作已取消。");
+      return;
+    }
+
+    const confirmed = confirmFn(`确认删除页面「${wikiPageDetail.title}」吗？此操作不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+
+    const targetPath = wikiPageDetail.path;
+    setWikiDeleteRunning(true);
+    setStatusMessage("");
+
+    try {
+      const result = await deleteWikiPage(targetPath);
+      if (!result) {
+        setStatusMessage("当前环境不支持删除页面。请检查 Tauri 后端是否可用。");
+        return;
+      }
+
+      handleCloseWikiPreview();
+      setPages((prev) => prev.filter((p) => !isSameWikiPagePath(p.path, targetPath)));
+      setStatusMessage(result.message || `已删除页面：${targetPath}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`删除页面失败：${message}`);
+    } finally {
+      setWikiDeleteRunning(false);
+    }
+  };
+
+  const handleStartWikiRename = () => {
+    if (!wikiPageDetail) return;
+    const currentName = wikiPageDetail.path.split(/[/\\]/).pop() ?? "";
+    setWikiRenameInput(currentName.replace(/\.md$/, ""));
+    setWikiRenameError("");
+    setWikiRenameMode(true);
+  };
+
+  const handleCancelWikiRename = () => {
+    setWikiRenameMode(false);
+    setWikiRenameInput("");
+    setWikiRenameError("");
+  };
+
+  const handleConfirmWikiRename = async () => {
+    if (!wikiPageDetail) return;
+
+    if (!isTauriRuntime()) {
+      setWikiRenameError("浏览器预览模式下无法重命名。");
+      return;
+    }
+
+    const newName = wikiRenameInput.trim();
+    if (!newName) {
+      setWikiRenameError("文件名不能为空。");
+      return;
+    }
+
+    setWikiRenameRunning(true);
+    setWikiRenameError("");
+
+    try {
+      const result = await renameWikiPage(wikiPageDetail.path, newName);
+      if (!result) {
+        setWikiRenameError("当前环境不支持重命名。");
+        return;
+      }
+
+      handleCancelWikiRename();
+      // 刷新页面列表并重新打开新路径
+      await refreshAppData();
+      await handleOpenWikiPage(result.new_path);
+      setStatusMessage(result.message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWikiRenameError(`重命名失败：${message}`);
+    } finally {
+      setWikiRenameRunning(false);
+    }
+  };
+
   const handleCopyFrontmatterValue = async (field: string, value: string) => {
     const normalized = value.trim();
     if (!normalized) {
@@ -1668,16 +2055,60 @@ export default function App() {
     ? formatLintCheckedAt(wikiImportedAtDebugRaw)
     : "";
   const wikiHighlightKeywords = tokenizeWikiKeyword(wikiKeyword);
+  const wikiRenderedContent = useMemo(() => {
+    const raw = wikiPageDetail?.content ?? "";
+    if (!raw) return "";
+    const html = marked.parse(raw, { gfm: true, breaks: false }) as string;
+    return DOMPurify.sanitize(html);
+  }, [wikiPageDetail?.content]);
   const sortedWikiPages = sortWikiPages(pages, wikiSortMode);
+  const allWikiTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const page of sortedWikiPages) {
+      for (const tag of page.tags ?? []) {
+        if (tag.trim()) tagSet.add(tag.trim());
+      }
+    }
+    return Array.from(tagSet).sort();
+  }, [sortedWikiPages]);
   const displayedWikiPages = wikiKeyword.trim()
-    ? [...sortedWikiPages].sort((a, b) => {
-        const kw = wikiKeyword.toLowerCase();
-        const aTitleMatch = a.title.toLowerCase().includes(kw) ? 1 : 0;
-        const bTitleMatch = b.title.toLowerCase().includes(kw) ? 1 : 0;
-        if (bTitleMatch !== aTitleMatch) return bTitleMatch - aTitleMatch;
-        return (b.score ?? 0) - (a.score ?? 0);
-      })
-    : sortedWikiPages;
+    ? [...sortedWikiPages]
+        .filter((p) => !wikiActiveTag || (p.tags ?? []).includes(wikiActiveTag))
+        .sort((a, b) => {
+          const kw = wikiKeyword.toLowerCase();
+          const aTitleMatch = a.title.toLowerCase().includes(kw) ? 1 : 0;
+          const bTitleMatch = b.title.toLowerCase().includes(kw) ? 1 : 0;
+          if (bTitleMatch !== aTitleMatch) return bTitleMatch - aTitleMatch;
+          return (b.score ?? 0) - (a.score ?? 0);
+        })
+    : sortedWikiPages.filter((p) => !wikiActiveTag || (p.tags ?? []).includes(wikiActiveTag));
+  const wikiTreeNodes = useMemo(
+    () => buildWikiTreeNodes(displayedWikiPages),
+    [displayedWikiPages],
+  );
+  const wikiTreeFolderKeys = useMemo(
+    () => collectWikiTreeFolderKeys(wikiTreeNodes),
+    [wikiTreeNodes],
+  );
+
+  useEffect(() => {
+    setWikiTreeCollapsedFolders((prev) => {
+      if (prev.size === 0) {
+        return prev;
+      }
+      const next = new Set<string>();
+      for (const key of prev) {
+        if (wikiTreeFolderKeys.has(key)) {
+          next.add(key);
+        }
+      }
+      if (next.size === prev.size && Array.from(next).every((key) => prev.has(key))) {
+        return prev;
+      }
+      return next;
+    });
+  }, [wikiTreeFolderKeys]);
+
   const wikiHasUnsavedChanges = hasUnsavedWikiEditChanges(
     wikiEditMode,
     wikiEditContent,
@@ -1707,6 +2138,68 @@ export default function App() {
     }
     return confirmed;
   }
+
+  const toggleWikiTreeFolder = (folderKey: string) => {
+    setWikiTreeCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderKey)) {
+        next.delete(folderKey);
+      } else {
+        next.add(folderKey);
+      }
+      return next;
+    });
+  };
+
+  const renderWikiTreeNodes = (nodes: WikiTreeNode[], depth = 0) => (
+    <ul className="wiki-tree__list">
+      {nodes.map((node) => {
+        if (node.kind === "folder") {
+          const collapsed = wikiTreeCollapsedFolders.has(node.key);
+          return (
+            <li key={node.key} className="wiki-tree__item">
+              <button
+                type="button"
+                className="wiki-tree__folder"
+                style={{ paddingLeft: `${depth * 14 + 8}px` }}
+                onClick={() => toggleWikiTreeFolder(node.key)}
+              >
+                <span className="wiki-tree__caret" aria-hidden="true">
+                  {collapsed ? "▸" : "▾"}
+                </span>
+                <span className="wiki-tree__name">{node.name}</span>
+              </button>
+              {!collapsed && node.children.length > 0
+                ? renderWikiTreeNodes(node.children, depth + 1)
+                : null}
+            </li>
+          );
+        }
+
+        const isActive = node.pagePath
+          ? isSameWikiPagePath(node.pagePath, wikiActivePagePath)
+          : false;
+
+        return (
+          <li key={node.key} className="wiki-tree__item">
+            <button
+              type="button"
+              className={`wiki-tree__file ${isActive ? "wiki-tree__file--active" : ""}`}
+              style={{ paddingLeft: `${depth * 14 + 28}px` }}
+              onClick={() => {
+                if (!node.pagePath) return;
+                void handleOpenWikiPage(node.pagePath);
+              }}
+              disabled={!isTauriRuntime() || wikiPageDetailLoading}
+              title={node.fullPath}
+            >
+              {node.name}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
 
   const renderWikiPreview = () => (
     <article className="wiki-preview">
@@ -1741,15 +2234,35 @@ export default function App() {
                 </span>
               </>
             ) : (
-              <button
-                type="button"
-                className="dev-panel__button"
-                onClick={handleStartWikiEdit}
-                disabled={wikiSaveRunning || !isTauriRuntime()}
-                title={isTauriRuntime() ? "编辑当前页面内容" : "浏览器预览模式下不可编辑"}
-              >
-                编辑内容
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={handleStartWikiEdit}
+                  disabled={wikiSaveRunning || !isTauriRuntime()}
+                  title={isTauriRuntime() ? "编辑当前页面内容" : "浏览器预览模式下不可编辑"}
+                >
+                  编辑内容
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={handleStartWikiRename}
+                  disabled={wikiDeleteRunning || !isTauriRuntime()}
+                  title={isTauriRuntime() ? "重命名文件" : "浏览器预览模式下不可重命名"}
+                >
+                  重命名
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--danger"
+                  onClick={() => void handleDeleteWikiPage()}
+                  disabled={wikiDeleteRunning || !isTauriRuntime()}
+                  title={isTauriRuntime() ? "删除当前页面（不可恢复）" : "浏览器预览模式下不可删除"}
+                >
+                  {wikiDeleteRunning ? "删除中..." : "删除"}
+                </button>
+              </>
             )
           ) : null}
           <button type="button" className="dev-panel__button" onClick={handleCloseWikiPreview}>
@@ -1757,6 +2270,40 @@ export default function App() {
           </button>
         </div>
       </div>
+      {wikiRenameMode ? (
+        <div className="wiki-rename-bar">
+          <input
+            type="text"
+            className="wiki-rename-bar__input"
+            value={wikiRenameInput}
+            onChange={(e) => setWikiRenameInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleConfirmWikiRename();
+              if (e.key === "Escape") handleCancelWikiRename();
+            }}
+            placeholder="新文件名（不含 .md）"
+            disabled={wikiRenameRunning}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="dev-panel__button dev-panel__button--accent"
+            onClick={() => void handleConfirmWikiRename()}
+            disabled={wikiRenameRunning}
+          >
+            {wikiRenameRunning ? "重命名中..." : "确认"}
+          </button>
+          <button
+            type="button"
+            className="dev-panel__button"
+            onClick={handleCancelWikiRename}
+            disabled={wikiRenameRunning}
+          >
+            取消
+          </button>
+          {wikiRenameError ? <span className="wiki-rename-bar__error">{wikiRenameError}</span> : null}
+        </div>
+      ) : null}
       {!isTauriRuntime() ? (
         <p className="runtime-hint wiki-preview__editor-hint">浏览器预览模式下仅支持查看，不支持编辑保存。</p>
       ) : null}
@@ -1850,7 +2397,11 @@ export default function App() {
           />
         </div>
       ) : (
-        <pre className="wiki-preview__content">{wikiPageDetail?.content ?? ""}</pre>
+        <div
+          className="wiki-preview__content wiki-preview__content--rendered"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: wikiRenderedContent }}
+        />
       )}
       {/* 独立调试面板：与 frontmatter 解耦，仅开发/诊断用 */}
       <div className="wiki-preview__debug-section">
@@ -2222,150 +2773,185 @@ export default function App() {
                   </span>
                 </div>
                 <div className="dev-panel">
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="vault-path">
-                      Vault 路径
-                    </label>
-                    <input
-                      id="vault-path"
-                      className="dev-panel__input"
-                      type="text"
-                      value={vaultPath}
-                      onChange={(event) => setVaultPath(event.target.value)}
-                      placeholder={defaultVaultPath}
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ingest-source-path">
-                      示例摄入文件
-                    </label>
-                    <input
-                      id="ingest-source-path"
-                      className="dev-panel__input"
-                      type="text"
-                      value={ingestSourcePath}
-                      onChange={(event) => setIngestSourcePath(event.target.value)}
-                      placeholder={defaultIngestSourcePath}
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className="dev-panel__actions">
+                  {/* Vault 路径 + 示例摄入（辅助）+ 初始化 */}
+                  <div className="dev-panel__vault-row">
+                    <div className="dev-panel__field dev-panel__vault-path">
+                      <label className="dev-panel__label" htmlFor="vault-path">
+                        Vault 路径
+                      </label>
+                      <div className="path-input-row">
+                        <input
+                          id="vault-path"
+                          className="dev-panel__input"
+                          type="text"
+                          value={vaultPath}
+                          onChange={(event) => setVaultPath(event.target.value)}
+                          placeholder={defaultVaultPath}
+                          spellCheck={false}
+                        />
+                        <button
+                          type="button"
+                          className="dev-panel__button path-pick-btn"
+                          onClick={() => void pickFolder().then((p) => { if (p) setVaultPath(p); })}
+                          disabled={!isTauriRuntime()}
+                          title="选择文件夹"
+                        >
+                          📁
+                        </button>
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      className="dev-panel__button"
+                      className="dev-panel__button dev-panel__vault-action"
+                      onClick={() => void handleDemoIngest()}
+                      disabled={!isTauriRuntime() || devAction !== null}
+                      title="用内置示例文件测试摄入流程"
+                    >
+                      {devAction === "ingest_markdown" ? "摄入中..." : "示例摄入"}
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__vault-action"
                       onClick={() => void handleInitVault()}
                       disabled={!isTauriRuntime() || devAction !== null}
                     >
                       {devAction === "init_vault" ? "初始化中..." : "初始化 Vault"}
                     </button>
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handleDemoIngest()}
-                      disabled={!isTauriRuntime() || devAction !== null}
-                    >
-                      {devAction === "ingest_markdown" ? "摄入中..." : "示例摄入"}
-                    </button>
                   </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ingest-url-input">
-                      URL 摄入
-                    </label>
-                    <input
-                      id="ingest-url-input"
-                      className="dev-panel__input"
-                      type="url"
-                      value={ingestUrlInput}
-                      onChange={(event) => setIngestUrlInput(event.target.value)}
-                      placeholder="https://example.com/article"
-                      spellCheck={false}
-                    />
+
+                  {/* 两列主摄入卡片 */}
+                  <div className="ingest-grid">
+
+                    {/* URL 摄入 */}
+                    <div className="ingest-card">
+                      <span className="ingest-card__title">URL 摄入</span>
+                      <div className="dev-panel__field">
+                        <label className="dev-panel__label" htmlFor="ingest-url-input">
+                          网页地址
+                        </label>
+                        <input
+                          id="ingest-url-input"
+                          className="dev-panel__input"
+                          type="url"
+                          value={ingestUrlInput}
+                          onChange={(event) => setIngestUrlInput(event.target.value)}
+                          placeholder="https://example.com/article"
+                          spellCheck={false}
+                        />
+                      </div>
+                      <div className="ingest-card__footer">
+                        <button
+                          type="button"
+                          className="dev-panel__button dev-panel__button--accent"
+                          onClick={() => void handleUrlIngest()}
+                          disabled={!isTauriRuntime() || devAction !== null}
+                        >
+                          {devAction === "ingest_url" ? "摄入中..." : "URL 摄入"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 文件摄入（自动识别格式，含 PDF） */}
+                    <div className="ingest-card">
+                      <span className="ingest-card__title">文件摄入</span>
+                      <div className="dev-panel__field">
+                        <label className="dev-panel__label" htmlFor="ingest-file-path">
+                          文件路径
+                        </label>
+                        <div className="path-input-row">
+                          <input
+                            id="ingest-file-path"
+                            className="dev-panel__input"
+                            type="text"
+                            value={ingestFilePickedPaths.length > 0 ? "" : ingestFilePath}
+                            onChange={(event) => { setIngestFilePath(event.target.value); setIngestFilePickedPaths([]); }}
+                            placeholder={ingestFilePickedPaths.length > 0 ? `已选 ${ingestFilePickedPaths.length} 个文件` : defaultIngestFilePath}
+                            disabled={ingestFilePickedPaths.length > 0}
+                            spellCheck={false}
+                          />
+                          <button
+                            type="button"
+                            className="dev-panel__button path-pick-btn"
+                            onClick={() =>
+                              void pickFiles({
+                                multiple: true,
+                                filters: [{ name: "支持的文件", extensions: ["md","txt","pdf","docx","pptx","png","jpg","jpeg","bmp","webp","tif","tiff"] }],
+                              }).then((paths) => {
+                                if (paths && paths.length > 0) {
+                                  setIngestFilePickedPaths(paths);
+                                  setIngestFilePath("");
+                                }
+                              })
+                            }
+                            disabled={!isTauriRuntime()}
+                            title="选择文件（支持多选）"
+                          >
+                            📄
+                          </button>
+                        </div>
+                        {ingestFilePickedPaths.length > 0 ? (
+                          <div className="picked-files">
+                            <div className="picked-files__head">
+                              <span>{ingestFilePickedPaths.length} 个文件</span>
+                              <button
+                                type="button"
+                                className="dev-panel__button picked-files__clear"
+                                onClick={() => setIngestFilePickedPaths([])}
+                              >
+                                清除
+                              </button>
+                            </div>
+                            <ul className="picked-files__list">
+                              {ingestFilePickedPaths.map((p) => (
+                                <li key={p} className="picked-files__item" title={p}>
+                                  {p.split(/[/\\]/).pop()}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : (
+                          <p className="dev-panel__hint">
+                            md · txt · pdf · docx · pptx · png · jpg · bmp · webp · tif
+                          </p>
+                        )}
+                      </div>
+                      <div className="dev-panel__field">
+                        <label className="dev-panel__label" htmlFor="ingest-file-ocr-provider">
+                          OCR
+                        </label>
+                        <select
+                          id="ingest-file-ocr-provider"
+                          className="dev-panel__input"
+                          value={ingestFileOcrProvider}
+                          onChange={(event) => {
+                            const provider: OcrProvider =
+                              event.target.value === "paddle" ? "paddle" : "tesseract";
+                            setIngestFileOcrProvider(provider);
+                            writeOcrProviderToStorage(provider);
+                            void saveOcrConfig(provider);
+                          }}
+                        >
+                          <option value="tesseract">{ocrProviderLabels.tesseract}</option>
+                          <option value="paddle">{ocrProviderLabels.paddle}</option>
+                        </select>
+                      </div>
+                      <div className="ingest-card__footer">
+                        <button
+                          type="button"
+                          className="dev-panel__button dev-panel__button--accent"
+                          onClick={() => void handleFileIngest()}
+                          disabled={!isTauriRuntime() || devAction !== null}
+                        >
+                          {devAction === "ingest_file" ? "摄入中..." : "文件摄入"}
+                        </button>
+                      </div>
+                    </div>
+
                   </div>
-                  <div className="dev-panel__actions">
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handleUrlIngest()}
-                      disabled={!isTauriRuntime() || devAction !== null}
-                    >
-                      {devAction === "ingest_url" ? "摄入中..." : "URL 摄入"}
-                    </button>
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ingest-pdf-path">
-                      PDF 摄入
-                    </label>
-                    <input
-                      id="ingest-pdf-path"
-                      className="dev-panel__input"
-                      type="text"
-                      value={ingestPdfPath}
-                      onChange={(event) => setIngestPdfPath(event.target.value)}
-                      placeholder={defaultIngestPdfPath}
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className="dev-panel__actions">
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handlePdfIngest()}
-                      disabled={!isTauriRuntime() || devAction !== null}
-                    >
-                      {devAction === "ingest_pdf" ? "摄入中..." : "PDF 摄入"}
-                    </button>
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ingest-file-path">
-                      通用文件摄入
-                    </label>
-                    <input
-                      id="ingest-file-path"
-                      className="dev-panel__input"
-                      type="text"
-                      value={ingestFilePath}
-                      onChange={(event) => setIngestFilePath(event.target.value)}
-                      placeholder={defaultIngestFilePath}
-                      spellCheck={false}
-                    />
-                    <p className="dev-panel__hint">
-                      支持格式：md / txt / pdf / docx / pptx / png / jpg / jpeg / bmp / webp / tif
-                    </p>
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ingest-file-ocr-provider">
-                      OCR Provider
-                    </label>
-                    <select
-                      id="ingest-file-ocr-provider"
-                      className="dev-panel__input"
-                      value={ingestFileOcrProvider}
-                      onChange={(event) => {
-                        const provider: OcrProvider =
-                          event.target.value === "paddle" ? "paddle" : "tesseract";
-                        setIngestFileOcrProvider(provider);
-                        writeOcrProviderToStorage(provider);
-                        void saveOcrConfig(provider); // 异步同步到后端，失败不阻断
-                      }}
-                    >
-                      <option value="tesseract">{ocrProviderLabels.tesseract}</option>
-                      <option value="paddle">{ocrProviderLabels.paddle}</option>
-                    </select>
-                  </div>
-                  <div className="dev-panel__actions">
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handleFileIngest()}
-                      disabled={!isTauriRuntime() || devAction !== null}
-                    >
-                      {devAction === "ingest_file" ? "摄入中..." : "通用文件摄入"}
-                    </button>
-                  </div>
+
                   <p className="dev-panel__hint">
                     {isTauriRuntime()
-                      ? "按钮会调用本地 Tauri 命令，默认本地优先（tesseract），失败会自动尝试另一 provider（可用时）。成功后自动刷新运行概览和最近日志。"
+                      ? "文件摄入自动按扩展名路由，图片/PDF 默认 tesseract OCR，失败自动回退。成功后刷新概览与日志。"
                       : "浏览器预览模式下按钮保持禁用，仅用于界面预览。"}
                   </p>
                 </div>
@@ -2464,80 +3050,128 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                {allWikiTags.length > 0 ? (
+                  <div className="wiki-tag-bar">
+                    <button
+                      type="button"
+                      className={`wiki-tag-chip ${wikiActiveTag === null ? "wiki-tag-chip--active" : ""}`}
+                      onClick={() => setWikiActiveTag(null)}
+                    >
+                      全部
+                    </button>
+                    {allWikiTags.map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        className={`wiki-tag-chip ${wikiActiveTag === tag ? "wiki-tag-chip--active" : ""}`}
+                        onClick={() => setWikiActiveTag((prev) => (prev === tag ? null : tag))}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {displayedWikiPages.length ? (
-                  <div className="ask-result__citations">
-                    {displayedWikiPages.map((page) => {
-                      const isActiveCard = isSameWikiPagePath(page.path, wikiActivePagePath);
-                      const isDetailForCard = Boolean(
-                        wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
-                      );
-                      const isSummaryExpanded = wikiExpandedPaths.some((path) =>
-                        isSameWikiPagePath(path, page.path),
-                      );
-                      const canToggleSummary = page.summary.trim().split('\n').length > wikiSummaryPreviewLines;
-                      const summaryDisplay = buildWikiSummaryDisplay(page.summary, isSummaryExpanded);
-                      const summarySegments = buildWikiHighlightSegments(
-                        summaryDisplay.text,
-                        wikiHighlightKeywords,
-                      );
+                  <div className="wiki-layout">
+                    <aside className="wiki-layout__tree">
+                      <div className="wiki-tree__head">
+                        <h3>Vault 文件树</h3>
+                        <span>{displayedWikiPages.length} 页</span>
+                      </div>
+                      <div className="wiki-tree__body">
+                        {renderWikiTreeNodes(wikiTreeNodes)}
+                      </div>
+                    </aside>
+                    <div className="wiki-layout__list">
+                      <div className="ask-result__citations">
+                        {displayedWikiPages.map((page) => {
+                          const isActiveCard = isSameWikiPagePath(page.path, wikiActivePagePath);
+                          const isDetailForCard = Boolean(
+                            wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
+                          );
+                          const isSummaryExpanded = wikiExpandedPaths.some((path) =>
+                            isSameWikiPagePath(path, page.path),
+                          );
+                          const canToggleSummary = page.summary.trim().split('\n').length > wikiSummaryPreviewLines;
+                          const summaryDisplay = buildWikiSummaryDisplay(page.summary, isSummaryExpanded);
+                          const summarySegments = buildWikiHighlightSegments(
+                            summaryDisplay.text,
+                            wikiHighlightKeywords,
+                          );
+                          const titleSegments = buildWikiHighlightSegments(
+                            page.title,
+                            wikiHighlightKeywords,
+                          );
 
-                      return (
-                        <article key={page.path} className="ask-citation">
-                          <div className="ask-citation__top">
-                            <code>{page.title}</code>
-                            <span>{formatLintCheckedAt(page.updated_at)}</span>
-                          </div>
-                          <div className="wiki-summary">
-                            <p className="wiki-summary__text">
-                              {summarySegments.map((segment, index) =>
-                                segment.matched ? (
-                                  <mark key={`${page.path}-summary-${index}`} className="wiki-summary__mark">
-                                    {segment.text}
-                                  </mark>
-                                ) : (
-                                  <span key={`${page.path}-summary-${index}`}>{segment.text}</span>
-                                ),
-                              )}
-                            </p>
-                            {canToggleSummary ? (
-                              <button
-                                type="button"
-                                className="dev-panel__button wiki-summary__toggle"
-                                onClick={() => handleToggleWikiSummary(page.path)}
-                              >
-                                {isSummaryExpanded ? "收起摘要" : "展开摘要"}
-                              </button>
-                            ) : null}
-                          </div>
-                          <div className="wiki-card__footer">
-                            <code>{resolveDisplayPath(page)}</code>
-                            <button
-                              type="button"
-                              className="dev-panel__button wiki-card__button"
-                              onClick={() => {
-                                if (isActiveCard && !wikiPageDetailLoading) {
-                                  handleCloseWikiPreview();
-                                  return;
-                                }
-                                void handleOpenWikiPage(page.path);
-                              }}
-                              disabled={!isTauriRuntime() || wikiPageDetailLoading}
-                            >
-                              {isActiveCard && isDetailForCard ? "收起内容" : "查看内容"}
-                            </button>
-                          </div>
-                          {isActiveCard ? (
-                            wikiPageDetailLoading ? (
-                              <p className="runtime-hint wiki-inline-status">正在读取页面内容...</p>
-                            ) : wikiPageDetailError ? (
-                              <p className="runtime-status wiki-inline-status">{wikiPageDetailError}</p>
-                            ) : isDetailForCard ? (
-                              <div className="wiki-inline-preview">{renderWikiPreview()}</div>
-                            ) : null
-                          ) : null}
-                        </article>
-                      );
-                    })}
+                          return (
+                            <article key={page.path} className="ask-citation">
+                              <div className="ask-citation__top">
+                                <code>
+                                  {titleSegments.map((segment, index) =>
+                                    segment.matched ? (
+                                      <mark key={`${page.path}-title-${index}`} className="wiki-summary__mark">
+                                        {segment.text}
+                                      </mark>
+                                    ) : (
+                                      <span key={`${page.path}-title-${index}`}>{segment.text}</span>
+                                    ),
+                                  )}
+                                </code>
+                                <span>{formatLintCheckedAt(page.updated_at)}</span>
+                              </div>
+                              <div className="wiki-summary">
+                                <p className="wiki-summary__text">
+                                  {summarySegments.map((segment, index) =>
+                                    segment.matched ? (
+                                      <mark key={`${page.path}-summary-${index}`} className="wiki-summary__mark">
+                                        {segment.text}
+                                      </mark>
+                                    ) : (
+                                      <span key={`${page.path}-summary-${index}`}>{segment.text}</span>
+                                    ),
+                                  )}
+                                </p>
+                                {canToggleSummary ? (
+                                  <button
+                                    type="button"
+                                    className="dev-panel__button wiki-summary__toggle"
+                                    onClick={() => handleToggleWikiSummary(page.path)}
+                                  >
+                                    {isSummaryExpanded ? "收起摘要" : "展开摘要"}
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="wiki-card__footer">
+                                <code>{resolveDisplayPath(page)}</code>
+                                <button
+                                  type="button"
+                                  className="dev-panel__button wiki-card__button"
+                                  onClick={() => {
+                                    if (isActiveCard && !wikiPageDetailLoading) {
+                                      handleCloseWikiPreview();
+                                      return;
+                                    }
+                                    void handleOpenWikiPage(page.path);
+                                  }}
+                                  disabled={!isTauriRuntime() || wikiPageDetailLoading}
+                                >
+                                  {isActiveCard && isDetailForCard ? "收起内容" : "查看内容"}
+                                </button>
+                              </div>
+                              {isActiveCard ? (
+                                wikiPageDetailLoading ? (
+                                  <p className="runtime-hint wiki-inline-status">正在读取页面内容...</p>
+                                ) : wikiPageDetailError ? (
+                                  <p className="runtime-status wiki-inline-status">{wikiPageDetailError}</p>
+                                ) : isDetailForCard ? (
+                                  <div className="wiki-inline-preview">{renderWikiPreview()}</div>
+                                ) : null
+                              ) : null}
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <p className="empty-state">
@@ -2642,6 +3276,30 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                {askMessages.length > 0 ? (
+                  <div className="ask-chat">
+                    {askMessages.map((message) => (
+                      <article
+                        key={message.id}
+                        className={`ask-chat__item ask-chat__item--${message.role}`}
+                      >
+                        <div className="ask-chat__role">
+                          {message.role === "user" ? "你" : "助手"}
+                        </div>
+                        <div className="ask-chat__content">
+                          {message.content || (message.streaming ? "思考中..." : "")}
+                          {message.streaming ? <span className="ask-chat__cursor" /> : null}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-state">
+                    {isTauriRuntime()
+                      ? '尚未执行 Query。输入问题后点击\u201c执行 Query\u201d查看本地检索结果。'
+                      : "浏览器预览模式下不连接后端，无法生成真实问答结果。"}
+                  </p>
+                )}
                 {queryResult ? (
                   <div className="ask-result">
                     <div className="ask-result__meta">
@@ -2651,7 +3309,6 @@ export default function App() {
                       <span className="pill">TopK：{queryTopK}</span>
                       <span className="pill">命中：{queryResult.matched_pages.length}</span>
                     </div>
-                    <pre className="ask-result__answer">{queryResult.answer}</pre>
                     <div className="ask-result__citations">
                       {queryResult.citations.map((citation) => (
                         <article key={`${citation.page_path}-${citation.score}`} className="ask-citation">
@@ -2664,13 +3321,7 @@ export default function App() {
                       ))}
                     </div>
                   </div>
-                ) : (
-                  <p className="empty-state">
-                    {isTauriRuntime()
-                      ? '尚未执行 Query。输入问题后点击\u201c执行 Query\u201d查看本地检索结果。'
-                      : "浏览器预览模式下不连接后端，无法生成真实问答结果。"}
-                  </p>
-                )}
+                ) : null}
               </section>
             </>
           )}

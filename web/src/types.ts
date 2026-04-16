@@ -113,6 +113,22 @@ export interface SaveWikiPageResult {
   message: string;
 }
 
+export interface DeleteWikiPageResult {
+  path: string;
+  message: string;
+}
+
+export interface RenameWikiPageResult {
+  new_path: string;
+  message: string;
+}
+
+export interface AskHistoryItem {
+  id: number;
+  question: string;
+  created_at: string;
+}
+
 export interface WikiPageItem {
   title: string;
   path: string;
@@ -121,6 +137,7 @@ export interface WikiPageItem {
   summary: string;
   updated_at: string;
   score?: number;
+  tags?: string[];
 }
 
 export interface WikiPageDetail {

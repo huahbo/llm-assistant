@@ -272,3 +272,42 @@ pub async fn save_wiki_page(
     eprintln!("[save_wiki_page] called with path={}", path);
     state.save_wiki_page_impl(&path, &content).await
 }
+
+/// 重命名 Wiki 页面（文件系统 + DB path 同步）。
+#[tauri::command]
+pub async fn rename_wiki_page(
+    state: tauri::State<'_, AppState>,
+    old_path: String,
+    new_name: String,
+) -> Result<crate::models::RenameWikiPageResult, String> {
+    eprintln!("[rename_wiki_page] old={} new_name={}", old_path, new_name);
+    state.rename_wiki_page_impl(&old_path, &new_name).await
+}
+
+/// 删除 Wiki 页面（.md 文件 + DB 记录）。
+#[tauri::command]
+pub async fn delete_wiki_page(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<crate::models::DeleteWikiPageResult, String> {
+    eprintln!("[delete_wiki_page] called with path={}", path);
+    state.delete_wiki_page_impl(&path).await
+}
+
+/// 保存 Ask 问题到历史（answer 暂不存储）。
+#[tauri::command]
+pub fn save_ask_history(
+    state: tauri::State<'_, AppState>,
+    question: String,
+) -> Result<(), String> {
+    state.save_ask_history_impl(&question)
+}
+
+/// 读取 Ask 历史（最近 N 条）。
+#[tauri::command]
+pub fn get_ask_history(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::models::AskHistoryItem>, String> {
+    state.get_ask_history_impl(limit.unwrap_or(30))
+}

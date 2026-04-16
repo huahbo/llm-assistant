@@ -1,5 +1,6 @@
 import type {
   AppOverview,
+  AskHistoryItem,
   BackendAppMode,
   DefaultPaths,
   IngestResult,
@@ -20,6 +21,8 @@ import type {
   QuerySettings,
   SaveQueryAnswerInput,
   SaveQueryAnswerResult,
+  DeleteWikiPageResult,
+  RenameWikiPageResult,
   SaveWikiPageResult,
   VaultInitResult,
   WikiPageDetail,
@@ -42,6 +45,31 @@ export async function listenProgress(
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** 打开文件选择对话框，返回选中路径数组（取消返回 null） */
+export async function pickFiles(options: {
+  multiple?: boolean;
+  filters?: Array<{ name: string; extensions: string[] }>;
+}): Promise<string[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const result = await open({
+    multiple: options.multiple ?? false,
+    filters: options.filters,
+  });
+  if (!result) return null;
+  if (Array.isArray(result)) return result as string[];
+  return [result as string];
+}
+
+/** 打开文件夹选择对话框，返回选中路径（取消返回 null） */
+export async function pickFolder(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const result = await open({ directory: true, multiple: false });
+  if (!result) return null;
+  return Array.isArray(result) ? (result[0] as string) : (result as string);
+}
 
 type DisplayPathSource = {
   display_path?: string | null;
@@ -942,6 +970,49 @@ export async function saveWikiPage(
       ...createSaveWikiPageArgs(path, content),
     }),
   );
+}
+
+export async function saveAskHistory(question: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("save_ask_history", { question });
+  } catch {
+    // 历史保存失败不阻断主流程
+  }
+}
+
+export async function fetchAskHistory(limit = 30): Promise<AskHistoryItem[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<AskHistoryItem[]>("get_ask_history", { limit });
+  } catch {
+    return null;
+  }
+}
+
+export async function renameWikiPage(
+  oldPath: string,
+  newName: string,
+): Promise<RenameWikiPageResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<RenameWikiPageResult>("rename_wiki_page", { oldPath, newName }),
+  );
+}
+
+export async function deleteWikiPage(path: string): Promise<DeleteWikiPageResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(invoke<DeleteWikiPageResult>("delete_wiki_page", { path }));
 }
 
 /** 读取 LLM Provider 配置（Settings 页面初始化时调用） */

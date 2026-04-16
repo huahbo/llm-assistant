@@ -18,6 +18,7 @@ fn main() {
             app.state::<AppState>().set_app_handle(app.handle().clone());
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_overview,
             commands::get_default_paths,
@@ -47,7 +48,11 @@ fn main() {
             commands::set_llm_config,
             commands::get_ocr_config,
             commands::set_ocr_config,
-            commands::save_wiki_page
+            commands::save_wiki_page,
+            commands::rename_wiki_page,
+            commands::delete_wiki_page,
+            commands::save_ask_history,
+            commands::get_ask_history
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

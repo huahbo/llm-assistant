@@ -357,6 +357,21 @@ pub struct SaveWikiPageResult {
     pub message: String,
 }
 
+/// Wiki 页面删除结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeleteWikiPageResult {
+    pub path: String,
+    pub message: String,
+}
+
+/// Wiki 页面重命名结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RenameWikiPageResult {
+    /// 重命名后的新路径
+    pub new_path: String,
+    pub message: String,
+}
+
 /// 长时间操作的进度事件载荷（Tauri emit 用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressPayload {
@@ -388,6 +403,16 @@ pub struct WikiPageItem {
     pub updated_at: String,
     #[serde(default)]
     pub score: f64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Ask 历史单条记录（前端显示用）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AskHistoryItem {
+    pub id: i64,
+    pub question: String,
+    pub created_at: String,
 }
 
 /// Wiki 页面详情。

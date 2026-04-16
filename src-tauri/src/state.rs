@@ -1118,6 +1118,52 @@ impl AppState {
         }
     }
 
+    /// 将完整回答切成较短片段，用于阶段1伪流式输出。
+    fn split_query_answer_for_pseudo_stream(answer: &str, max_chars: usize) -> Vec<String> {
+        if max_chars == 0 {
+            return Vec::new();
+        }
+        let mut chunks = Vec::new();
+        let mut buffer = String::new();
+        let mut count = 0usize;
+
+        for ch in answer.chars() {
+            buffer.push(ch);
+            count += 1;
+
+            let punctuation_break = matches!(ch, '。' | '！' | '？' | '；' | '\n');
+            if count >= max_chars || (punctuation_break && count >= 8) {
+                let chunk = buffer.trim();
+                if !chunk.is_empty() {
+                    chunks.push(chunk.to_string());
+                }
+                buffer.clear();
+                count = 0;
+            }
+        }
+
+        let tail = buffer.trim();
+        if !tail.is_empty() {
+            chunks.push(tail.to_string());
+        }
+
+        chunks
+    }
+
+    /// 通过 query_progress 分片推送回答文本（阶段1：伪流式）。
+    fn emit_query_answer_pseudo_stream(&self, answer: &str) {
+        let chunks = Self::split_query_answer_for_pseudo_stream(answer, 32);
+        if chunks.is_empty() {
+            return;
+        }
+
+        self.emit_progress("query_progress", "answer_stream_start", "回答生成完成，正在输出...");
+        for chunk in chunks {
+            self.emit_progress("query_progress", "answer_chunk", &chunk);
+        }
+        self.emit_progress("query_progress", "answer_stream_done", "回答输出完成。");
+    }
+
     pub fn overview(&self) -> AppOverview {
         let guard = self.inner.lock().expect("状态锁已被污染");
         let vault_path = guard
@@ -1193,6 +1239,7 @@ impl AppState {
             .into_iter()
             .map(|page| {
                 let display_path = friendly_display_path(Path::new(&page.path));
+                let tags = read_page_tags(Path::new(&page.path));
                 WikiPageItem {
                     title: page.title,
                     path: page.path,
@@ -1200,6 +1247,7 @@ impl AppState {
                     summary: page.summary,
                     updated_at: page.updated_at,
                     score: 0.0,
+                    tags,
                 }
             })
             .collect())
@@ -1241,6 +1289,7 @@ impl AppState {
             .into_iter()
             .map(|page| {
                 let display_path = friendly_display_path(Path::new(&page.path));
+                let tags = read_page_tags(Path::new(&page.path));
                 WikiPageItem {
                     title: page.title,
                     path: page.path,
@@ -1248,6 +1297,7 @@ impl AppState {
                     summary: page.summary,
                     updated_at: page.updated_at,
                     score: page.score,
+                    tags,
                 }
             })
             .collect())
@@ -1901,6 +1951,7 @@ Wiki 页面：\n{}",
         let (answer, answer_strategy) = self
             .generate_query_answer_with_provider(&normalized_question, &matches, provider)
             .await;
+        self.emit_query_answer_pseudo_stream(&answer);
 
         let matched_pages = matches
             .iter()
@@ -2048,6 +2099,168 @@ Wiki 页面：\n{}",
             path: path.to_string(),
             message: format!("已保存并更新索引：{path}"),
         })
+    }
+
+    pub async fn rename_wiki_page_impl(
+        &self,
+        old_path: &str,
+        new_name: &str,
+    ) -> Result<crate::models::RenameWikiPageResult, String> {
+        // 1. 验证新文件名（不允许路径分隔符、不能为空）
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("新文件名不能为空".to_string());
+        }
+        if new_name.contains('/') || new_name.contains('\\') {
+            return Err("新文件名不能包含路径分隔符".to_string());
+        }
+        // 确保以 .md 结尾
+        let new_name = if new_name.ends_with(".md") {
+            new_name.to_string()
+        } else {
+            format!("{new_name}.md")
+        };
+
+        // 2. 计算新路径（与旧文件同目录）
+        let old_file = std::path::Path::new(old_path);
+        let parent = old_file
+            .parent()
+            .ok_or_else(|| format!("无法获取父目录：{old_path}"))?;
+        let new_file = parent.join(&new_name);
+        let new_path_str = new_file.to_string_lossy().to_string();
+
+        if new_file == old_file {
+            return Ok(crate::models::RenameWikiPageResult {
+                new_path: new_path_str,
+                message: "文件名未变化".to_string(),
+            });
+        }
+
+        if new_file.exists() {
+            return Err(format!("目标文件已存在：{new_path_str}"));
+        }
+
+        // 3. 重命名文件
+        std::fs::rename(old_file, &new_file)
+            .map_err(|err| format!("文件重命名失败：{}", err))?;
+
+        // 4. 读取新文件内容以更新 FTS
+        let content = std::fs::read_to_string(&new_file).unwrap_or_default();
+        let title = content
+            .lines()
+            .find(|l| l.starts_with("# "))
+            .map(|l| l.trim_start_matches("# ").trim().to_string())
+            .unwrap_or_else(|| new_name.trim_end_matches(".md").to_string());
+
+        // 5. 更新数据库
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+
+        if let Some(vault_path) = vault_path {
+            let db_path = vault_path.join(".app").join("meta.db");
+            if db_path.exists() {
+                if let Err(err) = db::rename_wiki_page_in_db(
+                    &db_path,
+                    old_file,
+                    &new_file,
+                    &title,
+                    &content,
+                ) {
+                    self.push_log(
+                        LogLevel::Warn,
+                        format!("数据库重命名失败（降级）：{err}"),
+                    );
+                }
+            }
+        }
+
+        Ok(crate::models::RenameWikiPageResult {
+            new_path: new_path_str.clone(),
+            message: format!("已重命名：{old_path} → {new_path_str}"),
+        })
+    }
+
+    pub async fn delete_wiki_page_impl(
+        &self,
+        path: &str,
+    ) -> Result<crate::models::DeleteWikiPageResult, String> {
+        // 1. 删除 .md 文件
+        let file_path = std::path::Path::new(path);
+        if file_path.exists() {
+            std::fs::remove_file(file_path)
+                .map_err(|err| format!("删除文件失败：{}", err))?;
+        }
+
+        // 2. 清理数据库记录
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+
+        if let Some(vault_path) = vault_path {
+            let db_path = vault_path.join(".app").join("meta.db");
+            if db_path.exists() {
+                if let Err(err) = db::delete_wiki_page_from_db(&db_path, file_path) {
+                    self.push_log(LogLevel::Warn, format!("数据库清理失败（降级）：{err}"));
+                }
+            }
+        }
+
+        Ok(crate::models::DeleteWikiPageResult {
+            path: path.to_string(),
+            message: format!("已删除：{path}"),
+        })
+    }
+
+    pub fn save_ask_history_impl(&self, question: &str) -> Result<(), String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return Ok(());
+        }
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+        db::save_ask_history(&db_path, question, &created_at)?;
+        Ok(())
+    }
+
+    pub fn get_ask_history_impl(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::models::AskHistoryItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(Vec::new());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
+        // 读取上限与落库上限一致，避免异常大值导致一次性扫描过多数据。
+        let safe_limit = limit.min(db::ASK_HISTORY_MAX_ENTRIES);
+        let records = db::list_ask_history(&db_path, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|r| crate::models::AskHistoryItem {
+                id: r.id,
+                question: r.question,
+                created_at: r.created_at,
+            })
+            .collect())
     }
 
     fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
@@ -3580,6 +3793,17 @@ fn parse_wiki_frontmatter(content: &str) -> Option<WikiPageFrontmatter> {
     } else {
         None
     }
+}
+
+/// 读取 .md 文件的 frontmatter entities 作为标签，失败时返回空。
+fn read_page_tags(path: &Path) -> Vec<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    parse_wiki_frontmatter(&content)
+        .map(|fm| fm.entities)
+        .unwrap_or_default()
 }
 
 fn extract_frontmatter_block(content: &str) -> Option<String> {
@@ -5471,6 +5695,21 @@ entities:
         assert_eq!(report.severity_stats.error, 0);
         assert_eq!(report.severity_stats.warning, 1);
         assert_eq!(report.severity_stats.info, 0);
+    }
+
+    #[test]
+    fn split_query_answer_for_pseudo_stream_splits_long_text() {
+        let text = "第一段回答说明。第二段补充细节。第三段结论。";
+        let chunks = AppState::split_query_answer_for_pseudo_stream(text, 10);
+        assert!(chunks.len() >= 3);
+        assert!(chunks.iter().all(|chunk| !chunk.trim().is_empty()));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn split_query_answer_for_pseudo_stream_ignores_empty_input() {
+        let chunks = AppState::split_query_answer_for_pseudo_stream("   ", 10);
+        assert!(chunks.is_empty());
     }
 
     struct TempDirGuard(PathBuf);
