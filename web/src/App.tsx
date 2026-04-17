@@ -370,6 +370,13 @@ export const isSameWikiPagePath = (left: string | null | undefined, right: strin
   return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
 };
 
+export const resolveGraphNodePagePath = (node: Partial<KnowledgeGraphNode> | null | undefined) => {
+  if (!node || typeof node.id !== "string") {
+    return "";
+  }
+  return node.id.trim();
+};
+
 export const shouldAutoDismissStatusMessage = (message: string) => {
   const normalized = message.trim().toLowerCase();
   if (!normalized) {
@@ -1125,6 +1132,7 @@ export default function App() {
   // 知识图谱模块状态
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState("");
   const graphContainerRef = useRef<HTMLDivElement>(null);
   const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
   // 当前激活的导航模块
@@ -1145,11 +1153,15 @@ export default function App() {
     if (activeModule !== "graph") return;
     void (async () => {
       setGraphLoading(true);
+      setGraphError("");
       try {
         const data = await getKnowledgeGraph();
         setGraphData(data);
       } catch (err) {
         console.error("图谱加载失败:", err);
+        const message = err instanceof Error ? err.message : String(err);
+        setGraphData(null);
+        setGraphError(`图谱加载失败：${message}`);
       } finally {
         setGraphLoading(false);
       }
@@ -2026,6 +2038,17 @@ export default function App() {
       setWikiPageDetailLoading(false);
       setWikiPageCitationsLoading(false);
     }
+  };
+
+  const handleGraphNodeClick = async (node: object) => {
+    const graphNode = node as Partial<KnowledgeGraphNode>;
+    const pagePath = resolveGraphNodePagePath(graphNode);
+    if (!pagePath) {
+      setStatusMessage("图谱节点数据异常，无法打开页面。");
+      return;
+    }
+    setActiveModule("wiki");
+    await handleOpenWikiPage(pagePath);
   };
 
   const handleCloseWikiPreview = () => {
@@ -4088,10 +4111,22 @@ export default function App() {
                 {graphLoading && (
                   <div className="graph-module__loading">加载图谱中...</div>
                 )}
+                {!graphLoading && graphError && (
+                  <div className="graph-module__empty">
+                    <p>{graphError}</p>
+                    <p>请检查后端日志或稍后重试。</p>
+                  </div>
+                )}
                 {!graphLoading && graphData && graphData.nodes.length === 0 && (
                   <div className="graph-module__empty">
                     <p>暂无 Wiki 页面数据。</p>
                     <p>请先在 Inbox 中摄入文档，生成 Wiki 页面后图谱将自动显示。</p>
+                  </div>
+                )}
+                {!graphLoading && !graphError && !graphData && (
+                  <div className="graph-module__empty">
+                    <p>当前未获取到图谱数据。</p>
+                    <p>请稍后重试，或先确认后端服务运行正常。</p>
                   </div>
                 )}
                 {!graphLoading && graphData && graphData.nodes.length > 0 && (
@@ -4110,11 +4145,7 @@ export default function App() {
                       linkColor={() => "rgba(120,120,180,0.4)"}
                       linkWidth={1}
                       onNodeClick={(node: object) => {
-                        const n = node as KnowledgeGraphNode;
-                        setActiveModule("wiki");
-                        void fetchWikiPageDetail(n.id).then((detail) => {
-                          if (detail) setWikiPageDetail(detail);
-                        });
+                        void handleGraphNodeClick(node);
                       }}
                       nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
                         const n = node as KnowledgeGraphNode;

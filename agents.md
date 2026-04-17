@@ -252,6 +252,7 @@
 | P19-1 | Ask 历史管理增强（时间显示 + 关键词过滤 + 清空入口） | ✅ `db.rs` + `state.rs` + `commands.rs` + `main.rs` + `tauri-client.ts` + `App.tsx` + `styles.css` + `app-utils.test.ts`（118 前端；Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P20-1 后端 | Outbox 事件流基础（`wiki_outbox` + 导出/ack 命令 + 关键路径事件写入） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs`（Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P20-2 后端 | Wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）+ patch preview/apply 最小可用 | ✅ `state.rs`（新增 2 条 Rust 单测；待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
+| P21-Fix 前端 | 图谱点击白屏修复（统一打开链路 + 图谱可见错误提示 + 节点路径健壮性） | ✅ `web/src/App.tsx` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 
 ### 18.2 下一轮待开发（TODO）
 
@@ -278,8 +279,8 @@
 - 前端：新”图谱”模块，`ForceGraph2D` + `groupColor()` + 节点点击跳转详情 + resize 响应
 
 **Claude Code / Gemini 入手点（下轮开始先做）**
-1. 基线已复核（2026-04-17 P21）：`cargo test` 102/102，`npm test` 118/118，`typecheck` 零错误，`build` 通过。
-2. P20/P21 全部完成。下一步：P19-2（文件树增强）或 P19-3（多标签筛选），或用户指定新功能。
+1. 先做 Windows 复核（P21-Fix）：`npm run typecheck`、`npm run test -- --run`、`npm run build`，重点手测“图谱节点点击跳转 Wiki”与失败提示路径。
+2. P20/P21 主干已完成。下一步：P19-2（文件树增强）或 P19-3（多标签筛选），或用户指定新功能。
 3. 每轮必须按 §14 并行规则拆分子任务（至少前端/后端两条），并在记录中写明文件所有权。
 4. 每轮结束必须更新 `docs/实施过程记录.md` 与 `agents.md §18`；三方交接仅以这两处为准。
 5. 对标结论强调”功能优先、实现第二”：允许本项目使用不同工程路径，只要满足 A+C 架构与 Strict Local 约束。
@@ -302,10 +303,10 @@ src-tauri/src/
   vault.rs          # 文件系统操作
 
 web/src/
-  App.tsx           # 主界面（含图谱模块、stale横幅/按钮、RRF策略标签）
+  App.tsx           # 主界面（含图谱模块、节点点击统一打开链路、图谱错误提示）
   tauri-client.ts   # Tauri invoke 封装（含 markPageStale, getKnowledgeGraph）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（118 个）
+  app-utils.test.ts # 前端单元测试（新增图谱节点路径解析用例）
 ```
 
 ### 18.4 验证基线
@@ -315,8 +316,9 @@ web/src/
 - `cargo check`（src-tauri/，2026-04-17 P20-1 热修复复核）：用户在 Windows 报告 `E0063`（`ollama_model/ollama_base_url` 缺失）后已修复代码，**待用户再次复核**
 - `cargo test`（src-tauri/）：**102 通过，0 失败（2026-04-17 P21）**
 - `npm run test -- --run`（web/）：**118 通过，0 失败（2026-04-17 P21）**
-- `npm run typecheck`（web/）：**零错误（2026-04-17 P21）**
-- `npm run build`（web/）：**通过（2026-04-17 P21，含 react-force-graph-2d 懒加载 chunk 62KB gzipped）**
+- `npm run typecheck`（web/）：**零错误（2026-04-17 P21-Fix，Codex WSL）**
+- `npm run test -- --run`（web，2026-04-17 P21-Fix）：WSL 环境阻塞（缺少 `@rollup/rollup-linux-x64-gnu` 可选依赖），**待 Windows 复核**
+- `npm run build`（web，2026-04-17 P21-Fix）：WSL 环境阻塞（同上），**待 Windows 复核**
 
 ### 18.5 关键约束提醒
 

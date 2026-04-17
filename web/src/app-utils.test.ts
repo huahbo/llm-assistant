@@ -17,6 +17,7 @@ import {
   parseLegacyImportedAtFromContent,
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
+  resolveGraphNodePagePath,
   parseLegacyWikiMetadataFromContent,
   formatPdfIngestErrorMessage,
   readWikiSortModeFromStorage,
@@ -456,6 +457,15 @@ describe("Wiki 路径比较", () => {
 
   it("空路径不视为同一路径", () => {
     expect(isSameWikiPagePath("", "")).toBe(false);
+  });
+
+  it("图谱节点路径解析仅接受非空字符串", () => {
+    expect(resolveGraphNodePagePath({ id: "  E:\\llm-wiki\\vault\\wiki\\a.md  " })).toBe(
+      "E:\\llm-wiki\\vault\\wiki\\a.md",
+    );
+    expect(resolveGraphNodePagePath({ id: "" })).toBe("");
+    expect(resolveGraphNodePagePath({ id: 1 as unknown as string })).toBe("");
+    expect(resolveGraphNodePagePath(null)).toBe("");
   });
 });
 
