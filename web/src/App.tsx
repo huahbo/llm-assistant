@@ -1,4 +1,4 @@
-import { type KeyboardEvent, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Component, type KeyboardEvent, lazy, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -67,6 +67,7 @@ import type {
   AskHistoryItem,
   BackendAppMode,
   KnowledgeGraphData,
+  KnowledgeGraphLink,
   KnowledgeGraphNode,
   LlmProviderConfig,
   LlmStatus,
@@ -375,6 +376,72 @@ export const resolveGraphNodePagePath = (node: Partial<KnowledgeGraphNode> | nul
     return "";
   }
   return node.id.trim();
+};
+
+const resolveGraphLinkNodeId = (
+  endpoint: string | KnowledgeGraphNode | null | undefined,
+) => {
+  if (typeof endpoint === "string") {
+    return endpoint.trim();
+  }
+  return resolveGraphNodePagePath(endpoint);
+};
+
+export type GraphNormalizedEdge = {
+  sourceId: string;
+  targetId: string;
+};
+
+export const buildGraphVisibleData = (input: {
+  nodes: KnowledgeGraphNode[];
+  edges: GraphNormalizedEdge[];
+  totalDegree: Map<string, number>;
+  groupFilter: string;
+  showOrphans: boolean;
+  neighborOnly: boolean;
+  selectedNodeId: string;
+}): KnowledgeGraphData => {
+  let visibleNodes = input.nodes.filter((node) => {
+    const group = node.group?.trim() ?? "";
+    if (input.groupFilter === "__all__") {
+      return true;
+    }
+    if (input.groupFilter === "__ungrouped__") {
+      return !group;
+    }
+    return group === input.groupFilter;
+  });
+
+  if (!input.showOrphans) {
+    visibleNodes = visibleNodes.filter((node) => (input.totalDegree.get(node.id) ?? 0) > 0);
+  }
+
+  let visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  let visibleEdges = input.edges.filter(
+    (edge) => visibleNodeIds.has(edge.sourceId) && visibleNodeIds.has(edge.targetId),
+  );
+
+  if (input.neighborOnly && input.selectedNodeId && visibleNodeIds.has(input.selectedNodeId)) {
+    const neighborIds = new Set<string>([input.selectedNodeId]);
+    for (const edge of visibleEdges) {
+      if (isSameWikiPagePath(edge.sourceId, input.selectedNodeId)) {
+        neighborIds.add(edge.targetId);
+      }
+      if (isSameWikiPagePath(edge.targetId, input.selectedNodeId)) {
+        neighborIds.add(edge.sourceId);
+      }
+    }
+    visibleNodes = visibleNodes.filter((node) => neighborIds.has(node.id));
+    visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+    visibleEdges = visibleEdges.filter(
+      (edge) => visibleNodeIds.has(edge.sourceId) && visibleNodeIds.has(edge.targetId),
+    );
+  }
+
+  return {
+    nodes: visibleNodes.map((node) => ({ ...node })),
+    links: visibleEdges.map((edge) => ({ source: edge.sourceId, target: edge.targetId })),
+  };
 };
 
 export const shouldAutoDismissStatusMessage = (message: string) => {
@@ -986,6 +1053,47 @@ function groupColor(group: string): string {
   return palette[Math.abs(hash) % palette.length];
 }
 
+type GraphErrorBoundaryProps = {
+  children: ReactNode;
+};
+
+type GraphErrorBoundaryState = {
+  hasError: boolean;
+  message: string;
+};
+
+// 图谱渲染兜底：避免第三方图形库异常导致整个应用白屏。
+class GraphErrorBoundary extends Component<GraphErrorBoundaryProps, GraphErrorBoundaryState> {
+  override state: GraphErrorBoundaryState = {
+    hasError: false,
+    message: "",
+  };
+
+  static getDerivedStateFromError(error: unknown): GraphErrorBoundaryState {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      hasError: true,
+      message: message.trim(),
+    };
+  }
+
+  override componentDidCatch(error: unknown) {
+    console.error("图谱渲染异常:", error);
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <div className="graph-module__empty">
+          <p>{this.state.message ? `图谱渲染失败：${this.state.message}` : "图谱渲染失败。"}</p>
+          <p>请先检查图谱依赖是否安装完整，或切换模块后重试。</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
@@ -1133,7 +1241,12 @@ export default function App() {
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState("");
+  const [graphSelectedNodeId, setGraphSelectedNodeId] = useState("");
+  const [graphGroupFilter, setGraphGroupFilter] = useState("__all__");
+  const [graphShowOrphans, setGraphShowOrphans] = useState(true);
+  const [graphNeighborOnly, setGraphNeighborOnly] = useState(false);
   const graphContainerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<any>(null);
   const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
   // 当前激活的导航模块
   const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
@@ -1142,6 +1255,127 @@ export default function App() {
     () => filterQueryHistoryItems(queryHistoryItems, askHistoryKeyword),
     [queryHistoryItems, askHistoryKeyword],
   );
+
+  const graphNodes = graphData?.nodes ?? [];
+  const graphNodeById = useMemo(() => {
+    const map = new Map<string, KnowledgeGraphNode>();
+    for (const node of graphNodes) {
+      map.set(node.id, node);
+    }
+    return map;
+  }, [graphNodes]);
+  const graphNormalizedLinks = useMemo(() => {
+    if (!graphData) {
+      return [] as Array<{ sourceId: string; targetId: string }>;
+    }
+    const normalized: Array<{ sourceId: string; targetId: string }> = [];
+    for (const link of graphData.links ?? []) {
+      const edge = link as KnowledgeGraphLink;
+      const sourceId = resolveGraphLinkNodeId(
+        edge.source as string | KnowledgeGraphNode | null | undefined,
+      );
+      const targetId = resolveGraphLinkNodeId(
+        edge.target as string | KnowledgeGraphNode | null | undefined,
+      );
+      if (!sourceId || !targetId) {
+        continue;
+      }
+      normalized.push({ sourceId, targetId });
+    }
+    return normalized;
+  }, [graphData]);
+  const graphMetrics = useMemo(() => {
+    const inDegree = new Map<string, number>();
+    const outDegree = new Map<string, number>();
+    const totalDegree = new Map<string, number>();
+    const adjacency = new Map<string, Set<string>>();
+
+    for (const node of graphNodes) {
+      inDegree.set(node.id, 0);
+      outDegree.set(node.id, 0);
+      totalDegree.set(node.id, 0);
+      adjacency.set(node.id, new Set());
+    }
+
+    for (const edge of graphNormalizedLinks) {
+      const nextOut = (outDegree.get(edge.sourceId) ?? 0) + 1;
+      const nextIn = (inDegree.get(edge.targetId) ?? 0) + 1;
+      outDegree.set(edge.sourceId, nextOut);
+      inDegree.set(edge.targetId, nextIn);
+      totalDegree.set(edge.sourceId, (totalDegree.get(edge.sourceId) ?? 0) + 1);
+      totalDegree.set(edge.targetId, (totalDegree.get(edge.targetId) ?? 0) + 1);
+
+      if (!adjacency.has(edge.sourceId)) {
+        adjacency.set(edge.sourceId, new Set());
+      }
+      if (!adjacency.has(edge.targetId)) {
+        adjacency.set(edge.targetId, new Set());
+      }
+      adjacency.get(edge.sourceId)?.add(edge.targetId);
+      adjacency.get(edge.targetId)?.add(edge.sourceId);
+    }
+
+    const orphanCount = graphNodes.filter((node) => (totalDegree.get(node.id) ?? 0) === 0).length;
+    return { inDegree, outDegree, totalDegree, adjacency, orphanCount };
+  }, [graphNodes, graphNormalizedLinks]);
+  const graphGroupOptions = useMemo(() => {
+    const groups = new Set<string>();
+    for (const node of graphNodes) {
+      const group = node.group?.trim() ?? "";
+      if (group) {
+        groups.add(group);
+      }
+    }
+    return Array.from(groups).sort((left, right) => left.localeCompare(right, "zh-CN"));
+  }, [graphNodes]);
+  const graphVisibleData = useMemo<KnowledgeGraphData | null>(() => {
+    if (!graphData) {
+      return null;
+    }
+    return buildGraphVisibleData({
+      nodes: graphNodes,
+      edges: graphNormalizedLinks,
+      totalDegree: graphMetrics.totalDegree,
+      groupFilter: graphGroupFilter,
+      showOrphans: graphShowOrphans,
+      neighborOnly: graphNeighborOnly,
+      selectedNodeId: graphSelectedNodeId,
+    });
+  }, [
+    graphData,
+    graphGroupFilter,
+    graphMetrics.totalDegree,
+    graphNeighborOnly,
+    graphNodes,
+    graphNormalizedLinks,
+    graphSelectedNodeId,
+    graphShowOrphans,
+  ]);
+  const graphSelectedNode = useMemo(() => {
+    if (!graphSelectedNodeId) {
+      return null;
+    }
+    return graphNodeById.get(graphSelectedNodeId) ?? null;
+  }, [graphNodeById, graphSelectedNodeId]);
+  const graphSelectedNeighbors = useMemo(() => {
+    if (!graphSelectedNode) {
+      return [] as KnowledgeGraphNode[];
+    }
+    const adjacency = graphMetrics.adjacency.get(graphSelectedNode.id);
+    if (!adjacency || adjacency.size === 0) {
+      return [] as KnowledgeGraphNode[];
+    }
+    return Array.from(adjacency)
+      .map((neighborId) => graphNodeById.get(neighborId))
+      .filter((node): node is KnowledgeGraphNode => Boolean(node))
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }, [graphMetrics.adjacency, graphNodeById, graphSelectedNode]);
+  const graphVisibleOrphanCount = useMemo(() => {
+    if (!graphVisibleData) {
+      return 0;
+    }
+    return graphVisibleData.nodes.filter((node) => (graphMetrics.totalDegree.get(node.id) ?? 0) === 0).length;
+  }, [graphMetrics.totalDegree, graphVisibleData]);
 
   // 消息更新时自动滚动到底部
   useEffect(() => {
@@ -1182,6 +1416,28 @@ export default function App() {
     window.addEventListener("resize", updateSize);
     return () => window.removeEventListener("resize", updateSize);
   }, [activeModule]);
+
+  useEffect(() => {
+    if (!graphSelectedNodeId || !graphVisibleData) {
+      return;
+    }
+    const exists = graphVisibleData.nodes.some((node) =>
+      isSameWikiPagePath(node.id, graphSelectedNodeId),
+    );
+    if (!exists) {
+      setGraphSelectedNodeId("");
+      setGraphNeighborOnly(false);
+    }
+  }, [graphSelectedNodeId, graphVisibleData]);
+
+  useEffect(() => {
+    if (graphGroupFilter === "__all__" || graphGroupFilter === "__ungrouped__") {
+      return;
+    }
+    if (!graphGroupOptions.includes(graphGroupFilter)) {
+      setGraphGroupFilter("__all__");
+    }
+  }, [graphGroupFilter, graphGroupOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2040,15 +2296,26 @@ export default function App() {
     }
   };
 
-  const handleGraphNodeClick = async (node: object) => {
+  const handleGraphNodeClick = (node: object) => {
     const graphNode = node as Partial<KnowledgeGraphNode>;
     const pagePath = resolveGraphNodePagePath(graphNode);
     if (!pagePath) {
-      setStatusMessage("图谱节点数据异常，无法打开页面。");
+      setStatusMessage("图谱节点数据异常，无法选中。");
+      return;
+    }
+    setGraphSelectedNodeId(pagePath);
+  };
+
+  const handleOpenSelectedGraphNode = async () => {
+    if (!graphSelectedNode) {
       return;
     }
     setActiveModule("wiki");
-    await handleOpenWikiPage(pagePath);
+    await handleOpenWikiPage(graphSelectedNode.id);
+  };
+
+  const handleGraphZoomToFit = () => {
+    graphRef.current?.zoomToFit?.(350, 40);
   };
 
   const handleCloseWikiPreview = () => {
@@ -4107,66 +4374,220 @@ export default function App() {
                 <h1 className="module-header__title">知识图谱</h1>
                 <p className="module-header__sub">Wiki 页面与引用关系可视化</p>
               </div>
-              <div className="graph-module" ref={graphContainerRef}>
-                {graphLoading && (
-                  <div className="graph-module__loading">加载图谱中...</div>
-                )}
-                {!graphLoading && graphError && (
-                  <div className="graph-module__empty">
-                    <p>{graphError}</p>
-                    <p>请检查后端日志或稍后重试。</p>
+              <div className="graph-layout">
+                <section className="graph-workspace">
+                  <div className="graph-toolbar">
+                    <div className="graph-toolbar__controls">
+                      <label className="graph-control" htmlFor="graph-group-filter">
+                        <span className="graph-control__label">分组</span>
+                        <select
+                          id="graph-group-filter"
+                          className="dev-panel__input"
+                          value={graphGroupFilter}
+                          onChange={(event) => setGraphGroupFilter(event.target.value)}
+                        >
+                          <option value="__all__">全部</option>
+                          <option value="__ungrouped__">未分组</option>
+                          {graphGroupOptions.map((group) => (
+                            <option key={group} value={group}>
+                              {group}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className={`dev-panel__button ${graphShowOrphans ? "dev-panel__button--accent" : ""}`}
+                        onClick={() => setGraphShowOrphans((prev) => !prev)}
+                      >
+                        {graphShowOrphans ? "显示孤儿页" : "隐藏孤儿页"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`dev-panel__button ${graphNeighborOnly ? "dev-panel__button--accent" : ""}`}
+                        onClick={() => setGraphNeighborOnly((prev) => !prev)}
+                        disabled={!graphSelectedNode}
+                        title={graphSelectedNode ? "仅显示当前节点与一跳邻居" : "先选中节点后可启用"}
+                      >
+                        {graphNeighborOnly ? "仅看邻居：开" : "仅看邻居：关"}
+                      </button>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        onClick={handleGraphZoomToFit}
+                        disabled={!graphVisibleData || graphVisibleData.nodes.length === 0}
+                      >
+                        适配视图
+                      </button>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        onClick={() => {
+                          setGraphGroupFilter("__all__");
+                          setGraphShowOrphans(true);
+                          setGraphNeighborOnly(false);
+                        }}
+                      >
+                        重置筛选
+                      </button>
+                    </div>
+                    <div className="graph-toolbar__stats">
+                      <span className="pill">{`节点 ${graphVisibleData?.nodes.length ?? 0}/${graphNodes.length}`}</span>
+                      <span className="pill">{`边 ${graphVisibleData?.links.length ?? 0}/${graphNormalizedLinks.length}`}</span>
+                      <span className="pill">{`孤儿页 ${graphVisibleOrphanCount}/${graphMetrics.orphanCount}`}</span>
+                    </div>
                   </div>
-                )}
-                {!graphLoading && graphData && graphData.nodes.length === 0 && (
-                  <div className="graph-module__empty">
-                    <p>暂无 Wiki 页面数据。</p>
-                    <p>请先在 Inbox 中摄入文档，生成 Wiki 页面后图谱将自动显示。</p>
+
+                  <div className="graph-module" ref={graphContainerRef}>
+                    {graphLoading && (
+                      <div className="graph-module__loading">加载图谱中...</div>
+                    )}
+                    {!graphLoading && graphError && (
+                      <div className="graph-module__empty">
+                        <p>{graphError}</p>
+                        <p>请检查后端日志或稍后重试。</p>
+                      </div>
+                    )}
+                    {!graphLoading && graphData && graphData.nodes.length === 0 && (
+                      <div className="graph-module__empty">
+                        <p>暂无 Wiki 页面数据。</p>
+                        <p>请先在 Inbox 中摄入文档，生成 Wiki 页面后图谱将自动显示。</p>
+                      </div>
+                    )}
+                    {!graphLoading && !graphError && !graphData && (
+                      <div className="graph-module__empty">
+                        <p>当前未获取到图谱数据。</p>
+                        <p>请稍后重试，或先确认后端服务运行正常。</p>
+                      </div>
+                    )}
+                    {!graphLoading && graphData && graphData.nodes.length > 0 && graphVisibleData && graphVisibleData.nodes.length === 0 && (
+                      <div className="graph-module__empty">
+                        <p>当前筛选条件下无节点。</p>
+                        <p>请放宽分组、孤儿页或邻居筛选条件。</p>
+                      </div>
+                    )}
+                    {!graphLoading && graphVisibleData && graphVisibleData.nodes.length > 0 && (
+                      <GraphErrorBoundary key={`${graphVisibleData.nodes.length}-${graphVisibleData.links.length}`}>
+                        <Suspense fallback={<div className="graph-module__loading">图谱渲染中...</div>}>
+                          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                          <ForceGraph2D
+                            ref={graphRef}
+                            graphData={graphVisibleData as any}
+                            width={graphDimensions.width}
+                            height={graphDimensions.height}
+                            nodeLabel="label"
+                            nodeRelSize={6}
+                            nodeVal={(node: object) => {
+                              const n = node as KnowledgeGraphNode;
+                              const degree = graphMetrics.totalDegree.get(n.id) ?? 0;
+                              return 2 + Math.min(8, degree);
+                            }}
+                            nodeColor={(node: object) => {
+                              const n = node as KnowledgeGraphNode;
+                              return n.group ? groupColor(n.group) : "#4a9eff";
+                            }}
+                            linkColor={() => "rgba(120,120,180,0.4)"}
+                            linkWidth={1}
+                            onNodeClick={(node: object) => {
+                              handleGraphNodeClick(node);
+                            }}
+                            nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                              const n = node as KnowledgeGraphNode;
+                              const label = n.label || n.id;
+                              const selected = Boolean(
+                                graphSelectedNodeId && isSameWikiPagePath(graphSelectedNodeId, n.id),
+                              );
+                              const radius = selected ? 8 : 5;
+                              const fontSize = Math.max(10 / globalScale, 3);
+                              ctx.font = `${fontSize}px Sans-Serif`;
+                              ctx.fillStyle = n.group ? groupColor(n.group) : "#4a9eff";
+                              ctx.beginPath();
+                              ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, 2 * Math.PI, false);
+                              ctx.fill();
+                              if (selected) {
+                                ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+                                ctx.lineWidth = Math.max(2 / globalScale, 1);
+                                ctx.beginPath();
+                                ctx.arc(n.x ?? 0, n.y ?? 0, radius + 2, 0, 2 * Math.PI, false);
+                                ctx.stroke();
+                              }
+                              if (globalScale > 1.4 || selected) {
+                                ctx.fillStyle = "rgba(255,255,255,0.9)";
+                                ctx.fillText(label, (n.x ?? 0) + 10, (n.y ?? 0) + 4);
+                              }
+                            }}
+                            cooldownTicks={100}
+                            d3AlphaDecay={0.02}
+                            d3VelocityDecay={0.3}
+                          />
+                        </Suspense>
+                      </GraphErrorBoundary>
+                    )}
                   </div>
-                )}
-                {!graphLoading && !graphError && !graphData && (
-                  <div className="graph-module__empty">
-                    <p>当前未获取到图谱数据。</p>
-                    <p>请稍后重试，或先确认后端服务运行正常。</p>
+                </section>
+
+                <aside className="graph-sidepanel">
+                  <div className="graph-sidepanel__head">
+                    <h3>节点详情</h3>
+                    <span>{graphSelectedNode ? "已选中" : "未选中"}</span>
                   </div>
-                )}
-                {!graphLoading && graphData && graphData.nodes.length > 0 && (
-                  <Suspense fallback={<div className="graph-module__loading">图谱渲染中...</div>}>
-                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                    <ForceGraph2D
-                      graphData={graphData as any}
-                      width={graphDimensions.width}
-                      height={graphDimensions.height}
-                      nodeLabel="label"
-                      nodeRelSize={6}
-                      nodeColor={(node: object) => {
-                        const n = node as KnowledgeGraphNode;
-                        return n.group ? groupColor(n.group) : "#4a9eff";
-                      }}
-                      linkColor={() => "rgba(120,120,180,0.4)"}
-                      linkWidth={1}
-                      onNodeClick={(node: object) => {
-                        void handleGraphNodeClick(node);
-                      }}
-                      nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
-                        const n = node as KnowledgeGraphNode;
-                        const label = n.label || n.id;
-                        const fontSize = Math.max(10 / globalScale, 3);
-                        ctx.font = `${fontSize}px Sans-Serif`;
-                        ctx.fillStyle = n.group ? groupColor(n.group) : "#4a9eff";
-                        ctx.beginPath();
-                        ctx.arc(n.x ?? 0, n.y ?? 0, 5, 0, 2 * Math.PI, false);
-                        ctx.fill();
-                        if (globalScale > 1.5) {
-                          ctx.fillStyle = "rgba(255,255,255,0.85)";
-                          ctx.fillText(label, (n.x ?? 0) + 7, (n.y ?? 0) + 3);
-                        }
-                      }}
-                      cooldownTicks={100}
-                      d3AlphaDecay={0.02}
-                      d3VelocityDecay={0.3}
-                    />
-                  </Suspense>
-                )}
+                  {!graphSelectedNode ? (
+                    <p className="graph-sidepanel__hint">点击左侧节点可查看标题、度数和关联页面。</p>
+                  ) : (
+                    <>
+                      <div className="graph-node-card">
+                        <p className="graph-node-card__title">{graphSelectedNode.label || "未命名页面"}</p>
+                        <code className="graph-node-card__path">{graphSelectedNode.id}</code>
+                        <div className="graph-node-card__stats">
+                          <span className="pill">{`入度 ${graphMetrics.inDegree.get(graphSelectedNode.id) ?? 0}`}</span>
+                          <span className="pill">{`出度 ${graphMetrics.outDegree.get(graphSelectedNode.id) ?? 0}`}</span>
+                          <span className="pill">{`总连接 ${graphMetrics.totalDegree.get(graphSelectedNode.id) ?? 0}`}</span>
+                        </div>
+                        <div className="graph-node-card__actions">
+                          <button
+                            type="button"
+                            className="dev-panel__button dev-panel__button--accent"
+                            onClick={() => void handleOpenSelectedGraphNode()}
+                          >
+                            打开页面
+                          </button>
+                          <button
+                            type="button"
+                            className={`dev-panel__button ${graphNeighborOnly ? "dev-panel__button--accent" : ""}`}
+                            onClick={() => setGraphNeighborOnly((prev) => !prev)}
+                          >
+                            {graphNeighborOnly ? "退出邻居模式" : "仅看该节点邻居"}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="graph-neighbors">
+                        <div className="graph-neighbors__head">
+                          <h4>关联页面</h4>
+                          <span>{graphSelectedNeighbors.length}</span>
+                        </div>
+                        {graphSelectedNeighbors.length === 0 ? (
+                          <p className="graph-sidepanel__hint">该页面当前没有关联边。</p>
+                        ) : (
+                          <ul className="graph-neighbors__list">
+                            {graphSelectedNeighbors.slice(0, 12).map((neighbor) => (
+                              <li key={neighbor.id}>
+                                <button
+                                  type="button"
+                                  className="graph-neighbors__item"
+                                  onClick={() => setGraphSelectedNodeId(neighbor.id)}
+                                  title={neighbor.id}
+                                >
+                                  <span>{neighbor.label}</span>
+                                  <code>{neighbor.group || "未分组"}</code>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </aside>
               </div>
             </>
           )}

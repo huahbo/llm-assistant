@@ -253,6 +253,7 @@
 | P20-1 后端 | Outbox 事件流基础（`wiki_outbox` + 导出/ack 命令 + 关键路径事件写入） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs`（Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P20-2 后端 | Wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）+ patch preview/apply 最小可用 | ✅ `state.rs`（新增 2 条 Rust 单测；待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P21-Fix 前端 | 图谱点击白屏修复（统一打开链路 + 图谱可见错误提示 + 节点路径健壮性） | ✅ `web/src/App.tsx` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
+| P21-B 前端 | 图谱体验升级（左图谱+右详情、分组/孤儿/邻居筛选、适配视图、节点统计） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 
 ### 18.2 下一轮待开发（TODO）
 
@@ -278,12 +279,17 @@
 - 后端：`get_knowledge_graph()` 命令，nodes = wiki_pages，links = citations（去重）
 - 前端：新”图谱”模块，`ForceGraph2D` + `groupColor()` + 节点点击跳转详情 + resize 响应
 
+**P21-UX 迭代（已与用户确认）**
+- ~~P21-B（下一轮优先实施，已选方案）~~ ✅ 已完成（Codex 2026-04-17，待 Windows 前端测试复核）。
+- P21-C（后续迭代，非排除）：保留并继续推进 Global/Local 双模式（含 hop 深度控制、局部子图聚焦、状态持久化）；必要时再补后端局部子图接口优化性能。
+- 对标口径：`external/article.txt` 与 `external/llm-wiki-main` 继续作为功能对标参考样本（功能优先，技术实现第二，不强绑实现）。
+
 **Claude Code / Gemini 入手点（下轮开始先做）**
-1. 先做 Windows 复核（P21-Fix）：`npm run typecheck`、`npm run test -- --run`、`npm run build`，重点手测“图谱节点点击跳转 Wiki”与失败提示路径。
-2. P20/P21 主干已完成。下一步：P19-2（文件树增强）或 P19-3（多标签筛选），或用户指定新功能。
-3. 每轮必须按 §14 并行规则拆分子任务（至少前端/后端两条），并在记录中写明文件所有权。
-4. 每轮结束必须更新 `docs/实施过程记录.md` 与 `agents.md §18`；三方交接仅以这两处为准。
-5. 对标结论强调”功能优先、实现第二”：允许本项目使用不同工程路径，只要满足 A+C 架构与 Strict Local 约束。
+1. 先做 Windows 复核（P21-Fix + P21-B）：`npm run typecheck`、`npm run test -- --run`、`npm run build`，重点手测“图谱占比、右侧详情面板、筛选控件、节点打开页面”。
+2. P21-C 明确保留在后续迭代（非排除）：Global/Local 双模式 + hop 深度 + 局部子图性能优化。
+3. 下轮并行拆分建议：子任务 A（前端实现，仅 `web/` 图谱相关文件）；子任务 B（文档交接，仅 `agents.md` + `docs/实施过程记录.md`）。
+4. 每轮必须按 §14 并行规则执行，并在记录中写明文件所有权、验证结果、未完成项。
+5. 每轮结束必须更新 `docs/实施过程记录.md` 与 `agents.md §18`；三方交接仅以这两处为准。
 
 ### 18.3 当前代码快照
 
@@ -303,10 +309,10 @@ src-tauri/src/
   vault.rs          # 文件系统操作
 
 web/src/
-  App.tsx           # 主界面（含图谱模块、节点点击统一打开链路、图谱错误提示）
+  App.tsx           # 主界面（含图谱模块、左图谱+右详情面板、筛选控件与节点统计）
   tauri-client.ts   # Tauri invoke 封装（含 markPageStale, getKnowledgeGraph）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（新增图谱节点路径解析用例）
+  app-utils.test.ts # 前端单元测试（新增图谱节点路径解析 + 图谱过滤逻辑用例）
 ```
 
 ### 18.4 验证基线
@@ -319,6 +325,9 @@ web/src/
 - `npm run typecheck`（web/）：**零错误（2026-04-17 P21-Fix，Codex WSL）**
 - `npm run test -- --run`（web，2026-04-17 P21-Fix）：WSL 环境阻塞（缺少 `@rollup/rollup-linux-x64-gnu` 可选依赖），**待 Windows 复核**
 - `npm run build`（web，2026-04-17 P21-Fix）：WSL 环境阻塞（同上），**待 Windows 复核**
+- `npm run typecheck`（web/）：**零错误（2026-04-17 P21-B，Codex WSL）**
+- `npm run test -- --run`（web，2026-04-17 P21-B）：WSL 环境阻塞（同上），**待 Windows 复核**
+- `npm run build`（web，2026-04-17 P21-B）：WSL 环境阻塞（同上），**待 Windows 复核**
 
 ### 18.5 关键约束提醒
 

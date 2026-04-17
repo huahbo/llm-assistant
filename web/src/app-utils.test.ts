@@ -15,6 +15,7 @@ import {
   WIKI_SORT_MODE_STORAGE_KEY,
   isWikiSortMode,
   parseLegacyImportedAtFromContent,
+  buildGraphVisibleData,
   isSameWikiPagePath,
   normalizeWikiPathForCompare,
   resolveGraphNodePagePath,
@@ -466,6 +467,60 @@ describe("Wiki 路径比较", () => {
     expect(resolveGraphNodePagePath({ id: "" })).toBe("");
     expect(resolveGraphNodePagePath({ id: 1 as unknown as string })).toBe("");
     expect(resolveGraphNodePagePath(null)).toBe("");
+  });
+});
+
+describe("图谱过滤与邻居模式", () => {
+  const graphNodes = [
+    { id: "A", label: "A", group: "alpha" },
+    { id: "B", label: "B", group: "alpha" },
+    { id: "C", label: "C", group: "" },
+  ];
+  const graphEdges = [{ sourceId: "A", targetId: "B" }];
+  const totalDegree = new Map<string, number>([
+    ["A", 1],
+    ["B", 1],
+    ["C", 0],
+  ]);
+
+  it("可按是否展示孤儿页过滤", () => {
+    const withoutOrphans = buildGraphVisibleData({
+      nodes: graphNodes,
+      edges: graphEdges,
+      totalDegree,
+      groupFilter: "__all__",
+      showOrphans: false,
+      neighborOnly: false,
+      selectedNodeId: "",
+    });
+    expect(withoutOrphans.nodes.map((node) => node.id)).toEqual(["A", "B"]);
+  });
+
+  it("邻居模式只保留选中节点与一跳邻居", () => {
+    const neighborOnly = buildGraphVisibleData({
+      nodes: graphNodes,
+      edges: graphEdges,
+      totalDegree,
+      groupFilter: "__all__",
+      showOrphans: true,
+      neighborOnly: true,
+      selectedNodeId: "B",
+    });
+    expect(neighborOnly.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
+    expect(neighborOnly.links).toHaveLength(1);
+  });
+
+  it("可按分组筛选节点", () => {
+    const grouped = buildGraphVisibleData({
+      nodes: graphNodes,
+      edges: graphEdges,
+      totalDegree,
+      groupFilter: "alpha",
+      showOrphans: true,
+      neighborOnly: false,
+      selectedNodeId: "",
+    });
+    expect(grouped.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
   });
 });
 
