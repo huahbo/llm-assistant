@@ -293,16 +293,17 @@ src-tauri/src/
     provider.rs     # LlmProvider trait, LlmError
     ollama.rs       # OllamaProvider (health_check, complete, summarize)
     openai.rs       # OpenAiProvider (OpenAI-compatible Chat Completions API, Hybrid 模式)
-  commands.rs       # 所有 Tauri 命令（含 ingest_file/rename/delete/wiki 保存、save/get/clear_ask_history）
-  db.rs             # SQLite 操作（含 ask_history 去重迁移、容量上限裁剪、清空）
-  main.rs           # Tauri app 入口（含 setup hook 注入 AppHandle）
-  models.rs         # 全部数据模型（AppConfig 含 cloud_* 字段并兼容 openai_* 旧字段，LlmProviderConfig）
-  state.rs          # AppState 核心逻辑（含 ask_history 读写/清空、provider 路由、多格式 ingest_file + OCR provider 回退）
-  vault.rs          # 文件系统操作（含 append_see_also_link）
+  search.rs         # reciprocal_rank_fusion() 纯函数（P20-3，3 条单测）
+  commands.rs       # 所有 Tauri 命令（含 mark_page_stale, get_knowledge_graph）
+  db.rs             # SQLite 操作（含 query_linked_page_paths, query_citation_popular_paths, list_all_wiki_pages）
+  main.rs           # Tauri app 入口
+  models.rs         # 全部数据模型（含 WikiPageFrontmatter.stale, KnowledgeGraphNode/Link/Data）
+  state.rs          # AppState 核心逻辑（含 search_wiki_matches_rrf, set_page_stale, get_knowledge_graph_impl）
+  vault.rs          # 文件系统操作
 
 web/src/
-  App.tsx           # 主界面（含 Ask 多轮聊天、历史筛选/清空、Wiki 标签筛选、Vault 文件树浏览）
-  tauri-client.ts   # Tauri invoke 封装（含 pickFiles/pickFolder/save/fetch/clearAskHistory）
+  App.tsx           # 主界面（含图谱模块、stale横幅/按钮、RRF策略标签）
+  tauri-client.ts   # Tauri invoke 封装（含 markPageStale, getKnowledgeGraph）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
   app-utils.test.ts # 前端单元测试（118 个）
 ```
