@@ -266,15 +266,18 @@
 - ~~P19-1 Ask 历史管理增强（时间显示/清空入口/按关键词过滤）~~ ✅ 已完成（Codex 2026-04-17）
 - ~~P19-2 Wiki 文件树增强（按目录批量折叠/展开、当前页自动定位）~~ ✅ 已完成（Gemini 2026-04-17）
 - P19-3 标签维度增强（多标签交集筛选 + 标签计数）
+### 18.2 下一轮待开发（TODO）
 
-**P20：功能对标 external/llm-wiki-main（优先级提升）**
-- 对标参考（功能层，不绑定实现）：
-  - `E:\llm-wiki\external\article.txt`
-  - `E:\llm-wiki\external\llm-wiki-main`
-  - WSL 路径：`/mnt/e/llm-wiki/external/article.txt`、`/mnt/e/llm-wiki/external/llm-wiki-main`
-- ~~P20-0 调研闸门（§10 必做）：先提交 MCP/skills/workflow 候选清单、理由与取舍，待用户确认后安装/启用。~~ ✅ 已完成（Gemini 2026-04-17）
-- P20-1 事件流能力：完善 outbox 事件订阅，确保 UI 能实时感知 ingest 完成。
-- P20-2 Wiki 语义健康：实现 broken_wikilink 自动扫描并提供侧边栏警告。
+**P20-X：后续路线图（供 Claude Code / Codex 接手参考）**
+
+| 优先级 | 任务方向 | 核心价值 | 预计复杂度 |
+| :--- | :--- | :--- | :--- |
+| **1** | **P20-3: 融合检索 (RAG 增强)** | 结合向量搜索与 BM25，解决语义模糊匹配问题，提升知识召回率。 | 中等 |
+| **2** | **P19-2: Wiki 动态文件树与感知** | 实现目录自动定位、右键菜单、折叠状态持久化。 | 低 |
+| **3** | **P20-1: 事件流实时闭环** | 完善 Outbox 订阅，实现 Wiki 页删除/重命名后即时全系统刷新。 | 高 |
+| **4** | **P19-3: 标签维度与健康仪表盘** | 实现多标签交集筛选，增加知识库概览 Dashboard。 | 低 |
+
+**注意**：所有推进需严格执行 §14 并行开发规范。
 
 ~~**P21：知识图谱可视化**~~ ✅ 完成（Claude Code 2026-04-17，102 Rust / 118 前端）
 - `react-force-graph-2d`（Canvas，lazy-loaded，Tauri WebView2 兼容）

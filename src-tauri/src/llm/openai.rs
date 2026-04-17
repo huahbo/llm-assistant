@@ -104,6 +104,25 @@ struct ChatResponse {
     choices: Vec<ChatChoice>,
 }
 
+/// Embeddings 请求体
+#[derive(Debug, Serialize)]
+struct EmbedRequest<'a> {
+    model: &'a str,
+    input: &'a str,
+}
+
+/// Embeddings 响应中 Embedding 数据
+#[derive(Debug, Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
+}
+
+/// Embeddings 响应体
+#[derive(Debug, Deserialize)]
+struct EmbedResponse {
+    data: Vec<EmbeddingData>,
+}
+
 /// 流式响应中的 delta 内容
 #[derive(Debug, Deserialize)]
 struct ChatStreamDelta {
@@ -230,6 +249,51 @@ impl LlmProvider for OpenAiProvider {
             .next()
             .map(|c| c.message.content)
             .ok_or_else(|| LlmError::InvalidResponse("响应中没有可用的 choice".to_string()))
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let url = format!("{}/embeddings", self.config.base_url);
+
+        let request_body = EmbedRequest {
+            model: &self.config.model,
+            input: text,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.api_key)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(Self::map_reqwest_error)?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            return Err(LlmError::ConnectionFailed(
+                "云端 API Key 无效或未授权，请在 Settings 中更新 API Key".to_string(),
+            ));
+        }
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::InvalidResponse(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let embed_response: EmbedResponse = response
+            .json()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(format!("解析嵌入响应失败: {}", e)))?;
+
+        embed_response
+            .data
+            .into_iter()
+            .next()
+            .map(|d| d.embedding)
+            .ok_or_else(|| LlmError::InvalidResponse("响应中没有可用的 embedding 数据".to_string()))
     }
 
     async fn complete_stream(

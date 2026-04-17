@@ -45,6 +45,22 @@ struct GenerateRequest<'a> {
     stream: bool,
 }
 
+/// Ollama /api/embeddings 请求体
+#[derive(Debug, Serialize)]
+struct EmbedRequest<'a> {
+    /// 模型名称
+    model: &'a str,
+    /// 需要嵌入的文本
+    prompt: &'a str,
+}
+
+/// Ollama /api/embeddings 响应体
+#[derive(Debug, Deserialize)]
+struct EmbedResponse {
+    /// 生成的嵌入向量
+    embedding: Vec<f32>,
+}
+
 /// Ollama /api/generate 响应体
 #[derive(Debug, Deserialize)]
 struct GenerateResponse {
@@ -236,6 +252,43 @@ impl LlmProvider for OllamaProvider {
             .map_err(|e| LlmError::InvalidResponse(format!("解析响应失败: {}", e)))?;
 
         Ok(generate_response.response)
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let url = format!("{}/api/embeddings", self.config.base_url);
+
+        let request_body = EmbedRequest {
+            model: &self.config.model,
+            prompt: text,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| Self::map_reqwest_error(e))?;
+
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(LlmError::ModelNotFound(self.config.model.clone()));
+        }
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::InvalidResponse(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let embed_response: EmbedResponse = response
+            .json()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(format!("解析嵌入响应失败: {}", e)))?;
+
+        Ok(embed_response.embedding)
     }
 
     async fn complete_stream(

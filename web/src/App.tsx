@@ -4810,17 +4810,21 @@ export default function App() {
                                       <p className="lint-issue__message">{issue.message}</p>
                                       {issue.code === "BROKEN_WIKILINK" ? (
                                         <div className="lint-issue__action">
-                                          <p>检测到失效链接：{issue.path}</p>
+                                          <p>
+                                            页面 <strong>{issue.path}</strong> 引用了不存在的页面 <strong>{issue.target_page || "未知页面"}</strong>
+                                          </p>
                                           <button
                                             type="button"
                                             onClick={async () => {
                                               try {
-                                                setStatusMessage(`正在创建页面：${issue.path}...`);
+                                                const targetTitle = issue.target_page || "新页面";
+                                                setStatusMessage(`正在创建页面：${targetTitle}...`);
+                                                // 使用 target_page 作为新页面的标题
                                                 await saveWikiPage(
-                                                  issue.path || "",
-                                                  `# ${issue.path?.split(/[\\/]/).pop() || "新页面"}\n`
+                                                  targetTitle,
+                                                  `# ${targetTitle}\n`
                                                 );
-                                                setStatusMessage("页面创建成功！");
+                                                setStatusMessage(`页面 ${targetTitle} 创建成功！`);
                                                 await refreshAppData();
                                               } catch (err) {
                                                 console.error("创建页面失败:", err);
@@ -4828,7 +4832,7 @@ export default function App() {
                                               }
                                             }}
                                           >
-                                            创建页面
+                                            创建 {issue.target_page ? `[${issue.target_page}]` : "页面"}
                                           </button>
                                         </div>
                                       ) : (

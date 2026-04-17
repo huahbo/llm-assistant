@@ -1093,6 +1093,21 @@ impl AppState {
             )
             .await;
 
+        // 步骤5：嵌入向量化与持久化
+        self.emit_progress("ingest_progress", "embedding", "正在进行向量化...");
+        if let Some(provider) = self.get_llm_provider() {
+            match provider.embed(&source_content).await {
+                Ok(embedding) => {
+                    if let Err(e) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
+                        self.push_log(LogLevel::Warn, format!("写入向量数据库失败: {}", e));
+                    }
+                }
+                Err(e) => {
+                    self.push_log(LogLevel::Warn, format!("页面向量生成失败: {}", e));
+                }
+            }
+        }
+
         result.entities = entities;
         result.updated_pages = updated_pages;
 
@@ -1910,25 +1925,19 @@ impl AppState {
         let wiki_dir = vault_path.join("wiki");
         let wiki_page_paths = collect_wiki_page_paths(&wiki_dir);
 
-        // BROKEN_WIKILINK 检测逻辑
-        // 1. 定义正则提取 wiki 链接路径
+        // 1. 扫描失效 wiki-link
         let link_regex = regex::Regex::new(r"\[\[([^|\]]+)(?:\|[^\]]+)?\]\]").unwrap();
-        
         for page_path in &wiki_page_paths {
             if let Ok(content) = fs::read_to_string(page_path) {
                 for caps in link_regex.captures_iter(&content) {
                     let target_name = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
                     if target_name.is_empty() { continue; }
-                    
-                    // 2. 检查页面是否存在
-                    let target_path = resolve_existing_wiki_page_path(vault_path, target_name);
-                    
-                    if target_path.is_err() {
-                        // 3. 报告检测到的 BROKEN_WIKILINK
+
+                    if resolve_existing_wiki_page_path(vault_path, target_name).is_err() {
                         issues.push(LintIssue {
-                            code: "BROKEN_WIKILINK".to_string(),
+                            code: "broken_wikilink".to_string(),
                             severity: "warning".to_string(),
-                            message: format!("页面存在失效的 wiki-link 链接：指向不存在的目标 {}", target_name),
+                            message: format!("页面存在失效的 wiki-link：指向不存在的目标 {}", target_name),
                             path: Some(page_path.clone()),
                             suggestion: "请修复链接名称，或确认该页面已创建。".to_string(),
                         });
@@ -1940,19 +1949,8 @@ impl AppState {
         let (broken_wiki_links, outbound_wiki_links, inbound_wiki_link_counts) =
             collect_wiki_link_graph(vault_path, &wiki_page_paths);
 
-        for (source_path, broken_target) in broken_wiki_links {
-            issues.push(LintIssue {
-                code: "broken_wikilink".to_string(),
-                severity: "warning".to_string(),
-                message: format!(
-                    "页面存在失效 wiki-link：{} -> {}",
-                    source_path, broken_target
-                ),
-                path: Some(source_path),
-                suggestion: "修复目标页面路径，或应用补丁把失效链接降级为纯文本".to_string(),
-            });
-        }
-
+        // 注意：collect_wiki_link_graph 返回的 broken_wiki_links 与我们手动实现的逻辑重叠，建议优先使用其中之一或整合。
+        // 为保持一致性，如果手动实现已覆盖需求，可以移除此处 collect_wiki_link_graph 返回的旧逻辑或根据业务需要调整。
         for (source_path, missing_targets) in collect_xref_missing_sources(&outbound_wiki_links) {
             issues.push(LintIssue {
                 code: "xref_missing".to_string(),

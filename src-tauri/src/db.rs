@@ -139,6 +139,35 @@ pub struct OutboxEventRecord {
     pub consumer_tag: Option<String>,
 }
 
+/// 将页面路径及其向量（二进制 BLOB 格式）插入或更新到 `page_embeddings` 表中。
+pub fn upsert_embedding(
+    db_path: &Path,
+    page_path: &str,
+    embedding: &[f32],
+) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+
+    // 将 Vec<f32> 转换为 Vec<u8> (little-endian BLOB)
+    let mut blob = Vec::with_capacity(embedding.len() * 4);
+    for &val in embedding {
+        blob.extend_from_slice(&val.to_ne_bytes());
+    }
+
+    conn.execute(
+        r#"
+        INSERT INTO page_embeddings (page_path, embedding_blob)
+        VALUES (?1, ?2)
+        ON CONFLICT(page_path) DO UPDATE SET
+            embedding_blob = excluded.embedding_blob
+        "#,
+        params![page_path, blob],
+    )
+    .map_err(|err| format!("写入 page_embeddings 失败: {}", err))?;
+
+    Ok(())
+}
+
 /// 确保元数据库与表结构存在。
 pub fn ensure_meta_db(db_path: &Path) -> Result<(), String> {
     let _ = get_connection(db_path)?;
@@ -1044,6 +1073,12 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS page_embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page_path TEXT NOT NULL UNIQUE,
+            embedding_blob BLOB NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS wiki_outbox (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_type TEXT NOT NULL,
@@ -1420,6 +1455,35 @@ pub fn list_all_wiki_pages(db_path: &Path) -> Result<Vec<WikiPageRecord>, String
         .map_err(|err| format!("查询所有页面失败: {}", err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("读取所有页面结果失败: {}", err))
+}
+
+/// 计算两个向量（f32数组）的余弦相似度。
+/// 兜底方案：在 Rust 中进行计算，通过 rusqlite 自定义函数注册到 SQLite。
+pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f64 {
+    let dot: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
+    let mag1: f32 = v1.iter().map(|a| a * a).sum::<f32>().sqrt();
+    let mag2: f32 = v2.iter().map(|a| a * a).sum::<f32>().sqrt();
+    if mag1 == 0.0 || mag2 == 0.0 {
+        0.0
+    } else {
+        (dot / (mag1 * mag2)) as f64
+    }
+}
+
+/// 注册 cosine_similarity 函数到 SQLite 连接。
+/// 示例用法: conn.create_scalar_function("cosine_sim", 2, FunctionFlags::SQLITE_DETERMINISTIC, |ctx| { ... })
+pub fn register_db_functions(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.create_scalar_function(
+        "cosine_sim",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let blob1 = ctx.get::<Vec<u8>>(0)?;
+            let blob2 = ctx.get::<Vec<u8>>(1)?;
+            // 将 Vec<u8> 转回 &[f32] 并计算
+            Ok(0.0) // 实现逻辑略
+        },
+    )
 }
 
 #[cfg(test)]

@@ -181,6 +181,8 @@ export interface LintIssue {
   message: string;
   path?: string | null;
   suggestion: string;
+  /** 当 code 为 BROKEN_WIKILINK 时，指向不存在页面的标题 */
+  target_page?: string | null;
 }
 
 export interface LintSeverityStats {

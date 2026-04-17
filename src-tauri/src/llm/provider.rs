@@ -77,6 +77,16 @@ pub trait LlmProvider: Send + Sync {
         Ok(answer)
     }
 
+    /// 生成文本嵌入向量
+    ///
+    /// # 参数
+    /// - `text`: 需要转换为向量的文本
+    ///
+    /// # 返回
+    /// - `Ok(Vec<f32>)`: 生成的嵌入向量数组
+    /// - `Err(LlmError)`: 生成失败时的错误信息
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError>;
+
     /// 检查服务是否可用
     ///
     /// 用于在调用前验证 LLM 服务的连通性和可用性。
