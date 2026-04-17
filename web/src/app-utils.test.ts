@@ -19,10 +19,14 @@ import {
   buildGraphLocalData,
   clampGraphLocalDepth,
   GRAPH_LOCAL_DEPTH_STORAGE_KEY,
+  GRAPH_LOCAL_DIRECTION_STORAGE_KEY,
   GRAPH_VIEW_MODE_STORAGE_KEY,
   isSameWikiPagePath,
+  isGraphTraversalDirection,
   isGraphViewMode,
   normalizeWikiPathForCompare,
+  shouldUseBackendSubgraph,
+  readGraphLocalDirectionFromStorage,
   readGraphLocalDepthFromStorage,
   readGraphViewModeFromStorage,
   resolveGraphNodePagePath,
@@ -34,8 +38,11 @@ import {
   hasUnsavedWikiEditChanges,
   shouldAutoDismissStatusMessage,
   writeGraphLocalDepthToStorage,
+  writeGraphLocalDirectionToStorage,
   writeGraphViewModeToStorage,
   writeWikiSortModeToStorage,
+  GRAPH_LOCAL_BACKEND_LINK_THRESHOLD,
+  GRAPH_LOCAL_BACKEND_NODE_THRESHOLD,
   groupLintIssuesByPath,
   groupPatchPreviewItemsByPath,
   OCR_PROVIDER_STORAGE_KEY,
@@ -495,6 +502,17 @@ describe("图谱视图偏好持久化", () => {
     writeGraphLocalDepthToStorage(9);
     expect(store.get(GRAPH_LOCAL_DEPTH_STORAGE_KEY)).toBe("3");
   });
+
+  it("图谱 local 方向可读写", () => {
+    const { store } = installLocalStorageMock();
+    expect(isGraphTraversalDirection("both")).toBe(true);
+    expect(isGraphTraversalDirection("out")).toBe(true);
+    expect(isGraphTraversalDirection("in")).toBe(true);
+    expect(isGraphTraversalDirection("none")).toBe(false);
+    writeGraphLocalDirectionToStorage("in");
+    expect(store.get(GRAPH_LOCAL_DIRECTION_STORAGE_KEY)).toBe("in");
+    expect(readGraphLocalDirectionFromStorage()).toBe("in");
+  });
 });
 
 describe("Wiki 路径比较", () => {
@@ -602,6 +620,7 @@ describe("图谱过滤与邻居模式", () => {
       ],
       selectedNodeId: "A",
       maxDepth: 1,
+      direction: "both",
     });
     expect(localDepth1.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
 
@@ -617,8 +636,78 @@ describe("图谱过滤与邻居模式", () => {
       ],
       selectedNodeId: "A",
       maxDepth: 2,
+      direction: "both",
     });
     expect(localDepth2.nodes.map((node) => node.id).sort()).toEqual(["A", "B", "C"]);
+  });
+
+  it("Local 子图支持方向遍历", () => {
+    const directional = buildGraphLocalData({
+      nodes: [
+        { id: "A", label: "A", group: "" },
+        { id: "B", label: "B", group: "" },
+        { id: "C", label: "C", group: "" },
+      ],
+      edges: [
+        { sourceId: "A", targetId: "B" },
+        { sourceId: "B", targetId: "C" },
+      ],
+      selectedNodeId: "B",
+      maxDepth: 1,
+      direction: "out",
+    });
+    expect(directional.nodes.map((node) => node.id).sort()).toEqual(["B", "C"]);
+
+    const reverseDirectional = buildGraphLocalData({
+      nodes: [
+        { id: "A", label: "A", group: "" },
+        { id: "B", label: "B", group: "" },
+        { id: "C", label: "C", group: "" },
+      ],
+      edges: [
+        { sourceId: "A", targetId: "B" },
+        { sourceId: "B", targetId: "C" },
+      ],
+      selectedNodeId: "B",
+      maxDepth: 1,
+      direction: "in",
+    });
+    expect(reverseDirectional.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
+  });
+
+  it("大图 Local 模式触发后端子图策略", () => {
+    expect(
+      shouldUseBackendSubgraph({
+        viewMode: "global",
+        selectedNodeId: "A",
+        totalNodes: GRAPH_LOCAL_BACKEND_NODE_THRESHOLD + 10,
+        totalLinks: 10,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseBackendSubgraph({
+        viewMode: "local",
+        selectedNodeId: "",
+        totalNodes: GRAPH_LOCAL_BACKEND_NODE_THRESHOLD + 10,
+        totalLinks: GRAPH_LOCAL_BACKEND_LINK_THRESHOLD + 10,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseBackendSubgraph({
+        viewMode: "local",
+        selectedNodeId: "A",
+        totalNodes: GRAPH_LOCAL_BACKEND_NODE_THRESHOLD + 1,
+        totalLinks: 10,
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseBackendSubgraph({
+        viewMode: "local",
+        selectedNodeId: "A",
+        totalNodes: 10,
+        totalLinks: GRAPH_LOCAL_BACKEND_LINK_THRESHOLD + 1,
+      }),
+    ).toBe(true);
   });
 });
 

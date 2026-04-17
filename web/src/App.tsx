@@ -37,11 +37,13 @@ import {
   saveOcrConfig,
   deleteWikiPage,
   getKnowledgeGraph,
+  getKnowledgeSubgraph,
   markPageStale,
   renameWikiPage,
   saveWikiPage,
   searchWikiPages,
   saveQueryAnswer,
+  get_outbox_events,
   setBackendMode,
   setQueryTopK as persistQueryTopK,
   formatLlmStatusSummary,
@@ -393,13 +395,40 @@ export type GraphNormalizedEdge = {
 };
 
 export type GraphViewMode = "global" | "local";
+export type GraphTraversalDirection = "both" | "out" | "in";
 export const GRAPH_VIEW_MODE_STORAGE_KEY = "llm_wiki_graph_view_mode_v1";
 export const GRAPH_LOCAL_DEPTH_STORAGE_KEY = "llm_wiki_graph_local_depth_v1";
+export const GRAPH_LOCAL_DIRECTION_STORAGE_KEY = "llm_wiki_graph_local_direction_v1";
 export const GRAPH_LOCAL_DEPTH_MIN = 1;
 export const GRAPH_LOCAL_DEPTH_MAX = 3;
+export const GRAPH_LOCAL_BACKEND_NODE_THRESHOLD = 1200;
+export const GRAPH_LOCAL_BACKEND_LINK_THRESHOLD = 4000;
+export const GRAPH_LOCAL_BACKEND_MAX_NODES = 1500;
+export const GRAPH_LOCAL_BACKEND_MAX_LINKS = 8000;
 
 export const isGraphViewMode = (value: string): value is GraphViewMode =>
   value === "global" || value === "local";
+
+export const isGraphTraversalDirection = (value: string): value is GraphTraversalDirection =>
+  value === "both" || value === "out" || value === "in";
+
+export const shouldUseBackendSubgraph = (input: {
+  viewMode: GraphViewMode;
+  selectedNodeId: string;
+  totalNodes: number;
+  totalLinks: number;
+}) => {
+  if (input.viewMode !== "local") {
+    return false;
+  }
+  if (!input.selectedNodeId.trim()) {
+    return false;
+  }
+  return (
+    input.totalNodes > GRAPH_LOCAL_BACKEND_NODE_THRESHOLD ||
+    input.totalLinks > GRAPH_LOCAL_BACKEND_LINK_THRESHOLD
+  );
+};
 
 export const readGraphViewModeFromStorage = (): GraphViewMode => {
   try {
@@ -424,6 +453,34 @@ export const writeGraphViewModeToStorage = (mode: GraphViewMode) => {
       return;
     }
     storage.setItem(GRAPH_VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
+export const readGraphLocalDirectionFromStorage = (): GraphTraversalDirection => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return "both";
+    }
+    const raw = storage.getItem(GRAPH_LOCAL_DIRECTION_STORAGE_KEY);
+    if (!raw) {
+      return "both";
+    }
+    return isGraphTraversalDirection(raw) ? raw : "both";
+  } catch {
+    return "both";
+  }
+};
+
+export const writeGraphLocalDirectionToStorage = (direction: GraphTraversalDirection) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(GRAPH_LOCAL_DIRECTION_STORAGE_KEY, direction);
   } catch {
     // 本地存储不可用时静默降级
   }
@@ -521,28 +578,39 @@ export const buildGraphLocalData = (input: {
   edges: GraphNormalizedEdge[];
   selectedNodeId: string;
   maxDepth: number;
+  direction: GraphTraversalDirection;
 }): KnowledgeGraphData => {
   const centerId = input.selectedNodeId.trim();
   if (!centerId) {
     return { nodes: [], links: [] };
   }
 
-  const adjacency = new Map<string, Set<string>>();
+  const undirectedAdjacency = new Map<string, Set<string>>();
+  const outboundAdjacency = new Map<string, Set<string>>();
+  const inboundAdjacency = new Map<string, Set<string>>();
   for (const node of input.nodes) {
-    adjacency.set(node.id, new Set());
+    undirectedAdjacency.set(node.id, new Set());
+    outboundAdjacency.set(node.id, new Set());
+    inboundAdjacency.set(node.id, new Set());
   }
   for (const edge of input.edges) {
-    if (!adjacency.has(edge.sourceId)) {
-      adjacency.set(edge.sourceId, new Set());
+    if (!undirectedAdjacency.has(edge.sourceId)) {
+      undirectedAdjacency.set(edge.sourceId, new Set());
+      outboundAdjacency.set(edge.sourceId, new Set());
+      inboundAdjacency.set(edge.sourceId, new Set());
     }
-    if (!adjacency.has(edge.targetId)) {
-      adjacency.set(edge.targetId, new Set());
+    if (!undirectedAdjacency.has(edge.targetId)) {
+      undirectedAdjacency.set(edge.targetId, new Set());
+      outboundAdjacency.set(edge.targetId, new Set());
+      inboundAdjacency.set(edge.targetId, new Set());
     }
-    adjacency.get(edge.sourceId)?.add(edge.targetId);
-    adjacency.get(edge.targetId)?.add(edge.sourceId);
+    undirectedAdjacency.get(edge.sourceId)?.add(edge.targetId);
+    undirectedAdjacency.get(edge.targetId)?.add(edge.sourceId);
+    outboundAdjacency.get(edge.sourceId)?.add(edge.targetId);
+    inboundAdjacency.get(edge.targetId)?.add(edge.sourceId);
   }
 
-  if (!adjacency.has(centerId)) {
+  if (!undirectedAdjacency.has(centerId)) {
     return { nodes: [], links: [] };
   }
 
@@ -558,7 +626,12 @@ export const buildGraphLocalData = (input: {
     if (current.depth >= depthLimit) {
       continue;
     }
-    const neighbors = adjacency.get(current.id);
+    const neighbors =
+      input.direction === "out"
+        ? outboundAdjacency.get(current.id)
+        : input.direction === "in"
+          ? inboundAdjacency.get(current.id)
+          : undirectedAdjacency.get(current.id);
     if (!neighbors) {
       continue;
     }
@@ -1342,7 +1415,8 @@ export default function App() {
   const [expandedCitationIds, setExpandedCitationIds] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [wikiKeyword, setWikiKeyword] = useState("");
-  const [wikiActiveTag, setWikiActiveTag] = useState<string | null>(null);
+  // 当前激活的标签集合，支持多选
+  const [wikiActiveTags, setWikiActiveTags] = useState<Set<string>>(new Set());
   const [wikiTreeCollapsedFolders, setWikiTreeCollapsedFolders] = useState<Set<string>>(
     new Set(),
   );
@@ -1382,15 +1456,43 @@ export default function App() {
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState("");
+  const [graphLocalSubgraphData, setGraphLocalSubgraphData] = useState<KnowledgeGraphData | null>(null);
+  const [graphLocalSubgraphLoading, setGraphLocalSubgraphLoading] = useState(false);
+  const [graphLocalSubgraphError, setGraphLocalSubgraphError] = useState("");
+  const [graphLocalSubgraphTruncated, setGraphLocalSubgraphTruncated] = useState(false);
   const [graphSelectedNodeId, setGraphSelectedNodeId] = useState("");
   const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>(() => readGraphViewModeFromStorage());
   const [graphLocalDepth, setGraphLocalDepth] = useState(() => readGraphLocalDepthFromStorage());
+  const [graphLocalDirection, setGraphLocalDirection] = useState<GraphTraversalDirection>(
+    () => readGraphLocalDirectionFromStorage(),
+  );
   const [graphGroupFilter, setGraphGroupFilter] = useState("__all__");
   const [graphShowOrphans, setGraphShowOrphans] = useState(true);
   const [graphNeighborOnly, setGraphNeighborOnly] = useState(false);
   const [graphLayoutFrozen, setGraphLayoutFrozen] = useState(false);
+  const [graphSearchQuery, setGraphSearchQuery] = useState("");
+  const [outboxLastId, setOutboxLastId] = useState(0);
+  const [ingesting, setIngesting] = useState(false);
+
+  const graphSearchHits = useMemo(() => {
+    const query = graphSearchQuery.trim().toLowerCase();
+    if (!query || !graphData) {
+      return new Set<string>();
+    }
+    const hits = new Set<string>();
+    for (const node of graphData.nodes) {
+      if (
+        (node.label || "").toLowerCase().includes(query) ||
+        (node.id || "").toLowerCase().includes(query)
+      ) {
+        hits.add(node.id);
+      }
+    }
+    return hits;
+  }, [graphSearchQuery, graphData]);
+
   const graphContainerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<any>(undefined);
+  const graphRef = useRef<any>(null);
   const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
   // 当前激活的导航模块
   const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
@@ -1472,6 +1574,16 @@ export default function App() {
     }
     return Array.from(groups).sort((left, right) => left.localeCompare(right, "zh-CN"));
   }, [graphNodes]);
+  const graphShouldUseBackendSubgraph = useMemo(
+    () =>
+      shouldUseBackendSubgraph({
+        viewMode: graphViewMode,
+        selectedNodeId: graphSelectedNodeId,
+        totalNodes: graphNodes.length,
+        totalLinks: graphNormalizedLinks.length,
+      }),
+    [graphNormalizedLinks, graphNodes.length, graphSelectedNodeId, graphViewMode],
+  );
   const graphVisibleData = useMemo<KnowledgeGraphData | null>(() => {
     if (!graphData) {
       return null;
@@ -1485,6 +1597,22 @@ export default function App() {
       neighborOnly: graphNeighborOnly,
       selectedNodeId: graphSelectedNodeId,
     });
+    if (graphViewMode === "local" && graphShouldUseBackendSubgraph && graphLocalSubgraphData) {
+      return buildGraphVisibleData({
+        nodes: graphLocalSubgraphData.nodes,
+        edges: graphLocalSubgraphData.links
+          .map((link) => ({
+            sourceId: resolveGraphLinkNodeId(link.source as string | KnowledgeGraphNode | null | undefined),
+            targetId: resolveGraphLinkNodeId(link.target as string | KnowledgeGraphNode | null | undefined),
+          }))
+          .filter((edge) => edge.sourceId && edge.targetId),
+        totalDegree: graphMetrics.totalDegree,
+        groupFilter: graphGroupFilter,
+        showOrphans: graphShowOrphans,
+        neighborOnly: graphNeighborOnly,
+        selectedNodeId: graphSelectedNodeId,
+      });
+    }
     if (graphViewMode === "local") {
       return buildGraphLocalData({
         nodes: baseVisible.nodes,
@@ -1496,6 +1624,7 @@ export default function App() {
           .filter((edge) => edge.sourceId && edge.targetId),
         selectedNodeId: graphSelectedNodeId,
         maxDepth: graphLocalDepth,
+        direction: graphLocalDirection,
       });
     }
     return baseVisible;
@@ -1503,11 +1632,14 @@ export default function App() {
     graphData,
     graphGroupFilter,
     graphLocalDepth,
+    graphLocalDirection,
+    graphLocalSubgraphData,
     graphMetrics.totalDegree,
     graphNeighborOnly,
     graphNodes,
     graphNormalizedLinks,
     graphSelectedNodeId,
+    graphShouldUseBackendSubgraph,
     graphViewMode,
     graphShowOrphans,
   ]);
@@ -1562,6 +1694,73 @@ export default function App() {
     })();
   }, [activeModule]);
 
+  // 大图 Local 模式切换到后端子图计算，避免前端 BFS 在高规模图上卡顿。
+  useEffect(() => {
+    if (
+      activeModule !== "graph" ||
+      !graphShouldUseBackendSubgraph ||
+      !graphSelectedNodeId ||
+      graphViewMode !== "local"
+    ) {
+      setGraphLocalSubgraphData(null);
+      setGraphLocalSubgraphLoading(false);
+      setGraphLocalSubgraphError("");
+      setGraphLocalSubgraphTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setGraphLocalSubgraphLoading(true);
+      setGraphLocalSubgraphError("");
+      try {
+        const subgraph = await getKnowledgeSubgraph({
+          centerPagePath: graphSelectedNodeId,
+          hop: graphLocalDepth,
+          direction: graphLocalDirection,
+          limitNodes: GRAPH_LOCAL_BACKEND_MAX_NODES,
+          limitLinks: GRAPH_LOCAL_BACKEND_MAX_LINKS,
+        });
+        if (cancelled) {
+          return;
+        }
+        if (!subgraph) {
+          setGraphLocalSubgraphData(null);
+          setGraphLocalSubgraphTruncated(false);
+          setGraphLocalSubgraphError("后端未返回子图数据，已回退前端计算。");
+          return;
+        }
+        setGraphLocalSubgraphData({
+          nodes: subgraph.nodes,
+          links: subgraph.links,
+        });
+        setGraphLocalSubgraphTruncated(Boolean(subgraph.meta?.truncated));
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        setGraphLocalSubgraphData(null);
+        setGraphLocalSubgraphTruncated(false);
+        setGraphLocalSubgraphError(`后端子图计算失败：${message}。已回退前端计算。`);
+      } finally {
+        if (!cancelled) {
+          setGraphLocalSubgraphLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeModule,
+    graphLocalDepth,
+    graphLocalDirection,
+    graphSelectedNodeId,
+    graphShouldUseBackendSubgraph,
+    graphViewMode,
+  ]);
+
   // 监听图谱容器尺寸变化
   useEffect(() => {
     const updateSize = () => {
@@ -1608,6 +1807,10 @@ export default function App() {
   }, [graphLocalDepth]);
 
   useEffect(() => {
+    writeGraphLocalDirectionToStorage(graphLocalDirection);
+  }, [graphLocalDirection]);
+
+  useEffect(() => {
     if (!graphRef.current) {
       return;
     }
@@ -1618,6 +1821,68 @@ export default function App() {
     graphRef.current.resumeAnimation?.();
     graphRef.current.d3ReheatSimulation?.();
   }, [graphLayoutFrozen, graphVisibleData?.links.length, graphVisibleData?.nodes.length]);
+
+  // Outbox 事件轮询：实现 ingest 完成/Wiki 变更后的 UI 自动刷新与状态同步。
+  useEffect(() => {
+    let timerId: ReturnType<typeof globalThis.setInterval> | null = null;
+    let polling = false;
+
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+
+      try {
+        const events = await get_outbox_events({ last_id: outboxLastId });
+        if (events && events.length > 0) {
+          let shouldRefresh = false;
+          let newIngesting = ingesting;
+          let maxId = outboxLastId;
+
+          for (const event of events) {
+            maxId = Math.max(maxId, event.id);
+            const type = event.event_type;
+
+            // 若 ingest 完成、Wiki 页面删除、重命名或查询结果存入 Wiki，触发全局数据刷新。
+            if (
+              type === "ingest_completed" ||
+              type === "wiki_page_deleted" ||
+              type === "wiki_page_renamed" ||
+              type === "query_saved_to_wiki"
+            ) {
+              shouldRefresh = true;
+            }
+
+            // 处理 ingest 状态标记
+            if (type === "ingest_started") {
+              newIngesting = true;
+            } else if (type === "ingest_completed") {
+              newIngesting = false;
+            }
+          }
+
+          if (shouldRefresh) {
+            void refreshAppData();
+          }
+          if (newIngesting !== ingesting) {
+            setIngesting(newIngesting);
+          }
+          if (maxId > outboxLastId) {
+            setOutboxLastId(maxId);
+          }
+        }
+      } catch (err) {
+        console.error("Outbox 轮询失败:", err);
+      } finally {
+        polling = false;
+      }
+    };
+
+    // 每 3 秒执行一次增量检查
+    timerId = globalThis.setInterval(poll, 3000);
+    return () => {
+      if (timerId) globalThis.clearInterval(timerId);
+    };
+  }, [outboxLastId, ingesting]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2405,11 +2670,59 @@ export default function App() {
 
   const handleResetWikiPages = async () => {
     setWikiKeyword("");
-    setWikiActiveTag(null);
+    // 重置已选标签集合
+    setWikiActiveTags(new Set());
     setWikiExpandedPaths([]);
     setWikiTreeCollapsedFolders(new Set());
     await refreshAppData();
     setStatusMessage("已恢复显示最近 Wiki 页面。");
+  };
+
+  /**
+   * 自动展开父级目录并将当前活跃页面滚动到可视区域
+   */
+  const autoRevealWikiPage = (pagePath: string) => {
+    // 寻找该 pagePath 在 wikiTreeNodes 中的父级节点序列
+    const findAncestors = (
+      nodes: WikiTreeNode[],
+      targetPath: string,
+      ancestors: string[] = [],
+    ): string[] | null => {
+      for (const node of nodes) {
+        if (node.kind === "file" && node.pagePath && isSameWikiPagePath(node.pagePath, targetPath)) {
+          return ancestors;
+        }
+        if (node.kind === "folder") {
+          const result = findAncestors(node.children, targetPath, [...ancestors, node.key]);
+          if (result) return result;
+        }
+      }
+      return null;
+    };
+
+    const ancestors = findAncestors(wikiTreeNodes, pagePath);
+    if (ancestors && ancestors.length > 0) {
+      // 更新 wikiTreeCollapsedFolders 状态，确保所有祖先节点都处于展开状态
+      setWikiTreeCollapsedFolders((prev) => {
+        const next = new Set(prev);
+        let changed = false;
+        for (const ancestorKey of ancestors) {
+          if (next.has(ancestorKey)) {
+            next.delete(ancestorKey);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+
+    // 在页面激活后延迟执行（确保 DOM 已渲染），调用 .scrollIntoView() 使 .wiki-tree__file--active 节点可见
+    globalThis.setTimeout(() => {
+      const activeNode = document.querySelector(".wiki-tree__file--active");
+      if (activeNode) {
+        activeNode.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }, 150);
   };
 
   const handleOpenWikiPage = async (pagePath: string) => {
@@ -2434,6 +2747,8 @@ export default function App() {
     setWikiFrontmatterCopiedKey("");
     setWikiFrontmatterCollapsed(false);
     setWikiDebugInfoVisible(false);
+    // 重置已选标签集合
+    setWikiActiveTags(new Set());
     setWikiEditMode(false);
     setWikiEditContent("");
     setWikiSaveRunning(false);
@@ -2463,6 +2778,9 @@ export default function App() {
         setWikiPageCitationsError("当前环境不支持读取页面引用。");
       }
       setStatusMessage(`已打开页面：${detail.title}`);
+
+      // 成功打开后自动触发 Auto-Reveal
+      autoRevealWikiPage(pagePath);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
@@ -2477,13 +2795,19 @@ export default function App() {
   };
 
   const handleGraphNodeClick = (node: object) => {
-    const graphNode = node as Partial<KnowledgeGraphNode>;
+    const graphNode = node as any;
     const pagePath = resolveGraphNodePagePath(graphNode);
     if (!pagePath) {
       setStatusMessage("图谱节点数据异常，无法选中。");
       return;
     }
     setGraphSelectedNodeId(pagePath);
+
+    // 自动聚焦到点击的节点
+    if (graphRef.current && typeof graphNode.x === "number" && typeof graphNode.y === "number") {
+      graphRef.current.centerAt(graphNode.x, graphNode.y, 400);
+      graphRef.current.zoom(2.0, 400);
+    }
   };
 
   const handleOpenSelectedGraphNode = async () => {
@@ -2510,6 +2834,13 @@ export default function App() {
 
   const handleGraphLocalDepthChange = (value: number) => {
     setGraphLocalDepth(clampGraphLocalDepth(value));
+  };
+
+  const handleGraphLocalDirectionChange = (value: string) => {
+    if (!isGraphTraversalDirection(value)) {
+      return;
+    }
+    setGraphLocalDirection(value);
   };
 
   const handleToggleGraphLayoutFreeze = () => {
@@ -2813,17 +3144,29 @@ export default function App() {
   }, [wikiPageDetail?.content]);
   const sortedWikiPages = sortWikiPages(pages, wikiSortMode);
   const allWikiTags = useMemo(() => {
-    const tagSet = new Set<string>();
+    // 统计标签出现的次数
+    const tagCountMap = new Map<string, number>();
     for (const page of sortedWikiPages) {
       for (const tag of page.tags ?? []) {
-        if (tag.trim()) tagSet.add(tag.trim());
+        const trimmed = tag.trim();
+        if (trimmed) {
+          tagCountMap.set(trimmed, (tagCountMap.get(trimmed) ?? 0) + 1);
+        }
       }
     }
-    return Array.from(tagSet).sort();
+    // 返回 Array<{ name: string, count: number }> 并按名称排序
+    return Array.from(tagCountMap.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }, [sortedWikiPages]);
   const displayedWikiPages = wikiKeyword.trim()
     ? [...sortedWikiPages]
-        .filter((p) => !wikiActiveTag || (p.tags ?? []).includes(wikiActiveTag))
+        .filter((p) => {
+          // 使用 AND 逻辑：只有当页面包含了 wikiActiveTags 中的所有标签时才显示
+          if (wikiActiveTags.size === 0) return true;
+          const pageTags = p.tags ?? [];
+          return Array.from(wikiActiveTags).every((tag) => pageTags.includes(tag));
+        })
         .sort((a, b) => {
           const kw = wikiKeyword.toLowerCase();
           const aTitleMatch = a.title.toLowerCase().includes(kw) ? 1 : 0;
@@ -2831,7 +3174,12 @@ export default function App() {
           if (bTitleMatch !== aTitleMatch) return bTitleMatch - aTitleMatch;
           return (b.score ?? 0) - (a.score ?? 0);
         })
-    : sortedWikiPages.filter((p) => !wikiActiveTag || (p.tags ?? []).includes(wikiActiveTag));
+    : sortedWikiPages.filter((p) => {
+        // 使用 AND 逻辑：只有当页面包含了 wikiActiveTags 中的所有标签时才显示
+        if (wikiActiveTags.size === 0) return true;
+        const pageTags = p.tags ?? [];
+        return Array.from(wikiActiveTags).every((tag) => pageTags.includes(tag));
+      });
   const wikiTreeNodes = useMemo(
     () => buildWikiTreeNodes(displayedWikiPages),
     [displayedWikiPages],
@@ -2901,6 +3249,16 @@ export default function App() {
     });
   };
 
+  /** 全部展开文件树文件夹 */
+  const expandAllWikiFolders = () => {
+    setWikiTreeCollapsedFolders(new Set());
+  };
+
+  /** 全部收起文件树文件夹 */
+  const collapseAllWikiFolders = () => {
+    setWikiTreeCollapsedFolders(new Set(wikiTreeFolderKeys));
+  };
+
   const renderWikiTreeNodes = (nodes: WikiTreeNode[], depth = 0) => (
     <ul className="wiki-tree__list">
       {nodes.map((node) => {
@@ -2917,6 +3275,9 @@ export default function App() {
                 <span className="wiki-tree__caret" aria-hidden="true">
                   {collapsed ? "▸" : "▾"}
                 </span>
+                <span className="wiki-tree__icon" aria-hidden="true">
+                  {collapsed ? "📁" : "📂"}
+                </span>
                 <span className="wiki-tree__name">{node.name}</span>
               </button>
               {!collapsed && node.children.length > 0
@@ -2929,6 +3290,8 @@ export default function App() {
         const isActive = node.pagePath
           ? isSameWikiPagePath(node.pagePath, wikiActivePagePath)
           : false;
+
+        const isMarkdown = node.name.toLowerCase().endsWith(".md");
 
         return (
           <li key={node.key} className="wiki-tree__item">
@@ -2943,7 +3306,10 @@ export default function App() {
               disabled={!isTauriRuntime() || wikiPageDetailLoading}
               title={node.fullPath}
             >
-              {node.name}
+              <span className="wiki-tree__icon" aria-hidden="true">
+                {isMarkdown ? "📄" : "📎"}
+              </span>
+              <span className="wiki-tree__name">{node.name}</span>
             </button>
           </li>
         );
@@ -3426,16 +3792,19 @@ export default function App() {
 
       {/* 主内容区 */}
       <div className="main-content">
-        {statusMessage ? (
-          <div className="status-bar">
-            <span>{statusMessage}</span>
-            <button
-              type="button"
-              className="status-bar__close"
-              onClick={() => setStatusMessage("")}
-            >
-              ✕
-            </button>
+        {(statusMessage || ingesting) ? (
+          <div className={`status-bar${ingesting ? " status-bar--ingesting" : ""}`}>
+            {ingesting && <span className="status-bar__loader">⏳</span>}
+            <span>{ingesting ? "正在摄入并处理文档..." : statusMessage}</span>
+            {!ingesting && (
+              <button
+                type="button"
+                className="status-bar__close"
+                onClick={() => setStatusMessage("")}
+              >
+                ✕
+              </button>
+            )}
           </div>
         ) : null}
 
@@ -3463,6 +3832,12 @@ export default function App() {
                     <div className="stat-card__value">{overview.pending_tasks}</div>
                     <div className="stat-card__label">待处理任务</div>
                   </div>
+                  {ingesting && (
+                    <div className="stat-card stat-card--ingesting">
+                      <div className="stat-card__value stat-card__loader">⏳</div>
+                      <div className="stat-card__label">正在摄入...</div>
+                    </div>
+                  )}
                 </div>
               ) : null}
 
@@ -3820,19 +4195,34 @@ export default function App() {
                   <div className="wiki-tag-bar">
                     <button
                       type="button"
-                      className={`wiki-tag-chip ${wikiActiveTag === null ? "wiki-tag-chip--active" : ""}`}
-                      onClick={() => setWikiActiveTag(null)}
+                      className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
+                      onClick={() => {
+                        // 清空所有已选标签（显示全部）
+                        setWikiActiveTags(new Set());
+                      }}
                     >
                       全部
                     </button>
                     {allWikiTags.map((tag) => (
                       <button
-                        key={tag}
+                        key={tag.name}
                         type="button"
-                        className={`wiki-tag-chip ${wikiActiveTag === tag ? "wiki-tag-chip--active" : ""}`}
-                        onClick={() => setWikiActiveTag((prev) => (prev === tag ? null : tag))}
+                        className={`wiki-tag-chip ${wikiActiveTags.has(tag.name) ? "wiki-tag-chip--active" : ""}`}
+                        onClick={() =>
+                          setWikiActiveTags((prev) => {
+                            // 切换当前标签的激活状态
+                            const next = new Set(prev);
+                            if (next.has(tag.name)) {
+                              next.delete(tag.name);
+                            } else {
+                              next.add(tag.name);
+                            }
+                            return next;
+                          })
+                        }
                       >
-                        {tag}
+                        {/* 标签名及其页面计数，计数使用淡色 span 包裹 */}
+                        {tag.name} <span className="wiki-tag-chip__count">({tag.count})</span>
                       </button>
                     ))}
                   </div>
@@ -3841,8 +4231,28 @@ export default function App() {
                   <div className="wiki-layout">
                     <aside className="wiki-layout__tree">
                       <div className="wiki-tree__head">
-                        <h3>Vault 文件树</h3>
-                        <span>{displayedWikiPages.length} 页</span>
+                        <div className="wiki-tree__head-title">
+                          <h3>Vault 文件树</h3>
+                          <span>{displayedWikiPages.length} 页</span>
+                        </div>
+                        <div className="wiki-tree__head-actions">
+                          <button
+                            type="button"
+                            className="wiki-tree__action-btn"
+                            onClick={expandAllWikiFolders}
+                            title="全部展开"
+                          >
+                            展开全部
+                          </button>
+                          <button
+                            type="button"
+                            className="wiki-tree__action-btn"
+                            onClick={collapseAllWikiFolders}
+                            title="全部收起"
+                          >
+                            收起全部
+                          </button>
+                        </div>
                       </div>
                       <div className="wiki-tree__body">
                         {renderWikiTreeNodes(wikiTreeNodes)}
@@ -4591,9 +5001,29 @@ export default function App() {
                         >
                           Local
                         </button>
-                      </div>
-                      <label className="graph-control" htmlFor="graph-group-filter">
-                        <span className="graph-control__label">分组</span>
+                        </div>
+
+                        <div className="graph-control graph-control--search">
+                          <input
+                            type="text"
+                            className="dev-panel__input"
+                            placeholder="搜索节点..."
+                            value={graphSearchQuery}
+                            onChange={(e) => setGraphSearchQuery(e.target.value)}
+                          />
+                          {graphSearchQuery && (
+                            <button
+                              type="button"
+                              className="dev-panel__button dev-panel__button--small"
+                              onClick={() => setGraphSearchQuery("")}
+                              title="清除搜索"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+
+                        <label className="graph-control" htmlFor="graph-group-filter">                        <span className="graph-control__label">分组</span>
                         <select
                           id="graph-group-filter"
                           className="dev-panel__input"
@@ -4622,6 +5052,20 @@ export default function App() {
                           onChange={(event) => handleGraphLocalDepthChange(Number(event.target.value))}
                         />
                         <span className="graph-control__value">{graphLocalDepth}</span>
+                      </label>
+                      <label className="graph-control" htmlFor="graph-local-direction">
+                        <span className="graph-control__label">方向</span>
+                        <select
+                          id="graph-local-direction"
+                          className="dev-panel__input"
+                          value={graphLocalDirection}
+                          disabled={graphViewMode !== "local" || !graphSelectedNode}
+                          onChange={(event) => handleGraphLocalDirectionChange(event.target.value)}
+                        >
+                          <option value="both">双向</option>
+                          <option value="out">向外</option>
+                          <option value="in">向内</option>
+                        </select>
                       </label>
                       <button
                         type="button"
@@ -4661,6 +5105,11 @@ export default function App() {
                         onClick={() => {
                           setGraphViewMode("global");
                           setGraphLocalDepth(1);
+                          setGraphLocalDirection("both");
+                          setGraphLocalSubgraphData(null);
+                          setGraphLocalSubgraphLoading(false);
+                          setGraphLocalSubgraphError("");
+                          setGraphLocalSubgraphTruncated(false);
                           setGraphGroupFilter("__all__");
                           setGraphShowOrphans(true);
                           setGraphNeighborOnly(false);
@@ -4672,11 +5121,30 @@ export default function App() {
                     </div>
                     <div className="graph-toolbar__stats">
                       <span className="pill">{`模式 ${graphViewMode === "local" ? "Local" : "Global"}`}</span>
+                      {graphViewMode === "local" ? (
+                        <span className="pill">{`方向 ${graphLocalDirection}`}</span>
+                      ) : null}
+                      {graphViewMode === "local" ? (
+                        <span className="pill">{`局部计算 ${graphShouldUseBackendSubgraph ? "后端" : "前端"}`}</span>
+                      ) : null}
+                      {graphViewMode === "local" && graphLocalSubgraphTruncated ? (
+                        <span className="pill pill--warn">子图已裁剪</span>
+                      ) : null}
                       <span className="pill">{`节点 ${graphVisibleData?.nodes.length ?? 0}/${graphNodes.length}`}</span>
                       <span className="pill">{`边 ${graphVisibleData?.links.length ?? 0}/${graphNormalizedLinks.length}`}</span>
                       <span className="pill">{`孤儿页 ${graphVisibleOrphanCount}/${graphMetrics.orphanCount}`}</span>
                     </div>
                   </div>
+
+                  {graphViewMode === "local" && graphShouldUseBackendSubgraph ? (
+                    <p className="runtime-hint">当前图规模较大，Local 模式已自动启用后端子图计算。</p>
+                  ) : null}
+                  {graphViewMode === "local" && graphLocalSubgraphLoading ? (
+                    <p className="runtime-hint">正在请求后端子图...</p>
+                  ) : null}
+                  {graphViewMode === "local" && graphLocalSubgraphError ? (
+                    <p className="runtime-status">{graphLocalSubgraphError}</p>
+                  ) : null}
 
                   <div className="graph-module" ref={graphContainerRef}>
                     {graphLoading && (
@@ -4746,9 +5214,18 @@ export default function App() {
                               const selected = Boolean(
                                 graphSelectedNodeId && isSameWikiPagePath(graphSelectedNodeId, n.id),
                               );
+                              const isSearchHit = graphSearchHits.has(n.id);
                               const radius = selected ? 8 : 5;
-                              const fontSize = Math.max(10 / globalScale, 3);
-                              ctx.font = `${fontSize}px Sans-Serif`;
+
+                              // 绘制搜索命中光晕
+                              if (isSearchHit) {
+                                ctx.beginPath();
+                                ctx.arc(n.x ?? 0, n.y ?? 0, radius + 8, 0, 2 * Math.PI, false);
+                                ctx.fillStyle = "rgba(255, 235, 59, 0.4)";
+                                ctx.fill();
+                              }
+
+                              const fontSize = Math.max(10 / globalScale, 3);                              ctx.font = `${fontSize}px Sans-Serif`;
                               ctx.fillStyle = n.group ? groupColor(n.group) : "#4a9eff";
                               ctx.beginPath();
                               ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, 2 * Math.PI, false);
@@ -4776,6 +5253,39 @@ export default function App() {
                 </section>
 
                 <aside className="graph-sidepanel">
+                  {graphSearchQuery.trim() !== "" && (
+                    <div className="graph-search-results">
+                      <div className="graph-sidepanel__head">
+                        <h3>搜索结果</h3>
+                        <span>{graphSearchHits.size} 条命中</span>
+                      </div>
+                      {graphSearchHits.size === 0 ? (
+                        <p className="graph-sidepanel__hint">未找到匹配的节点。</p>
+                      ) : (
+                        <ul className="graph-neighbors__list" style={{ maxHeight: "240px", overflowY: "auto" }}>
+                          {Array.from(graphSearchHits).slice(0, 50).map((id) => {
+                            const node = graphData?.nodes.find((n) => n.id === id);
+                            if (!node) return null;
+                            return (
+                              <li key={node.id}>
+                                <button
+                                  type="button"
+                                  className={`graph-neighbors__item ${graphSelectedNodeId === node.id ? "graph-neighbors__item--active" : ""}`}
+                                  onClick={() => handleGraphNodeClick(node)}
+                                  title={node.id}
+                                >
+                                  <span>{node.label || node.id}</span>
+                                  <code>{node.group || "未分组"}</code>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      <hr className="graph-sidepanel__divider" />
+                    </div>
+                  )}
+
                   <div className="graph-sidepanel__head">
                     <h3>节点详情</h3>
                     <span>{graphSelectedNode ? "已选中" : "未选中"} · {graphViewMode === "local" ? "Local" : "Global"}</span>
@@ -4823,7 +5333,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   className="graph-neighbors__item"
-                                  onClick={() => setGraphSelectedNodeId(neighbor.id)}
+                                  onClick={() => handleGraphNodeClick(neighbor)}
                                   title={neighbor.id}
                                 >
                                   <span>{neighbor.label}</span>

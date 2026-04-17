@@ -291,3 +291,41 @@ export interface KnowledgeGraphData {
   nodes: KnowledgeGraphNode[];
   links: KnowledgeGraphLink[];
 }
+
+/** 子图遍历方向：双向 / 仅出边 / 仅入边 */
+export type GraphTraversalDirection = "both" | "out" | "in";
+
+/** 知识子图元信息（后端用于返回统计与裁剪状态） */
+export interface KnowledgeSubgraphMeta {
+  center_page_path: string;
+  hop: number;
+  direction: GraphTraversalDirection;
+  truncated: boolean;
+  node_count: number;
+  link_count: number;
+}
+
+/** 知识子图返回结构（节点/边 + 元信息） */
+export interface KnowledgeSubgraphData {
+  nodes: KnowledgeGraphNode[];
+  links: KnowledgeGraphLink[];
+  meta: KnowledgeSubgraphMeta;
+}
+
+/** 获取知识子图请求参数（前端契约） */
+export interface KnowledgeSubgraphRequestParams {
+  centerPagePath: string;
+  hop?: number;
+  direction?: GraphTraversalDirection;
+  limitNodes?: number;
+  limitLinks?: number;
+}
+
+export interface OutboxEventItem {
+  id: number;
+  event_type: string;
+  payload_json: string;
+  created_at: string;
+  processed_at?: string | null;
+  consumer_tag?: string | null;
+}

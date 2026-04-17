@@ -227,6 +227,32 @@ input, select, textarea { font: inherit; }
 
 .status-bar__close:hover { background: var(--border); }
 
+/* Ingesting 状态样式 */
+.status-bar--ingesting {
+  background: var(--info-bg);
+  color: var(--info);
+  border-bottom-color: var(--info);
+}
+
+.status-bar__loader {
+  display: inline-block;
+  animation: rotate 2s linear infinite;
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.stat-card--ingesting {
+  border-color: var(--info);
+  background: var(--info-bg);
+}
+
+.stat-card--ingesting .stat-card__value {
+  color: var(--info);
+}
+
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -2351,6 +2377,17 @@ code {
   color: #fff;
   border-color: transparent;
   font-weight: 600;
+  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.3); /* 增强激活态视觉对比 */
+}
+
+.wiki-tag-chip__count {
+  margin-left: 3px;
+  font-size: 11px;
+  opacity: 0.65; /* 计数括号使用较淡的颜色 */
+}
+
+.wiki-tag-chip--active .wiki-tag-chip__count {
+  opacity: 0.85; /* 激活态时计数文字稍微亮一点 */
 }
 
 /* Wiki 文件树布局 */
@@ -2379,16 +2416,50 @@ code {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary, #f7f8fa);
+  gap: 8px;
+}
+
+.wiki-tree__head-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 
 .wiki-tree__head h3 {
   margin: 0;
   font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .wiki-tree__head span {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.wiki-tree__head-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.wiki-tree__action-btn {
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+
+.wiki-tree__action-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-light);
 }
 
 .wiki-tree__body {
@@ -2397,10 +2468,16 @@ code {
   padding: 6px 0;
 }
 
+@keyframes wikiTreeExpand {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .wiki-tree__list {
   list-style: none;
   margin: 0;
   padding: 0;
+  animation: wikiTreeExpand 0.2s ease-out;
 }
 
 .wiki-tree__item {
@@ -2419,6 +2496,9 @@ code {
   display: flex;
   align-items: center;
   gap: 6px;
+  transition: background-color 0.2s ease, border-left-color 0.2s ease;
+  border-left: 3px solid transparent;
+  cursor: pointer;
 }
 
 .wiki-tree__folder:hover,
@@ -2430,17 +2510,31 @@ code {
   color: var(--accent);
   font-weight: 600;
   background: var(--accent-light);
+  border-left-color: var(--accent);
 }
 
 .wiki-tree__caret {
   width: 12px;
   color: var(--text-muted);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wiki-tree__icon {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
 }
 
 .wiki-tree__name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
 }
 
 @media (max-width: 980px) {
@@ -2539,6 +2633,40 @@ code {
   min-width: 16px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.graph-control--search {
+  position: relative;
+  min-width: 140px;
+}
+
+.graph-control--search .dev-panel__input {
+  min-width: 140px;
+  width: 100%;
+}
+
+.graph-control--search .dev-panel__button--small {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 20px;
+  width: 20px;
+  padding: 0;
+  min-width: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+}
+
+.graph-control--search .dev-panel__button--small:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .graph-control .dev-panel__input {
@@ -2696,6 +2824,19 @@ code {
   padding: 8px 10px;
   background: var(--bg-card);
   transition: border-color .15s ease, background .15s ease;
+}
+
+.graph-sidepanel__divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+  opacity: 0.6;
+}
+
+.graph-neighbors__item--active {
+  border-color: var(--accent) !important;
+  background: var(--accent-light) !important;
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .graph-neighbors__item:hover {

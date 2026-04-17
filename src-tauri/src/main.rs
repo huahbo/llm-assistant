@@ -61,7 +61,8 @@ fn main() {
             commands::cancel_ask_session,
             commands::clear_ask_session,
             commands::mark_page_stale,
-            commands::get_knowledge_graph
+            commands::get_knowledge_graph,
+            commands::get_knowledge_subgraph
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

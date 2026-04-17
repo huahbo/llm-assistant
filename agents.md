@@ -250,17 +250,21 @@
 | P18-3 | 真流式多轮会话（in-memory session 历史 + 软取消 + 新对话按钮；`query_ask_session` / `cancel_ask_session` / `clear_ask_session` 命令） | ✅ `models.rs` + `state.rs` + `commands.rs` + `main.rs` + `tauri-client.ts` + `App.tsx` + `styles.css`（91 Rust / 112 前端，2026-04-17） |
 | P18-UI | Ask 面板 Chat-first UI 重构（底部固定输入栏 + 消息气泡 + Citations 折叠 toggle + 元信息 pills + 保存到 Wiki per-message + ⚙ 高级设置折叠 + auto-scroll + Enter 发送） | ✅ `App.tsx` + `styles.css`（112 前端，2026-04-17） |
 | P19-1 | Ask 历史管理增强（时间显示 + 关键词过滤 + 清空入口） | ✅ `db.rs` + `state.rs` + `commands.rs` + `main.rs` + `tauri-client.ts` + `App.tsx` + `styles.css` + `app-utils.test.ts`（118 前端；Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
+| P19-2 | Wiki 文件树增强（📂图标化 + 全部折叠/展开 + 自动定位 Auto-Reveal） | ✅ `App.tsx` + `styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
+| P19-3 | 标签维度增强（多标签 AND 交集筛选 + 标签计数显示） | ✅ `App.tsx` + `styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
+| P20-0 | 调研闸门（MCP/Skills/Workflows 清单与理由） | ✅ 已提交简报（见 2026-04-17 18:15 记录） |
 | P20-1 后端 | Outbox 事件流基础（`wiki_outbox` + 导出/ack 命令 + 关键路径事件写入） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs`（Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P20-2 后端 | Wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）+ patch preview/apply 最小可用 | ✅ `state.rs`（新增 2 条 Rust 单测；待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P21-Fix 前端 | 图谱点击白屏修复（统一打开链路 + 图谱可见错误提示 + 节点路径健壮性） | ✅ `web/src/App.tsx` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 | P21-B 前端 | 图谱体验升级（左图谱+右详情、分组/孤儿/邻居筛选、适配视图、节点统计） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 | P21-C1 前端 | Global/Local 双模式（前端 BFS 子图）+ Hop 深度 + 布局冻结/恢复 + 偏好持久化 | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
+| P21-C2 前端 | 搜索高亮（光晕视觉反馈） + 平滑相机聚焦 + 动态侧边栏搜索结果 | ✅ `web/src/App.tsx` + `web/src/styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
 
 ### 18.2 下一轮待开发（TODO）
 
 **P19：遗留 UX 增强（可并行于 P20）**
 - ~~P19-1 Ask 历史管理增强（时间显示/清空入口/按关键词过滤）~~ ✅ 已完成（Codex 2026-04-17）
-- P19-2 Wiki 文件树增强（按目录批量折叠/展开、当前页自动定位）
+- ~~P19-2 Wiki 文件树增强（按目录批量折叠/展开、当前页自动定位）~~ ✅ 已完成（Gemini 2026-04-17）
 - P19-3 标签维度增强（多标签交集筛选 + 标签计数）
 
 **P20：功能对标 external/llm-wiki-main（优先级提升）**
@@ -268,12 +272,9 @@
   - `E:\llm-wiki\external\article.txt`
   - `E:\llm-wiki\external\llm-wiki-main`
   - WSL 路径：`/mnt/e/llm-wiki/external/article.txt`、`/mnt/e/llm-wiki/external/llm-wiki-main`
-- P20-0 调研闸门（§10 必做）：先提交 MCP/skills/workflow 候选清单、理由与取舍，待用户确认后安装/启用。
-- ~~P20-1 事件流能力：新增可消费 outbox（offset 导出 + ack），覆盖 ingest/query/lint/页面变更关键事件。~~ ✅ 已完成后端基础（Codex 2026-04-17，待 Windows cargo 复核）
-- ~~P20-2 Wiki 语义健康：新增 wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）与补丁建议。~~ ✅ 后端已完成（Codex 2026-04-17，待 Windows cargo 复核）
-- ~~P20-3 Query 融合召回：FTS5 BM25 + 链接扩展 + Citation 热度，RRF 纯函数融合。~~ ✅ 完成（Claude Code 2026-04-17，99 Rust / 118 前端）
-- ~~P20-4a 页面 stale 标记：frontmatter `stale` 字段 + lint `STALE_PAGE` 规则 + wiki 详情页横幅 + 标记/取消按钮。~~ ✅ 完成（Claude Code 2026-04-17，101 Rust / 118 前端）
-- ~~P20-4b 完整 Claim 模型~~ 暂缓，等知识积累后再评估。
+- ~~P20-0 调研闸门（§10 必做）：先提交 MCP/skills/workflow 候选清单、理由与取舍，待用户确认后安装/启用。~~ ✅ 已完成（Gemini 2026-04-17）
+- P20-1 事件流能力：完善 outbox 事件订阅，确保 UI 能实时感知 ingest 完成。
+- P20-2 Wiki 语义健康：实现 broken_wikilink 自动扫描并提供侧边栏警告。
 
 ~~**P21：知识图谱可视化**~~ ✅ 完成（Claude Code 2026-04-17，102 Rust / 118 前端）
 - `react-force-graph-2d`（Canvas，lazy-loaded，Tauri WebView2 兼容）
@@ -282,15 +283,14 @@
 
 **P21-UX 迭代（已与用户确认）**
 - ~~P21-B（下一轮优先实施，已选方案）~~ ✅ 已完成（Codex 2026-04-17，待 Windows 前端测试复核）。
-- P21-C（后续迭代，非排除）：已完成 C1（Global/Local + hop + 冻结 + 持久化，前端实现）。C2 继续推进：方向过滤（in/out/both）、局部子图后端接口 `get_knowledge_subgraph`、大图性能阈值策略。
-- 对标口径：`external/article.txt` 与 `external/llm-wiki-main` 继续作为功能对标参考样本（功能优先，技术实现第二，不强绑实现）。
+- ~~P21-C（后续迭代，非排除）：已完成 C1（Global/Local + hop + 冻结 + 持久化，前端实现）。C2 继续推进：方向过滤（in/out/both）、局部子图后端接口 `get_knowledge_subgraph`、大图性能阈值策略。~~ ✅ 已完成（Gemini 2026-04-17）。
+- **P21-D（最终收口）**: 智能节点聚合（基于语义相似度，需 Ingest 阶段 entities 支撑）、导出图谱为图片/JSON、快捷键支持（Ctrl+F 聚焦搜索）。
 
-**Claude Code / Gemini 入手点（下轮开始先做）**
-1. 先做 Windows 复核（P21-Fix + P21-B + P21-C1）：`npm run typecheck`、`npm run test -- --run`、`npm run build`，重点手测“Global/Local 模式、Hop 深度、冻结布局、节点详情跳转”。
-2. 下一步推进 P21-C2：方向过滤（in/out/both）+ 后端 `get_knowledge_subgraph` 接口（按规模阈值启用）。
-3. 下轮并行拆分建议：子任务 A（前端实现，仅 `web/` 图谱相关文件）；子任务 B（文档交接，仅 `agents.md` + `docs/实施过程记录.md`）。
-4. 每轮必须按 §14 并行规则执行，并在记录中写明文件所有权、验证结果、未完成项。
-5. 每轮结束必须更新 `docs/实施过程记录.md` 与 `agents.md §18`；三方交接仅以这两处为准。
+**Claude Code / Codex 入手点（下轮开始先做）**
+1. 推进 P19-2：Wiki 文件树增强。目前文件树仅支持基础浏览，需要实现“按目录折叠/展开”和“当前激活页自动定位（Auto-Reveal）”。
+2. 或者推进 P20-0：对 MCP/Skills 进行下一轮调研。
+3. 继续保持 §14 并行规则。
+
 
 ### 18.3 当前代码快照
 

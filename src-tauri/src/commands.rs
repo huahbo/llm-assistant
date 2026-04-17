@@ -1,11 +1,12 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, DefaultPaths, IngestResult, KnowledgeGraphData, LintPatchApplyInput,
-    LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview,
-    LintReport, LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult,
-    OutboxEventItem, QueryAnswerResult, QueryAskOptions, QuerySettings, SaveQueryAnswerInput,
-    SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    AppMode, AppOverview, DefaultPaths, IngestResult, KnowledgeGraphData,
+    KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult,
+    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport,
+    LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult, OutboxEventItem,
+    QueryAnswerResult, QueryAskOptions, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
+    VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -386,4 +387,23 @@ pub fn get_knowledge_graph(
     state: State<'_, AppState>,
 ) -> Result<KnowledgeGraphData, String> {
     state.get_knowledge_graph_impl()
+}
+
+/// 获取知识子图（中心节点 + hop + 方向 + 返回上限）。
+#[tauri::command]
+pub fn get_knowledge_subgraph(
+    center_page_path: String,
+    hop: Option<u8>,
+    direction: Option<KnowledgeGraphDirection>,
+    limit_nodes: Option<usize>,
+    limit_links: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<KnowledgeSubgraphData, String> {
+    state.get_knowledge_subgraph_impl(
+        center_page_path,
+        hop.unwrap_or(2),
+        direction.unwrap_or_default(),
+        limit_nodes.unwrap_or(500),
+        limit_links.unwrap_or(2000),
+    )
 }

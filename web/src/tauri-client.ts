@@ -5,6 +5,8 @@ import type {
   DefaultPaths,
   IngestResult,
   KnowledgeGraphData,
+  KnowledgeSubgraphData,
+  KnowledgeSubgraphRequestParams,
   LlmProviderConfig,
   LlmStatus,
   LintReport,
@@ -16,6 +18,7 @@ import type {
   LintPatchApplyResult,
   LogEntry,
   ModeChangeResult,
+  OutboxEventItem,
   ProgressPayload,
   QueryAnswerResult,
   QueryAskOptions,
@@ -375,6 +378,19 @@ export const createWikiPageDetailArgs = (pagePath: string) => ({
 export const createWikiPageCitationsArgs = (pagePath: string) => ({
   pagePath,
   page_path: pagePath,
+});
+
+export const createGetKnowledgeSubgraphArgs = (
+  params: KnowledgeSubgraphRequestParams,
+) => ({
+  centerPagePath: params.centerPagePath,
+  center_page_path: params.centerPagePath,
+  hop: params.hop,
+  direction: params.direction,
+  limitNodes: params.limitNodes,
+  limit_nodes: params.limitNodes,
+  limitLinks: params.limitLinks,
+  limit_links: params.limitLinks,
 });
 
 export const createPreviewLintPatchesArgs = () => ({});
@@ -1155,4 +1171,35 @@ export async function getKnowledgeGraph(): Promise<KnowledgeGraphData | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import("@tauri-apps/api/core");
   return await invoke<KnowledgeGraphData>("get_knowledge_graph");
+}
+
+/** 获取知识子图（以中心页面为起点，按 hop/方向裁剪） */
+export async function getKnowledgeSubgraph(
+  params: KnowledgeSubgraphRequestParams,
+): Promise<KnowledgeSubgraphData | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await withTimeout(
+    invoke<KnowledgeSubgraphData>("get_knowledge_subgraph", {
+      ...createGetKnowledgeSubgraphArgs(params),
+    }),
+  );
+}
+
+/** 获取 Outbox 事件（增量轮询） */
+export async function get_outbox_events(options: {
+  last_id?: number;
+  limit?: number;
+}): Promise<OutboxEventItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<OutboxEventItem[]>("get_outbox_events", {
+      lastId: options.last_id,
+      last_id: options.last_id,
+      limit: options.limit,
+    });
+  } catch {
+    return [];
+  }
 }

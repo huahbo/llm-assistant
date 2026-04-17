@@ -531,3 +531,37 @@ pub struct KnowledgeGraphData {
     pub nodes: Vec<KnowledgeGraphNode>,
     pub links: Vec<KnowledgeGraphLink>,
 }
+
+/// 知识子图方向过滤。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KnowledgeGraphDirection {
+    Both,
+    Out,
+    In,
+}
+
+impl Default for KnowledgeGraphDirection {
+    fn default() -> Self {
+        Self::Both
+    }
+}
+
+/// 知识子图元信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeSubgraphMeta {
+    pub center_page_path: String,
+    pub hop: u8,
+    pub direction: KnowledgeGraphDirection,
+    pub truncated: bool,
+    pub node_count: usize,
+    pub link_count: usize,
+}
+
+/// 知识子图返回结构。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeSubgraphData {
+    pub nodes: Vec<KnowledgeGraphNode>,
+    pub links: Vec<KnowledgeGraphLink>,
+    pub meta: KnowledgeSubgraphMeta,
+}
