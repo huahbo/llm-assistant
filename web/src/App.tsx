@@ -392,6 +392,78 @@ export type GraphNormalizedEdge = {
   targetId: string;
 };
 
+export type GraphViewMode = "global" | "local";
+export const GRAPH_VIEW_MODE_STORAGE_KEY = "llm_wiki_graph_view_mode_v1";
+export const GRAPH_LOCAL_DEPTH_STORAGE_KEY = "llm_wiki_graph_local_depth_v1";
+export const GRAPH_LOCAL_DEPTH_MIN = 1;
+export const GRAPH_LOCAL_DEPTH_MAX = 3;
+
+export const isGraphViewMode = (value: string): value is GraphViewMode =>
+  value === "global" || value === "local";
+
+export const readGraphViewModeFromStorage = (): GraphViewMode => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return "global";
+    }
+    const raw = storage.getItem(GRAPH_VIEW_MODE_STORAGE_KEY);
+    if (!raw) {
+      return "global";
+    }
+    return isGraphViewMode(raw) ? raw : "global";
+  } catch {
+    return "global";
+  }
+};
+
+export const writeGraphViewModeToStorage = (mode: GraphViewMode) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(GRAPH_VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
+export const clampGraphLocalDepth = (depth: number) =>
+  Math.max(GRAPH_LOCAL_DEPTH_MIN, Math.min(GRAPH_LOCAL_DEPTH_MAX, depth));
+
+export const readGraphLocalDepthFromStorage = (): number => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return 1;
+    }
+    const raw = storage.getItem(GRAPH_LOCAL_DEPTH_STORAGE_KEY);
+    if (!raw) {
+      return 1;
+    }
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      return 1;
+    }
+    return clampGraphLocalDepth(Math.round(parsed));
+  } catch {
+    return 1;
+  }
+};
+
+export const writeGraphLocalDepthToStorage = (depth: number) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(GRAPH_LOCAL_DEPTH_STORAGE_KEY, String(clampGraphLocalDepth(depth)));
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
 export const buildGraphVisibleData = (input: {
   nodes: KnowledgeGraphNode[];
   edges: GraphNormalizedEdge[];
@@ -441,6 +513,75 @@ export const buildGraphVisibleData = (input: {
   return {
     nodes: visibleNodes.map((node) => ({ ...node })),
     links: visibleEdges.map((edge) => ({ source: edge.sourceId, target: edge.targetId })),
+  };
+};
+
+export const buildGraphLocalData = (input: {
+  nodes: KnowledgeGraphNode[];
+  edges: GraphNormalizedEdge[];
+  selectedNodeId: string;
+  maxDepth: number;
+}): KnowledgeGraphData => {
+  const centerId = input.selectedNodeId.trim();
+  if (!centerId) {
+    return { nodes: [], links: [] };
+  }
+
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of input.nodes) {
+    adjacency.set(node.id, new Set());
+  }
+  for (const edge of input.edges) {
+    if (!adjacency.has(edge.sourceId)) {
+      adjacency.set(edge.sourceId, new Set());
+    }
+    if (!adjacency.has(edge.targetId)) {
+      adjacency.set(edge.targetId, new Set());
+    }
+    adjacency.get(edge.sourceId)?.add(edge.targetId);
+    adjacency.get(edge.targetId)?.add(edge.sourceId);
+  }
+
+  if (!adjacency.has(centerId)) {
+    return { nodes: [], links: [] };
+  }
+
+  const depthLimit = clampGraphLocalDepth(input.maxDepth);
+  const visited = new Set<string>([centerId]);
+  const queue: Array<{ id: string; depth: number }> = [{ id: centerId, depth: 0 }];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    if (current.depth >= depthLimit) {
+      continue;
+    }
+    const neighbors = adjacency.get(current.id);
+    if (!neighbors) {
+      continue;
+    }
+    for (const neighborId of neighbors) {
+      if (visited.has(neighborId)) {
+        continue;
+      }
+      visited.add(neighborId);
+      queue.push({ id: neighborId, depth: current.depth + 1 });
+    }
+  }
+
+  const visibleNodes = input.nodes
+    .filter((node) => visited.has(node.id))
+    .map((node) => ({ ...node }));
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const visibleEdges = input.edges
+    .filter((edge) => visibleNodeIds.has(edge.sourceId) && visibleNodeIds.has(edge.targetId))
+    .map((edge) => ({ source: edge.sourceId, target: edge.targetId }));
+
+  return {
+    nodes: visibleNodes,
+    links: visibleEdges,
   };
 };
 
@@ -1242,11 +1383,14 @@ export default function App() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState("");
   const [graphSelectedNodeId, setGraphSelectedNodeId] = useState("");
+  const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>(() => readGraphViewModeFromStorage());
+  const [graphLocalDepth, setGraphLocalDepth] = useState(() => readGraphLocalDepthFromStorage());
   const [graphGroupFilter, setGraphGroupFilter] = useState("__all__");
   const [graphShowOrphans, setGraphShowOrphans] = useState(true);
   const [graphNeighborOnly, setGraphNeighborOnly] = useState(false);
+  const [graphLayoutFrozen, setGraphLayoutFrozen] = useState(false);
   const graphContainerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<any>(null);
+  const graphRef = useRef<any>(undefined);
   const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
   // 当前激活的导航模块
   const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
@@ -1332,7 +1476,7 @@ export default function App() {
     if (!graphData) {
       return null;
     }
-    return buildGraphVisibleData({
+    const baseVisible = buildGraphVisibleData({
       nodes: graphNodes,
       edges: graphNormalizedLinks,
       totalDegree: graphMetrics.totalDegree,
@@ -1341,14 +1485,30 @@ export default function App() {
       neighborOnly: graphNeighborOnly,
       selectedNodeId: graphSelectedNodeId,
     });
+    if (graphViewMode === "local") {
+      return buildGraphLocalData({
+        nodes: baseVisible.nodes,
+        edges: baseVisible.links
+          .map((link) => ({
+            sourceId: resolveGraphLinkNodeId(link.source as string | KnowledgeGraphNode | null | undefined),
+            targetId: resolveGraphLinkNodeId(link.target as string | KnowledgeGraphNode | null | undefined),
+          }))
+          .filter((edge) => edge.sourceId && edge.targetId),
+        selectedNodeId: graphSelectedNodeId,
+        maxDepth: graphLocalDepth,
+      });
+    }
+    return baseVisible;
   }, [
     graphData,
     graphGroupFilter,
+    graphLocalDepth,
     graphMetrics.totalDegree,
     graphNeighborOnly,
     graphNodes,
     graphNormalizedLinks,
     graphSelectedNodeId,
+    graphViewMode,
     graphShowOrphans,
   ]);
   const graphSelectedNode = useMemo(() => {
@@ -1438,6 +1598,26 @@ export default function App() {
       setGraphGroupFilter("__all__");
     }
   }, [graphGroupFilter, graphGroupOptions]);
+
+  useEffect(() => {
+    writeGraphViewModeToStorage(graphViewMode);
+  }, [graphViewMode]);
+
+  useEffect(() => {
+    writeGraphLocalDepthToStorage(graphLocalDepth);
+  }, [graphLocalDepth]);
+
+  useEffect(() => {
+    if (!graphRef.current) {
+      return;
+    }
+    if (graphLayoutFrozen) {
+      graphRef.current.pauseAnimation?.();
+      return;
+    }
+    graphRef.current.resumeAnimation?.();
+    graphRef.current.d3ReheatSimulation?.();
+  }, [graphLayoutFrozen, graphVisibleData?.links.length, graphVisibleData?.nodes.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2316,6 +2496,24 @@ export default function App() {
 
   const handleGraphZoomToFit = () => {
     graphRef.current?.zoomToFit?.(350, 40);
+  };
+
+  const handleGraphViewModeChange = (mode: GraphViewMode) => {
+    setGraphViewMode(mode);
+    if (mode === "global") {
+      return;
+    }
+    if (!graphSelectedNodeId) {
+      setStatusMessage("已切换为 Local 图模式，请先点击一个节点作为中心。");
+    }
+  };
+
+  const handleGraphLocalDepthChange = (value: number) => {
+    setGraphLocalDepth(clampGraphLocalDepth(value));
+  };
+
+  const handleToggleGraphLayoutFreeze = () => {
+    setGraphLayoutFrozen((prev) => !prev);
   };
 
   const handleCloseWikiPreview = () => {
@@ -4378,6 +4576,22 @@ export default function App() {
                 <section className="graph-workspace">
                   <div className="graph-toolbar">
                     <div className="graph-toolbar__controls">
+                      <div className="graph-mode-switch" role="group" aria-label="图谱模式切换">
+                        <button
+                          type="button"
+                          className={`dev-panel__button ${graphViewMode === "global" ? "dev-panel__button--accent" : ""}`}
+                          onClick={() => handleGraphViewModeChange("global")}
+                        >
+                          Global
+                        </button>
+                        <button
+                          type="button"
+                          className={`dev-panel__button ${graphViewMode === "local" ? "dev-panel__button--accent" : ""}`}
+                          onClick={() => handleGraphViewModeChange("local")}
+                        >
+                          Local
+                        </button>
+                      </div>
                       <label className="graph-control" htmlFor="graph-group-filter">
                         <span className="graph-control__label">分组</span>
                         <select
@@ -4394,6 +4608,20 @@ export default function App() {
                             </option>
                           ))}
                         </select>
+                      </label>
+                      <label className="graph-control graph-control--depth" htmlFor="graph-local-depth">
+                        <span className="graph-control__label">Hop 深度</span>
+                        <input
+                          id="graph-local-depth"
+                          type="range"
+                          min={GRAPH_LOCAL_DEPTH_MIN}
+                          max={GRAPH_LOCAL_DEPTH_MAX}
+                          step={1}
+                          value={graphLocalDepth}
+                          disabled={graphViewMode !== "local" || !graphSelectedNode}
+                          onChange={(event) => handleGraphLocalDepthChange(Number(event.target.value))}
+                        />
+                        <span className="graph-control__value">{graphLocalDepth}</span>
                       </label>
                       <button
                         type="button"
@@ -4421,17 +4649,29 @@ export default function App() {
                       </button>
                       <button
                         type="button"
+                        className={`dev-panel__button ${graphLayoutFrozen ? "dev-panel__button--accent" : ""}`}
+                        onClick={handleToggleGraphLayoutFreeze}
+                        disabled={!graphVisibleData || graphVisibleData.nodes.length === 0}
+                      >
+                        {graphLayoutFrozen ? "恢复布局" : "冻结布局"}
+                      </button>
+                      <button
+                        type="button"
                         className="dev-panel__button"
                         onClick={() => {
+                          setGraphViewMode("global");
+                          setGraphLocalDepth(1);
                           setGraphGroupFilter("__all__");
                           setGraphShowOrphans(true);
                           setGraphNeighborOnly(false);
+                          setGraphLayoutFrozen(false);
                         }}
                       >
                         重置筛选
                       </button>
                     </div>
                     <div className="graph-toolbar__stats">
+                      <span className="pill">{`模式 ${graphViewMode === "local" ? "Local" : "Global"}`}</span>
                       <span className="pill">{`节点 ${graphVisibleData?.nodes.length ?? 0}/${graphNodes.length}`}</span>
                       <span className="pill">{`边 ${graphVisibleData?.links.length ?? 0}/${graphNormalizedLinks.length}`}</span>
                       <span className="pill">{`孤儿页 ${graphVisibleOrphanCount}/${graphMetrics.orphanCount}`}</span>
@@ -4462,8 +4702,17 @@ export default function App() {
                     )}
                     {!graphLoading && graphData && graphData.nodes.length > 0 && graphVisibleData && graphVisibleData.nodes.length === 0 && (
                       <div className="graph-module__empty">
-                        <p>当前筛选条件下无节点。</p>
-                        <p>请放宽分组、孤儿页或邻居筛选条件。</p>
+                        {graphViewMode === "local" && !graphSelectedNode ? (
+                          <>
+                            <p>Local 模式需要先选择中心节点。</p>
+                            <p>请先在图中点击一个节点，或切回 Global 模式。</p>
+                          </>
+                        ) : (
+                          <>
+                            <p>当前筛选条件下无节点。</p>
+                            <p>请放宽分组、孤儿页、邻居或 Hop 深度筛选条件。</p>
+                          </>
+                        )}
                       </div>
                     )}
                     {!graphLoading && graphVisibleData && graphVisibleData.nodes.length > 0 && (
@@ -4529,7 +4778,7 @@ export default function App() {
                 <aside className="graph-sidepanel">
                   <div className="graph-sidepanel__head">
                     <h3>节点详情</h3>
-                    <span>{graphSelectedNode ? "已选中" : "未选中"}</span>
+                    <span>{graphSelectedNode ? "已选中" : "未选中"} · {graphViewMode === "local" ? "Local" : "Global"}</span>
                   </div>
                   {!graphSelectedNode ? (
                     <p className="graph-sidepanel__hint">点击左侧节点可查看标题、度数和关联页面。</p>

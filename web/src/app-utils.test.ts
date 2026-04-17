@@ -16,8 +16,15 @@ import {
   isWikiSortMode,
   parseLegacyImportedAtFromContent,
   buildGraphVisibleData,
+  buildGraphLocalData,
+  clampGraphLocalDepth,
+  GRAPH_LOCAL_DEPTH_STORAGE_KEY,
+  GRAPH_VIEW_MODE_STORAGE_KEY,
   isSameWikiPagePath,
+  isGraphViewMode,
   normalizeWikiPathForCompare,
+  readGraphLocalDepthFromStorage,
+  readGraphViewModeFromStorage,
   resolveGraphNodePagePath,
   parseLegacyWikiMetadataFromContent,
   formatPdfIngestErrorMessage,
@@ -26,6 +33,8 @@ import {
   resolveNextActiveProvider,
   hasUnsavedWikiEditChanges,
   shouldAutoDismissStatusMessage,
+  writeGraphLocalDepthToStorage,
+  writeGraphViewModeToStorage,
   writeWikiSortModeToStorage,
   groupLintIssuesByPath,
   groupPatchPreviewItemsByPath,
@@ -431,6 +440,63 @@ describe("Wiki 排序偏好持久化", () => {
   });
 });
 
+describe("图谱视图偏好持久化", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const localStorageMock = {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: localStorageMock,
+    });
+
+    return { store };
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  it("识别合法图谱视图模式", () => {
+    expect(isGraphViewMode("global")).toBe(true);
+    expect(isGraphViewMode("local")).toBe(true);
+    expect(isGraphViewMode("invalid")).toBe(false);
+  });
+
+  it("图谱视图模式默认 global", () => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+    expect(readGraphViewModeFromStorage()).toBe("global");
+  });
+
+  it("图谱视图模式可读写", () => {
+    const { store } = installLocalStorageMock();
+    writeGraphViewModeToStorage("local");
+    expect(store.get(GRAPH_VIEW_MODE_STORAGE_KEY)).toBe("local");
+    expect(readGraphViewModeFromStorage()).toBe("local");
+  });
+
+  it("图谱 local 深度读写时自动裁剪", () => {
+    const { store } = installLocalStorageMock({
+      [GRAPH_LOCAL_DEPTH_STORAGE_KEY]: "100",
+    });
+    expect(readGraphLocalDepthFromStorage()).toBe(3);
+    expect(clampGraphLocalDepth(0)).toBe(1);
+    writeGraphLocalDepthToStorage(9);
+    expect(store.get(GRAPH_LOCAL_DEPTH_STORAGE_KEY)).toBe("3");
+  });
+});
+
 describe("Wiki 路径比较", () => {
   it("统一路径分隔符与大小写用于比较", () => {
     expect(normalizeWikiPathForCompare("E:\\LLM-Wiki\\vault\\wiki\\A.md")).toBe(
@@ -521,6 +587,38 @@ describe("图谱过滤与邻居模式", () => {
       selectedNodeId: "",
     });
     expect(grouped.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
+  });
+
+  it("Local 子图按 hop 深度裁剪", () => {
+    const localDepth1 = buildGraphLocalData({
+      nodes: [
+        { id: "A", label: "A", group: "" },
+        { id: "B", label: "B", group: "" },
+        { id: "C", label: "C", group: "" },
+      ],
+      edges: [
+        { sourceId: "A", targetId: "B" },
+        { sourceId: "B", targetId: "C" },
+      ],
+      selectedNodeId: "A",
+      maxDepth: 1,
+    });
+    expect(localDepth1.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
+
+    const localDepth2 = buildGraphLocalData({
+      nodes: [
+        { id: "A", label: "A", group: "" },
+        { id: "B", label: "B", group: "" },
+        { id: "C", label: "C", group: "" },
+      ],
+      edges: [
+        { sourceId: "A", targetId: "B" },
+        { sourceId: "B", targetId: "C" },
+      ],
+      selectedNodeId: "A",
+      maxDepth: 2,
+    });
+    expect(localDepth2.nodes.map((node) => node.id).sort()).toEqual(["A", "B", "C"]);
   });
 });
 

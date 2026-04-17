@@ -2514,6 +2514,11 @@ code {
   align-items: center;
 }
 
+.graph-mode-switch {
+  display: flex;
+  gap: 6px;
+}
+
 .graph-toolbar__stats {
   display: flex;
   flex-wrap: wrap;
@@ -2524,6 +2529,16 @@ code {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.graph-control--depth input[type="range"] {
+  width: 120px;
+}
+
+.graph-control__value {
+  min-width: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .graph-control .dev-panel__input {
