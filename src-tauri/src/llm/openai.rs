@@ -17,8 +17,29 @@ pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
 /// 默认 API 基础地址（可替换为兼容端点）
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
+/// LLM 提供商预设
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProviderPreset {
+    OpenAI,
+    DeepSeek,
+    Moonshot,
+    Custom,
+}
+
+impl ProviderPreset {
+    /// 获取预设的默认 API 地址与模型
+    pub fn get_defaults(&self) -> (&str, &str) {
+        match self {
+            ProviderPreset::OpenAI => ("https://api.openai.com/v1", "gpt-4o-mini"),
+            ProviderPreset::DeepSeek => ("https://api.deepseek.com", "deepseek-chat"),
+            ProviderPreset::Moonshot => ("https://api.moonshot.cn/v1", "moonshot-v1-8k"),
+            ProviderPreset::Custom => (DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL),
+        }
+    }
+}
+
 /// OpenAI-compatible Provider 配置
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAiConfig {
     /// 云端 API Key
     pub api_key: String,
@@ -28,16 +49,24 @@ pub struct OpenAiConfig {
     pub base_url: String,
     /// 请求超时时间（秒）
     pub timeout_secs: u64,
+    /// 所属预设（可选）
+    pub preset: Option<ProviderPreset>,
 }
 
 impl OpenAiConfig {
     /// 使用 API Key、基础地址和模型创建配置
-    pub fn with_base_url_and_model(api_key: String, base_url: String, model: String) -> Self {
+    pub fn with_base_url_and_model(
+        api_key: String,
+        base_url: String,
+        model: String,
+        preset: Option<ProviderPreset>,
+    ) -> Self {
         Self {
             api_key,
             model,
             base_url,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            preset,
         }
     }
 }
@@ -315,6 +344,7 @@ mod tests {
             "sk-test".to_string(),
             DEFAULT_OPENAI_BASE_URL.to_string(),
             DEFAULT_OPENAI_MODEL.to_string(),
+            None,
         );
         assert_eq!(config.api_key, "sk-test");
         assert_eq!(config.model, DEFAULT_OPENAI_MODEL);
@@ -328,6 +358,7 @@ mod tests {
             "sk-test".to_string(),
             DEFAULT_OPENAI_BASE_URL.to_string(),
             "gpt-4o".to_string(),
+            None,
         );
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.base_url, DEFAULT_OPENAI_BASE_URL);
@@ -339,6 +370,7 @@ mod tests {
             "sk-test".to_string(),
             DEFAULT_OPENAI_BASE_URL.to_string(),
             DEFAULT_OPENAI_MODEL.to_string(),
+            None,
         );
         let provider = OpenAiProvider::new(config.clone());
         assert_eq!(provider.config.model, config.model);

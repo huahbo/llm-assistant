@@ -304,7 +304,7 @@ impl AppState {
                         cloud_provider_name.as_deref(),
                         cloud_base_url.as_deref(),
                     );
-                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model);
+                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model, None);
                     // 注意：Hybrid 模式下的 OpenAiProvider 目前不进入 OnceLock，以支持 key 的实时更新
                     // 或者，我们可以改进 OnceLock 逻辑使其支持重置
                     Some(Arc::new(OpenAiProvider::new(config)) as Arc<dyn LlmProvider>)
@@ -410,7 +410,7 @@ impl AppState {
                         cloud_provider_name.as_deref(),
                         cloud_base_url.as_deref(),
                     );
-                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model);
+                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model, None);
                     (mode, cloud_provider_name, Some(config), None)
                 } else {
                     (mode, None, None, Some(self.get_ollama_provider()))
@@ -1909,6 +1909,34 @@ impl AppState {
 
         let wiki_dir = vault_path.join("wiki");
         let wiki_page_paths = collect_wiki_page_paths(&wiki_dir);
+
+        // BROKEN_WIKILINK 检测逻辑
+        // 1. 定义正则提取 wiki 链接路径
+        let link_regex = regex::Regex::new(r"\[\[([^|\]]+)(?:\|[^\]]+)?\]\]").unwrap();
+        
+        for page_path in &wiki_page_paths {
+            if let Ok(content) = fs::read_to_string(page_path) {
+                for caps in link_regex.captures_iter(&content) {
+                    let target_name = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                    if target_name.is_empty() { continue; }
+                    
+                    // 2. 检查页面是否存在
+                    let target_path = resolve_existing_wiki_page_path(vault_path, target_name);
+                    
+                    if target_path.is_err() {
+                        // 3. 报告检测到的 BROKEN_WIKILINK
+                        issues.push(LintIssue {
+                            code: "BROKEN_WIKILINK".to_string(),
+                            severity: "warning".to_string(),
+                            message: format!("页面存在失效的 wiki-link 链接：指向不存在的目标 {}", target_name),
+                            path: Some(page_path.clone()),
+                            suggestion: "请修复链接名称，或确认该页面已创建。".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
         let (broken_wiki_links, outbound_wiki_links, inbound_wiki_link_counts) =
             collect_wiki_link_graph(vault_path, &wiki_page_paths);
 

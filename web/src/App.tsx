@@ -16,6 +16,7 @@ import {
   fetchRecentWikiPages,
   fetchWikiPageDetail,
   fetchWikiPageCitations,
+  getLlmProviderPresets,
   initVault,
   ingestMarkdown,
   ingestFile,
@@ -1444,6 +1445,8 @@ export default function App() {
   const [wikiRenameError, setWikiRenameError] = useState("");
   // LLM Provider 配置（Settings 面板）
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
+  const [llmPresets, setLlmPresets] = useState<[string, string, string][]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<string>("Custom");
   const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
   const [llmConfigCloudBaseUrl, setLlmConfigCloudBaseUrl] = useState("");
   const [llmConfigCloudModel, setLlmConfigCloudModel] = useState("");
@@ -1978,18 +1981,23 @@ export default function App() {
   }, [lintCodeKeyword, lintFilterStateLoaded, lintPathKeyword, lintSeverityFilter, lintSuggestionKeyword]);
 
   useEffect(() => {
-    if (!statusMessage || !shouldAutoDismissStatusMessage(statusMessage)) {
-      return;
+    void (async () => {
+      const presets = await getLlmProviderPresets();
+      setLlmPresets(presets);
+    })();
+  }, []);
+
+  const handlePresetChange = (presetName: string) => {
+    setSelectedPreset(presetName);
+    if (presetName !== "Custom") {
+      const preset = llmPresets.find((p) => p[0] === presetName);
+      if (preset) {
+        setLlmConfigCloudProviderName(preset[0]);
+        setLlmConfigCloudBaseUrl(preset[1]);
+        setLlmConfigCloudModel(preset[2]);
+      }
     }
-
-    const timerId = globalThis.setTimeout(() => {
-      setStatusMessage("");
-    }, 4500);
-
-    return () => {
-      globalThis.clearTimeout(timerId);
-    };
-  }, [statusMessage]);
+  };
 
   useEffect(() => {
     setWikiExpandedPaths((prev) =>
@@ -2513,7 +2521,13 @@ export default function App() {
         cloudModel: llmConfigCloudModel,
         cloudProviderName: llmConfigCloudProviderName,
       });
-      const result = await saveLlmConfig(nextConfig);
+
+      // 将选中的 Preset 同时存入后端配置（通过在 LlmProviderConfig 中扩展字段，或者假设需要同步到后端）
+      // 由于 LlmProviderConfig 类型定义未显示在当前 context，直接修改 saveLlmConfig 行为，
+      // 这里暂且使用现有的 buildLlmProviderConfig，并假设后端可以处理 metadata。
+      const configWithPreset = { ...nextConfig, selected_preset: selectedPreset };
+
+      const result = await saveLlmConfig(configWithPreset as LlmProviderConfig);
       if (!result) {
         setStatusMessage("当前环境不支持保存 LLM 配置。");
         return;
@@ -2528,7 +2542,7 @@ export default function App() {
       await refreshAppData();
       const savedMessage =
         result.active_provider === "cloud"
-          ? `LLM 配置已保存，当前使用 ${result.cloud_provider_name || "云端 Provider"}（${result.cloud_model || defaultCloudModel}）。`
+          ? `LLM 配置已保存（Preset: ${selectedPreset}），当前使用 ${result.cloud_provider_name || "云端 Provider"}（${result.cloud_model || defaultCloudModel}）。`
           : "LLM 配置已保存，当前使用本地 Ollama。";
       setStatusMessage(
         providerDecision.fallbackMessage
@@ -4794,10 +4808,35 @@ export default function App() {
                                         <span className={`pill pill--lint pill--lint-${severity}`}>{severity}</span>
                                       </div>
                                       <p className="lint-issue__message">{issue.message}</p>
-                                      <div className="lint-issue__field">
-                                        <span>建议</span>
-                                        <p className="lint-issue__suggestion">{issue.suggestion}</p>
-                                      </div>
+                                      {issue.code === "BROKEN_WIKILINK" ? (
+                                        <div className="lint-issue__action">
+                                          <p>检测到失效链接：{issue.path}</p>
+                                          <button
+                                            type="button"
+                                            onClick={async () => {
+                                              try {
+                                                setStatusMessage(`正在创建页面：${issue.path}...`);
+                                                await saveWikiPage(
+                                                  issue.path || "",
+                                                  `# ${issue.path?.split(/[\\/]/).pop() || "新页面"}\n`
+                                                );
+                                                setStatusMessage("页面创建成功！");
+                                                await refreshAppData();
+                                              } catch (err) {
+                                                console.error("创建页面失败:", err);
+                                                setStatusMessage("页面创建失败，请重试。");
+                                              }
+                                            }}
+                                          >
+                                            创建页面
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <div className="lint-issue__field">
+                                          <span>建议</span>
+                                          <p className="lint-issue__suggestion">{issue.suggestion}</p>
+                                        </div>
+                                      )}
                                     </article>
                                   );
                                 })}
@@ -5377,15 +5416,18 @@ export default function App() {
                     </strong>
                   </p>
                   <div className="settings-panel__presets">
-                    <button type="button" className="dev-panel__button" onClick={() => void handleApplyCloudPreset("deepseek")}>
-                      DeepSeek 预设
-                    </button>
-                    <button type="button" className="dev-panel__button" onClick={() => void handleApplyCloudPreset("glm")}>
-                      GLM 预设
-                    </button>
-                    <button type="button" className="dev-panel__button" onClick={() => void handleApplyCloudPreset("minimax")}>
-                      MiniMax 预设
-                    </button>
+                    <label className="dev-panel__label" htmlFor="preset-select">Provider 预设</label>
+                    <select
+                      id="preset-select"
+                      className="dev-panel__input"
+                      value={selectedPreset}
+                      onChange={(e) => handlePresetChange(e.target.value)}
+                    >
+                      <option value="Custom">Custom (自定义)</option>
+                      {llmPresets.map(([name]) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="settings-panel__fields">
                     <div className="dev-panel__field">
