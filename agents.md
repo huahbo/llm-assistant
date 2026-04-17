@@ -134,7 +134,7 @@
 - 在用户手动验证前，不将功能标记为"最终完成"；需要等待用户回传验证结果。
 - 每轮记录中必须包含：自动化测试结果 + 用户侧 PowerShell 验证命令。
 
-## 16) 多 Agent 交接规范（Claude Code / Codex 兼容）
+## 16) 多 Agent 交接规范（Claude Code / Codex / Gemini 三方协作）
 
 ### 16.1 代码风格一致性
 - Rust: 遵循 `cargo fmt` 和 `cargo clippy` 默认规则。
@@ -196,7 +196,7 @@
 
 > 本节由每轮结束的主控 Agent 维护，是下一轮开发的起点。
 
-### 18.1 已完成（截至 2026-04-15）
+### 18.1 已完成（截至 2026-04-17）
 
 | 优先级 | 功能 | 状态 |
 |--------|------|------|
@@ -246,29 +246,43 @@
 | P17-A | Wiki 标签/分类筛选（按 frontmatter entities 聚合 tag chips） | ✅ `state.rs` + `App.tsx` + `styles.css` |
 | P17-B | Vault 文件树浏览（左侧树形层级 + 点击打开页面 + 折叠目录） | ✅ `App.tsx` + `styles.css` + `app-utils.test.ts`（110 测试） |
 | P18-1 | Ask 伪流式对话（后端分片 emit + 前端聊天流增量渲染） | ✅ `state.rs` + `App.tsx` + `styles.css` + `app-utils.test.ts`（112 测试） |
+| P18-2 | Provider 级真流式单轮（Ollama `/api/generate stream=true` + OpenAI SSE `stream=true`，`complete_stream` trait + fallback） | ✅ `llm/provider.rs` + `llm/ollama.rs` + `llm/openai.rs` + `state.rs`（89 Rust / 112 前端；**Gemini** 实施，2026-04-17 Windows 验证通过） |
+| P18-3 | 真流式多轮会话（in-memory session 历史 + 软取消 + 新对话按钮；`query_ask_session` / `cancel_ask_session` / `clear_ask_session` 命令） | ✅ `models.rs` + `state.rs` + `commands.rs` + `main.rs` + `tauri-client.ts` + `App.tsx` + `styles.css`（91 Rust / 112 前端，2026-04-17） |
+| P18-UI | Ask 面板 Chat-first UI 重构（底部固定输入栏 + 消息气泡 + Citations 折叠 toggle + 元信息 pills + 保存到 Wiki per-message + ⚙ 高级设置折叠 + auto-scroll + Enter 发送） | ✅ `App.tsx` + `styles.css`（112 前端，2026-04-17） |
+| P19-1 | Ask 历史管理增强（时间显示 + 关键词过滤 + 清空入口） | ✅ `db.rs` + `state.rs` + `commands.rs` + `main.rs` + `tauri-client.ts` + `App.tsx` + `styles.css` + `app-utils.test.ts`（118 前端；Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
+| P20-1 后端 | Outbox 事件流基础（`wiki_outbox` + 导出/ack 命令 + 关键路径事件写入） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs`（Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
+| P20-2 后端 | Wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）+ patch preview/apply 最小可用 | ✅ `state.rs`（新增 2 条 Rust 单测；待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 
 ### 18.2 下一轮待开发（TODO）
 
-**P18：Ask 流式对话（按 1 → 2 → 3 顺序推进）**
-- 阶段 2（真流式单轮）：
-  - Provider 抽象层新增 stream 能力（Ollama 流式 + OpenAI-compatible SSE）。
-  - 新增流式命令与事件协议（建议 `start/chunk/done/error`）。
-  - 验收：单轮问答全链路真流式，Strict Local/Hybrid 模式策略不回归。
-- 阶段 3（真流式多轮会话）：
-  - 新增 `session_id`、历史上下文、取消生成、重试。
-  - Ask 面板升级为多轮会话 UI（保留证据引用与保存到 Wiki 能力）。
-  - 验收：会话状态可恢复、日志可追踪、任务状态机与现有契约一致。
+**P19：遗留 UX 增强（可并行于 P20）**
+- ~~P19-1 Ask 历史管理增强（时间显示/清空入口/按关键词过滤）~~ ✅ 已完成（Codex 2026-04-17）
+- P19-2 Wiki 文件树增强（按目录批量折叠/展开、当前页自动定位）
+- P19-3 标签维度增强（多标签交集筛选 + 标签计数）
 
-**P19：候选方向（流式完成后）**
-- Ask 历史管理增强（时间显示/清空入口/按关键词过滤）
-- Wiki 文件树增强（按目录批量折叠/展开、当前页自动定位）
-- 标签维度增强（多标签交集筛选 + 标签计数）
+**P20：功能对标 external/llm-wiki-main（优先级提升）**
+- 对标参考（功能层，不绑定实现）：
+  - `E:\llm-wiki\external\article.txt`
+  - `E:\llm-wiki\external\llm-wiki-main`
+  - WSL 路径：`/mnt/e/llm-wiki/external/article.txt`、`/mnt/e/llm-wiki/external/llm-wiki-main`
+- P20-0 调研闸门（§10 必做）：先提交 MCP/skills/workflow 候选清单、理由与取舍，待用户确认后安装/启用。
+- ~~P20-1 事件流能力：新增可消费 outbox（offset 导出 + ack），覆盖 ingest/query/lint/页面变更关键事件。~~ ✅ 已完成后端基础（Codex 2026-04-17，待 Windows cargo 复核）
+- ~~P20-2 Wiki 语义健康：新增 wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）与补丁建议。~~ ✅ 后端已完成（Codex 2026-04-17，待 Windows cargo 复核）
+- ~~P20-3 Query 融合召回：FTS5 BM25 + 链接扩展 + Citation 热度，RRF 纯函数融合。~~ ✅ 完成（Claude Code 2026-04-17，99 Rust / 118 前端）
+- ~~P20-4a 页面 stale 标记：frontmatter `stale` 字段 + lint `STALE_PAGE` 规则 + wiki 详情页横幅 + 标记/取消按钮。~~ ✅ 完成（Claude Code 2026-04-17，101 Rust / 118 前端）
+- ~~P20-4b 完整 Claim 模型~~ 暂缓，等知识积累后再评估。
 
-**Claude Code 入手点（下轮开始先做）**
-1. 在 Windows PowerShell 先复核基线：`cargo check`、`cargo test`、`npm run typecheck`、`npm run test -- --run`、`npm run build`。
-2. 进入 P18 阶段 2（真流式单轮）并单独收口；每阶段结束后先写实施记录并等待用户确认，再进入下一阶段。
-3. 若 Rust 复核失败，先回溯 `ask_history` 与 `query` 相关改动（`db.rs`/`state.rs`/`commands.rs`）再推进流式。
-4. 周额度低时优先“阶段内最小可用 + 验证 + 文档收口”，不要跨阶段并行铺开。
+~~**P21：知识图谱可视化**~~ ✅ 完成（Claude Code 2026-04-17，102 Rust / 118 前端）
+- `react-force-graph-2d`（Canvas，lazy-loaded，Tauri WebView2 兼容）
+- 后端：`get_knowledge_graph()` 命令，nodes = wiki_pages，links = citations（去重）
+- 前端：新”图谱”模块，`ForceGraph2D` + `groupColor()` + 节点点击跳转详情 + resize 响应
+
+**Claude Code / Gemini 入手点（下轮开始先做）**
+1. 基线已复核（2026-04-17 P21）：`cargo test` 102/102，`npm test` 118/118，`typecheck` 零错误，`build` 通过。
+2. P20/P21 全部完成。下一步：P19-2（文件树增强）或 P19-3（多标签筛选），或用户指定新功能。
+3. 每轮必须按 §14 并行规则拆分子任务（至少前端/后端两条），并在记录中写明文件所有权。
+4. 每轮结束必须更新 `docs/实施过程记录.md` 与 `agents.md §18`；三方交接仅以这两处为准。
+5. 对标结论强调”功能优先、实现第二”：允许本项目使用不同工程路径，只要满足 A+C 架构与 Strict Local 约束。
 
 ### 18.3 当前代码快照
 
@@ -279,27 +293,29 @@ src-tauri/src/
     provider.rs     # LlmProvider trait, LlmError
     ollama.rs       # OllamaProvider (health_check, complete, summarize)
     openai.rs       # OpenAiProvider (OpenAI-compatible Chat Completions API, Hybrid 模式)
-  commands.rs       # 所有 Tauri 命令（含 ingest_file/rename/delete/wiki 保存、save/get_ask_history）
-  db.rs             # SQLite 操作（含 ask_history 去重迁移、容量上限裁剪）
+  commands.rs       # 所有 Tauri 命令（含 ingest_file/rename/delete/wiki 保存、save/get/clear_ask_history）
+  db.rs             # SQLite 操作（含 ask_history 去重迁移、容量上限裁剪、清空）
   main.rs           # Tauri app 入口（含 setup hook 注入 AppHandle）
   models.rs         # 全部数据模型（AppConfig 含 cloud_* 字段并兼容 openai_* 旧字段，LlmProviderConfig）
-  state.rs          # AppState 核心逻辑（含 ask_history 读写、provider 路由、多格式 ingest_file + OCR provider 回退）
+  state.rs          # AppState 核心逻辑（含 ask_history 读写/清空、provider 路由、多格式 ingest_file + OCR provider 回退）
   vault.rs          # 文件系统操作（含 append_see_also_link）
 
 web/src/
-  App.tsx           # 主界面（含 Ask 伪流式聊天渲染、历史回退、Wiki 标签筛选、Vault 文件树浏览）
-  tauri-client.ts   # Tauri invoke 封装（含 pickFiles/pickFolder/saveAskHistory/fetchAskHistory）
+  App.tsx           # 主界面（含 Ask 多轮聊天、历史筛选/清空、Wiki 标签筛选、Vault 文件树浏览）
+  tauri-client.ts   # Tauri invoke 封装（含 pickFiles/pickFolder/save/fetch/clearAskHistory）
   types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（112 个）
+  app-utils.test.ts # 前端单元测试（118 个）
 ```
 
 ### 18.4 验证基线
 
-- `cargo check`（src-tauri/）：**待 Windows 复核（本轮 WSL 环境缺少 cargo，2026-04-16）**
-- `cargo test`（src-tauri/）：**待 Windows 复核（本轮 WSL 环境缺少 cargo，2026-04-16）**
-- `npm run test -- --run`（web/）：**112 通过，0 失败（2026-04-16 P18-1）**
-- `npm run typecheck`（web/）：**零错误（2026-04-16 P18-1）**
-- `npm run build`（web/）：**通过（2026-04-16 P18-1）**
+- `cargo check`（src-tauri/）：**通过（2026-04-17 P18-3）**；P19-1 后端新增命令待 Windows 复核
+- `cargo test`（src-tauri/）：**91 通过，0 失败（2026-04-17 P18-3）**；P19-1 后端新增测试待 Windows 复核
+- `cargo check`（src-tauri/，2026-04-17 P20-1 热修复复核）：用户在 Windows 报告 `E0063`（`ollama_model/ollama_base_url` 缺失）后已修复代码，**待用户再次复核**
+- `cargo test`（src-tauri/）：**102 通过，0 失败（2026-04-17 P21）**
+- `npm run test -- --run`（web/）：**118 通过，0 失败（2026-04-17 P21）**
+- `npm run typecheck`（web/）：**零错误（2026-04-17 P21）**
+- `npm run build`（web/）：**通过（2026-04-17 P21，含 react-force-graph-2d 懒加载 chunk 62KB gzipped）**
 
 ### 18.5 关键约束提醒
 
@@ -308,3 +324,12 @@ web/src/
 - **`lint_report_full_future` / `llm_status_future` 模式**：先同步提取数据，`drop(state)` 后再 await。
 - **文件写入幂等**：`append_see_also_link` 先检查链接是否已存在再写入。
 - **API Key 禁止入仓**：`.claude/`、`.codex/`、`.env` 均在 §16.5 禁止提交。
+
+### 18.6 多 Agent 运行环境说明（交接必读）
+
+- **Codex（本轮）运行环境**：WSL/Linux（`/mnt/e/llm-wiki`），当前会话 `cargo` 不可用（`cargo: command not found`），因此 Rust 编译/测试不能在本端确认。
+- **Claude Code / Gemini 运行环境**：Windows（PowerShell 原生），可执行完整 Rust/前端验证链路。
+- **交接规则**：
+  1. Codex 提交 Rust 相关改动时，必须在记录中明确标注“待 Windows cargo 复核”。
+  2. Claude Code 或 Gemini 接手后，先在 Windows 执行：`cargo check`、`cargo test`、`npm run typecheck`、`npm run test -- --run`、`npm run build`。
+  3. 仅当 Windows 验证回传通过后，相关轮次可标记为最终收口完成。

@@ -55,6 +55,17 @@ struct GenerateResponse {
     done: bool,
 }
 
+/// Ollama 流式生成响应体（按行 JSON）
+#[derive(Debug, Deserialize)]
+struct GenerateStreamResponse {
+    /// 本次增量文本
+    #[serde(default)]
+    response: String,
+    /// 是否结束
+    #[serde(default)]
+    done: bool,
+}
+
 /// Ollama /api/tags 响应体（用于健康检查）
 #[derive(Debug, Deserialize)]
 struct TagsResponse {
@@ -131,6 +142,25 @@ impl OllamaProvider {
         Ok(exists)
     }
 
+    /// 列出 Ollama 服务上可用的模型名称列表
+    pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        let url = format!("{}/api/tags", self.config.base_url);
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(Self::map_reqwest_error)?;
+        if !response.status().is_success() {
+            return Err(LlmError::ConnectionFailed("无法获取模型列表".to_string()));
+        }
+        let tags: TagsResponse = response
+            .json()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(format!("解析响应失败: {}", e)))?;
+        Ok(tags.models.into_iter().map(|m| m.name).collect())
+    }
+
     /// 将 reqwest 错误映射为 LlmError
     fn map_reqwest_error(e: reqwest::Error) -> LlmError {
         if e.is_timeout() {
@@ -145,6 +175,14 @@ impl OllamaProvider {
 
 #[async_trait]
 impl LlmProvider for OllamaProvider {
+    fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    fn base_url(&self) -> &str {
+        &self.config.base_url
+    }
+
     async fn summarize(&self, content: &str, max_tokens: usize) -> Result<String, LlmError> {
         // 构造摘要专用 prompt
         let prompt = format!(
@@ -198,6 +236,79 @@ impl LlmProvider for OllamaProvider {
             .map_err(|e| LlmError::InvalidResponse(format!("解析响应失败: {}", e)))?;
 
         Ok(generate_response.response)
+    }
+
+    async fn complete_stream(
+        &self,
+        prompt: &str,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String, LlmError> {
+        let url = format!("{}/api/generate", self.config.base_url);
+        let request_body = GenerateRequest {
+            model: &self.config.model,
+            prompt,
+            stream: true,
+        };
+
+        let mut response = self
+            .client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(Self::map_reqwest_error)?;
+
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(LlmError::ModelNotFound(self.config.model.clone()));
+        }
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            if error_text.contains("model") && error_text.contains("not found") {
+                return Err(LlmError::ModelNotFound(self.config.model.clone()));
+            }
+            return Err(LlmError::InvalidResponse(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let mut full_text = String::new();
+        let mut pending = String::new();
+
+        while let Some(chunk) = response.chunk().await.map_err(Self::map_reqwest_error)? {
+            pending.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(newline_pos) = pending.find('\n') {
+                let line = pending[..newline_pos].trim().to_string();
+                pending.drain(..=newline_pos);
+                if line.is_empty() {
+                    continue;
+                }
+
+                let parsed: GenerateStreamResponse = serde_json::from_str(&line)
+                    .map_err(|e| LlmError::InvalidResponse(format!("解析流式响应失败: {}", e)))?;
+                if !parsed.response.is_empty() {
+                    full_text.push_str(&parsed.response);
+                    on_chunk(parsed.response);
+                }
+                if parsed.done {
+                    return Ok(full_text);
+                }
+            }
+        }
+
+        let tail = pending.trim();
+        if !tail.is_empty() {
+            let parsed: GenerateStreamResponse = serde_json::from_str(tail)
+                .map_err(|e| LlmError::InvalidResponse(format!("解析流式响应失败: {}", e)))?;
+            if !parsed.response.is_empty() {
+                full_text.push_str(&parsed.response);
+                on_chunk(parsed.response);
+            }
+        }
+
+        Ok(full_text)
     }
 
     async fn health_check(&self) -> Result<bool, LlmError> {

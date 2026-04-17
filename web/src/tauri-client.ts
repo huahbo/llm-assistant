@@ -4,6 +4,7 @@ import type {
   BackendAppMode,
   DefaultPaths,
   IngestResult,
+  KnowledgeGraphData,
   LlmProviderConfig,
   LlmStatus,
   LintReport,
@@ -918,6 +919,59 @@ export async function queryAskWithOptions(
   }
 }
 
+/** 多轮会话问答（携带 session_id，后端维护历史上下文） */
+export async function queryAskSession(
+  sessionId: string,
+  question: string,
+  options?: QueryAskOptions,
+): Promise<QueryAnswerResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await invoke<QueryAnswerResult>("query_ask_session", {
+      sessionId,
+      question,
+      options: options ?? null,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** 取消正在进行的会话查询 */
+export async function cancelAskSession(sessionId: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    await invoke("cancel_ask_session", { sessionId });
+  } catch {
+    // 忽略错误
+  }
+}
+
+/** 清空会话历史（开启新对话） */
+export async function clearAskSession(sessionId: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    await invoke("clear_ask_session", { sessionId });
+  } catch {
+    // 忽略错误
+  }
+}
+
 export async function setQueryTopK(topK: number): Promise<QuerySettings | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -989,6 +1043,17 @@ export async function fetchAskHistory(limit = 30): Promise<AskHistoryItem[] | nu
     return await invoke<AskHistoryItem[]>("get_ask_history", { limit });
   } catch {
     return null;
+  }
+}
+
+export async function clearAskHistory(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke<number>("clear_ask_history");
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1074,3 +1139,20 @@ export const saveOcrConfig = async (provider: string | null): Promise<void> => {
 
 /** 构造 set_ocr_config 参数（用于测试） */
 export const createSetOcrConfigArgs = (provider: string | null) => ({ provider });
+
+/** 设置或取消 Wiki 页面的 stale 标记 */
+export async function markPageStale(
+  pagePath: string,
+  stale: boolean,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke<void>("mark_page_stale", { pagePath, stale });
+}
+
+/** 获取知识图谱数据（节点 = wiki 页面，边 = 引用关系） */
+export async function getKnowledgeGraph(): Promise<KnowledgeGraphData | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke<KnowledgeGraphData>("get_knowledge_graph");
+}

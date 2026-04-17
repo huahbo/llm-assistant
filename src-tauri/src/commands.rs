@@ -1,11 +1,11 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, DefaultPaths, IngestResult, LintPatchApplyInput, LintPatchApplyResult,
-    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
-    LlmStatus, LogEntry, ModeChangeResult, QueryAnswerResult, QueryAskOptions, QuerySettings,
-    SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem,
-    WikiPageDetail, WikiPageItem,
+    AppMode, AppOverview, DefaultPaths, IngestResult, KnowledgeGraphData, LintPatchApplyInput,
+    LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview,
+    LintReport, LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult,
+    OutboxEventItem, QueryAnswerResult, QueryAskOptions, QuerySettings, SaveQueryAnswerInput,
+    SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -80,9 +80,7 @@ pub fn get_wiki_page_citations(
 /// 返回当前 lint 报告（规则检查 + LLM 语义分析）。
 #[tauri::command]
 pub async fn run_lint(state: State<'_, AppState>) -> Result<LintReport, String> {
-    let future = state.lint_report_full_future();
-    drop(state);
-    Ok(future.await)
+    Ok(state.run_lint_with_outbox().await)
 }
 
 /// 预览 Lint 建议补丁。
@@ -310,4 +308,82 @@ pub fn get_ask_history(
     limit: Option<usize>,
 ) -> Result<Vec<crate::models::AskHistoryItem>, String> {
     state.get_ask_history_impl(limit.unwrap_or(30))
+}
+
+/// 清空 Ask 历史（返回删除条数）。
+#[tauri::command]
+pub fn clear_ask_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, String> {
+    state.clear_ask_history_impl()
+}
+
+/// 按 id 增量读取 outbox 事件。
+#[tauri::command]
+pub fn get_outbox_events(
+    state: tauri::State<'_, AppState>,
+    last_id: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<OutboxEventItem>, String> {
+    state.get_outbox_events_impl(last_id.unwrap_or(0), limit.unwrap_or(200))
+}
+
+/// 标记 outbox 事件已消费。
+#[tauri::command]
+pub fn ack_outbox_events(
+    state: tauri::State<'_, AppState>,
+    up_to_id: i64,
+    consumer_tag: String,
+) -> Result<OutboxAckResult, String> {
+    state.ack_outbox_events_impl(up_to_id, &consumer_tag)
+}
+
+/// 多轮会话问答（携带 session_id 和历史上下文）。
+#[tauri::command]
+pub async fn query_ask_session(
+    session_id: String,
+    question: String,
+    options: Option<QueryAskOptions>,
+    state: State<'_, AppState>,
+) -> Result<QueryAnswerResult, String> {
+    eprintln!("[query_ask_session] session={}, question={}", session_id, question);
+    state
+        .query_ask_session(session_id, question, options.unwrap_or_default())
+        .await
+}
+
+/// 取消正在进行的会话查询。
+#[tauri::command]
+pub fn cancel_ask_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.cancel_ask_session(session_id)
+}
+
+/// 清空会话历史（开启新对话）。
+#[tauri::command]
+pub fn clear_ask_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.clear_ask_session(session_id)
+}
+
+/// 设置或取消 Wiki 页面的 stale 标记。
+#[tauri::command]
+pub fn mark_page_stale(
+    page_path: String,
+    stale: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.set_page_stale(page_path, stale)
+}
+
+/// 获取知识图谱数据（节点 = wiki 页面，边 = 引用关系）。
+#[tauri::command]
+pub fn get_knowledge_graph(
+    state: State<'_, AppState>,
+) -> Result<KnowledgeGraphData, String> {
+    state.get_knowledge_graph_impl()
 }

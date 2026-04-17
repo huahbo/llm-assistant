@@ -128,6 +128,17 @@ pub struct AskHistoryRecord {
     pub created_at: String,
 }
 
+/// Outbox 事件记录。
+#[derive(Debug, Clone)]
+pub struct OutboxEventRecord {
+    pub id: i64,
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: String,
+    pub processed_at: Option<String>,
+    pub consumer_tag: Option<String>,
+}
+
 /// 确保元数据库与表结构存在。
 pub fn ensure_meta_db(db_path: &Path) -> Result<(), String> {
     let _ = get_connection(db_path)?;
@@ -891,6 +902,75 @@ pub fn search_fts_page_paths(
         .map_err(|err| format!("读取 FTS 查询结果失败: {}", err))
 }
 
+/// 查找与指定页面集合有引用关系的页面路径（双向：引用方 + 被引用方）。
+/// 用于 RRF 链接扩展路径。
+pub fn query_linked_page_paths(
+    db_path: &Path,
+    from_paths: &[String],
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    if from_paths.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    let mut result = std::collections::HashSet::new();
+
+    for path in from_paths {
+        // 正向：此页面引用的页面
+        let mut stmt = conn.prepare(
+            "SELECT cited_page_path FROM citations WHERE page_path = ?1 LIMIT ?2"
+        ).map_err(|e| format!("准备正向链接查询失败: {}", e))?;
+        let rows = stmt.query_map(params![path, limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("执行正向链接查询失败: {}", e))?;
+        for r in rows.flatten() { result.insert(r); }
+
+        // 反向：引用此页面的页面
+        let mut stmt = conn.prepare(
+            "SELECT page_path FROM citations WHERE cited_page_path = ?1 LIMIT ?2"
+        ).map_err(|e| format!("准备反向链接查询失败: {}", e))?;
+        let rows = stmt.query_map(params![path, limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("执行反向链接查询失败: {}", e))?;
+        for r in rows.flatten() { result.insert(r); }
+
+        if result.len() >= limit { break; }
+    }
+
+    // 去掉 from_paths 本身（避免循环引用降低 RRF 效果）
+    let from_set: std::collections::HashSet<&String> = from_paths.iter().collect();
+    Ok(result.into_iter()
+        .filter(|p| !from_set.contains(p))
+        .take(limit)
+        .collect())
+}
+
+/// 查找被引用次数最多的页面路径（Citation 热度排序）。
+/// 用于 RRF 热度路径。
+pub fn query_citation_popular_paths(
+    db_path: &Path,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT cited_page_path
+            FROM citations
+            GROUP BY cited_page_path
+            ORDER BY COUNT(*) DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|e| format!("准备 citation 热度查询失败: {}", e))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("执行 citation 热度查询失败: {}", e))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取 citation 热度结果失败: {}", e))
+}
+
 fn open_connection(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("创建数据库目录失败: {}", err))?;
@@ -964,11 +1044,26 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS wiki_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            processed_at TEXT,
+            consumer_tag TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_citations_page_path
             ON citations(page_path);
 
         CREATE INDEX IF NOT EXISTS idx_lint_patch_events_created_at
             ON lint_patch_events(created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_wiki_outbox_created_at
+            ON wiki_outbox(created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_wiki_outbox_processed_at
+            ON wiki_outbox(processed_at);
 
         CREATE TABLE IF NOT EXISTS ask_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1179,6 +1274,112 @@ pub fn list_ask_history(db_path: &Path, limit: usize) -> Result<Vec<AskHistoryRe
         .map_err(|err| format!("读取 ask_history 失败: {}", err))
 }
 
+/// 清空 Ask 历史，返回删除条数。
+pub fn clear_ask_history(db_path: &Path) -> Result<usize, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let affected = conn
+        .execute("DELETE FROM ask_history", [])
+        .map_err(|err| format!("清空 ask_history 失败: {}", err))?;
+    Ok(affected)
+}
+
+/// 追加一条 outbox 事件，返回事件 id。
+pub fn append_outbox_event(
+    db_path: &Path,
+    event_type: &str,
+    payload_json: &str,
+    created_at: &str,
+) -> Result<i64, String> {
+    let normalized_event_type = event_type.trim();
+    if normalized_event_type.is_empty() {
+        return Err("event_type 不能为空".to_string());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.execute(
+        r#"
+        INSERT INTO wiki_outbox (
+            event_type,
+            payload_json,
+            created_at
+        ) VALUES (?1, ?2, ?3)
+        "#,
+        params![normalized_event_type, payload_json, created_at],
+    )
+    .map_err(|err| format!("写入 wiki_outbox 失败: {}", err))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 按事件 id 增量读取 outbox。
+pub fn list_outbox_events_from_id(
+    db_path: &Path,
+    last_id: i64,
+    limit: usize,
+) -> Result<Vec<OutboxEventRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, event_type, payload_json, created_at, processed_at, consumer_tag
+            FROM wiki_outbox
+            WHERE id > ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备查询 wiki_outbox 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![last_id, limit as i64], |row| {
+            Ok(OutboxEventRecord {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                payload_json: row.get(2)?,
+                created_at: row.get(3)?,
+                processed_at: row.get(4)?,
+                consumer_tag: row.get(5)?,
+            })
+        })
+        .map_err(|err| format!("查询 wiki_outbox 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 wiki_outbox 失败: {}", err))
+}
+
+/// 标记 outbox 事件已消费，返回本次 ack 数量。
+pub fn ack_outbox_events(
+    db_path: &Path,
+    up_to_id: i64,
+    consumer_tag: &str,
+    processed_at: &str,
+) -> Result<usize, String> {
+    let normalized_consumer_tag = consumer_tag.trim();
+    if normalized_consumer_tag.is_empty() {
+        return Err("consumer_tag 不能为空".to_string());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let affected = conn
+        .execute(
+            r#"
+            UPDATE wiki_outbox
+            SET processed_at = ?1,
+                consumer_tag = ?2
+            WHERE id <= ?3 AND processed_at IS NULL
+            "#,
+            params![processed_at, normalized_consumer_tag, up_to_id],
+        )
+        .map_err(|err| format!("更新 wiki_outbox ack 失败: {}", err))?;
+    Ok(affected)
+}
+
 fn build_fts_match_query(tokens: &[String]) -> Option<String> {
     let terms = tokens
         .iter()
@@ -1192,6 +1393,33 @@ fn build_fts_match_query(tokens: &[String]) -> Option<String> {
     } else {
         Some(terms.join(" OR "))
     }
+}
+
+/// 获取所有 Wiki 页面（用于知识图谱节点构建）。
+pub fn list_all_wiki_pages(db_path: &Path) -> Result<Vec<WikiPageRecord>, String> {
+    let conn = open_connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT title, path, summary, updated_at, 0.0 AS score
+            FROM wiki_pages
+            ORDER BY updated_at DESC
+            "#,
+        )
+        .map_err(|err| format!("准备查询所有页面失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(WikiPageRecord {
+                title: row.get(0)?,
+                path: row.get(1)?,
+                summary: row.get(2)?,
+                updated_at: row.get(3)?,
+                score: row.get::<_, f64>(4).unwrap_or(0.0),
+            })
+        })
+        .map_err(|err| format!("查询所有页面失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取所有页面结果失败: {}", err))
 }
 
 #[cfg(test)]
@@ -1423,6 +1651,56 @@ mod tests {
     }
 
     #[test]
+    fn outbox_append_export_and_ack_work() {
+        let dir = make_temp_dir("llm-wiki-db-outbox");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        let first_id = append_outbox_event(
+            &db_path,
+            "ingest_completed",
+            r#"{"wiki_path":"wiki/a.md"}"#,
+            "100",
+        )
+        .expect("写入第一条 outbox 失败");
+        let second_id = append_outbox_event(
+            &db_path,
+            "query_answered",
+            r#"{"question":"rust"}"#,
+            "200",
+        )
+        .expect("写入第二条 outbox 失败");
+        assert!(second_id > first_id);
+
+        let all = list_outbox_events_from_id(&db_path, 0, 20).expect("读取 outbox 全量失败");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].event_type, "ingest_completed");
+        assert_eq!(all[1].event_type, "query_answered");
+        assert!(all[0].processed_at.is_none());
+
+        let incremental =
+            list_outbox_events_from_id(&db_path, first_id, 20).expect("读取 outbox 增量失败");
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].id, second_id);
+
+        let acked = ack_outbox_events(&db_path, first_id, "test-consumer", "300")
+            .expect("执行 outbox ack 失败");
+        assert_eq!(acked, 1);
+
+        let acked_again = ack_outbox_events(&db_path, first_id, "test-consumer", "301")
+            .expect("重复 outbox ack 失败");
+        assert_eq!(acked_again, 0);
+
+        let after_ack =
+            list_outbox_events_from_id(&db_path, 0, 20).expect("读取 ack 后 outbox 失败");
+        assert_eq!(after_ack.len(), 2);
+        assert_eq!(after_ack[0].processed_at.as_deref(), Some("300"));
+        assert_eq!(after_ack[0].consumer_tag.as_deref(), Some("test-consumer"));
+        assert!(after_ack[1].processed_at.is_none());
+    }
+
+    #[test]
     fn delete_wiki_page_from_db_removes_all_related_records() {
         let dir = make_temp_dir("llm-wiki-db-delete-wiki-page");
         let _guard = TempDirGuard(dir.clone());
@@ -1643,5 +1921,22 @@ mod tests {
         assert_eq!(rows.len(), ASK_HISTORY_MAX_ENTRIES);
         assert_eq!(rows[0].question, format!("question-{}", total - 1));
         assert_eq!(rows.last().map(|r| r.question.as_str()), Some("question-15"));
+    }
+
+    #[test]
+    fn clear_ask_history_removes_all_rows() {
+        let dir = make_temp_dir("llm-wiki-db-ask-history-clear");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        save_ask_history(&db_path, "问题 1", "100").expect("写入历史失败");
+        save_ask_history(&db_path, "问题 2", "200").expect("写入历史失败");
+
+        let removed = clear_ask_history(&db_path).expect("清空历史失败");
+        assert_eq!(removed, 2);
+
+        let rows = list_ask_history(&db_path, 10).expect("读取 Ask 历史失败");
+        assert!(rows.is_empty());
     }
 }

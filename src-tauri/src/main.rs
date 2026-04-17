@@ -4,6 +4,7 @@ mod commands;
 mod db;
 mod llm;
 mod models;
+mod search;
 mod state;
 mod vault;
 
@@ -52,7 +53,15 @@ fn main() {
             commands::rename_wiki_page,
             commands::delete_wiki_page,
             commands::save_ask_history,
-            commands::get_ask_history
+            commands::get_ask_history,
+            commands::clear_ask_history,
+            commands::get_outbox_events,
+            commands::ack_outbox_events,
+            commands::query_ask_session,
+            commands::cancel_ask_session,
+            commands::clear_ask_session,
+            commands::mark_page_stale,
+            commands::get_knowledge_graph
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

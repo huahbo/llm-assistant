@@ -63,6 +63,12 @@ pub struct AppConfig {
     /// 默认 OCR provider（tesseract / paddle），未设置时回退 tesseract
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_ocr_provider: Option<String>,
+    /// 本地 Ollama 模型名（手动指定，覆盖默认值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_model: Option<String>,
+    /// 本地 Ollama Base URL（手动指定，覆盖默认值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_base_url: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -77,6 +83,8 @@ impl Default for AppConfig {
             cloud_provider_name: None,
             active_provider: None,
             default_ocr_provider: None,
+            ollama_model: None,
+            ollama_base_url: None,
         }
     }
 }
@@ -99,6 +107,12 @@ pub struct LlmProviderConfig {
     /// 当前活跃的 provider 类型（"cloud" / "ollama"）
     #[serde(default)]
     pub active_provider: String,
+    /// 本地 Ollama 模型名（手动指定）
+    #[serde(default)]
+    pub ollama_model: String,
+    /// 本地 Ollama Base URL（手动指定）
+    #[serde(default)]
+    pub ollama_base_url: String,
 }
 
 /// 应用总览。
@@ -415,6 +429,35 @@ pub struct AskHistoryItem {
     pub created_at: String,
 }
 
+/// Outbox 事件项（增量导出与消费确认用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboxEventItem {
+    pub id: i64,
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumer_tag: Option<String>,
+}
+
+/// Outbox ack 结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboxAckResult {
+    pub acked: usize,
+    pub up_to_id: i64,
+    pub consumer_tag: String,
+}
+
+/// Ask 会话单轮记录（多轮对话用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskTurn {
+    /// "user" 或 "assistant"
+    pub role: String,
+    pub content: String,
+}
+
 /// Wiki 页面详情。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WikiPageDetail {
@@ -440,6 +483,9 @@ pub struct WikiPageFrontmatter {
     pub imported_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<String>,
+    /// 是否已过时（由用户或 lint 标记）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
 }
 
 /// Wiki 页面引用项。
@@ -457,4 +503,31 @@ pub struct WikiPageCitationItem {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct IngestUrlInput {
     pub url: String,
+}
+
+/// 知识图谱节点（对应一个 Wiki 页面）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeGraphNode {
+    /// 节点唯一 ID（页面绝对路径）
+    pub id: String,
+    /// 显示标签（页面标题）
+    pub label: String,
+    /// 分组标识（第一个 entity 标签，或空字符串）
+    pub group: String,
+}
+
+/// 知识图谱边（页面间引用关系）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeGraphLink {
+    /// 来源页面路径
+    pub source: String,
+    /// 目标页面路径
+    pub target: String,
+}
+
+/// 知识图谱完整数据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeGraphData {
+    pub nodes: Vec<KnowledgeGraphNode>,
+    pub links: Vec<KnowledgeGraphLink>,
 }

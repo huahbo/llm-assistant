@@ -39,6 +39,12 @@ import {
   mergeQueryHistory,
   readQueryHistoryFromStorage,
   writeQueryHistoryToStorage,
+  normalizeQueryHistoryItems,
+  mergeQueryHistoryItems,
+  filterQueryHistoryItems,
+  formatAskHistoryCreatedAt,
+  readQueryHistoryItemsFromStorage,
+  writeQueryHistoryItemsToStorage,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -1596,5 +1602,70 @@ describe("查询历史 dedup 与存储 key", () => {
   it("readQueryHistoryFromStorage 在非法 JSON 时安全回退为空", () => {
     installLocalStorageMock({ [QUERY_HISTORY_STORAGE_KEY]: "{invalid-json" });
     expect(readQueryHistoryFromStorage()).toEqual([]);
+  });
+
+  it("normalizeQueryHistoryItems 会按 question 去重并保留 created_at", () => {
+    const source = [
+      { id: 1, question: "  问题A ", created_at: "100" },
+      { id: 2, question: "问题B", created_at: "200" },
+      { id: 3, question: "问题A", created_at: "300" },
+    ];
+    expect(normalizeQueryHistoryItems(source, 10)).toEqual([
+      { id: 1, question: "问题A", created_at: "100" },
+      { id: 2, question: "问题B", created_at: "200" },
+    ]);
+  });
+
+  it("mergeQueryHistoryItems 会将新问题插入头部并去重", () => {
+    const prev = [
+      { id: 1, question: "问题A", created_at: "100" },
+      { id: 2, question: "问题B", created_at: "200" },
+    ];
+    const next = mergeQueryHistoryItems(prev, "问题B", "300", QUERY_HISTORY_MAX);
+    expect(next[0].question).toBe("问题B");
+    expect(next[0].created_at).toBe("300");
+    expect(next.map((item) => item.question)).toEqual(["问题B", "问题A"]);
+  });
+
+  it("read/writeQueryHistoryItemsToStorage 可读写对象历史", () => {
+    installLocalStorageMock();
+    writeQueryHistoryItemsToStorage(
+      [
+        { id: 1, question: "问题A", created_at: "100" },
+        { id: 2, question: "问题B", created_at: "200" },
+      ],
+      QUERY_HISTORY_MAX,
+    );
+    expect(readQueryHistoryItemsFromStorage()).toEqual([
+      { id: 1, question: "问题A", created_at: "100" },
+      { id: 2, question: "问题B", created_at: "200" },
+    ]);
+  });
+
+  it("readQueryHistoryItemsFromStorage 兼容旧版字符串数组", () => {
+    installLocalStorageMock({
+      [QUERY_HISTORY_STORAGE_KEY]: JSON.stringify(["问题A", "问题B"]),
+    });
+    expect(readQueryHistoryItemsFromStorage()).toEqual([
+      { id: 1, question: "问题A", created_at: "" },
+      { id: 2, question: "问题B", created_at: "" },
+    ]);
+  });
+
+  it("filterQueryHistoryItems 支持关键词筛选", () => {
+    const source = [
+      { id: 1, question: "Rust FTS5 是什么", created_at: "100" },
+      { id: 2, question: "SQLite 索引怎么建", created_at: "200" },
+    ];
+    expect(filterQueryHistoryItems(source, "rust")).toEqual([
+      { id: 1, question: "Rust FTS5 是什么", created_at: "100" },
+    ]);
+    expect(filterQueryHistoryItems(source, "  ")).toEqual(source);
+  });
+
+  it("formatAskHistoryCreatedAt 在有效时间戳时返回紧凑格式", () => {
+    expect(formatAskHistoryCreatedAt("1713300000")).toMatch(/^\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(formatAskHistoryCreatedAt("")).toBe("");
+    expect(formatAskHistoryCreatedAt("invalid")).toBe("");
   });
 });

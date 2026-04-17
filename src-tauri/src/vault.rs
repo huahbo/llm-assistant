@@ -40,6 +40,8 @@ pub fn initialize_vault(vault_path: &Path, mode: AppMode) -> Result<VaultInitRes
     let config_content = serde_json::to_string_pretty(&AppConfig {
         mode,
         vault_path: Some(vault_path.to_string_lossy().to_string()),
+        ollama_model: None,
+        ollama_base_url: None,
         query_top_k: Some(3),
         cloud_api_key: None,
         cloud_base_url: None,

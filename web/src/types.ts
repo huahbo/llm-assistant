@@ -7,7 +7,7 @@ export interface ModeOption {
   badge: string;
 }
 
-export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "settings";
+export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings";
 
 export interface ModuleItem {
   id: ModuleId;
@@ -129,6 +129,12 @@ export interface AskHistoryItem {
   created_at: string;
 }
 
+/** Ask 会话单轮记录 */
+export interface AskTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface WikiPageItem {
   title: string;
   path: string;
@@ -156,6 +162,7 @@ export interface WikiPageFrontmatter {
   raw?: string | null;
   imported_at?: string | null;
   entities?: string[];
+  stale?: boolean | null;
 }
 
 export interface WikiPageCitation {
@@ -264,4 +271,23 @@ export interface LlmProviderConfig {
   cloud_provider_name: string;
   /** 当前活跃的 provider 类型，"ollama" 或 "cloud" */
   active_provider: string;
+}
+
+export interface KnowledgeGraphNode {
+  id: string;       // 页面绝对路径
+  label: string;    // 页面标题
+  group: string;    // 分组标签（第一个 entity 或空字符串）
+  // react-force-graph-2d 会在运行时追加 x/y/vx/vy 等字段
+  x?: number;
+  y?: number;
+}
+
+export interface KnowledgeGraphLink {
+  source: string | KnowledgeGraphNode;
+  target: string | KnowledgeGraphNode;
+}
+
+export interface KnowledgeGraphData {
+  nodes: KnowledgeGraphNode[];
+  links: KnowledgeGraphLink[];
 }

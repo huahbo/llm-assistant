@@ -1,6 +1,8 @@
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+
+const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import {
   fetchAppOverview,
   fetchDefaultPaths,
@@ -22,7 +24,10 @@ import {
   isTauriRuntime,
   pickFiles,
   pickFolder,
-  queryAskWithOptions,
+  queryAskSession,
+  cancelAskSession,
+  clearAskHistory,
+  clearAskSession,
   runLint,
   applyLintPatch,
   applyLintPatchesBatch,
@@ -31,6 +36,8 @@ import {
   saveAskHistory,
   saveOcrConfig,
   deleteWikiPage,
+  getKnowledgeGraph,
+  markPageStale,
   renameWikiPage,
   saveWikiPage,
   searchWikiPages,
@@ -57,7 +64,10 @@ import {
 import type { LintSeverityFilter } from "./lint-utils";
 import type {
   AppOverview,
+  AskHistoryItem,
   BackendAppMode,
+  KnowledgeGraphData,
+  KnowledgeGraphNode,
   LlmProviderConfig,
   LlmStatus,
   LintIssue,
@@ -123,6 +133,7 @@ const searchStrategyLabels: Record<string, string> = {
   fts: "FTS 检索",
   scan: "回退扫描",
   empty: "空结果",
+  rrf: "RRF 融合检索",
 };
 
 const wikiSortModeLabels: Record<WikiSortMode, string> = {
@@ -565,6 +576,10 @@ export const mergeQueryHistory = (
 ): string[] => normalizeQueryHistory([nextQuestion, ...previous], max);
 
 export const readQueryHistoryFromStorage = (): string[] => {
+  return readQueryHistoryItemsFromStorage().map((item) => item.question);
+};
+
+export const readQueryHistoryItemsFromStorage = (): AskHistoryItem[] => {
   try {
     const storage = globalThis.localStorage;
     if (!storage) {
@@ -578,7 +593,31 @@ export const readQueryHistoryFromStorage = (): string[] => {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    return normalizeQueryHistory(parsed.filter((item): item is string => typeof item === "string"));
+    const items = parsed
+      .map((item, index) => {
+        if (typeof item === "string") {
+          return {
+            id: index + 1,
+            question: item,
+            created_at: "",
+          } as AskHistoryItem;
+        }
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        const record = item as Partial<AskHistoryItem>;
+        if (typeof record.question !== "string") {
+          return null;
+        }
+        return {
+          id: typeof record.id === "number" ? record.id : index + 1,
+          question: record.question,
+          created_at: typeof record.created_at === "string" ? record.created_at : "",
+        } as AskHistoryItem;
+      })
+      .filter((item): item is AskHistoryItem => Boolean(item));
+
+    return normalizeQueryHistoryItems(items);
   } catch {
     return [];
   }
@@ -588,15 +627,115 @@ export const writeQueryHistoryToStorage = (
   history: string[],
   max = QUERY_HISTORY_MAX,
 ): void => {
+  const items = history.map((question, index) => ({
+    id: index + 1,
+    question,
+    created_at: "",
+  }));
+  writeQueryHistoryItemsToStorage(items, max);
+};
+
+export const writeQueryHistoryItemsToStorage = (
+  history: AskHistoryItem[],
+  max = QUERY_HISTORY_MAX,
+): void => {
   try {
     const storage = globalThis.localStorage;
     if (!storage) {
       return;
     }
-    storage.setItem(QUERY_HISTORY_STORAGE_KEY, JSON.stringify(normalizeQueryHistory(history, max)));
+    storage.setItem(QUERY_HISTORY_STORAGE_KEY, JSON.stringify(normalizeQueryHistoryItems(history, max)));
   } catch {
     // 本地存储不可用时静默降级，避免影响查询主流程。
   }
+};
+
+export const normalizeQueryHistoryItems = (
+  history: AskHistoryItem[],
+  max = QUERY_HISTORY_MAX,
+): AskHistoryItem[] => {
+  const normalized: AskHistoryItem[] = [];
+  const seen = new Set<string>();
+
+  for (const item of history) {
+    const question = item.question.trim();
+    if (!question || seen.has(question)) {
+      continue;
+    }
+    normalized.push({
+      id: item.id,
+      question,
+      created_at: item.created_at,
+    });
+    seen.add(question);
+    if (normalized.length >= max) {
+      break;
+    }
+  }
+
+  return normalized;
+};
+
+export const mergeQueryHistoryItems = (
+  previous: AskHistoryItem[],
+  nextQuestion: string,
+  createdAt: string,
+  max = QUERY_HISTORY_MAX,
+): AskHistoryItem[] =>
+  normalizeQueryHistoryItems(
+    [
+      {
+        id: Date.now(),
+        question: nextQuestion,
+        created_at: createdAt,
+      },
+      ...previous,
+    ],
+    max,
+  );
+
+export const filterQueryHistoryItems = (
+  history: AskHistoryItem[],
+  keyword: string,
+): AskHistoryItem[] => {
+  const normalizedKeyword = keyword.trim().toLocaleLowerCase("zh-CN");
+  if (!normalizedKeyword) {
+    return history;
+  }
+  return history.filter((item) =>
+    item.question.toLocaleLowerCase("zh-CN").includes(normalizedKeyword),
+  );
+};
+
+export const formatAskHistoryCreatedAt = (createdAt: string): string => {
+  const trimmed = createdAt.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  let timestampMs = 0;
+  if (/^\d+$/.test(trimmed)) {
+    const value = Number(trimmed);
+    if (Number.isFinite(value) && value > 0) {
+      timestampMs = value < 1_000_000_000_000 ? value * 1000 : value;
+    }
+  } else {
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) {
+      timestampMs = parsed;
+    }
+  }
+
+  if (!timestampMs) {
+    return "";
+  }
+
+  const date = new Date(timestampMs);
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+  return `${month}-${day} ${hours}:${minutes}`;
 };
 
 export const isOcrProvider = (value: string): value is OcrProvider =>
@@ -827,11 +966,25 @@ export const parseQueryProgressPayload = (payload: ProgressPayload): QueryProgre
   return { kind: "status", text };
 };
 
+// 根据分组标签生成稳定颜色
+function groupColor(group: string): string {
+  const palette = [
+    "#4a9eff", "#ff7043", "#66bb6a", "#ab47bc",
+    "#ffa726", "#26c6da", "#ec407a", "#8d6e63",
+  ];
+  let hash = 0;
+  for (let i = 0; i < group.length; i++) {
+    hash = group.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return palette[Math.abs(hash) % palette.length];
+}
+
 const modules: ModuleItem[] = [
   { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
   { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
   { id: "ask", name: "Ask", description: "基于索引与引用证据的问答入口。" },
   { id: "lint", name: "Lint", description: "一致性检查、孤儿页与过期结论扫描。" },
+  { id: "graph", name: "图谱", description: "Wiki 页面知识图谱可视化。" },
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
 ];
 
@@ -842,6 +995,14 @@ type AskMessage = {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  citations?: import("./types").QueryCitation[];
+  meta?: {
+    mode: import("./types").BackendAppMode;
+    searchStrategy?: string | null;
+    answerStrategy?: string | null;
+    topK: number;
+    matchedPages: number;
+  };
 };
 
 type LoadResult = {
@@ -914,8 +1075,16 @@ export default function App() {
   const [queryTopKMax, setQueryTopKMax] = useState(defaultQueryTopKMax);
   const [querySettingsSaving, setQuerySettingsSaving] = useState(false);
   const [queryResultSaving, setQueryResultSaving] = useState(false);
-  const [queryHistory, setQueryHistory] = useState<string[]>(() => readQueryHistoryFromStorage());
+  const [queryHistoryItems, setQueryHistoryItems] = useState<AskHistoryItem[]>(() =>
+    readQueryHistoryItemsFromStorage(),
+  );
+  const [askHistoryKeyword, setAskHistoryKeyword] = useState("");
   const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
+  // 当前会话 ID（每次"新对话"重新生成）
+  const [askSessionId, setAskSessionId] = useState(() => crypto.randomUUID());
+  const [showAskAdvanced, setShowAskAdvanced] = useState(false);
+  const [expandedCitationIds, setExpandedCitationIds] = useState<Set<string>>(new Set());
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [wikiKeyword, setWikiKeyword] = useState("");
   const [wikiActiveTag, setWikiActiveTag] = useState<string | null>(null);
   const [wikiTreeCollapsedFolders, setWikiTreeCollapsedFolders] = useState<Set<string>>(
@@ -953,8 +1122,54 @@ export default function App() {
     "ollama",
   );
   const [llmConfigSaving, setLlmConfigSaving] = useState(false);
+  // 知识图谱模块状态
+  const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const graphContainerRef = useRef<HTMLDivElement>(null);
+  const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
   // 当前激活的导航模块
   const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
+
+  const filteredQueryHistoryItems = useMemo(
+    () => filterQueryHistoryItems(queryHistoryItems, askHistoryKeyword),
+    [queryHistoryItems, askHistoryKeyword],
+  );
+
+  // 消息更新时自动滚动到底部
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [askMessages]);
+
+  // 切换到 graph 模块时加载图谱数据
+  useEffect(() => {
+    if (activeModule !== "graph") return;
+    void (async () => {
+      setGraphLoading(true);
+      try {
+        const data = await getKnowledgeGraph();
+        setGraphData(data);
+      } catch (err) {
+        console.error("图谱加载失败:", err);
+      } finally {
+        setGraphLoading(false);
+      }
+    })();
+  }, [activeModule]);
+
+  // 监听图谱容器尺寸变化
+  useEffect(() => {
+    const updateSize = () => {
+      if (graphContainerRef.current) {
+        setGraphDimensions({
+          width: graphContainerRef.current.clientWidth || 800,
+          height: graphContainerRef.current.clientHeight || 600,
+        });
+      }
+    };
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, [activeModule]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1021,11 +1236,11 @@ export default function App() {
 
         // Ask 历史优先读取后端 DB；后端不可用时回退到 localStorage。
         if (dbAskHistory) {
-          const normalized = normalizeQueryHistory(dbAskHistory.map((item) => item.question));
-          setQueryHistory(normalized);
-          writeQueryHistoryToStorage(normalized);
+          const normalized = normalizeQueryHistoryItems(dbAskHistory, QUERY_HISTORY_MAX);
+          setQueryHistoryItems(normalized);
+          writeQueryHistoryItemsToStorage(normalized, QUERY_HISTORY_MAX);
         } else {
-          setQueryHistory(readQueryHistoryFromStorage());
+          setQueryHistoryItems(readQueryHistoryItemsFromStorage());
         }
       }
     };
@@ -1489,7 +1704,7 @@ export default function App() {
         console.warn("订阅 query 进度事件失败，继续执行查询流程。", error);
       }
 
-      const result = await queryAskWithOptions(nextQuestion, { top_k: nextTopK });
+      const result = await queryAskSession(askSessionId, nextQuestion, { top_k: nextTopK });
       if (!result) {
         setStatusMessage("当前环境不支持查询。");
         return;
@@ -1499,13 +1714,26 @@ export default function App() {
       setAskMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessageId
-            ? { ...message, content: result.answer, streaming: false }
+            ? {
+                ...message,
+                content: result.answer,
+                streaming: false,
+                citations: result.citations ?? [],
+                meta: {
+                  mode: result.mode,
+                  searchStrategy: result.search_strategy,
+                  answerStrategy: result.answer_strategy,
+                  topK: nextTopK,
+                  matchedPages: result.matched_pages.length,
+                },
+              }
             : message,
         ),
       );
-      setQueryHistory((prev) => {
-        const next = mergeQueryHistory(prev, nextQuestion, QUERY_HISTORY_MAX);
-        writeQueryHistoryToStorage(next);
+      setQueryHistoryItems((prev) => {
+        const createdAt = Math.floor(Date.now() / 1000).toString();
+        const next = mergeQueryHistoryItems(prev, nextQuestion, createdAt, QUERY_HISTORY_MAX);
+        writeQueryHistoryItemsToStorage(next, QUERY_HISTORY_MAX);
         return next;
       });
       void saveAskHistory(nextQuestion); // 异步保存到 DB，不阻断
@@ -1533,6 +1761,25 @@ export default function App() {
       }
       setQueryRunning(false);
     }
+  };
+
+  const handleClearQueryHistory = async () => {
+    if (queryHistoryItems.length === 0) {
+      return;
+    }
+    if (!globalThis.confirm("确定清空 Ask 历史吗？此操作不可撤销。")) {
+      return;
+    }
+
+    let backendCleared = true;
+    if (isTauriRuntime()) {
+      backendCleared = await clearAskHistory();
+    }
+
+    setQueryHistoryItems([]);
+    setAskHistoryKeyword("");
+    writeQueryHistoryItemsToStorage([], QUERY_HISTORY_MAX);
+    setStatusMessage(backendCleared ? "Ask 历史已清空。" : "本地历史已清空（后端清理失败）。");
   };
 
   const handleSaveLlmConfig = async () => {
@@ -1859,6 +2106,21 @@ export default function App() {
       setStatusMessage(errorMessage);
     } finally {
       setWikiSaveRunning(false);
+    }
+  };
+
+  const handleToggleStale = async () => {
+    if (!wikiPageDetail) return;
+    const currentStale = wikiPageDetail.frontmatter?.stale === true;
+    const nextStale = !currentStale;
+    try {
+      await markPageStale(wikiPageDetail.path, nextStale);
+      const updated = await fetchWikiPageDetail(wikiPageDetail.path);
+      if (updated) setWikiPageDetail(updated);
+      setStatusMessage(nextStale ? "已标记为过时。" : "已取消过时标记。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`操作失败：${message}`);
     }
   };
 
@@ -2255,6 +2517,14 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  className={`dev-panel__button wiki-detail__action-btn ${wikiPageDetail.frontmatter?.stale ? "wiki-detail__action-btn--stale-active" : ""}`}
+                  onClick={() => void handleToggleStale()}
+                  title={wikiPageDetail.frontmatter?.stale ? "取消过时标记" : "标记为过时"}
+                >
+                  {wikiPageDetail.frontmatter?.stale ? "↺ 取消过时" : "⚑ 标记过时"}
+                </button>
+                <button
+                  type="button"
                   className="dev-panel__button dev-panel__button--danger"
                   onClick={() => void handleDeleteWikiPage()}
                   disabled={wikiDeleteRunning || !isTauriRuntime()}
@@ -2308,6 +2578,13 @@ export default function App() {
         <p className="runtime-hint wiki-preview__editor-hint">浏览器预览模式下仅支持查看，不支持编辑保存。</p>
       ) : null}
       {wikiSaveError ? <p className="runtime-status wiki-preview__save-error">{wikiSaveError}</p> : null}
+      {/* stale 警告横幅 */}
+      {wikiPageDetail?.frontmatter?.stale === true && (
+        <div className="wiki-stale-banner">
+          <span className="wiki-stale-banner__icon">⚠</span>
+          <span className="wiki-stale-banner__text">此页面已标记为过时，内容可能不再准确</span>
+        </div>
+      )}
       {wikiFrontmatterDisplay.hasMeta ? (
         <div className="wiki-preview__meta">
           <div className="wiki-preview__meta-head">
@@ -2613,6 +2890,7 @@ export default function App() {
     { id: "wiki",     icon: "📄", label: "Wiki" },
     { id: "ask",      icon: "💬", label: "Ask" },
     { id: "lint",     icon: "🔍", label: "Lint" },
+    { id: "graph",    icon: "🕸", label: "图谱" },
     { id: "settings", icon: "⚙", label: "设置" },
   ];
 
@@ -2673,7 +2951,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className="module-viewport">
+        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}`}>
           {/* ---- 概览模块 ---- */}
           {activeModule === "inbox" && (
             <>
@@ -3195,135 +3473,275 @@ export default function App() {
 
           {/* ---- Ask 模块 ---- */}
           {activeModule === "ask" && (
-            <>
-              <div className="module-header">
-                <h1 className="module-header__title">Ask</h1>
-                <p className="module-header__sub">基于索引与引用证据的 LLM 问答</p>
-              </div>
-              <section className="panel">
-                <div className="section-head">
-                  <h2>Ask 面板</h2>
-                  <span className="section-head__hint">
-                    {isTauriRuntime() ? "可调用 query_ask" : "浏览器预览"}
-                  </span>
+            <div className="ask-layout">
+              {/* ── 顶部工具栏 ── */}
+              <div className="ask-topbar">
+                <div className="ask-topbar__title-group">
+                  <h1 className="ask-topbar__title">Ask</h1>
+                  <span className="ask-topbar__sub">基于 Wiki 索引的多轮问答</span>
                 </div>
-                <div className="ask-panel">
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ask-question">问题</label>
-                    <textarea
-                      id="ask-question"
-                      className="dev-panel__input ask-panel__textarea"
-                      value={queryQuestion}
-                      onChange={(event) => setQueryQuestion(event.target.value)}
-                      placeholder="输入你要检索的问题"
-                      rows={3}
-                    />
-                    {queryHistory.length > 0 && !queryResult && (
-                      <div className="ask-history">
-                        {queryHistory.map((q, i) => (
-                          <button
-                            key={i}
-                            className="ask-history__chip"
-                            onClick={() => setQueryQuestion(q)}
-                            title={q}
-                          >
-                            {q.length > 40 ? q.slice(0, 40) + "…" : q}
-                          </button>
-                        ))}
+                <div className="ask-topbar__actions">
+                  {askMessages.length > 0 && (
+                    <button
+                      type="button"
+                      className="ask-new-session-btn"
+                      onClick={() => {
+                        void clearAskSession(askSessionId);
+                        setAskSessionId(crypto.randomUUID());
+                        setAskMessages([]);
+                        setQueryResult(null);
+                        setExpandedCitationIds(new Set());
+                        setStatusMessage("新对话已开始。");
+                      }}
+                    >
+                      ↺ 新对话
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* ── 消息区 ── */}
+              <div className="ask-messages">
+                {askMessages.length === 0 ? (
+                  <div className="ask-empty">
+                    <div className="ask-empty__icon">💬</div>
+                    <p className="ask-empty__text">输入问题，基于 Wiki 知识库获得有引用来源的回答</p>
+                    {queryHistoryItems.length > 0 && (
+                      <div className="ask-empty__history">
+                        <div className="ask-empty__history-toolbar">
+                          <span className="ask-empty__history-label">最近提问</span>
+                          <div className="ask-empty__history-actions">
+                            <input
+                              className="ask-empty__history-filter"
+                              type="text"
+                              value={askHistoryKeyword}
+                              placeholder="筛选历史问题"
+                              onChange={(event) => setAskHistoryKeyword(event.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="ask-empty__history-clear"
+                              onClick={() => void handleClearQueryHistory()}
+                            >
+                              清空历史
+                            </button>
+                          </div>
+                        </div>
+                        <div className="ask-history">
+                          {filteredQueryHistoryItems.length > 0 ? (
+                            filteredQueryHistoryItems.map((item) => (
+                              <button
+                                key={`${item.id}-${item.question}`}
+                                type="button"
+                                className="ask-history__chip"
+                                onClick={() => setQueryQuestion(item.question)}
+                                title={item.question}
+                              >
+                                <span className="ask-history__chip-question">
+                                  {item.question.length > 50 ? `${item.question.slice(0, 50)}…` : item.question}
+                                </span>
+                                {formatAskHistoryCreatedAt(item.created_at) ? (
+                                  <span className="ask-history__chip-time">
+                                    {formatAskHistoryCreatedAt(item.created_at)}
+                                  </span>
+                                ) : null}
+                              </button>
+                            ))
+                          ) : (
+                            <span className="ask-history__empty">没有匹配的历史问题</span>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="ask-top-k">
+                ) : (
+                  askMessages.map((message) => {
+                    const isLastAssistant =
+                      message.role === "assistant" &&
+                      !message.streaming &&
+                      message.id === [...askMessages].reverse().find((m) => m.role === "assistant")?.id;
+                    const hasCitations = message.role === "assistant" && (message.citations?.length ?? 0) > 0;
+                    const citationsExpanded = expandedCitationIds.has(message.id);
+
+                    return (
+                      <article
+                        key={message.id}
+                        className={`ask-message ask-message--${message.role}`}
+                      >
+                        <div className="ask-message__avatar">
+                          {message.role === "user" ? "你" : "AI"}
+                        </div>
+                        <div className="ask-message__body">
+                          <div className="ask-message__content">
+                            {message.content || (message.streaming ? "" : "")}
+                            {message.streaming ? <span className="ask-chat__cursor" /> : null}
+                          </div>
+
+                          {/* Citations 折叠展开 */}
+                          {hasCitations && (
+                            <div className="ask-message__citations-wrap">
+                              <button
+                                type="button"
+                                className="ask-citations-toggle"
+                                onClick={() =>
+                                  setExpandedCitationIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(message.id)) {
+                                      next.delete(message.id);
+                                    } else {
+                                      next.add(message.id);
+                                    }
+                                    return next;
+                                  })
+                                }
+                              >
+                                📎 {message.citations!.length} 个引用来源
+                                <span className="ask-citations-toggle__chevron">
+                                  {citationsExpanded ? "▾" : "▸"}
+                                </span>
+                              </button>
+                              {citationsExpanded && (
+                                <div className="ask-citations-list">
+                                  {message.citations!.map((citation) => (
+                                    <div
+                                      key={`${citation.page_path}-${citation.score}`}
+                                      className="ask-citation"
+                                    >
+                                      <div className="ask-citation__top">
+                                        <code>{resolveDisplayPath(citation)}</code>
+                                        <span>score: {citation.score}</span>
+                                      </div>
+                                      <p>{citation.excerpt}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* 元信息 pills：仅 assistant 完成后显示 */}
+                          {message.role === "assistant" && !message.streaming && message.meta && (
+                            <div className="ask-message__meta">
+                              <span className="pill pill--info">
+                                {formatBackendMode(message.meta.mode)}
+                              </span>
+                              {message.meta.searchStrategy && (
+                                <span className="pill pill--lint">
+                                  {formatQuerySearchStrategyLabel(message.meta.searchStrategy)}
+                                </span>
+                              )}
+                              {message.meta.answerStrategy && (
+                                <span className="pill pill--lint">
+                                  {formatQueryAnswerStrategyLabel(message.meta.answerStrategy)}
+                                </span>
+                              )}
+                              <span className="pill">命中 {message.meta.matchedPages} 页</span>
+                            </div>
+                          )}
+
+                          {/* 保存到 Wiki（仅最后一条 assistant 消息） */}
+                          {isLastAssistant && queryResult && (
+                            <div className="ask-message__actions">
+                              <button
+                                type="button"
+                                className="ask-message__save-btn"
+                                onClick={() => void handleSaveQueryResult()}
+                                disabled={!isTauriRuntime() || queryResultSaving}
+                              >
+                                {queryResultSaving ? "保存中..." : "保存回答到 Wiki"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+                {/* 自动滚动锚点 */}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* ── 底部输入区 ── */}
+              <div className="ask-input-area">
+                {/* 高级设置展开区 */}
+                {showAskAdvanced && (
+                  <div className="ask-advanced">
+                    <label className="ask-advanced__label">
                       TopK（{queryTopKMin}–{queryTopKMax}）
+                      <input
+                        type="number"
+                        className="ask-advanced__input"
+                        min={queryTopKMin}
+                        max={queryTopKMax}
+                        step={1}
+                        value={queryTopK}
+                        onChange={(e) => setQueryTopK(Number(e.target.value))}
+                      />
                     </label>
-                    <input
-                      id="ask-top-k"
-                      className="dev-panel__input"
-                      type="number"
-                      min={queryTopKMin}
-                      max={queryTopKMax}
-                      step={1}
-                      value={queryTopK}
-                      onChange={(event) => setQueryTopK(Number(event.target.value))}
-                      style={{ width: "100px" }}
-                    />
-                  </div>
-                  <div className="dev-panel__actions">
                     <button
                       type="button"
-                      className="dev-panel__button"
+                      className="ask-advanced__save-btn"
                       onClick={() => void handleSaveQuerySettings()}
                       disabled={!isTauriRuntime() || querySettingsSaving}
                     >
                       {querySettingsSaving ? "保存中..." : "保存参数"}
                     </button>
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handleQueryAsk()}
-                      disabled={!isTauriRuntime() || queryRunning}
-                    >
-                      {queryRunning ? "检索中..." : "执行 Query"}
-                    </button>
-                    <button
-                      type="button"
-                      className="dev-panel__button"
-                      onClick={() => void handleSaveQueryResult()}
-                      disabled={!isTauriRuntime() || queryResultSaving || !queryResult}
-                    >
-                      {queryResultSaving ? "保存中..." : "保存回答到 Wiki"}
-                    </button>
+                  </div>
+                )}
+
+                {/* 输入框 */}
+                <textarea
+                  className="ask-input__textarea"
+                  value={queryQuestion}
+                  onChange={(e) => setQueryQuestion(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!queryRunning && isTauriRuntime()) void handleQueryAsk();
+                    }
+                  }}
+                  placeholder="输入问题后按 Enter 发送，Shift+Enter 换行"
+                  rows={2}
+                  disabled={queryRunning}
+                />
+
+                {/* 操作行 */}
+                <div className="ask-input__footer">
+                  <button
+                    type="button"
+                    className={`ask-advanced-toggle${showAskAdvanced ? " ask-advanced-toggle--active" : ""}`}
+                    onClick={() => setShowAskAdvanced((v) => !v)}
+                    title="高级设置（TopK）"
+                  >
+                    ⚙ 高级
+                  </button>
+                  <div className="ask-input__footer-right">
+                    {queryRunning ? (
+                      <button
+                        type="button"
+                        className="ask-stop-btn"
+                        onClick={async () => {
+                          await cancelAskSession(askSessionId);
+                          setQueryRunning(false);
+                          setStatusMessage("查询已取消。");
+                        }}
+                      >
+                        ⏹ 停止
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ask-send-btn"
+                        onClick={() => void handleQueryAsk()}
+                        disabled={!isTauriRuntime() || queryRunning}
+                      >
+                        发送 ↵
+                      </button>
+                    )}
                   </div>
                 </div>
-                {askMessages.length > 0 ? (
-                  <div className="ask-chat">
-                    {askMessages.map((message) => (
-                      <article
-                        key={message.id}
-                        className={`ask-chat__item ask-chat__item--${message.role}`}
-                      >
-                        <div className="ask-chat__role">
-                          {message.role === "user" ? "你" : "助手"}
-                        </div>
-                        <div className="ask-chat__content">
-                          {message.content || (message.streaming ? "思考中..." : "")}
-                          {message.streaming ? <span className="ask-chat__cursor" /> : null}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-state">
-                    {isTauriRuntime()
-                      ? '尚未执行 Query。输入问题后点击\u201c执行 Query\u201d查看本地检索结果。'
-                      : "浏览器预览模式下不连接后端，无法生成真实问答结果。"}
-                  </p>
-                )}
-                {queryResult ? (
-                  <div className="ask-result">
-                    <div className="ask-result__meta">
-                      <span className="pill pill--info">模式：{formatBackendMode(queryResult.mode)}</span>
-                      <span className="pill pill--lint">检索：{formatQuerySearchStrategyLabel(queryResult.search_strategy)}</span>
-                      <span className="pill pill--lint">策略：{formatQueryAnswerStrategyLabel(queryResult.answer_strategy)}</span>
-                      <span className="pill">TopK：{queryTopK}</span>
-                      <span className="pill">命中：{queryResult.matched_pages.length}</span>
-                    </div>
-                    <div className="ask-result__citations">
-                      {queryResult.citations.map((citation) => (
-                        <article key={`${citation.page_path}-${citation.score}`} className="ask-citation">
-                          <div className="ask-citation__top">
-                            <code>{resolveDisplayPath(citation)}</code>
-                            <span>score: {citation.score}</span>
-                          </div>
-                          <p>{citation.excerpt}</p>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </section>
-            </>
+              </div>
+            </div>
           )}
 
           {/* ---- Lint 模块 ---- */}
@@ -3656,6 +4074,69 @@ export default function App() {
                   </p>
                 )}
               </section>
+            </>
+          )}
+
+          {/* ---- 图谱模块 ---- */}
+          {activeModule === "graph" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">知识图谱</h1>
+                <p className="module-header__sub">Wiki 页面与引用关系可视化</p>
+              </div>
+              <div className="graph-module" ref={graphContainerRef}>
+                {graphLoading && (
+                  <div className="graph-module__loading">加载图谱中...</div>
+                )}
+                {!graphLoading && graphData && graphData.nodes.length === 0 && (
+                  <div className="graph-module__empty">
+                    <p>暂无 Wiki 页面数据。</p>
+                    <p>请先在 Inbox 中摄入文档，生成 Wiki 页面后图谱将自动显示。</p>
+                  </div>
+                )}
+                {!graphLoading && graphData && graphData.nodes.length > 0 && (
+                  <Suspense fallback={<div className="graph-module__loading">图谱渲染中...</div>}>
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    <ForceGraph2D
+                      graphData={graphData as any}
+                      width={graphDimensions.width}
+                      height={graphDimensions.height}
+                      nodeLabel="label"
+                      nodeRelSize={6}
+                      nodeColor={(node: object) => {
+                        const n = node as KnowledgeGraphNode;
+                        return n.group ? groupColor(n.group) : "#4a9eff";
+                      }}
+                      linkColor={() => "rgba(120,120,180,0.4)"}
+                      linkWidth={1}
+                      onNodeClick={(node: object) => {
+                        const n = node as KnowledgeGraphNode;
+                        setActiveModule("wiki");
+                        void fetchWikiPageDetail(n.id).then((detail) => {
+                          if (detail) setWikiPageDetail(detail);
+                        });
+                      }}
+                      nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                        const n = node as KnowledgeGraphNode;
+                        const label = n.label || n.id;
+                        const fontSize = Math.max(10 / globalScale, 3);
+                        ctx.font = `${fontSize}px Sans-Serif`;
+                        ctx.fillStyle = n.group ? groupColor(n.group) : "#4a9eff";
+                        ctx.beginPath();
+                        ctx.arc(n.x ?? 0, n.y ?? 0, 5, 0, 2 * Math.PI, false);
+                        ctx.fill();
+                        if (globalScale > 1.5) {
+                          ctx.fillStyle = "rgba(255,255,255,0.85)";
+                          ctx.fillText(label, (n.x ?? 0) + 7, (n.y ?? 0) + 3);
+                        }
+                      }}
+                      cooldownTicks={100}
+                      d3AlphaDecay={0.02}
+                      d3VelocityDecay={0.3}
+                    />
+                  </Suspense>
+                )}
+              </div>
             </>
           )}
 
