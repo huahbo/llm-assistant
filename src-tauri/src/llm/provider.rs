@@ -61,6 +61,22 @@ pub trait LlmProvider: Send + Sync {
     /// - `Err(LlmError)`: 生成失败时的错误信息
     async fn complete(&self, prompt: &str) -> Result<String, LlmError>;
 
+    /// 流式文本补全（阶段2：真流式能力）
+    ///
+    /// 默认实现会回退到 `complete` 并一次性回调。
+    /// 支持流式的 Provider 应覆盖此方法并在收到增量时触发 `on_chunk`。
+    async fn complete_stream(
+        &self,
+        prompt: &str,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String, LlmError> {
+        let answer = self.complete(prompt).await?;
+        if !answer.is_empty() {
+            on_chunk(answer.clone());
+        }
+        Ok(answer)
+    }
+
     /// 检查服务是否可用
     ///
     /// 用于在调用前验证 LLM 服务的连通性和可用性。
@@ -70,4 +86,14 @@ pub trait LlmProvider: Send + Sync {
     /// - `Ok(false)`: 服务不可用
     /// - `Err(LlmError)`: 检查过程中出错
     async fn health_check(&self) -> Result<bool, LlmError>;
+
+    /// 获取服务的基础地址（用于状态显示）
+    fn base_url(&self) -> &str {
+        ""
+    }
+
+    /// 获取使用的模型名称（用于状态显示）
+    fn model(&self) -> &str {
+        "Unknown"
+    }
 }

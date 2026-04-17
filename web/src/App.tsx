@@ -1469,7 +1469,7 @@ export default function App() {
         unlisten = await listenProgress("query_progress", (payload) => {
           const update = parseQueryProgressPayload(payload);
           if (update.kind === "chunk") {
-            if (!update.text.trim()) {
+            if (update.text === "") {
               return;
             }
             setAskMessages((prev) =>

@@ -1,8 +1,60 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection};
 
 use crate::models::LintPatchEventItem;
+/// 已执行过初始化（init_schema）的数据库路径缓存。
+static INITIALIZED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// 检查并标记数据库是否已初始化，用于在进程生命周期内跳过冗余 init_schema 调用。
+fn is_db_initialized(path: &Path) -> bool {
+    let mutex = INITIALIZED_DBS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut set = mutex.lock().unwrap();
+    if set.contains(path) {
+        true
+    } else {
+        set.insert(path.to_path_buf());
+        false
+    }
+}
+
+/// 数据库连接池（每个路径一个单例连接，由 Mutex 保护）。
+static CONNECTION_POOL: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Connection>>>>> = OnceLock::new();
+
+/// 获取数据库连接（带缓存与初始化逻辑）。
+fn get_connection(db_path: &Path) -> Result<Arc<Mutex<Connection>>, String> {
+    let pool_mutex = CONNECTION_POOL.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut pool = pool_mutex.lock().unwrap();
+
+    if let Some(conn) = pool.get(db_path) {
+        return Ok(Arc::clone(conn));
+    }
+
+    // 缓存未命中，创建新连接并初始化（如果是第一次）。
+    let conn = open_connection_internal(db_path)?;
+    if !is_db_initialized(db_path) {
+        init_schema(&conn)?;
+    }
+
+    let shared_conn = Arc::new(Mutex::new(conn));
+    pool.insert(db_path.to_path_buf(), Arc::clone(&shared_conn));
+    Ok(shared_conn)
+}
+
+fn open_connection_internal(db_path: &Path) -> Result<Connection, String> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("创建数据库目录失败: {}", err))?;
+    }
+
+    let conn = Connection::open(db_path).map_err(|err| format!("打开数据库失败: {}", err))?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|err| format!("启用外键失败: {}", err))?;
+    Ok(conn)
+}
+
+/// 统计待处理任务数量。
 
 /// Ask 历史最大保留条数，防止无限增长。
 pub const ASK_HISTORY_MAX_ENTRIES: usize = 200;
@@ -78,8 +130,8 @@ pub struct AskHistoryRecord {
 
 /// 确保元数据库与表结构存在。
 pub fn ensure_meta_db(db_path: &Path) -> Result<(), String> {
-    let conn = open_connection(db_path)?;
-    init_schema(&conn)
+    let _ = get_connection(db_path)?;
+    Ok(())
 }
 
 /// 统计待处理任务数量。
@@ -967,10 +1019,13 @@ fn ensure_ask_history_quality(conn: &Connection) -> Result<(), String> {
         }
     }
 
-    if !has_question_norm {
-        conn.execute("ALTER TABLE ask_history ADD COLUMN question_norm TEXT", [])
-            .map_err(|err| format!("升级 ask_history 结构失败: {}", err))?;
+    if has_question_norm {
+        // 如果已经有 question_norm，说明结构已经升级并清洗过，跳过重度操作以提升性能。
+        return Ok(());
     }
+
+    conn.execute("ALTER TABLE ask_history ADD COLUMN question_norm TEXT", [])
+        .map_err(|err| format!("升级 ask_history 结构失败: {}", err))?;
 
     // 清洗旧数据，避免空白问题和历史重复占用容量。
     conn.execute(
@@ -1058,8 +1113,8 @@ pub fn save_ask_history(db_path: &Path, question: &str, created_at: &str) -> Res
     }
     let question_norm = normalize_ask_question(cleaned_question);
 
-    let mut conn = open_connection(db_path)?;
-    init_schema(&conn)?;
+    let shared_conn = get_connection(db_path)?;
+    let mut conn = shared_conn.lock().unwrap();
     let tx = conn
         .transaction()
         .map_err(|err| format!("开启 ask_history 事务失败: {}", err))?;

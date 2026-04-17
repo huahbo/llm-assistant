@@ -38,8 +38,8 @@ const LLM_SUMMARY_MAX_TOKENS: usize = 200;
 pub struct AppState {
     inner: Mutex<AppStateData>,
     config_path: PathBuf,
-    /// LLM Provider（延迟初始化）
-    llm_provider: OnceLock<Option<Arc<OllamaProvider>>>,
+    /// LLM Provider（延迟初始化，存储 trait 对象以支持多后端与 Mock）
+    llm_provider: OnceLock<Arc<dyn LlmProvider>>,
     /// Tauri AppHandle（应用启动后由 setup hook 注入，用于 emit 进度事件）
     app_handle: OnceLock<AppHandle>,
 }
@@ -160,13 +160,13 @@ impl AppState {
     }
 
     /// 获取 Ollama Provider（延迟初始化）。
-    fn get_ollama_provider(&self) -> Option<Arc<OllamaProvider>> {
+    fn get_ollama_provider(&self) -> Arc<dyn LlmProvider> {
         self.llm_provider
             .get_or_init(|| {
                 // 这里固定使用本地 Ollama
                 let config = OllamaConfig::default();
                 let provider = OllamaProvider::new(config);
-                Some(Arc::new(provider))
+                Arc::new(provider)
             })
             .clone()
     }
@@ -175,6 +175,11 @@ impl AppState {
     /// - StrictLocal → 仅 Ollama
     /// - Hybrid → 优先使用 active_provider（仅 cloud/ollama），并在无 key 时安全回退到 ollama
     fn get_llm_provider(&self) -> Option<Arc<dyn LlmProvider>> {
+        // 如果 OnceLock 已经设置（例如测试注入了 Mock），直接返回
+        if let Some(p) = self.llm_provider.get() {
+            return Some(p.clone());
+        }
+
         let (
             mode,
             cloud_api_key,
@@ -204,8 +209,7 @@ impl AppState {
         match mode {
             AppMode::StrictLocal => {
                 // 严格本地模式：禁止云 Provider
-                self.get_ollama_provider()
-                    .map(|p| p as Arc<dyn LlmProvider>)
+                Some(self.get_ollama_provider())
             }
             AppMode::Hybrid => {
                 // Hybrid 模式：遵循 active_provider，cloud 仅在 key 可用时生效
@@ -221,10 +225,11 @@ impl AppState {
                         cloud_base_url.as_deref(),
                     );
                     let config = OpenAiConfig::with_base_url_and_model(key, base_url, model);
+                    // 注意：Hybrid 模式下的 OpenAiProvider 目前不进入 OnceLock，以支持 key 的实时更新
+                    // 或者，我们可以改进 OnceLock 逻辑使其支持重置
                     Some(Arc::new(OpenAiProvider::new(config)) as Arc<dyn LlmProvider>)
                 } else {
-                    self.get_ollama_provider()
-                        .map(|p| p as Arc<dyn LlmProvider>)
+                    Some(self.get_ollama_provider())
                 }
             }
         }
@@ -283,7 +288,7 @@ impl AppState {
         AppMode,
         Option<String>,
         Option<OpenAiConfig>,
-        Option<Arc<OllamaProvider>>,
+        Option<Arc<dyn LlmProvider>>,
     ) {
         let (
             mode,
@@ -312,7 +317,7 @@ impl AppState {
             resolve_active_provider(mode, active_provider.as_deref(), has_cloud_key, None);
 
         match mode {
-            AppMode::StrictLocal => (mode, None, None, self.get_ollama_provider()),
+            AppMode::StrictLocal => (mode, None, None, Some(self.get_ollama_provider())),
             AppMode::Hybrid => {
                 if resolved_provider == "cloud" {
                     let key = cloud_api_key
@@ -328,7 +333,7 @@ impl AppState {
                     let config = OpenAiConfig::with_base_url_and_model(key, base_url, model);
                     (mode, cloud_provider_name, Some(config), None)
                 } else {
-                    (mode, None, None, self.get_ollama_provider())
+                    (mode, None, None, Some(self.get_ollama_provider()))
                 }
             }
         }
@@ -339,7 +344,7 @@ impl AppState {
         mode: AppMode,
         cloud_provider_name: Option<String>,
         cloud_config: Option<OpenAiConfig>,
-        ollama_provider: Option<Arc<OllamaProvider>>,
+        provider: Option<Arc<dyn LlmProvider>>,
     ) -> LlmStatus {
         if let Some(config) = cloud_config {
             let provider_name = normalize_cloud_provider_name(cloud_provider_name.as_deref())
@@ -378,7 +383,7 @@ impl AppState {
             }
         } else {
             // 使用本地 Ollama
-            match ollama_provider {
+            match provider {
                 Some(provider) => {
                     let base_url = provider.base_url().to_string();
                     let model = provider.model().to_string();
@@ -1072,31 +1077,54 @@ impl AppState {
         question: &str,
         matches: &[WikiMatch],
         provider: Option<Arc<dyn LlmProvider>>,
+        mut on_chunk: Option<&mut (dyn FnMut(String) + Send)>,
     ) -> (String, String) {
-        let fallback = || (build_query_answer(question, matches), "rule".to_string());
+        let fallback_answer = || build_query_answer(question, matches);
 
         let provider = match provider {
             Some(provider) => provider,
             None => {
+                let fallback = fallback_answer();
+                if !fallback.is_empty() {
+                    if let Some(handler) = on_chunk.as_deref_mut() {
+                        handler(fallback.clone());
+                    }
+                }
                 self.push_log(
                     LogLevel::Warn,
                     "本地 LLM Provider 不可用，Query 已回退到规则回答".to_string(),
                 );
-                return fallback();
+                return (fallback, "rule".to_string());
             }
         };
 
         let prompt = build_query_prompt(question, matches);
 
-        match provider.complete(&prompt).await {
+        let streamed = {
+            let on_chunk_ref = &mut on_chunk;
+            let mut chunk_forwarder = |chunk: String| {
+                if let Some(handler) = on_chunk_ref.as_deref_mut() {
+                    handler(chunk);
+                }
+            };
+            provider.complete_stream(&prompt, &mut chunk_forwarder).await
+        };
+
+        match streamed {
             Ok(answer) => {
                 let answer = answer.trim().to_string();
                 if answer.is_empty() {
+                    let fallback = fallback_answer();
+                    if !fallback.is_empty() {
+                        if let Some(handler) = on_chunk.as_deref_mut() {
+                            handler(fallback.clone());
+                        }
+                    }
                     self.push_log(
                         LogLevel::Warn,
                         "本地 LLM 返回空回答，Query 已回退到规则回答".to_string(),
                     );
-                    fallback()
+                    (fallback, "rule".to_string())
                 } else {
                     self.push_log(
                         LogLevel::Info,
@@ -1109,59 +1137,19 @@ impl AppState {
                 }
             }
             Err(err) => {
+                let fallback = fallback_answer();
+                if !fallback.is_empty() {
+                    if let Some(handler) = on_chunk.as_deref_mut() {
+                        handler(fallback.clone());
+                    }
+                }
                 self.push_log(
                     LogLevel::Warn,
                     format!("本地 LLM Query 合成失败: {}，已回退到规则回答", err),
                 );
-                fallback()
+                (fallback, "rule".to_string())
             }
         }
-    }
-
-    /// 将完整回答切成较短片段，用于阶段1伪流式输出。
-    fn split_query_answer_for_pseudo_stream(answer: &str, max_chars: usize) -> Vec<String> {
-        if max_chars == 0 {
-            return Vec::new();
-        }
-        let mut chunks = Vec::new();
-        let mut buffer = String::new();
-        let mut count = 0usize;
-
-        for ch in answer.chars() {
-            buffer.push(ch);
-            count += 1;
-
-            let punctuation_break = matches!(ch, '。' | '！' | '？' | '；' | '\n');
-            if count >= max_chars || (punctuation_break && count >= 8) {
-                let chunk = buffer.trim();
-                if !chunk.is_empty() {
-                    chunks.push(chunk.to_string());
-                }
-                buffer.clear();
-                count = 0;
-            }
-        }
-
-        let tail = buffer.trim();
-        if !tail.is_empty() {
-            chunks.push(tail.to_string());
-        }
-
-        chunks
-    }
-
-    /// 通过 query_progress 分片推送回答文本（阶段1：伪流式）。
-    fn emit_query_answer_pseudo_stream(&self, answer: &str) {
-        let chunks = Self::split_query_answer_for_pseudo_stream(answer, 32);
-        if chunks.is_empty() {
-            return;
-        }
-
-        self.emit_progress("query_progress", "answer_stream_start", "回答生成完成，正在输出...");
-        for chunk in chunks {
-            self.emit_progress("query_progress", "answer_chunk", &chunk);
-        }
-        self.emit_progress("query_progress", "answer_stream_done", "回答输出完成。");
     }
 
     pub fn overview(&self) -> AppOverview {
@@ -1634,7 +1622,7 @@ impl AppState {
     /// - 最多返回 10 条语义问题。
     async fn run_semantic_lint(
         pages: Vec<(String, String, String)>,
-        provider: Option<Arc<OllamaProvider>>,
+        provider: Option<Arc<dyn LlmProvider>>,
     ) -> Vec<LintIssue> {
         let provider = match provider {
             Some(p) => p,
@@ -1681,7 +1669,7 @@ Wiki 页面：\n{}",
         let (pages, _mode) = self.collect_semantic_lint_input();
         let provider = self.get_ollama_provider();
         async move {
-            let semantic = Self::run_semantic_lint(pages, provider).await;
+            let semantic = Self::run_semantic_lint(pages, Some(provider)).await;
             merge_lint_with_semantic(rules, semantic)
         }
     }
@@ -1948,10 +1936,21 @@ Wiki 页面：\n{}",
         // 步骤2：LLM 合成回答
         self.emit_progress("query_progress", "generating", "正在合成回答（LLM）...");
         let provider = self.get_llm_provider();
+        self.emit_progress("query_progress", "answer_stream_start", "开始流式输出回答...");
+        let mut emit_chunk = |chunk: String| {
+            if !chunk.is_empty() {
+                self.emit_progress("query_progress", "answer_chunk", &chunk);
+            }
+        };
         let (answer, answer_strategy) = self
-            .generate_query_answer_with_provider(&normalized_question, &matches, provider)
+            .generate_query_answer_with_provider(
+                &normalized_question,
+                &matches,
+                provider,
+                Some(&mut emit_chunk),
+            )
             .await;
-        self.emit_query_answer_pseudo_stream(&answer);
+        self.emit_progress("query_progress", "answer_stream_done", "回答输出完成。");
 
         let matched_pages = matches
             .iter()
@@ -5049,7 +5048,12 @@ entities:
         let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
         let (answer, strategy) = runtime.block_on(async {
             state
-                .generate_query_answer_with_provider("核心目标是什么", &matches, Some(provider))
+                .generate_query_answer_with_provider(
+                    "核心目标是什么",
+                    &matches,
+                    Some(provider),
+                    None,
+                )
                 .await
         });
 
@@ -5085,7 +5089,12 @@ entities:
         let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
         let (answer, strategy) = runtime.block_on(async {
             state
-                .generate_query_answer_with_provider("需要回退吗", &matches, Some(provider))
+                .generate_query_answer_with_provider(
+                    "需要回退吗",
+                    &matches,
+                    Some(provider),
+                    None,
+                )
                 .await
         });
 
@@ -5697,21 +5706,6 @@ entities:
         assert_eq!(report.severity_stats.info, 0);
     }
 
-    #[test]
-    fn split_query_answer_for_pseudo_stream_splits_long_text() {
-        let text = "第一段回答说明。第二段补充细节。第三段结论。";
-        let chunks = AppState::split_query_answer_for_pseudo_stream(text, 10);
-        assert!(chunks.len() >= 3);
-        assert!(chunks.iter().all(|chunk| !chunk.trim().is_empty()));
-        assert_eq!(chunks.concat(), text);
-    }
-
-    #[test]
-    fn split_query_answer_for_pseudo_stream_ignores_empty_input() {
-        let chunks = AppState::split_query_answer_for_pseudo_stream("   ", 10);
-        assert!(chunks.is_empty());
-    }
-
     struct TempDirGuard(PathBuf);
 
     impl Drop for TempDirGuard {
@@ -5732,7 +5726,7 @@ entities:
     }
 
     fn make_test_state(vault_dir: &Path) -> AppState {
-        AppState {
+        let state = AppState {
             inner: Mutex::new(AppStateData {
                 mode: AppMode::Hybrid,
                 vault_path: None,
@@ -5740,7 +5734,6 @@ entities:
                 logs: Vec::new(),
                 next_log_id: 1,
                 config_snapshot: None,
-                // 测试环境不配置云端 Provider，以确保回退到 Ollama
                 cloud_api_key: None,
                 cloud_base_url: None,
                 cloud_model: None,
@@ -5750,9 +5743,14 @@ entities:
             }),
             config_path: vault_dir.join(".runtime").join("app-config.json"),
             llm_provider: OnceLock::new(),
-            // 测试环境不注入 AppHandle，emit_progress 静默跳过
             app_handle: OnceLock::new(),
-        }
+        };
+        // 注入已有的 MockQueryProvider
+        let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(
+            "Mock Answer",
+            Arc::new(Mutex::new(Vec::new())),
+        )));
+        state
     }
 
     fn assert_paths_semantically_equal(expected: &Path, actual: &str) {
