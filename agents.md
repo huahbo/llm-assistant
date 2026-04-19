@@ -194,9 +194,17 @@
 
 ## 18) 当前开发状态（Agent 交接必读）
 
-> 本节由每轮结束的主控 Agent 维护，是下一轮开发的起点。
+> 本节由每轮结束的主控 Agent 维护。新 Agent 启动时先读本节，再读 `docs/实施过程记录.md` 最新条目。
 
-### 18.1 已完成（截至 2026-04-17）
+### 18.0 快速恢复步骤
+
+1. `cargo test`（src-tauri/）→ 应 **102 passed**
+2. `npm run test -- --run`（web/）→ 应 **130 passed**
+3. `npm run typecheck`（web/）→ 应 **0 errors**
+4. 读 `docs/实施过程记录.md` 最新 3 条了解背景
+5. 按 §18.3 TODO 开始下一轮，**必须使用 §14 子代理并行规则**
+
+### 18.1 已完成（截至 2026-04-19）
 
 | 优先级 | 功能 | 状态 |
 |--------|------|------|
@@ -260,95 +268,53 @@
 | P21-C1 前端 | Global/Local 双模式（前端 BFS 子图）+ Hop 深度 + 布局冻结/恢复 + 偏好持久化 | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 | P21-C2 前端 | 搜索高亮（光晕视觉反馈） + 平滑相机聚焦 + 动态侧边栏搜索结果 | ✅ `web/src/App.tsx` + `web/src/styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
 
-### 18.2 下一轮待开发（TODO）
+### 18.2 下一轮 TODO（按优先级）
 
-**P19：遗留 UX 增强（可并行于 P20）**
-- ~~P19-1 Ask 历史管理增强（时间显示/清空入口/按关键词过滤）~~ ✅ 已完成（Codex 2026-04-17）
-- ~~P19-2 Wiki 文件树增强（按目录批量折叠/展开、当前页自动定位）~~ ✅ 已完成（Gemini 2026-04-17）
-- P19-3 标签维度增强（多标签交集筛选 + 标签计数）
-### 18.2 下一轮待开发（TODO）
+| 优先级 | 任务 | 说明 |
+|---|---|---|
+| 1 | **P22 Windows 打包** | `cargo tauri build` 生成 MSI/EXE，验证 SQLite/WebView2 路径正确 |
+| 2 | **P21-D 图谱收口** | Ctrl+F 聚焦搜索、导出图谱 JSON、大图（>200节点）节点聚合 |
+| 3 | **P19-4 内链补全体验** | 已实现 `[[` 触发，需验证 dropdown 定位和光标位置 |
+| 4 | **P20-5 Embedding 向量检索** | `get_embed_provider()` 已就绪，需接入 `search_wiki_matches_rrf` 作为第4路 |
 
-**P20-X：后续路线图（供 Claude Code / Codex 接手参考）**
+**开发规则（每轮必读）：**
+- **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
+- 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-| 优先级 | 任务方向 | 核心价值 | 预计复杂度 |
-| :--- | :--- | :--- | :--- |
-| **1** | **P20-3: 融合检索 (RAG 增强)** | 结合向量搜索与 BM25，解决语义模糊匹配问题，提升知识召回率。 | 中等 |
-| **2** | **P19-2: Wiki 动态文件树与感知** | 实现目录自动定位、右键菜单、折叠状态持久化。 | 低 |
-| **3** | **P20-1: 事件流实时闭环** | 完善 Outbox 订阅，实现 Wiki 页删除/重命名后即时全系统刷新。 | 高 |
-| **4** | **P19-3: 标签维度与健康仪表盘** | 实现多标签交集筛选，增加知识库概览 Dashboard。 | 低 |
-
-**注意**：所有推进需严格执行 §14 并行开发规范。
-
-~~**P21：知识图谱可视化**~~ ✅ 完成（Claude Code 2026-04-17，102 Rust / 118 前端）
-- `react-force-graph-2d`（Canvas，lazy-loaded，Tauri WebView2 兼容）
-- 后端：`get_knowledge_graph()` 命令，nodes = wiki_pages，links = citations（去重）
-- 前端：新”图谱”模块，`ForceGraph2D` + `groupColor()` + 节点点击跳转详情 + resize 响应
-
-**P21-UX 迭代（已与用户确认）**
-- ~~P21-B（下一轮优先实施，已选方案）~~ ✅ 已完成（Codex 2026-04-17，待 Windows 前端测试复核）。
-- ~~P21-C（后续迭代，非排除）：已完成 C1（Global/Local + hop + 冻结 + 持久化，前端实现）。C2 继续推进：方向过滤（in/out/both）、局部子图后端接口 `get_knowledge_subgraph`、大图性能阈值策略。~~ ✅ 已完成（Gemini 2026-04-17）。
-- **P21-D（最终收口）**: 智能节点聚合（基于语义相似度，需 Ingest 阶段 entities 支撑）、导出图谱为图片/JSON、快捷键支持（Ctrl+F 聚焦搜索）。
-
-**Claude Code / Codex 入手点（下轮开始先做）**
-1. 推进 P19-2：Wiki 文件树增强。目前文件树仅支持基础浏览，需要实现“按目录折叠/展开”和“当前激活页自动定位（Auto-Reveal）”。
-2. 或者推进 P20-0：对 MCP/Skills 进行下一轮调研。
-3. 继续保持 §14 并行规则。
-
-
-### 18.3 当前代码快照
+### 18.3 当前代码快照（2026-04-19）
 
 ```
 src-tauri/src/
   llm/
-    mod.rs          # pub use provider + ollama + openai
-    provider.rs     # LlmProvider trait, LlmError
-    ollama.rs       # OllamaProvider (health_check, complete, summarize)
-    openai.rs       # OpenAiProvider (OpenAI-compatible Chat Completions API, Hybrid 模式)
-  search.rs         # reciprocal_rank_fusion() 纯函数（P20-3，3 条单测）
-  commands.rs       # 所有 Tauri 命令（含 mark_page_stale, get_knowledge_graph）
-  db.rs             # SQLite 操作（含 query_linked_page_paths, query_citation_popular_paths, list_all_wiki_pages）
-  main.rs           # Tauri app 入口
-  models.rs         # 全部数据模型（含 WikiPageFrontmatter.stale, KnowledgeGraphNode/Link/Data）
-  state.rs          # AppState 核心逻辑（含 search_wiki_matches_rrf, set_page_stale, get_knowledge_graph_impl）
-  vault.rs          # 文件系统操作
+    provider.rs     # LlmProvider trait（含 embed/complete_stream/health_check）
+    ollama.rs       # OllamaProvider（Ollama /api/generate + /api/embeddings）
+    openai.rs       # OpenAiProvider（OpenAI-compatible Chat Completions + embeddings）
+  search.rs         # reciprocal_rank_fusion() 纯函数（k=60，3条单测）
+  commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale, get_knowledge_graph）
+  db.rs             # SQLite（含 upsert_embedding, list_all_wiki_pages, query_citation_popular_paths）
+  models.rs         # 全部数据模型（含 stale, KnowledgeGraph*, embed_ollama_model 字段）
+  state.rs          # 核心逻辑（含 get_embed_provider, search_wiki_matches_rrf, get_knowledge_graph_impl）
+  vault.rs          # 文件系统（hash去重, ingest_markdown, append_see_also_link）
 
 web/src/
-  App.tsx           # 主界面（含图谱模块、左图谱+右详情面板、筛选控件与节点统计）
-  tauri-client.ts   # Tauri invoke 封装（含 markPageStale, getKnowledgeGraph）
-  types.ts          # TS 类型定义（含 LlmProviderConfig）
-  app-utils.test.ts # 前端单元测试（新增图谱节点路径解析 + 图谱过滤逻辑用例）
+  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成）
+  tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale）
+  types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url）
+  app-utils.test.ts # 单元测试（130 个）
+  styles.css        # 样式（含 graph-module, wiki-stale-banner, lint 分组等）
 ```
 
-### 18.4 验证基线
+### 18.4 验证基线（2026-04-19，Windows 已验证）
 
-- `cargo check`（src-tauri/）：**通过（2026-04-17 P18-3）**；P19-1 后端新增命令待 Windows 复核
-- `cargo test`（src-tauri/）：**91 通过，0 失败（2026-04-17 P18-3）**；P19-1 后端新增测试待 Windows 复核
-- `cargo check`（src-tauri/，2026-04-17 P20-1 热修复复核）：用户在 Windows 报告 `E0063`（`ollama_model/ollama_base_url` 缺失）后已修复代码，**待用户再次复核**
-- `cargo test`（src-tauri/）：**102 通过，0 失败（2026-04-17 P21）**
-- `npm run test -- --run`（web/）：**118 通过，0 失败（2026-04-17 P21）**
-- `npm run typecheck`（web/）：**零错误（2026-04-17 P21-Fix，Codex WSL）**
-- `npm run test -- --run`（web，2026-04-17 P21-Fix）：WSL 环境阻塞（缺少 `@rollup/rollup-linux-x64-gnu` 可选依赖），**待 Windows 复核**
-- `npm run build`（web，2026-04-17 P21-Fix）：WSL 环境阻塞（同上），**待 Windows 复核**
-- `npm run typecheck`（web/）：**零错误（2026-04-17 P21-B，Codex WSL）**
-- `npm run test -- --run`（web，2026-04-17 P21-B）：WSL 环境阻塞（同上），**待 Windows 复核**
-- `npm run build`（web，2026-04-17 P21-B）：WSL 环境阻塞（同上），**待 Windows 复核**
-- `npm run typecheck`（web/）：**零错误（2026-04-17 P21-C1，Codex WSL）**
-- `npm run test -- --run`（web，2026-04-17 P21-C1）：WSL 环境阻塞（同上），**待 Windows 复核**
-- `npm run build`（web，2026-04-17 P21-C1）：WSL 环境阻塞（同上），**待 Windows 复核**
+- `cargo test`：**102 passed，0 failed**
+- `npm run test -- --run`：**130 passed，0 failed**
+- `npm run typecheck`：**0 errors**
+- `npm run build`：**通过**（react-force-graph-2d lazy chunk 62KB gzipped）
 
-### 18.5 关键约束提醒
+### 18.5 关键架构约束
 
-- **LLM 调用全部在异步上下文**，不使用 `block_in_place`（已清理）。
-- **Tauri 异步命令带引用参数必须返回 `Result<T, String>`**（见 `run_lint`, `get_llm_status`）。
-- **`lint_report_full_future` / `llm_status_future` 模式**：先同步提取数据，`drop(state)` 后再 await。
-- **文件写入幂等**：`append_see_also_link` 先检查链接是否已存在再写入。
-- **API Key 禁止入仓**：`.claude/`、`.codex/`、`.env` 均在 §16.5 禁止提交。
-
-### 18.6 多 Agent 运行环境说明（交接必读）
-
-- **Codex（本轮）运行环境**：WSL/Linux（`/mnt/e/llm-wiki`），当前会话 `cargo` 不可用（`cargo: command not found`），因此 Rust 编译/测试不能在本端确认。
-- **Claude Code / Gemini 运行环境**：Windows（PowerShell 原生），可执行完整 Rust/前端验证链路。
-- **交接规则**：
-  1. Codex 提交 Rust 相关改动时，必须在记录中明确标注“待 Windows cargo 复核”。
-  2. Claude Code 或 Gemini 接手后，先在 Windows 执行：`cargo check`、`cargo test`、`npm run typecheck`、`npm run test -- --run`、`npm run build`。
-  3. 仅当 Windows 验证回传通过后，相关轮次可标记为最终收口完成。
+- **LLM vs Embed 分离**：LLM（摘要/实体/对话）走 `get_llm_provider()`（云端优先）；Embed 走 `get_embed_provider()`（始终本地 Ollama，默认 `nomic-embed-text:latest`）
+- **Ingest 超时**：前端 `INGEST_TIMEOUT_MS = 300_000`（5分钟）；LLM 输入截断 8000 字符
+- **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`；`lint_report_full_future` 模式先 drop(state) 再 await
+- **API Key 禁止入仓**：`.claude/`、`.codex/`、`.env` 均在 §16.5 禁止提交
+- **Codex 在 WSL**：Rust 编译/测试无法在 WSL 确认，Rust 改动需标注”待 Windows cargo 复核”；Claude Code/Gemini 在 Windows 全链路验证
