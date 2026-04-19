@@ -28,6 +28,7 @@ fn main() {
             commands::get_recent_logs,
             commands::get_recent_wiki_pages,
             commands::search_wiki_pages,
+            commands::search_wiki_paths,
             commands::get_wiki_page_detail,
             commands::get_wiki_page_citations,
             commands::run_lint,

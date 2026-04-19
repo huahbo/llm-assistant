@@ -1,0 +1,15 @@
+[llm]
+# OpenAI-compatible base url. DeepSeek examples:
+# - https://api.deepseek.com
+# - https://api.deepseek.com/v1
+base_url = "https://api.deepseek.com/v1"
+
+# Fill your key locally. Do NOT commit real keys.
+api_key = "YOUR_API_KEY_HERE"
+
+# Example models (adjust to your account):
+model = "deepseek-chat"
+
+# Optional knobs (not used by code yet; reserved)
+timeout_seconds = 60
+max_retries = 2

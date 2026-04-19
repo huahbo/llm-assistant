@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/wiki-core",
+  "crates/wiki-kernel",
+  "crates/wiki-mempalace-bridge",
+  "crates/wiki-storage",
+  "crates/wiki-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"

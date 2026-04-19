@@ -1436,6 +1436,13 @@ export default function App() {
   const [wikiDebugInfoVisible, setWikiDebugInfoVisible] = useState(false);
   const [wikiEditMode, setWikiEditMode] = useState(false);
   const [wikiEditContent, setWikiEditContent] = useState("");
+  // 内链自动补全相关状态
+  const [wikiAutocompleteOpen, setWikiAutocompleteOpen] = useState(false);
+  const [wikiAutocompleteResults, setWikiAutocompleteResults] = useState<string[]>([]);
+  const [wikiAutocompleteIndex, setWikiAutocompleteIndex] = useState(0);
+  const [wikiAutocompleteQuery, setWikiAutocompleteQuery] = useState("");
+  const wikiEditorRef = useRef<HTMLTextAreaElement>(null);
+  const [wikiAutocompletePos, setWikiAutocompletePos] = useState({ top: 0, left: 0 });
   const [wikiSaveRunning, setWikiSaveRunning] = useState(false);
   const [wikiSaveError, setWikiSaveError] = useState("");
   const [wikiDeleteRunning, setWikiDeleteRunning] = useState(false);
@@ -2903,6 +2910,54 @@ export default function App() {
     setWikiEditContent(wikiPageDetail?.content ?? "");
   };
 
+  const handleWikiAutocompleteSelect = (path: string) => {
+    if (!wikiEditorRef.current) return;
+    const textarea = wikiEditorRef.current;
+    const start = textarea.selectionStart;
+    // 替换光标前的 [[... 查询部分
+    const textBefore = wikiEditContent.substring(0, start);
+    const before = textBefore.replace(/\[\[([^\]\n]*)$/, `[[${path}]]`);
+    const after = wikiEditContent.substring(start);
+    const newContent = `${before}${after}`;
+    
+    setWikiEditContent(newContent);
+    setWikiAutocompleteOpen(false);
+    
+    // 延迟聚焦回编辑器并设置光标
+    setTimeout(() => {
+      textarea.focus();
+      const newCursor = before.length;
+      textarea.setSelectionRange(newCursor, newCursor);
+    }, 10);
+  };
+
+  const handleWikiEditorChange = async (val: string) => {
+    setWikiEditContent(val);
+    if (!wikiEditorRef.current) return;
+
+    const textarea = wikiEditorRef.current;
+    const start = textarea.selectionStart;
+    const textBefore = val.substring(0, start);
+    
+    // 匹配光标前的 [[ 及其后的查询词
+    const match = textBefore.match(/\[\[([^\]\n]*)$/);
+    if (match) {
+      const query = match[1];
+      setWikiAutocompleteQuery(query);
+      setWikiAutocompleteOpen(true);
+      setWikiAutocompleteIndex(0);
+      
+      try {
+        const results = await searchWikiPaths(query);
+        setWikiAutocompleteResults(results.slice(0, 10));
+      } catch (e) {
+        console.warn("自动补全搜索失败", e);
+      }
+    } else {
+      setWikiAutocompleteOpen(false);
+    }
+  };
+
   const handleSaveWikiPage = async () => {
     if (!wikiPageDetail) {
       return;
@@ -3522,12 +3577,36 @@ export default function App() {
         </div>
       ) : null}
       {wikiEditMode ? (
-        <div className="wiki-preview__editor-wrap">
+        <div className="wiki-preview__editor-wrap" style={{ position: "relative" }}>
           <textarea
             className="wiki-preview__editor"
+            ref={wikiEditorRef}
             value={wikiEditContent}
-            onChange={(event) => setWikiEditContent(event.target.value)}
+            onChange={(event) => handleWikiEditorChange(event.target.value)}
             onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+              // 自动补全键盘导航
+              if (wikiAutocompleteOpen && wikiAutocompleteResults.length > 0) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setWikiAutocompleteIndex((i) => (i + 1) % wikiAutocompleteResults.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setWikiAutocompleteIndex((i) => (i - 1 + wikiAutocompleteResults.length) % wikiAutocompleteResults.length);
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  handleWikiAutocompleteSelect(wikiAutocompleteResults[wikiAutocompleteIndex]);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  setWikiAutocompleteOpen(false);
+                  return;
+                }
+              }
+
               // Ctrl+S（Windows/Linux）或 Cmd+S（macOS）触发保存
               if ((event.ctrlKey || event.metaKey) && event.key === "s") {
                 event.preventDefault();
@@ -3540,6 +3619,23 @@ export default function App() {
             spellCheck={false}
             rows={16}
           />
+
+          {wikiAutocompleteOpen && wikiAutocompleteResults.length > 0 && (
+            <div className="wikilink-autocomplete">
+              <div className="wikilink-autocomplete__head">插入 Wiki 链接</div>
+              <ul className="wikilink-autocomplete__list">
+                {wikiAutocompleteResults.map((path, idx) => (
+                  <li 
+                    key={path} 
+                    className={`wikilink-autocomplete__item ${idx === wikiAutocompleteIndex ? 'wikilink-autocomplete__item--selected' : ''}`}
+                    onClick={() => handleWikiAutocompleteSelect(path)}
+                  >
+                    {path}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       ) : (
         <div

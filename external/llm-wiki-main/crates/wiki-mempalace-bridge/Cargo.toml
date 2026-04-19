@@ -1,0 +1,18 @@
+[package]
+name = "wiki-mempalace-bridge"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Adapter hooks for optional integration with rust-mempalace (local path)."
+
+[features]
+default = []
+
+[dependencies]
+wiki-core = { path = "../wiki-core" }
+thiserror = "2"
+serde_json = "1"
+
+[dev-dependencies]
+time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["v4"] }

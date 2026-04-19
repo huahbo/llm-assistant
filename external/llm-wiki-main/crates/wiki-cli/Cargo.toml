@@ -1,0 +1,18 @@
+[package]
+name = "wiki-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1"
+wiki-core = { path = "../wiki-core" }
+wiki-kernel = { path = "../wiki-kernel" }
+wiki-mempalace-bridge = { path = "../wiki-mempalace-bridge" }
+wiki-storage = { path = "../wiki-storage" }
+uuid = { version = "1", features = ["v4"] }

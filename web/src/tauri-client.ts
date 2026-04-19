@@ -686,6 +686,25 @@ export async function searchWikiPages(keyword: string): Promise<WikiPageItem[]> 
   }
 }
 
+/** 搜索所有 wiki 页面路径（用于链接自动补全） */
+export async function searchWikiPaths(query: string): Promise<string[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await withTimeout(
+      invoke<string[]>("search_wiki_paths", {
+        query,
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchWikiPageDetail(pagePath: string): Promise<WikiPageDetail | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -1209,4 +1228,10 @@ export async function getAppOverview(): Promise<AppOverview> {
   if (!isTauriRuntime()) return {} as AppOverview;
   const { invoke } = await import('@tauri-apps/api/core');
   return await invoke<AppOverview>('get_app_overview');
+}
+
+export async function searchWikiPaths(query: string): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke<string[]>('search_wiki_paths', { query });
 }

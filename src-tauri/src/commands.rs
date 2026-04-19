@@ -60,6 +60,15 @@ pub fn search_wiki_pages(
     state.search_wiki_pages(keyword, SEARCH_WIKI_LIMIT)
 }
 
+/// 按查询词搜索所有 wiki 页面路径并进行模糊匹配（忽略大小写）。
+#[tauri::command]
+pub fn search_wiki_paths(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    state.search_wiki_paths(query)
+}
+
 /// 读取指定 wiki 页面详情。
 #[tauri::command]
 pub fn get_wiki_page_detail(

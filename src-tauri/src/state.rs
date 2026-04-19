@@ -1679,6 +1679,30 @@ impl AppState {
             .collect())
     }
 
+    /// 获取所有 wiki 页面路径并根据查询进行模糊匹配（忽略大小写）。
+    pub fn search_wiki_paths(
+        &self,
+        query: String,
+    ) -> Result<Vec<String>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        db::ensure_meta_db(&db_path)?;
+        let pages = db::list_all_wiki_pages(&db_path)?;
+
+        let query_lower = query.to_lowercase();
+        Ok(pages
+            .into_iter()
+            .filter(|p| p.path.to_lowercase().contains(&query_lower))
+            .map(|p| p.path)
+            .collect())
+    }
+
     pub fn wiki_page_detail(&self, page_path: String) -> Result<WikiPageDetail, String> {
         let vault_path = {
             let guard = self.inner.lock().expect("状态锁已被污染");

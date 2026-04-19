@@ -565,3 +565,17 @@ pub struct KnowledgeSubgraphData {
     pub links: Vec<KnowledgeGraphLink>,
     pub meta: KnowledgeSubgraphMeta,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagStats {
+    pub tag: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticHealthReport {
+    pub total_pages: usize,
+    pub pages_with_entities: usize,
+    pub average_entities_per_page: f64,
+    pub stale_pages_count: usize,
+}
