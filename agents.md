@@ -204,7 +204,7 @@
 4. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 5. 按 §18.3 TODO 开始下一轮，**必须使用 §14 子代理并行规则**
 
-### 18.1 已完成（截至 2026-04-19）
+### 18.1 已完成（截至 2026-04-19，持续更新）
 
 | 优先级 | 功能 | 状态 |
 |--------|------|------|
@@ -267,6 +267,9 @@
 | P21-B 前端 | 图谱体验升级（左图谱+右详情、分组/孤儿/邻居筛选、适配视图、节点统计） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 | P21-C1 前端 | Global/Local 双模式（前端 BFS 子图）+ Hop 深度 + 布局冻结/恢复 + 偏好持久化 | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 | P21-C2 前端 | 搜索高亮（光晕视觉反馈） + 平滑相机聚焦 + 动态侧边栏搜索结果 | ✅ `web/src/App.tsx` + `web/src/styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
+| BugFix-UI-1 | 启动时 `ingesting` 误判为 true（outbox 历史事件污染）→ 添加快进初始化 `outboxInitialized` + 轮询守卫 | ✅ `web/src/App.tsx`（130 前端，2026-04-19，**Claude Code** 实施） |
+| BugFix-UI-2 | 孤立 wiki 页面（文件删除后 DB 记录残留）→ 启动时 `purge_orphaned_wiki_pages` 自动清理 | ✅ `src-tauri/src/state.rs` + `main.rs`（102 Rust，2026-04-19，**Claude Code** 实施） |
+| BugFix-PDF | PDF 摄入不稳定（15s 超时/LLM 截断/embed 走云端）→ 300s + 8000 char 截断 + `get_embed_provider()` 本地 Ollama | ✅ `state.rs` + `tauri-client.ts`（2026-04-19，**Claude Code** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -304,12 +307,16 @@ web/src/
   styles.css        # 样式（含 graph-module, wiki-stale-banner, lint 分组等）
 ```
 
-### 18.4 验证基线（2026-04-19，Windows 已验证）
+### 18.4 验证基线（2026-04-19 最新，Windows 已验证）
 
 - `cargo test`：**102 passed，0 failed**
 - `npm run test -- --run`：**130 passed，0 failed**
 - `npm run typecheck`：**0 errors**
 - `npm run build`：**通过**（react-force-graph-2d lazy chunk 62KB gzipped）
+
+最新提交（main 分支）：
+- `fix: 修复启动时 ingesting 误判为 true` (0a78418)
+- `feat: 启动时自动清理孤立 wiki 页面` (4f02cd9)
 
 ### 18.5 关键架构约束
 
