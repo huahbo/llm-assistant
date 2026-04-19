@@ -4,7 +4,7 @@ import DOMPurify from "dompurify";
 
 const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import {
-  fetchAppOverview,
+  getAppOverview,
   fetchDefaultPaths,
   fetchLlmStatus,
   fetchLlmConfig,
@@ -1344,7 +1344,7 @@ type LoadResult = {
 
 const loadAppData = async (): Promise<LoadResult> => {
   const [overviewResult, logsResult, pagesResult, llmStatusResult] = await Promise.allSettled([
-    fetchAppOverview(),
+    getAppOverview(),
     fetchRecentLogs(),
     fetchRecentWikiPages(),
     fetchLlmStatus(),

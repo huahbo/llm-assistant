@@ -9,7 +9,7 @@ async-trait = "0.1"
 lopdf = "0.34"
 regex = "1.12.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

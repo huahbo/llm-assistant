@@ -4835,7 +4835,7 @@ fn search_wiki_matches_rrf(
     }
 
     // RRF 融合
-    let fused = reciprocal_rank_fusion(&[fts_paths, link_paths, popular_paths], 60.0);
+    let fused = crate::search::reciprocal_rank_fusion(&[fts_paths, link_paths, popular_paths], 60.0);
 
     // 取 top-(limit*2) 的路径，再用 search_wiki_matches_from_paths 提取摘要和评分
     let top_paths: Vec<String> = fused

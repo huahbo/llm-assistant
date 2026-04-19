@@ -10,42 +10,32 @@ pub struct PageScore {
 
 /// RRF（Reciprocal Rank Fusion）多路召回融合。
 ///
-/// 算法：`score = Σ (1 / (k + rank_i))`，此处 `k = 60`。
+/// 算法：`score = Σ (1 / (k + rank_i))`。
 ///
 /// # 参数
-/// - `fts_results`: 全文检索结果列表
-/// - `vector_results`: 向量检索结果列表
+/// - `results_list`: 多路检索结果（每路仅包含页面路径列表，按原始排名排列）
+/// - `k`: 平滑常数，通常取 60.0
 ///
 /// # 返回
 /// 融合后的页面评分列表，按分数降序排列
 pub fn reciprocal_rank_fusion(
-    fts_results: &[PageScore],
-    vector_results: &[PageScore],
-) -> Vec<PageScore> {
-    let k = 60.0;
+    results_list: &[Vec<String>],
+    k: f64,
+) -> Vec<(String, f64)> {
     let mut acc: HashMap<String, f64> = HashMap::new();
 
-    // 统计 FTS 排名分数
-    for (idx, item) in fts_results.iter().enumerate() {
-        let rank = (idx + 1) as f64;
-        *acc.entry(item.page_path.clone()).or_insert(0.0) += 1.0 / (k + rank);
+    for list in results_list {
+        for (idx, page_path) in list.iter().enumerate() {
+            let rank = (idx + 1) as f64;
+            *acc.entry(page_path.clone()).or_insert(0.0) += 1.0 / (k + rank);
+        }
     }
 
-    // 统计 Vector 排名分数
-    for (idx, item) in vector_results.iter().enumerate() {
-        let rank = (idx + 1) as f64;
-        *acc.entry(item.page_path.clone()).or_insert(0.0) += 1.0 / (k + rank);
-    }
-
-    let mut result: Vec<PageScore> = acc
-        .into_iter()
-        .map(|(page_path, score)| PageScore { page_path, score })
-        .collect();
+    let mut result: Vec<(String, f64)> = acc.into_iter().collect();
 
     // 按分数降序排列
     result.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
+        b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -58,19 +48,13 @@ mod tests {
 
     #[test]
     fn test_reciprocal_rank_fusion() {
-        let fts = vec![
-            PageScore { page_path: "p1".into(), score: 0.9 },
-            PageScore { page_path: "p2".into(), score: 0.8 },
-        ];
-        let vec_res = vec![
-            PageScore { page_path: "p2".into(), score: 0.9 },
-            PageScore { page_path: "p1".into(), score: 0.8 },
-        ];
+        let fts = vec!["p1".into(), "p2".into()];
+        let vec_res = vec!["p2".into(), "p1".into()];
 
-        let fused = reciprocal_rank_fusion(&fts, &vec_res);
+        let fused = reciprocal_rank_fusion(&[fts, vec_res], 60.0);
 
         assert_eq!(fused.len(), 2);
         // p1 和 p2 分数应相等（在两者排名分别为 1 和 2 的情况下）
-        assert!((fused[0].score - fused[1].score).abs() < f64::EPSILON);
+        assert!((fused[0].1 - fused[1].1).abs() < f64::EPSILON);
     }
 }
