@@ -1487,6 +1487,7 @@ export default function App() {
   const [graphLayoutFrozen, setGraphLayoutFrozen] = useState(false);
   const [graphSearchQuery, setGraphSearchQuery] = useState("");
   const [outboxLastId, setOutboxLastId] = useState(0);
+  const [outboxInitialized, setOutboxInitialized] = useState(false);
   const [ingesting, setIngesting] = useState(false);
 
   const graphSearchHits = useMemo(() => {
@@ -1837,8 +1838,26 @@ export default function App() {
     graphRef.current.d3ReheatSimulation?.();
   }, [graphLayoutFrozen, graphVisibleData?.links.length, graphVisibleData?.nodes.length]);
 
+  // 启动时快进 outboxLastId，跳过历史遗留事件，避免旧 ingest_started 使 ingesting 误判为 true。
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const events = await get_outbox_events({ last_id: 0 });
+        if (events && events.length > 0) {
+          const maxId = events.reduce((max, e) => Math.max(max, e.id), 0);
+          setOutboxLastId(maxId);
+        }
+      } catch (err) {
+        console.error("初始化 outbox 快进失败:", err);
+      }
+      setOutboxInitialized(true);
+    };
+    void init();
+  }, []); // 仅在挂载时执行一次
+
   // Outbox 事件轮询：实现 ingest 完成/Wiki 变更后的 UI 自动刷新与状态同步。
   useEffect(() => {
+    if (!outboxInitialized) return; // 等待快进完成后再开始轮询
     let timerId: ReturnType<typeof globalThis.setInterval> | null = null;
     let polling = false;
 
@@ -1897,7 +1916,7 @@ export default function App() {
     return () => {
       if (timerId) globalThis.clearInterval(timerId);
     };
-  }, [outboxLastId, ingesting]);
+  }, [outboxLastId, ingesting, outboxInitialized]);
 
   useEffect(() => {
     let cancelled = false;
