@@ -17,6 +17,8 @@ fn main() {
         .setup(|app| {
             // 注入 AppHandle，供后续 emit 进度事件使用
             app.state::<AppState>().set_app_handle(app.handle().clone());
+            // 启动时清理孤立 wiki 页面（文件已删但 DB 记录残留）
+            app.state::<AppState>().purge_orphaned_wiki_pages();
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -37,6 +39,7 @@ fn main() {
             commands::apply_lint_patches_batch,
             commands::get_recent_lint_patch_events,
             commands::get_llm_status,
+            commands::get_llm_provider_presets,
             commands::init_vault,
             commands::ingest_markdown,
             commands::ingest_file,

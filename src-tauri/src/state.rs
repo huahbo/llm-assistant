@@ -2901,6 +2901,51 @@ Wiki 页面：\n{}",
         })
     }
 
+    /// 启动时清理孤立 wiki 页面：DB 有记录但文件已不存在的条目。
+    /// 在 setup hook 中调用，保证前端首次加载拿到的数据已是干净状态。
+    pub fn purge_orphaned_wiki_pages(&self) {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return; // vault 未配置，跳过
+        };
+
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return;
+        }
+
+        let paths = match db::list_wiki_page_paths(&db_path) {
+            Ok(p) => p,
+            Err(err) => {
+                eprintln!("[purge_orphaned] 读取 wiki_pages 失败: {err}");
+                return;
+            }
+        };
+
+        let mut purged = 0usize;
+        for path_str in &paths {
+            let file_path = std::path::Path::new(path_str);
+            if !file_path.exists() {
+                match db::delete_wiki_page_from_db(&db_path, file_path) {
+                    Ok(()) => {
+                        eprintln!("[purge_orphaned] 已清理孤立记录: {path_str}");
+                        purged += 1;
+                    }
+                    Err(err) => {
+                        eprintln!("[purge_orphaned] 清理失败 {path_str}: {err}");
+                    }
+                }
+            }
+        }
+
+        if purged > 0 {
+            eprintln!("[purge_orphaned] 启动清理完成，共删除 {purged} 条孤立 wiki 页面记录");
+        }
+    }
+
     pub fn save_ask_history_impl(&self, question: &str) -> Result<(), String> {
         let vault_path = {
             let guard = self.inner.lock().expect("状态锁已被污染");
