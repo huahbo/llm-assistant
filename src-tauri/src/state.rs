@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
+use flate2::read::ZlibDecoder;
 
 use tauri::{AppHandle, Emitter};
 
@@ -33,6 +34,7 @@ const STALE_PENDING_TASK_THRESHOLD_MS: u128 = 24 * 60 * 60 * 1000;
 const QUERY_TOP_K_MIN: usize = 1;
 const QUERY_TOP_K_MAX: usize = 8;
 const QUERY_TOP_K_DEFAULT: usize = 3;
+const QUERY_EMBED_ROUTE_MAX_CANDIDATES: usize = 5000;
 
 /// 默认摘要最大 token 数量
 const LLM_SUMMARY_MAX_TOKENS: usize = 200;
@@ -1079,26 +1081,41 @@ impl AppState {
     }
 
     pub async fn ingest_markdown(&self, source_path: PathBuf) -> Result<IngestResult, String> {
+        let source_path_text = source_path.to_string_lossy().to_string();
+
         // 记录开始导入事件
         self.record_outbox_event(
             "ingest_started",
             serde_json::json!({
-                "source_path": source_path.to_string_lossy().to_string(),
+                "source_path": source_path_text.clone(),
                 "task_id": current_timestamp_ms(),
             }),
         );
 
-        let vault_path = {
+        let vault_path_result = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             guard
                 .vault_path
                 .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())
+        };
+        let vault_path = match vault_path_result {
+            Ok(path) => path,
+            Err(err) => {
+                self.record_ingest_failed_event(&source_path_text, &err);
+                return Err(err);
+            }
         };
 
         // 读取源文件内容以生成 LLM 摘要
-        let source_content =
-            fs::read_to_string(&source_path).map_err(|err| format!("读取源文件失败: {}", err))?;
+        let source_content = match fs::read_to_string(&source_path) {
+            Ok(content) => content,
+            Err(err) => {
+                let message = format!("读取源文件失败: {}", err);
+                self.record_ingest_failed_event(&source_path_text, &message);
+                return Err(message);
+            }
+        };
 
         // 步骤1：LLM 摘要生成
         self.emit_progress("ingest_progress", "summarizing", "正在生成摘要（LLM）...");
@@ -1133,6 +1150,7 @@ impl AppState {
             }
             Err(err) => {
                 self.push_log(LogLevel::Warn, format!("Markdown 导入失败: {}", err));
+                self.record_ingest_failed_event(&source_path_text, &err);
                 return Err(err);
             }
         };
@@ -1251,21 +1269,44 @@ impl AppState {
         &self,
         source_path: &str,
     ) -> Result<crate::models::IngestResult, String> {
+        let source_path_text = source_path.trim().to_string();
+
         // 记录开始导入事件
         self.record_outbox_event(
             "ingest_started",
             serde_json::json!({
-                "source_path": source_path,
+                "source_path": source_path_text.clone(),
                 "task_id": current_timestamp_ms(),
             }),
         );
 
-        let source_path_buf = PathBuf::from(source_path);
-        validate_pdf_source_path(&source_path_buf)?;
+        let source_path_buf = PathBuf::from(&source_path_text);
+        if let Err(err) = validate_pdf_source_path(&source_path_buf) {
+            self.record_ingest_failed_event(&source_path_text, &err);
+            return Err(err);
+        }
 
-        let extracted_text = extract_text_from_pdf(&source_path_buf)?;
+        let extracted_text = match extract_text_from_pdf(&source_path_buf) {
+            Ok(text) => text,
+            Err(err) => {
+                let message = if err.contains("扫描件") || err.contains("未识别到可用文本") {
+                    format!(
+                        "{}。若为图片型 PDF，请先转图片后使用“文件摄入 + OCR（tesseract/paddle）”。",
+                        err
+                    )
+                } else {
+                    err
+                };
+                self.record_ingest_failed_event(&source_path_text, &message);
+                return Err(message);
+            }
+        };
         self.ingest_text_via_temp_markdown(&source_path_buf, extracted_text, "pdf")
             .await
+            .map_err(|err| {
+                self.record_ingest_failed_event(&source_path_text, &err);
+                err
+            })
     }
 
     /// 将提取后的纯文本写入临时 Markdown，再复用 ingest_markdown。
@@ -1306,11 +1347,13 @@ impl AppState {
 
     /// 拉取 URL 文本内容后走现有 ingest 流程
     pub async fn ingest_url_impl(&self, url: &str) -> Result<crate::models::IngestResult, String> {
+        let source_url = url.trim().to_string();
+
         // 记录开始导入事件
         self.record_outbox_event(
             "ingest_started",
             serde_json::json!({
-                "source_path": url,
+                "source_path": source_url.clone(),
                 "task_id": current_timestamp_ms(),
             }),
         );
@@ -1319,41 +1362,64 @@ impl AppState {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))?;
+            .map_err(|e| {
+                let message = format!("构建 HTTP 客户端失败：{e}");
+                self.record_ingest_failed_event(&source_url, &message);
+                message
+            })?;
 
         let response = client
-            .get(url)
+            .get(&source_url)
             .header("User-Agent", "llm-wiki/1.0")
             .send()
             .await
-            .map_err(|e| format!("拉取 URL 失败：{e}"))?;
+            .map_err(|e| {
+                let message = format!("拉取 URL 失败：{e}");
+                self.record_ingest_failed_event(&source_url, &message);
+                message
+            })?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(format!("URL 请求失败，HTTP {status}"));
+            let message = format!("URL 请求失败，HTTP {status}");
+            self.record_ingest_failed_event(&source_url, &message);
+            return Err(message);
         }
 
         let text = response
             .text()
             .await
-            .map_err(|e| format!("读取响应内容失败：{e}"))?;
+            .map_err(|e| {
+                let message = format!("读取响应内容失败：{e}");
+                self.record_ingest_failed_event(&source_url, &message);
+                message
+            })?;
 
         if text.trim().is_empty() {
-            return Err("URL 返回内容为空".to_string());
+            let message = "URL 返回内容为空".to_string();
+            self.record_ingest_failed_event(&source_url, &message);
+            return Err(message);
         }
 
         // 2. 将文本写入临时 Markdown 文件，复用 ingest_markdown
         let tmp_path = std::env::temp_dir().join(format!("llm_wiki_url_{}.md", uuid_v4_short()));
         tokio::fs::write(&tmp_path, &text)
             .await
-            .map_err(|e| format!("写入临时文件失败：{e}"))?;
+            .map_err(|e| {
+                let message = format!("写入临时文件失败：{e}");
+                self.record_ingest_failed_event(&source_url, &message);
+                message
+            })?;
 
         let result = self.ingest_markdown(tmp_path.clone()).await;
 
         // 3. 清理临时文件（忽略错误）
         let _ = tokio::fs::remove_file(&tmp_path).await;
 
-        result
+        result.map_err(|err| {
+            self.record_ingest_failed_event(&source_url, &err);
+            err
+        })
     }
 
     /// 用 LLM 从文档内容中提取关键实体（LLM 不可用时返回空列表）。
@@ -2525,6 +2591,53 @@ Wiki 页面：\n{}",
             .await
     }
 
+    async fn query_embedding_route_paths(
+        &self,
+        db_path: &Path,
+        question: &str,
+        limit: usize,
+    ) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let trimmed = question.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+
+        let candidate_limit = (limit.saturating_mul(20))
+            .max(limit)
+            .min(QUERY_EMBED_ROUTE_MAX_CANDIDATES);
+        let candidates = match db::list_embeddings(db_path, candidate_limit) {
+            Ok(items) => items,
+            Err(err) => {
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("读取 embedding 候选失败，已跳过 embedding 召回: {}", err),
+                );
+                return Vec::new();
+            }
+        };
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        self.emit_progress("query_progress", "embedding", "正在执行 embedding 召回...");
+        match self.get_embed_provider().embed(trimmed).await {
+            Ok(query_embedding) => {
+                crate::search::rank_embedding_paths_by_cosine(&query_embedding, &candidates, limit)
+            }
+            Err(err) => {
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("embedding 召回失败，已跳过该检索路径: {}", err),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     pub async fn query_ask_with_options(
         &self,
         question: String,
@@ -2549,12 +2662,24 @@ Wiki 页面：\n{}",
 
         // 步骤1：多路 RRF 融合检索
         self.emit_progress("query_progress", "searching", "多路 RRF 检索中...");
-        let (matches, search_strategy, fts_error) = search_wiki_matches_rrf(
+        let embedding_paths = if tokens.is_empty() {
+            Vec::new()
+        } else {
+            self.query_embedding_route_paths(&db_path, &normalized_question, top_k * 4)
+                .await
+        };
+        let extra_routes = if embedding_paths.is_empty() {
+            Vec::new()
+        } else {
+            vec![embedding_paths]
+        };
+        let (matches, search_strategy, fts_error) = search_wiki_matches_rrf_with_extra_routes(
             &db_path,
             &wiki_dir,
             &tokens,
             &normalized_question,
             top_k,
+            &extra_routes,
         )?;
 
         if let Some(err) = fts_error {
@@ -3114,12 +3239,24 @@ Wiki 页面：\n{}",
 
         // 多路 RRF 融合检索
         self.emit_progress("query_progress", "searching", "多路 RRF 检索中...");
-        let (matches, search_strategy, fts_error) = search_wiki_matches_rrf(
+        let embedding_paths = if tokens.is_empty() {
+            Vec::new()
+        } else {
+            self.query_embedding_route_paths(&db_path, &normalized_question, top_k * 4)
+                .await
+        };
+        let extra_routes = if embedding_paths.is_empty() {
+            Vec::new()
+        } else {
+            vec![embedding_paths]
+        };
+        let (matches, search_strategy, fts_error) = search_wiki_matches_rrf_with_extra_routes(
             &db_path,
             &wiki_dir,
             &tokens,
             &normalized_question,
             top_k,
+            &extra_routes,
         )
         .map_err(|e| {
             // 清理取消标志
@@ -3424,6 +3561,17 @@ Wiki 页面：\n{}",
     fn push_log(&self, level: LogLevel, message: String) {
         let mut guard = self.inner.lock().expect("状态锁已被污染");
         guard.push_log(level, message, current_timestamp_ms());
+    }
+
+    /// 记录 ingest 失败事件，供前端结束“处理中”状态并展示失败上下文。
+    fn record_ingest_failed_event(&self, source_path: &str, error_message: &str) {
+        self.record_outbox_event(
+            "ingest_failed",
+            serde_json::json!({
+                "source_path": source_path,
+                "error": error_message,
+            }),
+        );
     }
 
     /// 计算 outbox 对应的数据库路径（Vault 未初始化时返回 None）。
@@ -3965,27 +4113,240 @@ fn shorten_error_snippet(message: &str, max_chars: usize) -> String {
 }
 
 fn extract_text_from_pdf(source_path: &Path) -> Result<String, String> {
-    let document = lopdf::Document::load(source_path)
-        .map_err(|_| "读取 PDF 失败，文件内容可能不是有效 PDF".to_string())?;
-    let pages = document.get_pages();
-    let page_numbers: Vec<u32> = pages.keys().copied().collect();
+    let file_bytes =
+        fs::read(source_path).map_err(|err| format!("读取 PDF 原始字节失败：{}", err))?;
+    let mut parse_error: Option<String> = None;
 
-    if page_numbers.is_empty() {
-        return Err("PDF 不包含可读取页面".to_string());
-    }
+    match load_pdf_document_with_fallback(source_path, &file_bytes) {
+        Ok(document) => {
+            let pages = document.get_pages();
+            let page_numbers: Vec<u32> = pages.keys().copied().collect();
 
-    // 优先使用 lopdf 内置提取；失败时再走操作符降级解析。
-    if let Ok(text) = document.extract_text(&page_numbers) {
-        if let Some(normalized) = normalize_extracted_pdf_text(&text) {
-            return Ok(normalized);
+            if !page_numbers.is_empty() {
+                // 优先使用 lopdf 内置提取；失败时再走操作符降级解析。
+                if let Ok(text) = document.extract_text(&page_numbers) {
+                    if let Some(normalized) = normalize_extracted_pdf_text(&text) {
+                        return Ok(normalized);
+                    }
+                }
+
+                if let Some(text) = extract_text_from_pdf_fallback_ops(&document, &pages) {
+                    return Ok(text);
+                }
+            }
+        }
+        Err(err) => {
+            parse_error = Some(err);
         }
     }
 
-    if let Some(text) = extract_text_from_pdf_fallback_ops(&document, &pages) {
+    // 兼容兜底：尝试使用独立解析实现（pdf-extract）提取文本。
+    if let Some(text) = extract_text_from_pdf_with_pdf_extract(&file_bytes) {
         return Ok(text);
     }
 
+    // 当结构化解析失败时，尝试直接扫描 stream 并解压文本内容流。
+    if let Some(text) = extract_text_from_pdf_raw_streams(&file_bytes) {
+        return Ok(text);
+    }
+
+    if let Some(error_message) = parse_error {
+        return Err(format!(
+            "{}；并且未从原始流中提取到可用文本，可能是扫描件或字体编码不兼容",
+            error_message
+        ));
+    }
+
     Err("提取 PDF 文本失败：未识别到可用文本，可能是扫描件或字体编码不兼容".to_string())
+}
+
+/// 兼容加载 PDF：标准加载失败后，尝试对二进制做轻量修复再重试。
+/// 目的：避免“阅读器可打开但解析器严格失败”的误判。
+fn load_pdf_document_with_fallback(
+    source_path: &Path,
+    file_bytes: &[u8],
+) -> Result<lopdf::Document, String> {
+    let primary_error = match lopdf::Document::load(source_path) {
+        Ok(document) => return Ok(document),
+        Err(err) => err,
+    };
+    let mut attempt_reasons = vec![format!(
+        "标准加载失败：{}",
+        shorten_error_snippet(&primary_error.to_string(), 80)
+    )];
+
+    if let Ok(document) = lopdf::Document::load_mem(file_bytes) {
+        return Ok(document);
+    }
+    attempt_reasons.push("内存直读失败".to_string());
+
+    let pdf_header_offset = find_subsequence(file_bytes, b"%PDF-");
+    let pdf_eof_end = rfind_subsequence(file_bytes, b"%%EOF").map(|idx| idx + 5);
+
+    if let Some(start) = pdf_header_offset.filter(|offset| *offset > 0) {
+        if let Ok(document) = lopdf::Document::load_mem(&file_bytes[start..]) {
+            return Ok(document);
+        }
+        attempt_reasons.push(format!("头偏移修复失败(start={})", start));
+    }
+
+    if let Some(end) = pdf_eof_end.filter(|offset| *offset < file_bytes.len()) {
+        if let Ok(document) = lopdf::Document::load_mem(&file_bytes[..end]) {
+            return Ok(document);
+        }
+        attempt_reasons.push(format!("EOF 截断修复失败(end={})", end));
+    }
+
+    if let (Some(start), Some(end)) = (pdf_header_offset, pdf_eof_end) {
+        if start < end && (start > 0 || end < file_bytes.len()) {
+            if let Ok(document) = lopdf::Document::load_mem(&file_bytes[start..end]) {
+                return Ok(document);
+            }
+            attempt_reasons.push(format!("头尾联合修复失败(range={}..{})", start, end));
+        }
+    }
+
+    Err(format!(
+        "读取 PDF 失败：当前解析器暂不兼容该文件结构。可在阅读器中“另存为”后重试，或转图片后使用 OCR。{}",
+        attempt_reasons.join("；")
+    ))
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(haystack.len());
+    }
+    haystack.windows(needle.len()).rposition(|window| window == needle)
+}
+
+/// 无法建模 PDF 结构时，直接从原始 stream 中提取可解码文本。
+fn extract_text_from_pdf_raw_streams(file_bytes: &[u8]) -> Option<String> {
+    const STREAM_MARKER: &[u8] = b"stream";
+    const ENDSTREAM_MARKER: &[u8] = b"endstream";
+
+    let mut extracted_chunks = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < file_bytes.len() {
+        let Some(stream_rel) = find_subsequence(&file_bytes[cursor..], STREAM_MARKER) else {
+            break;
+        };
+        let stream_marker_index = cursor + stream_rel;
+        let mut stream_content_start = stream_marker_index + STREAM_MARKER.len();
+        if stream_content_start >= file_bytes.len() {
+            break;
+        }
+
+        // PDF stream 正文前通常紧跟换行。
+        if file_bytes[stream_content_start..].starts_with(b"\r\n") {
+            stream_content_start += 2;
+        } else if file_bytes[stream_content_start..].starts_with(b"\n")
+            || file_bytes[stream_content_start..].starts_with(b"\r")
+        {
+            stream_content_start += 1;
+        }
+
+        let Some(endstream_rel) =
+            find_subsequence(&file_bytes[stream_content_start..], ENDSTREAM_MARKER)
+        else {
+            break;
+        };
+        let stream_content_end = stream_content_start + endstream_rel;
+        if stream_content_end <= stream_content_start {
+            cursor = stream_content_end.saturating_add(ENDSTREAM_MARKER.len());
+            continue;
+        }
+
+        let stream_bytes = &file_bytes[stream_content_start..stream_content_end];
+        let candidates = decode_pdf_stream_candidates(stream_bytes);
+        for candidate in candidates {
+            let Ok(content) = lopdf::content::Content::decode(&candidate) else {
+                continue;
+            };
+            let decoded_text = extract_text_from_pdf_operations(&content.operations);
+            let Some(normalized_text) = normalize_extracted_pdf_text(&decoded_text) else {
+                continue;
+            };
+            if is_likely_meaningful_pdf_text(&normalized_text) {
+                extracted_chunks.push(normalized_text);
+            }
+        }
+
+        cursor = stream_content_end + ENDSTREAM_MARKER.len();
+    }
+
+    if extracted_chunks.is_empty() {
+        None
+    } else {
+        normalize_extracted_pdf_text(&extracted_chunks.join("\n\n"))
+    }
+}
+
+/// 为每个 stream 提供原始字节与 Flate 解压字节两个候选。
+fn decode_pdf_stream_candidates(stream_bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut candidates = Vec::with_capacity(2);
+    if !stream_bytes.is_empty() {
+        candidates.push(stream_bytes.to_vec());
+    }
+
+    let mut decoded = Vec::new();
+    let mut decoder = ZlibDecoder::new(stream_bytes);
+    if decoder.read_to_end(&mut decoded).is_ok() && !decoded.is_empty() {
+        candidates.push(decoded);
+    } else {
+        let mut trimmed_len = stream_bytes.len();
+        while trimmed_len > 0
+            && (stream_bytes[trimmed_len - 1] == b'\r' || stream_bytes[trimmed_len - 1] == b'\n')
+        {
+            trimmed_len -= 1;
+        }
+        let mut decoded_trimmed = Vec::new();
+        let mut decoder_trimmed = ZlibDecoder::new(&stream_bytes[..trimmed_len]);
+        if decoder_trimmed.read_to_end(&mut decoded_trimmed).is_ok() && !decoded_trimmed.is_empty()
+        {
+            candidates.push(decoded_trimmed);
+        }
+    }
+
+    candidates
+}
+
+fn is_likely_meaningful_pdf_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.chars().count() < 12 {
+        return false;
+    }
+
+    let ascii_letters = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
+    let cjk_chars = trimmed
+        .chars()
+        .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
+        .count();
+    let meaningful_chars = ascii_letters + cjk_chars;
+    let total_chars = trimmed.chars().count();
+
+    meaningful_chars * 100 / total_chars >= 18
+}
+
+/// 使用 pdf-extract 作为解析器独立兜底，提升异常结构 PDF 兼容性。
+fn extract_text_from_pdf_with_pdf_extract(file_bytes: &[u8]) -> Option<String> {
+    let extracted = pdf_extract::extract_text_from_mem(file_bytes).ok()?;
+    let normalized = normalize_extracted_pdf_text(&extracted)?;
+    if is_likely_meaningful_pdf_text(&normalized) {
+        Some(normalized)
+    } else {
+        None
+    }
 }
 
 fn normalize_extracted_pdf_text(text: &str) -> Option<String> {
@@ -4936,15 +5297,16 @@ fn search_wiki_matches_with_fts(
     }
 }
 
-/// 三路 RRF 融合检索：FTS5 + 链接扩展 + Citation 热度。
+/// 多路 RRF 融合检索：FTS5 + 链接扩展 + Citation 热度 + 可选扩展路径（如 embedding）。
 ///
 /// 若所有路径均为空（如空 vault），自动降级为 `search_wiki_matches_with_fts`。
-fn search_wiki_matches_rrf(
+fn search_wiki_matches_rrf_with_extra_routes(
     db_path: &Path,
     wiki_dir: &Path,
     tokens: &[String],
     question: &str,
     limit: usize,
+    extra_routes: &[Vec<String>],
 ) -> Result<(Vec<WikiMatch>, &'static str, Option<String>), String> {
     if tokens.is_empty() {
         return Ok((Vec::new(), "empty", None));
@@ -4966,13 +5328,20 @@ fn search_wiki_matches_rrf(
     // 路径3：Citation 热度
     let popular_paths = db::query_citation_popular_paths(db_path, limit * 4).unwrap_or_default();
 
-    // 如果三路全空，降级到原有单路逻辑
-    if fts_paths.is_empty() && link_paths.is_empty() && popular_paths.is_empty() {
+    let mut routes = vec![fts_paths.clone(), link_paths, popular_paths];
+    for route in extra_routes {
+        if !route.is_empty() {
+            routes.push(route.clone());
+        }
+    }
+
+    // 如果所有路径全空，降级到原有单路逻辑
+    if routes.iter().all(|route| route.is_empty()) {
         return search_wiki_matches_with_fts(db_path, wiki_dir, tokens, question, limit);
     }
 
     // RRF 融合
-    let fused = crate::search::reciprocal_rank_fusion(&[fts_paths, link_paths, popular_paths], 60.0);
+    let fused = reciprocal_rank_fusion(&routes, 60.0);
 
     // 取 top-(limit*2) 的路径，再用 search_wiki_matches_from_paths 提取摘要和评分
     let top_paths: Vec<String> = fused
@@ -4993,6 +5362,17 @@ fn search_wiki_matches_rrf(
     }
 
     Ok((matches, "rrf", fts_error))
+}
+
+/// 三路 RRF 融合检索：FTS5 + 链接扩展 + Citation 热度。
+fn search_wiki_matches_rrf(
+    db_path: &Path,
+    wiki_dir: &Path,
+    tokens: &[String],
+    question: &str,
+    limit: usize,
+) -> Result<(Vec<WikiMatch>, &'static str, Option<String>), String> {
+    search_wiki_matches_rrf_with_extra_routes(db_path, wiki_dir, tokens, question, limit, &[])
 }
 
 fn search_wiki_matches_from_paths(
@@ -5945,6 +6325,61 @@ mod tests {
         assert!(extracted.contains("Fallback Works"));
     }
 
+    #[test]
+    fn extract_text_from_pdf_raw_streams_extracts_text_from_flate_stream() {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+
+        let content = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("BT", vec![]),
+                lopdf::content::Operation::new(
+                    "Tj",
+                    vec![lopdf::Object::String(
+                        b"Gradient Tensor".to_vec(),
+                        lopdf::StringFormat::Literal,
+                    )],
+                ),
+                lopdf::content::Operation::new("ET", vec![]),
+            ],
+        };
+        let encoded = content.encode().expect("编码内容流失败");
+        let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
+        compressor
+            .write_all(&encoded)
+            .expect("压缩内容流失败");
+        let compressed = compressor.finish().expect("完成压缩失败");
+
+        let mut pseudo_pdf = Vec::new();
+        pseudo_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Length ");
+        pseudo_pdf.extend_from_slice(compressed.len().to_string().as_bytes());
+        pseudo_pdf.extend_from_slice(b" /Filter /FlateDecode >>\nstream\n");
+        pseudo_pdf.extend_from_slice(&compressed);
+        pseudo_pdf.extend_from_slice(b"\nendstream\n%%EOF");
+
+        let extracted = extract_text_from_pdf_raw_streams(&pseudo_pdf)
+            .expect("应能从 Flate stream 提取文本");
+        assert!(extracted.contains("Gradient Tensor"));
+    }
+
+    #[test]
+    fn decode_pdf_stream_candidates_supports_trailing_newline() {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+
+        let payload = b"BT\n(Hello Stream)\nTj\nET";
+        let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
+        compressor.write_all(payload).expect("压缩 payload 失败");
+        let mut compressed = compressor.finish().expect("完成压缩失败");
+        compressed.extend_from_slice(b"\r\n");
+
+        let candidates = decode_pdf_stream_candidates(&compressed);
+        assert!(candidates.iter().any(|candidate| {
+            let text = String::from_utf8_lossy(candidate);
+            text.contains("Hello Stream")
+        }));
+    }
+
     #[tokio::test]
     async fn ingest_pdf_impl_rejects_invalid_pdf_content_with_readable_error() {
         let vault_dir = make_temp_dir("llm-wiki-ingest-pdf-invalid");
@@ -5958,7 +6393,15 @@ mod tests {
             .await
             .expect_err("非法 PDF 内容应返回错误");
         assert!(err.contains("读取 PDF 失败"));
-        assert!(err.contains("有效 PDF"));
+        assert!(err.contains("解析器暂不兼容"));
+    }
+
+    #[test]
+    fn find_subsequence_returns_expected_offsets() {
+        let bytes = b"abc%PDF-1.4...%%EOFtail";
+        assert_eq!(find_subsequence(bytes, b"%PDF-"), Some(3));
+        assert_eq!(rfind_subsequence(bytes, b"%%EOF"), Some(14));
+        assert_eq!(find_subsequence(bytes, b"not-found"), None);
     }
 
     #[test]
@@ -7643,6 +8086,34 @@ entities:
         assert!(result.is_ok());
         let (matches, _, _) = result.unwrap();
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn search_wiki_matches_rrf_accepts_embedding_extra_route() {
+        let tmp = make_temp_dir("llm-wiki-rrf-extra-route");
+        let _guard = TempDirGuard(tmp.clone());
+        let db_path = tmp.join("meta.db");
+        let wiki_dir = tmp.join("wiki");
+        fs::create_dir_all(&wiki_dir).unwrap();
+
+        let page_path = wiki_dir.join("embedding-only.md");
+        fs::write(&page_path, "# Embedding\n\nRust embedding recall path").unwrap();
+
+        let tokens = vec!["rust".to_string()];
+        let extra_routes = vec![vec![page_path.to_string_lossy().to_string()]];
+        let result = search_wiki_matches_rrf_with_extra_routes(
+            &db_path,
+            &wiki_dir,
+            &tokens,
+            "rust",
+            3,
+            &extra_routes,
+        )
+        .expect("执行含 embedding 扩展路径的 RRF 失败");
+
+        assert_eq!(result.1, "rrf");
+        assert_eq!(result.0.len(), 1);
+        assert!(result.0[0].page_path.ends_with("embedding-only.md"));
     }
 
     #[test]

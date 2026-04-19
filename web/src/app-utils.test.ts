@@ -26,6 +26,7 @@ import {
   isGraphViewMode,
   normalizeWikiPathForCompare,
   shouldUseBackendSubgraph,
+  buildAggregatedGraphData,
   readGraphLocalDirectionFromStorage,
   readGraphLocalDepthFromStorage,
   readGraphViewModeFromStorage,
@@ -711,6 +712,44 @@ describe("图谱过滤与邻居模式", () => {
   });
 });
 
+describe("图谱聚合模式", () => {
+  it("按 group 折叠大组并合并跨组边", () => {
+    const aggregated = buildAggregatedGraphData(
+      [
+        { id: "A", label: "A", group: "g1" },
+        { id: "B", label: "B", group: "g1" },
+        { id: "C", label: "C", group: "g2" },
+      ],
+      [
+        { sourceId: "A", targetId: "B" }, // 同组边，应被去除
+        { sourceId: "A", targetId: "C" },
+        { sourceId: "B", targetId: "C" },
+      ],
+    );
+
+    const nodeIds = aggregated.nodes.map((node) => node.id).sort();
+    expect(nodeIds).toEqual(["C", "g1"]);
+    const g1Node = aggregated.nodes.find((node) => node.id === "g1");
+    expect(g1Node?.isAggregate).toBe(true);
+    expect(g1Node?.count).toBe(2);
+    expect(aggregated.links).toEqual([{ source: "g1", target: "C", weight: 2 }]);
+  });
+
+  it("group 节点数不足阈值时保持原节点", () => {
+    const aggregated = buildAggregatedGraphData(
+      [
+        { id: "A", label: "A", group: "g1" },
+        { id: "B", label: "B", group: "g2" },
+      ],
+      [{ sourceId: "A", targetId: "B" }],
+      3,
+    );
+
+    expect(aggregated.nodes.map((node) => node.id).sort()).toEqual(["A", "B"]);
+    expect(aggregated.links).toEqual([{ source: "A", target: "B", weight: 1 }]);
+  });
+});
+
 describe("状态提示自动收起策略", () => {
   it("成功类消息可自动收起", () => {
     expect(shouldAutoDismissStatusMessage("已打开页面：ingest-1")).toBe(true);
@@ -1139,6 +1178,13 @@ describe("PDF 摄入错误文案映射", () => {
     expect(result).toContain("PDF 摄入失败：读取 PDF 失败");
     expect(result).toContain("...");
     expect(result).not.toContain(raw);
+  });
+
+  it("解析器兼容性错误映射为另存为重试提示", () => {
+    const result = formatPdfIngestErrorMessage(
+      "读取 PDF 失败：当前解析器暂不兼容该文件结构。可在阅读器中另存为后重试。",
+    );
+    expect(result).toContain("当前解析器暂不兼容该结构");
   });
 });
 

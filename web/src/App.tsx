@@ -1,4 +1,4 @@
-import { Component, type KeyboardEvent, lazy, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -396,6 +396,111 @@ export type GraphNormalizedEdge = {
   targetId: string;
 };
 
+// ---- 图谱聚合模式类型与常量 ----
+
+/** 大图聚合模式触发阈值（节点数超过此值时可启用） */
+export const GRAPH_AGGREGATE_THRESHOLD = 200;
+
+/** 聚合后的超节点 */
+export type AggregatedNode = {
+  id: string;        // group name 或 page path（ungrouped）
+  label: string;     // group name + " (N)" 或原 label
+  group: string;
+  isAggregate: boolean;  // true = 超节点
+  count: number;     // 聚合了多少个原始节点
+};
+
+/** 聚合后的边（weight 为折叠的边数） */
+export type AggregatedEdge = {
+  source: string;
+  target: string;
+  weight: number;
+};
+
+/** 聚合后的图谱数据结构 */
+export type AggregatedGraphData = {
+  nodes: AggregatedNode[];
+  links: AggregatedEdge[];
+};
+
+/**
+ * 将原始 KnowledgeGraphData 按 group 聚合：
+ * - group 内节点数 >= groupMinSize 的节点合并为超节点
+ * - 其余节点（ungrouped 或小组）保持原样
+ * - 同组内部的边（自环）去除
+ * - 跨超节点的多条边合并（weight 累加）
+ */
+export function buildAggregatedGraphData(
+  nodes: KnowledgeGraphNode[],
+  links: GraphNormalizedEdge[],
+  groupMinSize: number = 2,
+): AggregatedGraphData {
+  if (nodes.length === 0) {
+    return { nodes: [], links: [] };
+  }
+
+  // 统计每个 group 的节点数
+  const groupCount = new Map<string, number>();
+  for (const node of nodes) {
+    if (node.group) {
+      groupCount.set(node.group, (groupCount.get(node.group) ?? 0) + 1);
+    }
+  }
+
+  // 判断某个 group 是否需要聚合
+  const shouldAggregate = (group: string): boolean =>
+    Boolean(group) && (groupCount.get(group) ?? 0) >= groupMinSize;
+
+  // 构建 nodeId -> 超节点 id 的映射
+  const nodeToAgg = new Map<string, string>();
+  for (const node of nodes) {
+    if (shouldAggregate(node.group)) {
+      nodeToAgg.set(node.id, node.group);
+    } else {
+      nodeToAgg.set(node.id, node.id);
+    }
+  }
+
+  // 构建超节点列表
+  const aggNodeMap = new Map<string, AggregatedNode>();
+  for (const node of nodes) {
+    const aggId = nodeToAgg.get(node.id)!;
+    if (!aggNodeMap.has(aggId)) {
+      const isAgg = shouldAggregate(node.group);
+      aggNodeMap.set(aggId, {
+        id: aggId,
+        label: isAgg ? `${node.group} (${groupCount.get(node.group)})` : node.label,
+        group: node.group,
+        isAggregate: isAgg,
+        count: isAgg ? (groupCount.get(node.group) ?? 1) : 1,
+      });
+    }
+  }
+
+  // 构建聚合边（去除自环，合并重复边）
+  const edgeWeightMap = new Map<string, number>();
+  for (const link of links) {
+    const srcAgg = nodeToAgg.get(link.sourceId);
+    const tgtAgg = nodeToAgg.get(link.targetId);
+    if (!srcAgg || !tgtAgg) continue;
+    // 去除自环（同组间的边）
+    if (srcAgg === tgtAgg) continue;
+    const key = `${srcAgg}|||${tgtAgg}`;
+    edgeWeightMap.set(key, (edgeWeightMap.get(key) ?? 0) + 1);
+  }
+
+  const aggLinks: AggregatedEdge[] = [];
+  for (const [key, weight] of edgeWeightMap) {
+    const [source, target] = key.split("|||");
+    aggLinks.push({ source, target, weight });
+  }
+
+  return {
+    nodes: Array.from(aggNodeMap.values()),
+    links: aggLinks,
+  };
+}
+
 export type GraphViewMode = "global" | "local";
 export type GraphTraversalDirection = "both" | "out" | "in";
 export const GRAPH_VIEW_MODE_STORAGE_KEY = "llm_wiki_graph_view_mode_v1";
@@ -688,6 +793,12 @@ export const formatPdfIngestErrorMessage = (error: unknown) => {
   if (normalized.includes("tounicode") || normalized.includes("cmap")) {
     friendlyReason = "PDF 字体映射解析失败，建议先用 PDF 工具另存为新文件后重试。";
   } else if (
+    normalized.includes("解析器暂不兼容")
+    || normalized.includes("结构不兼容")
+    || normalized.includes("parser")
+  ) {
+    friendlyReason = "PDF 文件可打开，但当前解析器暂不兼容该结构，建议先在阅读器中另存为新 PDF 后重试。";
+  } else if (
     normalized.includes("未提取到任何文本")
     || normalized.includes("未提取到可用文本")
     || normalized.includes("empty text")
@@ -695,7 +806,11 @@ export const formatPdfIngestErrorMessage = (error: unknown) => {
     || normalized.includes("扫描件")
   ) {
     friendlyReason = "PDF 中没有可提取文本，可能是扫描件或图片型文档，建议先做 OCR。";
-  } else if (normalized.includes("is not a pdf") || normalized.includes("不是 pdf")) {
+  } else if (
+    normalized.includes("is not a pdf")
+    || normalized.includes("不是 pdf")
+    || normalized.includes("扩展名错误")
+  ) {
     friendlyReason = "文件类型不是有效的 PDF，请检查路径或文件格式。";
   }
 
@@ -1490,26 +1605,13 @@ export default function App() {
   const [outboxInitialized, setOutboxInitialized] = useState(false);
   const [ingesting, setIngesting] = useState(false);
 
-  const graphSearchHits = useMemo(() => {
-    const query = graphSearchQuery.trim().toLowerCase();
-    if (!query || !graphData) {
-      return new Set<string>();
-    }
-    const hits = new Set<string>();
-    for (const node of graphData.nodes) {
-      if (
-        (node.label || "").toLowerCase().includes(query) ||
-        (node.id || "").toLowerCase().includes(query)
-      ) {
-        hits.add(node.id);
-      }
-    }
-    return hits;
-  }, [graphSearchQuery, graphData]);
-
   const graphContainerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
+  // 图谱搜索框 ref，用于 Ctrl+F 聚焦
+  const graphSearchInputRef = useRef<HTMLInputElement>(null);
   const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
+  // 聚合模式开关（大图时按 group 折叠超节点）
+  const [graphAggregateMode, setGraphAggregateMode] = useState(false);
   // 当前激活的导航模块
   const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
 
@@ -1692,22 +1794,7 @@ export default function App() {
 
   // 切换到 graph 模块时加载图谱数据
   useEffect(() => {
-    if (activeModule !== "graph") return;
-    void (async () => {
-      setGraphLoading(true);
-      setGraphError("");
-      try {
-        const data = await getKnowledgeGraph();
-        setGraphData(data);
-      } catch (err) {
-        console.error("图谱加载失败:", err);
-        const message = err instanceof Error ? err.message : String(err);
-        setGraphData(null);
-        setGraphError(`图谱加载失败：${message}`);
-      } finally {
-        setGraphLoading(false);
-      }
-    })();
+    void refreshGraphData();
   }, [activeModule]);
 
   // 大图 Local 模式切换到后端子图计算，避免前端 BFS 在高规模图上卡顿。
@@ -1826,6 +1913,82 @@ export default function App() {
     writeGraphLocalDirectionToStorage(graphLocalDirection);
   }, [graphLocalDirection]);
 
+  // 图谱 tab 激活时注册 Ctrl+F 快捷键聚焦搜索框
+  useEffect(() => {
+    if (activeModule !== "graph") return;
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        graphSearchInputRef.current?.focus();
+        graphSearchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeModule]);
+
+  // 大图聚合模式：将原始图谱按 group 折叠为超节点
+  const aggregatedGraphData = useMemo<AggregatedGraphData | null>(() => {
+    if (!graphAggregateMode || !graphVisibleData) return null;
+    if (graphVisibleData.nodes.length <= GRAPH_AGGREGATE_THRESHOLD) return null;
+    // 将 KnowledgeGraphData 的 links 转为 GraphNormalizedEdge 格式
+    const normalizedForAgg: GraphNormalizedEdge[] = graphVisibleData.links.map((link) => {
+      const srcId = typeof link.source === "string" ? link.source : (link.source as KnowledgeGraphNode).id;
+      const tgtId = typeof link.target === "string" ? link.target : (link.target as KnowledgeGraphNode).id;
+      return { sourceId: srcId, targetId: tgtId };
+    });
+    return buildAggregatedGraphData(graphVisibleData.nodes, normalizedForAgg);
+  }, [graphAggregateMode, graphVisibleData]);
+
+  const graphRenderData = useMemo<
+    | {
+        nodes: Array<KnowledgeGraphNode | AggregatedNode>;
+        links: Array<KnowledgeGraphLink | AggregatedEdge>;
+      }
+    | null
+  >(() => {
+    if (!graphVisibleData) {
+      return null;
+    }
+    if (aggregatedGraphData) {
+      return {
+        nodes: aggregatedGraphData.nodes,
+        links: aggregatedGraphData.links,
+      };
+    }
+    return graphVisibleData;
+  }, [aggregatedGraphData, graphVisibleData]);
+
+  const graphSearchableNodes = useMemo<Array<KnowledgeGraphNode | AggregatedNode>>(() => {
+    if (!graphRenderData) {
+      return [];
+    }
+    return graphRenderData.nodes;
+  }, [graphRenderData]);
+
+  const graphSearchHits = useMemo(() => {
+    const query = graphSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return new Set<string>();
+    }
+    const hits = new Set<string>();
+    for (const node of graphSearchableNodes) {
+      if (
+        (node.label || "").toLowerCase().includes(query) ||
+        (node.id || "").toLowerCase().includes(query)
+      ) {
+        hits.add(node.id);
+      }
+    }
+    return hits;
+  }, [graphSearchQuery, graphSearchableNodes]);
+
+  useEffect(() => {
+    if ((graphVisibleData?.nodes.length ?? 0) <= GRAPH_AGGREGATE_THRESHOLD && graphAggregateMode) {
+      setGraphAggregateMode(false);
+    }
+  }, [graphAggregateMode, graphVisibleData?.nodes.length]);
+
   useEffect(() => {
     if (!graphRef.current) {
       return;
@@ -1836,7 +1999,7 @@ export default function App() {
     }
     graphRef.current.resumeAnimation?.();
     graphRef.current.d3ReheatSimulation?.();
-  }, [graphLayoutFrozen, graphVisibleData?.links.length, graphVisibleData?.nodes.length]);
+  }, [graphLayoutFrozen, graphRenderData?.links.length, graphRenderData?.nodes.length]);
 
   // 启动时快进 outboxLastId，跳过历史遗留事件，避免旧 ingest_started 使 ingesting 误判为 true。
   useEffect(() => {
@@ -1879,6 +2042,7 @@ export default function App() {
             // 若 ingest 完成、Wiki 页面删除、重命名或查询结果存入 Wiki，触发全局数据刷新。
             if (
               type === "ingest_completed" ||
+              type === "ingest_failed" ||
               type === "wiki_page_deleted" ||
               type === "wiki_page_renamed" ||
               type === "query_saved_to_wiki"
@@ -1889,13 +2053,13 @@ export default function App() {
             // 处理 ingest 状态标记
             if (type === "ingest_started") {
               newIngesting = true;
-            } else if (type === "ingest_completed") {
+            } else if (type === "ingest_completed" || type === "ingest_failed") {
               newIngesting = false;
             }
           }
 
           if (shouldRefresh) {
-            void refreshAppData();
+            void refreshAppData({ includeGraph: true });
           }
           if (newIngesting !== ingesting) {
             setIngesting(newIngesting);
@@ -1916,7 +2080,7 @@ export default function App() {
     return () => {
       if (timerId) globalThis.clearInterval(timerId);
     };
-  }, [outboxLastId, ingesting, outboxInitialized]);
+  }, [activeModule, outboxLastId, ingesting, outboxInitialized]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2044,13 +2208,35 @@ export default function App() {
     writeWikiSortModeToStorage(wikiSortMode);
   }, [wikiSortMode]);
 
-  const refreshAppData = async () => {
+  async function refreshGraphData() {
+    if (activeModule !== "graph") {
+      return;
+    }
+    setGraphLoading(true);
+    setGraphError("");
+    try {
+      const data = await getKnowledgeGraph();
+      setGraphData(data);
+    } catch (err) {
+      console.error("图谱加载失败:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setGraphData(null);
+      setGraphError(`图谱加载失败：${message}`);
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+  const refreshAppData = async (options?: { includeGraph?: boolean }) => {
     const data = await loadAppData();
     setOverview(data.overview);
     setLogs(data.logs);
     setPages(data.pages);
     setLlmStatus(data.llmStatus);
     setLlmStatusLoaded(true);
+    if (options?.includeGraph) {
+      await refreshGraphData();
+    }
   };
 
   const refreshRecentLintPatchEvents = async () => {
@@ -2170,6 +2356,7 @@ export default function App() {
       if (unlisten) {
         unlisten();
       }
+      setIngesting(false);
       setDevAction(null);
     }
   };
@@ -2227,6 +2414,7 @@ export default function App() {
       if (unlisten) {
         unlisten();
       }
+      setIngesting(false);
       setDevAction(null);
     }
   };
@@ -2287,6 +2475,7 @@ export default function App() {
       if (unlisten) {
         unlisten();
       }
+      setIngesting(false);
       setDevAction(null);
     }
   };
@@ -2350,6 +2539,12 @@ export default function App() {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
+      const singleFilePath = pathsToIngest.length === 1 ? pathsToIngest[0] : "";
+      const isSinglePdf = singleFilePath.toLowerCase().endsWith(".pdf");
+      if (isSinglePdf && message.toLowerCase().includes("pdf")) {
+        setStatusMessage(formatPdfIngestErrorMessage(message));
+        return;
+      }
       // 检测 OCR 工具未找到的特征字符串，给出安装引导提示
       const isOcrNotFound =
         message.includes("未检测到 tesseract") ||
@@ -2369,6 +2564,7 @@ export default function App() {
       if (unlisten) {
         unlisten();
       }
+      setIngesting(false);
       setDevAction(null);
     }
   };
@@ -2702,7 +2898,7 @@ export default function App() {
     }
   };
 
-  const handleWikiKeywordKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleWikiKeywordKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) {
       return;
     }
@@ -2844,6 +3040,10 @@ export default function App() {
 
   const handleGraphNodeClick = (node: object) => {
     const graphNode = node as any;
+    if (graphNode?.isAggregate) {
+      setStatusMessage(`已选中聚合节点「${graphNode.label || graphNode.id}」，请关闭聚合模式后查看具体页面。`);
+      return;
+    }
     const pagePath = resolveGraphNodePagePath(graphNode);
     if (!pagePath) {
       setStatusMessage("图谱节点数据异常，无法选中。");
@@ -2856,6 +3056,49 @@ export default function App() {
       graphRef.current.centerAt(graphNode.x, graphNode.y, 400);
       graphRef.current.zoom(2.0, 400);
     }
+  };
+
+  // 导出当前可见图谱数据为 JSON 文件
+  const handleExportGraphJson = () => {
+    if (!graphRenderData) return;
+    const normalizedPayload = {
+      exported_at: new Date().toISOString(),
+      view_mode: graphViewMode,
+      aggregate_mode: Boolean(aggregatedGraphData),
+      nodes: graphRenderData.nodes.map((node) => {
+        const n = node as KnowledgeGraphNode & AggregatedNode;
+        return {
+          id: n.id,
+          label: n.label,
+          group: n.group ?? "",
+          is_aggregate: Boolean(n.isAggregate),
+          count: n.isAggregate ? (n.count ?? 1) : 1,
+        };
+      }),
+      links: graphRenderData.links
+        .map((link) => {
+          const edge = link as KnowledgeGraphLink & AggregatedEdge;
+          const sourceId = resolveGraphLinkNodeId(edge.source as string | KnowledgeGraphNode | null | undefined);
+          const targetId = resolveGraphLinkNodeId(edge.target as string | KnowledgeGraphNode | null | undefined);
+          if (!sourceId || !targetId) {
+            return null;
+          }
+          return {
+            source: sourceId,
+            target: targetId,
+            weight: edge.weight ?? 1,
+          };
+        })
+        .filter((edge): edge is { source: string; target: string; weight: number } => Boolean(edge)),
+    };
+    const json = JSON.stringify(normalizedPayload, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `llm-wiki-graph-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleOpenSelectedGraphNode = async () => {
@@ -3610,7 +3853,7 @@ export default function App() {
             ref={wikiEditorRef}
             value={wikiEditContent}
             onChange={(event) => handleWikiEditorChange(event.target.value)}
-            onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+            onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
               // 自动补全键盘导航
               if (wikiAutocompleteOpen && wikiAutocompleteResults.length > 0) {
                 if (event.key === "ArrowDown") {
@@ -5171,6 +5414,7 @@ export default function App() {
 
                         <div className="graph-control graph-control--search">
                           <input
+                            ref={graphSearchInputRef}
                             type="text"
                             className="dev-panel__input"
                             placeholder="搜索节点..."
@@ -5261,9 +5505,31 @@ export default function App() {
                         type="button"
                         className={`dev-panel__button ${graphLayoutFrozen ? "dev-panel__button--accent" : ""}`}
                         onClick={handleToggleGraphLayoutFreeze}
-                        disabled={!graphVisibleData || graphVisibleData.nodes.length === 0}
+                        disabled={!graphRenderData || graphRenderData.nodes.length === 0}
                       >
                         {graphLayoutFrozen ? "恢复布局" : "冻结布局"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`dev-panel__button ${graphAggregateMode ? "dev-panel__button--accent" : ""}`}
+                        disabled={(graphVisibleData?.nodes.length ?? 0) <= GRAPH_AGGREGATE_THRESHOLD}
+                        onClick={() => setGraphAggregateMode((prev) => !prev)}
+                        title={
+                          (graphVisibleData?.nodes.length ?? 0) <= GRAPH_AGGREGATE_THRESHOLD
+                            ? `节点数未超过 ${GRAPH_AGGREGATE_THRESHOLD}，无需聚合`
+                            : "按分组聚合显示大图，降低渲染压力"
+                        }
+                      >
+                        {graphAggregateMode ? "聚合模式：开" : "聚合模式：关"}
+                      </button>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        onClick={handleExportGraphJson}
+                        disabled={!graphRenderData || graphRenderData.nodes.length === 0}
+                        title="导出当前视图图谱 JSON"
+                      >
+                        导出 JSON
                       </button>
                       <button
                         type="button"
@@ -5280,6 +5546,7 @@ export default function App() {
                           setGraphShowOrphans(true);
                           setGraphNeighborOnly(false);
                           setGraphLayoutFrozen(false);
+                          setGraphAggregateMode(false);
                         }}
                       >
                         重置筛选
@@ -5295,6 +5562,9 @@ export default function App() {
                       ) : null}
                       {graphViewMode === "local" && graphLocalSubgraphTruncated ? (
                         <span className="pill pill--warn">子图已裁剪</span>
+                      ) : null}
+                      {(graphVisibleData?.nodes.length ?? 0) > GRAPH_AGGREGATE_THRESHOLD ? (
+                        <span className="pill">{`聚合 ${graphAggregateMode ? "ON" : "OFF"}`}</span>
                       ) : null}
                       <span className="pill">{`节点 ${graphVisibleData?.nodes.length ?? 0}/${graphNodes.length}`}</span>
                       <span className="pill">{`边 ${graphVisibleData?.links.length ?? 0}/${graphNormalizedLinks.length}`}</span>
@@ -5349,39 +5619,50 @@ export default function App() {
                         )}
                       </div>
                     )}
-                    {!graphLoading && graphVisibleData && graphVisibleData.nodes.length > 0 && (
-                      <GraphErrorBoundary key={`${graphVisibleData.nodes.length}-${graphVisibleData.links.length}`}>
+                    {!graphLoading && graphRenderData && graphRenderData.nodes.length > 0 && (
+                      <GraphErrorBoundary>
                         <Suspense fallback={<div className="graph-module__loading">图谱渲染中...</div>}>
                           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                           <ForceGraph2D
                             ref={graphRef}
-                            graphData={graphVisibleData as any}
+                            graphData={graphRenderData as any}
                             width={graphDimensions.width}
                             height={graphDimensions.height}
                             nodeLabel="label"
                             nodeRelSize={6}
                             nodeVal={(node: object) => {
-                              const n = node as KnowledgeGraphNode;
+                              const n = node as KnowledgeGraphNode & AggregatedNode;
+                              if (n.isAggregate) {
+                                return 5 + Math.min(16, n.count ?? 1);
+                              }
                               const degree = graphMetrics.totalDegree.get(n.id) ?? 0;
                               return 2 + Math.min(8, degree);
                             }}
                             nodeColor={(node: object) => {
-                              const n = node as KnowledgeGraphNode;
+                              const n = node as KnowledgeGraphNode & AggregatedNode;
                               return n.group ? groupColor(n.group) : "#4a9eff";
                             }}
                             linkColor={() => "rgba(120,120,180,0.4)"}
-                            linkWidth={1}
+                            linkWidth={(link: object) => {
+                              const edge = link as AggregatedEdge;
+                              return edge.weight ? Math.min(1 + edge.weight * 0.5, 4) : 1;
+                            }}
                             onNodeClick={(node: object) => {
                               handleGraphNodeClick(node);
                             }}
                             nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
-                              const n = node as KnowledgeGraphNode;
+                              const n = node as KnowledgeGraphNode & AggregatedNode;
                               const label = n.label || n.id;
+                              const isAggregateNode = Boolean(n.isAggregate);
                               const selected = Boolean(
-                                graphSelectedNodeId && isSameWikiPagePath(graphSelectedNodeId, n.id),
+                                !isAggregateNode && graphSelectedNodeId && isSameWikiPagePath(graphSelectedNodeId, n.id),
                               );
                               const isSearchHit = graphSearchHits.has(n.id);
-                              const radius = selected ? 8 : 5;
+                              const radius = isAggregateNode
+                                ? Math.min(14, 7 + Math.floor((n.count ?? 1) / 3))
+                                : selected
+                                  ? 8
+                                  : 5;
 
                               // 绘制搜索命中光晕
                               if (isSearchHit) {
@@ -5391,7 +5672,8 @@ export default function App() {
                                 ctx.fill();
                               }
 
-                              const fontSize = Math.max(10 / globalScale, 3);                              ctx.font = `${fontSize}px Sans-Serif`;
+                              const fontSize = Math.max(10 / globalScale, 3);
+                              ctx.font = `${fontSize}px Sans-Serif`;
                               ctx.fillStyle = n.group ? groupColor(n.group) : "#4a9eff";
                               ctx.beginPath();
                               ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, 2 * Math.PI, false);
@@ -5403,7 +5685,7 @@ export default function App() {
                                 ctx.arc(n.x ?? 0, n.y ?? 0, radius + 2, 0, 2 * Math.PI, false);
                                 ctx.stroke();
                               }
-                              if (globalScale > 1.4 || selected) {
+                              if (globalScale > 1.4 || selected || isAggregateNode) {
                                 ctx.fillStyle = "rgba(255,255,255,0.9)";
                                 ctx.fillText(label, (n.x ?? 0) + 10, (n.y ?? 0) + 4);
                               }
@@ -5430,7 +5712,7 @@ export default function App() {
                       ) : (
                         <ul className="graph-neighbors__list" style={{ maxHeight: "240px", overflowY: "auto" }}>
                           {Array.from(graphSearchHits).slice(0, 50).map((id) => {
-                            const node = graphData?.nodes.find((n) => n.id === id);
+                            const node = graphSearchableNodes.find((n) => n.id === id);
                             if (!node) return null;
                             return (
                               <li key={node.id}>
