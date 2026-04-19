@@ -1462,6 +1462,10 @@ export default function App() {
   const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState<"cloud" | "ollama">(
     "ollama",
   );
+  const [llmConfigOllamaModel, setLlmConfigOllamaModel] = useState("");
+  const [llmConfigOllamaBaseUrl, setLlmConfigOllamaBaseUrl] = useState("");
+  const [llmConfigEmbedModel, setLlmConfigEmbedModel] = useState("nomic-embed-text:latest");
+  const [llmConfigEmbedBaseUrl, setLlmConfigEmbedBaseUrl] = useState("");
   const [llmConfigSaving, setLlmConfigSaving] = useState(false);
   // 知识图谱模块状态
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
@@ -1942,6 +1946,10 @@ export default function App() {
           setLlmConfigActiveProvider(
             llmConfigResult.active_provider === "cloud" ? "cloud" : "ollama",
           );
+          setLlmConfigOllamaModel(llmConfigResult.ollama_model ?? "");
+          setLlmConfigOllamaBaseUrl(llmConfigResult.ollama_base_url ?? "");
+          setLlmConfigEmbedModel(llmConfigResult.embed_ollama_model || "nomic-embed-text:latest");
+          setLlmConfigEmbedBaseUrl(llmConfigResult.embed_ollama_base_url ?? "");
         }
 
         // 优先级：后端配置 > localStorage；后端有值时覆盖本地状态并同步到 localStorage。
@@ -2522,20 +2530,19 @@ export default function App() {
 
     try {
       const providerDecision = resolveNextActiveProvider(llmConfigActiveProvider, llmConfigCloudApiKey);
-      const nextConfig = buildLlmProviderConfig({
-        activeProvider: providerDecision.activeProvider,
-        cloudApiKey: llmConfigCloudApiKey,
-        cloudBaseUrl: llmConfigCloudBaseUrl,
-        cloudModel: llmConfigCloudModel,
-        cloudProviderName: llmConfigCloudProviderName,
-      });
+      const nextConfig: LlmProviderConfig = {
+        active_provider: providerDecision.activeProvider,
+        cloud_api_key: llmConfigCloudApiKey.trim(),
+        cloud_base_url: llmConfigCloudBaseUrl.trim(),
+        cloud_model: llmConfigCloudModel.trim(),
+        cloud_provider_name: llmConfigCloudProviderName.trim(),
+        ollama_model: llmConfigOllamaModel.trim(),
+        ollama_base_url: llmConfigOllamaBaseUrl.trim(),
+        embed_ollama_model: llmConfigEmbedModel.trim(),
+        embed_ollama_base_url: llmConfigEmbedBaseUrl.trim(),
+      };
 
-      // 将选中的 Preset 同时存入后端配置（通过在 LlmProviderConfig 中扩展字段，或者假设需要同步到后端）
-      // 由于 LlmProviderConfig 类型定义未显示在当前 context，直接修改 saveLlmConfig 行为，
-      // 这里暂且使用现有的 buildLlmProviderConfig，并假设后端可以处理 metadata。
-      const configWithPreset = { ...nextConfig, selected_preset: selectedPreset };
-
-      const result = await saveLlmConfig(configWithPreset as LlmProviderConfig);
+      const result = await saveLlmConfig(nextConfig);
       if (!result) {
         setStatusMessage("当前环境不支持保存 LLM 配置。");
         return;
@@ -5591,6 +5598,33 @@ export default function App() {
                         value={llmConfigCloudModel}
                         onChange={(event) => setLlmConfigCloudModel(event.target.value)}
                         placeholder={defaultCloudModel}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </div>
+                  <div className="settings-panel__section-title" style={{marginTop: "16px", fontWeight: 600, fontSize: "13px", color: "var(--text-secondary)"}}>本地 Ollama（Embedding 专用）</div>
+                  <div className="settings-panel__fields">
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="embed-ollama-model">Embedding 模型（本地 Ollama）</label>
+                      <input
+                        id="embed-ollama-model"
+                        className="dev-panel__input"
+                        type="text"
+                        value={llmConfigEmbedModel}
+                        onChange={(event) => setLlmConfigEmbedModel(event.target.value)}
+                        placeholder="nomic-embed-text:latest"
+                        spellCheck={false}
+                      />
+                    </div>
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="embed-ollama-base-url">Embedding Ollama Base URL（可选）</label>
+                      <input
+                        id="embed-ollama-base-url"
+                        className="dev-panel__input"
+                        type="text"
+                        value={llmConfigEmbedBaseUrl}
+                        onChange={(event) => setLlmConfigEmbedBaseUrl(event.target.value)}
+                        placeholder="http://localhost:11434（默认）"
                         spellCheck={false}
                       />
                     </div>

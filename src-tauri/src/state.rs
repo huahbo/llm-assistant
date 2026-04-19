@@ -76,6 +76,10 @@ struct AppStateData {
     ollama_model: Option<String>,
     /// 本地 Ollama Base URL（手动指定，覆盖默认值）
     ollama_base_url: Option<String>,
+    /// Embedding 专用 Ollama 模型（独立于 LLM 模型）
+    embed_ollama_model: Option<String>,
+    /// Embedding 专用 Ollama Base URL
+    embed_ollama_base_url: Option<String>,
 }
 
 impl Default for AppState {
@@ -106,6 +110,8 @@ impl AppState {
             default_ocr_provider: config.default_ocr_provider.clone(),
             ollama_model: config.ollama_model.clone(),
             ollama_base_url: config.ollama_base_url.clone(),
+            embed_ollama_model: config.embed_ollama_model.clone(),
+            embed_ollama_base_url: config.embed_ollama_base_url.clone(),
         });
         Self {
             inner: Mutex::new(AppStateData {
@@ -123,6 +129,8 @@ impl AppState {
                 default_ocr_provider: config.default_ocr_provider,
                 ollama_model: config.ollama_model,
                 ollama_base_url: config.ollama_base_url,
+                embed_ollama_model: config.embed_ollama_model,
+                embed_ollama_base_url: config.embed_ollama_base_url,
             }),
             config_path,
             llm_provider: OnceLock::new(),
@@ -154,6 +162,8 @@ impl AppState {
             default_ocr_provider: config.default_ocr_provider.clone(),
             ollama_model: config.ollama_model.clone(),
             ollama_base_url: config.ollama_base_url.clone(),
+            embed_ollama_model: config.embed_ollama_model.clone(),
+            embed_ollama_base_url: config.embed_ollama_base_url.clone(),
         });
         let mut runtime_snapshot = config_snapshot.clone();
 
@@ -196,6 +206,8 @@ impl AppState {
                 default_ocr_provider: config.default_ocr_provider,
                 ollama_model: config.ollama_model,
                 ollama_base_url: config.ollama_base_url,
+                embed_ollama_model: config.embed_ollama_model,
+                embed_ollama_base_url: config.embed_ollama_base_url,
             }),
             config_path,
             llm_provider: OnceLock::new(),
@@ -249,6 +261,34 @@ impl AppState {
                 Arc::new(provider)
             })
             .clone()
+    }
+
+    /// 获取 Embedding 专用 Provider：始终使用本地 Ollama embedding 模型，不走云端。
+    /// 默认模型：nomic-embed-text:latest；可在 Settings 中配置 embed_ollama_model。
+    fn get_embed_provider(&self) -> Arc<dyn LlmProvider> {
+        let (embed_model, embed_base_url, fallback_base_url) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (
+                guard.embed_ollama_model.clone(),
+                guard.embed_ollama_base_url.clone(),
+                guard.ollama_base_url.clone(),
+            )
+        };
+        let mut config = OllamaConfig::default();
+        // embed 模型优先 embed_ollama_model，未配置时用 nomic-embed-text:latest
+        let model = embed_model
+            .as_deref()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or("nomic-embed-text:latest");
+        config.model = model.to_string();
+        // base_url 优先 embed_ollama_base_url，其次 ollama_base_url，最后默认值
+        let base_url = embed_base_url
+            .as_deref()
+            .filter(|u| !u.trim().is_empty())
+            .or_else(|| fallback_base_url.as_deref().filter(|u| !u.trim().is_empty()))
+            .unwrap_or(&config.base_url);
+        config.base_url = base_url.to_string();
+        Arc::new(OllamaProvider::new(config))
     }
 
     /// 获取 LLM Provider，按模式路由：
@@ -323,6 +363,11 @@ impl AppState {
     /// # 返回
     /// 生成的摘要文本。如果 LLM 调用失败，则回退到简单截断。
     pub async fn generate_summary(&self, content: &str) -> String {
+        // 截断到 8000 字符，避免长 PDF 超出云端 LLM token 限制（约 2000 token）
+        const MAX_INPUT_CHARS: usize = 8000;
+        let truncated_content: String = content.chars().take(MAX_INPUT_CHARS).collect();
+        let content = truncated_content.as_str();
+
         // 尝试获取 LLM Provider
         let provider = match self.get_llm_provider() {
             Some(p) => p,
@@ -771,6 +816,11 @@ impl AppState {
             .unwrap_or_else(|| "openai-compatible".to_string());
         let ollama_model = guard.ollama_model.clone().unwrap_or_default();
         let ollama_base_url = guard.ollama_base_url.clone().unwrap_or_default();
+        let embed_ollama_model = guard
+            .embed_ollama_model
+            .clone()
+            .unwrap_or_else(|| "nomic-embed-text:latest".to_string());
+        let embed_ollama_base_url = guard.embed_ollama_base_url.clone().unwrap_or_default();
         let has_cloud_key = !cloud_api_key.trim().is_empty();
         let active_provider =
             resolve_active_provider(mode, guard.active_provider.as_deref(), has_cloud_key, None);
@@ -783,6 +833,8 @@ impl AppState {
             active_provider,
             ollama_model,
             ollama_base_url,
+            embed_ollama_model,
+            embed_ollama_base_url,
         }
     }
 
@@ -846,6 +898,16 @@ impl AppState {
             guard.active_provider = Some(active_provider);
             guard.ollama_model = ollama_model;
             guard.ollama_base_url = ollama_base_url;
+            guard.embed_ollama_model = if config.embed_ollama_model.trim().is_empty() {
+                None
+            } else {
+                Some(config.embed_ollama_model.trim().to_string())
+            };
+            guard.embed_ollama_base_url = if config.embed_ollama_base_url.trim().is_empty() {
+                None
+            } else {
+                Some(config.embed_ollama_base_url.trim().to_string())
+            };
         }
 
         match self.persist_config(
@@ -1093,18 +1155,22 @@ impl AppState {
             )
             .await;
 
-        // 步骤5：嵌入向量化与持久化
-        self.emit_progress("ingest_progress", "embedding", "正在进行向量化...");
-        if let Some(provider) = self.get_llm_provider() {
-            match provider.embed(&source_content).await {
-                Ok(embedding) => {
-                    if let Err(e) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
-                        self.push_log(LogLevel::Warn, format!("写入向量数据库失败: {}", e));
-                    }
+        // 步骤5：嵌入向量化与持久化（始终走本地 Ollama embed 模型，不走云端）
+        self.emit_progress("ingest_progress", "embedding", "正在向量化（本地 Ollama）...");
+        let embed_provider = self.get_embed_provider();
+        // 截断到 4096 字符以控制 embedding 请求体大小
+        let embed_content: String = source_content.chars().take(4096).collect();
+        match embed_provider.embed(&embed_content).await {
+            Ok(embedding) => {
+                if let Err(e) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
+                    self.push_log(LogLevel::Warn, format!("写入向量数据库失败: {}", e));
                 }
-                Err(e) => {
-                    self.push_log(LogLevel::Warn, format!("页面向量生成失败: {}", e));
-                }
+            }
+            Err(e) => {
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("向量化失败（跳过，不影响摄入）: {}", e),
+                );
             }
         }
 
@@ -3251,6 +3317,8 @@ Wiki 页面：\n{}",
                 default_ocr_provider: guard.default_ocr_provider.clone(),
                 ollama_model: guard.ollama_model.clone(),
                 ollama_base_url: guard.ollama_base_url.clone(),
+                embed_ollama_model: guard.embed_ollama_model.clone(),
+                embed_ollama_base_url: guard.embed_ollama_base_url.clone(),
             }
         };
         let serialized = Self::serialize_config_full(&config);
@@ -6784,6 +6852,8 @@ entities:
                 active_provider: "cloud".to_string(),
                 ollama_model: "".to_string(),
                 ollama_base_url: "".to_string(),
+                embed_ollama_model: "".to_string(),
+                embed_ollama_base_url: "".to_string(),
             })
             .expect("保存 LLM 配置失败");
 
@@ -7348,6 +7418,8 @@ entities:
                 default_ocr_provider: None,
                 ollama_model: None,
                 ollama_base_url: None,
+                embed_ollama_model: None,
+                embed_ollama_base_url: None,
             }),
             config_path: vault_dir.join(".runtime").join("app-config.json"),
             llm_provider: OnceLock::new(),

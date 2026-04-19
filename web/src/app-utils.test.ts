@@ -1045,6 +1045,10 @@ describe("云端 Provider 配置辅助函数", () => {
       cloud_model: "deepseek-chat",
       cloud_provider_name: "DeepSeek",
       active_provider: "cloud",
+      ollama_model: "",
+      ollama_base_url: "",
+      embed_ollama_model: "",
+      embed_ollama_base_url: "",
     });
   });
 
@@ -1058,6 +1062,10 @@ describe("云端 Provider 配置辅助函数", () => {
         cloud_model: "deepseek-chat",
         cloud_provider_name: "DeepSeek",
         active_provider: "cloud",
+        ollama_model: "",
+        ollama_base_url: "",
+        embed_ollama_model: "",
+        embed_ollama_base_url: "",
       }),
     ).resolves.toBeNull();
   });

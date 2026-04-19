@@ -69,6 +69,12 @@ pub struct AppConfig {
     /// 本地 Ollama Base URL（手动指定，覆盖默认值）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_base_url: Option<String>,
+    /// Embedding 专用 Ollama 模型（独立于 LLM 模型，默认 nomic-embed-text:latest）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_ollama_model: Option<String>,
+    /// Embedding 专用 Ollama Base URL（默认与 ollama_base_url 相同）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_ollama_base_url: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -85,6 +91,8 @@ impl Default for AppConfig {
             default_ocr_provider: None,
             ollama_model: None,
             ollama_base_url: None,
+            embed_ollama_model: None,
+            embed_ollama_base_url: None,
         }
     }
 }
@@ -113,6 +121,12 @@ pub struct LlmProviderConfig {
     /// 本地 Ollama Base URL（手动指定）
     #[serde(default)]
     pub ollama_base_url: String,
+    /// Embedding 专用 Ollama 模型（默认 nomic-embed-text:latest）
+    #[serde(default)]
+    pub embed_ollama_model: String,
+    /// Embedding 专用 Ollama Base URL（默认与 ollama_base_url 相同）
+    #[serde(default)]
+    pub embed_ollama_base_url: String,
 }
 
 /// 应用总览。

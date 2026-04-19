@@ -268,6 +268,10 @@ export const normalizeLlmProviderConfig = (
     cloud_model: cloudModel,
     cloud_provider_name: cloudProviderName,
     active_provider: activeProvider,
+    ollama_model: "",
+    ollama_base_url: "",
+    embed_ollama_model: "",
+    embed_ollama_base_url: "",
   };
 };
 
@@ -594,6 +598,9 @@ export const normalizeLintPatchEvents = (
     .filter((item) => item.created_at);
 };
 
+/** 摄入操作超时（5分钟）：PDF/文件需要 PDF提取 + LLM摘要 + 实体抽取，耗时长 */
+const INGEST_TIMEOUT_MS = 300_000;
+
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs = 15000): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -788,6 +795,7 @@ export async function ingestMarkdown(sourcePath: string): Promise<IngestResult |
     invoke<IngestResult>("ingest_markdown", {
       ...createIngestMarkdownArgs(sourcePath),
     }),
+    INGEST_TIMEOUT_MS,
   );
 }
 
@@ -801,6 +809,7 @@ export async function ingestPdf(sourcePath: string): Promise<IngestResult | null
     invoke<IngestResult>("ingest_pdf", {
       ...createIngestPdfArgs(sourcePath),
     }),
+    INGEST_TIMEOUT_MS,
   );
 }
 
@@ -817,6 +826,7 @@ export async function ingestFile(
     invoke<IngestResult>("ingest_file", {
       ...createIngestFileArgs(sourcePath, ocrProvider),
     }),
+    INGEST_TIMEOUT_MS,
   );
 }
 
@@ -831,6 +841,7 @@ export async function ingestUrl(url: string): Promise<IngestResult | null> {
     invoke<IngestResult>("ingest_url", {
       ...createIngestUrlArgs(url),
     }),
+    INGEST_TIMEOUT_MS,
   );
 }
 

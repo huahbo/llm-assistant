@@ -273,6 +273,14 @@ export interface LlmProviderConfig {
   cloud_provider_name: string;
   /** 当前活跃的 provider 类型，"ollama" 或 "cloud" */
   active_provider: string;
+  /** 本地 Ollama 模型名（LLM 用，空字符串时由后端使用默认值） */
+  ollama_model: string;
+  /** 本地 Ollama Base URL（LLM 用，空字符串时默认 http://localhost:11434） */
+  ollama_base_url: string;
+  /** Embedding 专用 Ollama 模型（默认 nomic-embed-text:latest） */
+  embed_ollama_model: string;
+  /** Embedding 专用 Ollama Base URL（空字符串时与 ollama_base_url 相同） */
+  embed_ollama_base_url: string;
 }
 
 export interface KnowledgeGraphNode {
