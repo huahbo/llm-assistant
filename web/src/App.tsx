@@ -43,6 +43,7 @@ import {
   renameWikiPage,
   saveWikiPage,
   searchWikiPages,
+  searchWikiPaths,
   saveQueryAnswer,
   get_outbox_events,
   setBackendMode,

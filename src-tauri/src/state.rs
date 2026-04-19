@@ -5661,6 +5661,10 @@ mod tests {
             Ok(self.response.clone())
         }
 
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            Ok(vec![])
+        }
+
         async fn health_check(&self) -> Result<bool, LlmError> {
             Ok(true)
         }

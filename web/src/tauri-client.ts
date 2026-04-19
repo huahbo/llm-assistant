@@ -609,6 +609,12 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs = 15000): Promise<T
   }
 };
 
+export async function getAppOverview(): Promise<AppOverview | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<AppOverview>("get_app_overview");
+}
+
 export async function getLlmProviderPresets(): Promise<[string, string, string][]> {
   if (!isTauriRuntime()) {
     return [];
@@ -1222,16 +1228,4 @@ export async function get_outbox_events(options: {
   } catch {
     return [];
   }
-}
-
-export async function getAppOverview(): Promise<AppOverview> {
-  if (!isTauriRuntime()) return {} as AppOverview;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return await invoke<AppOverview>('get_app_overview');
-}
-
-export async function searchWikiPaths(query: string): Promise<string[]> {
-  if (!isTauriRuntime()) return [];
-  const { invoke } = await import('@tauri-apps/api/core');
-  return await invoke<string[]>('search_wiki_paths', { query });
 }
