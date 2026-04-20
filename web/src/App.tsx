@@ -141,6 +141,14 @@ const searchStrategyLabels: Record<string, string> = {
   rrf: "RRF 融合检索",
 };
 
+const searchRouteLabels: Record<string, string> = {
+  fts: "FTS",
+  linked: "链接扩展",
+  popular: "引用热度",
+  embedding: "Embedding",
+  scan: "文件扫描",
+};
+
 const wikiSortModeLabels: Record<WikiSortMode, string> = {
   updated_desc: "更新时间（新到旧）",
   updated_asc: "更新时间（旧到新）",
@@ -261,6 +269,16 @@ export const formatQuerySearchStrategyLabel = (searchStrategy?: string | null) =
   }
 
   return searchStrategyLabels[normalizedStrategy] ?? "未知";
+};
+
+const formatQuerySearchRouteLabel = (route?: string | null) => {
+  const normalizedRoute = route?.trim().toLowerCase();
+
+  if (!normalizedRoute) {
+    return "未知路径";
+  }
+
+  return searchRouteLabels[normalizedRoute] ?? normalizedRoute;
 };
 
 export const buildFrontmatterCopyText = (field: string, value: string) => `${field}: ${value}`;
@@ -788,10 +806,26 @@ export const formatPdfIngestErrorMessage = (error: unknown) => {
   const rawMessage = error instanceof Error ? error.message : String(error ?? "");
   const compactRaw = rawMessage.replace(/\s+/g, " ").trim();
   const normalized = compactRaw.toLowerCase();
+  const hasAutoOcrFallbackHint =
+    normalized.includes("已自动 ocr 回退")
+    || normalized.includes("自动 ocr 回退")
+    || normalized.includes("自动ocr回退")
+    || normalized.includes("auto ocr fallback");
 
+  let messagePrefix = "PDF 摄入失败：";
   let friendlyReason = "读取 PDF 失败，请确认文件可访问且内容有效。";
-  if (normalized.includes("tounicode") || normalized.includes("cmap")) {
+  if (hasAutoOcrFallbackHint) {
+    messagePrefix = "PDF 摄入提示：";
+    friendlyReason = "检测到解析兼容性问题，已自动 OCR 回退并继续处理。";
+  } else if (normalized.includes("tounicode") || normalized.includes("cmap")) {
     friendlyReason = "PDF 字体映射解析失败，建议先用 PDF 工具另存为新文件后重试。";
+  } else if (
+    normalized.includes("pdftoppm")
+    || normalized.includes("poppler")
+    || normalized.includes("missing poppler")
+    || normalized.includes("未安装 poppler")
+  ) {
+    friendlyReason = "未检测到 pdftoppm（Poppler），请安装 Poppler 并将其 bin 目录加入 PATH 后重试。";
   } else if (
     normalized.includes("解析器暂不兼容")
     || normalized.includes("结构不兼容")
@@ -815,7 +849,7 @@ export const formatPdfIngestErrorMessage = (error: unknown) => {
   }
 
   if (!compactRaw) {
-    return `PDF 摄入失败：${friendlyReason}`;
+    return `${messagePrefix}${friendlyReason}`;
   }
 
   // 原始原因仅保留短片段，避免整段底层错误直接透出。
@@ -823,7 +857,7 @@ export const formatPdfIngestErrorMessage = (error: unknown) => {
   const rawSnippet = compactRaw.length > rawSnippetMaxLength
     ? `${compactRaw.slice(0, rawSnippetMaxLength)}...`
     : compactRaw;
-  return `PDF 摄入失败：${friendlyReason}（原因：${rawSnippet}）`;
+  return `${messagePrefix}${friendlyReason}（原因：${rawSnippet}）`;
 };
 
 // 编辑态下内容与原文不一致时，视为存在未保存改动。
@@ -1060,9 +1094,34 @@ export const writeWikiSortModeToStorage = (mode: WikiSortMode) => {
 };
 
 export const OCR_PROVIDER_STORAGE_KEY = "llm_wiki_ocr_provider_v1";
+export const ASK_SEARCH_DEBUG_VISIBLE_STORAGE_KEY = "llm_wiki_ask_search_debug_visible_v1";
 
 export const QUERY_HISTORY_STORAGE_KEY = "llm_wiki_query_history";
 export const QUERY_HISTORY_MAX = 30;
+
+export const readAskSearchDebugVisibleFromStorage = (): boolean => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return false;
+    }
+    return storage.getItem(ASK_SEARCH_DEBUG_VISIBLE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+export const writeAskSearchDebugVisibleToStorage = (visible: boolean): void => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(ASK_SEARCH_DEBUG_VISIBLE_STORAGE_KEY, visible ? "1" : "0");
+  } catch {
+    // 本地存储不可用时静默降级，避免影响主流程。
+  }
+};
 
 export const normalizeQueryHistory = (
   questions: string[],
@@ -1560,6 +1619,7 @@ type AskMessage = {
     answerStrategy?: string | null;
     topK: number;
     matchedPages: number;
+    searchDebug?: import("./types").QuerySearchDebug | null;
   };
 };
 
@@ -1636,6 +1696,10 @@ export default function App() {
   const [queryHistoryItems, setQueryHistoryItems] = useState<AskHistoryItem[]>(() =>
     readQueryHistoryItemsFromStorage(),
   );
+  const [askSearchDebugVisible, setAskSearchDebugVisible] = useState<boolean>(() =>
+    readAskSearchDebugVisibleFromStorage(),
+  );
+  const [searchDebugCopiedMessageId, setSearchDebugCopiedMessageId] = useState("");
   const [askHistoryKeyword, setAskHistoryKeyword] = useState("");
   const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
   // 当前会话 ID（每次"新对话"重新生成）
@@ -1704,6 +1768,7 @@ export default function App() {
   const [graphLocalSubgraphError, setGraphLocalSubgraphError] = useState("");
   const [graphLocalSubgraphTruncated, setGraphLocalSubgraphTruncated] = useState(false);
   const [graphSelectedNodeId, setGraphSelectedNodeId] = useState("");
+  const [graphSelectedAggregateId, setGraphSelectedAggregateId] = useState("");
   const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>(() => readGraphViewModeFromStorage());
   const [graphLocalDepth, setGraphLocalDepth] = useState(() => readGraphLocalDepthFromStorage());
   const [graphLocalDirection, setGraphLocalDirection] = useState<GraphTraversalDirection>(
@@ -2026,6 +2091,10 @@ export default function App() {
     writeGraphLocalDirectionToStorage(graphLocalDirection);
   }, [graphLocalDirection]);
 
+  useEffect(() => {
+    writeAskSearchDebugVisibleToStorage(askSearchDebugVisible);
+  }, [askSearchDebugVisible]);
+
   // 图谱 tab 激活时注册 Ctrl+F 快捷键聚焦搜索框
   useEffect(() => {
     if (activeModule !== "graph") return;
@@ -2078,6 +2147,44 @@ export default function App() {
     }
     return graphRenderData.nodes;
   }, [graphRenderData]);
+
+  const graphSelectedAggregateNode = useMemo(() => {
+    if (!graphSelectedAggregateId || !aggregatedGraphData) {
+      return null;
+    }
+    return (
+      aggregatedGraphData.nodes.find(
+        (node) => node.isAggregate && node.id === graphSelectedAggregateId,
+      ) ?? null
+    );
+  }, [aggregatedGraphData, graphSelectedAggregateId]);
+
+  const graphSelectedAggregateMembers = useMemo(() => {
+    if (!graphSelectedAggregateNode || !graphVisibleData) {
+      return [] as KnowledgeGraphNode[];
+    }
+    return graphVisibleData.nodes
+      .filter((node) => (node.group ?? "") === graphSelectedAggregateNode.id)
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }, [graphSelectedAggregateNode, graphVisibleData]);
+
+  useEffect(() => {
+    if (!graphAggregateMode) {
+      if (graphSelectedAggregateId) {
+        setGraphSelectedAggregateId("");
+      }
+      return;
+    }
+    if (!graphSelectedAggregateId || !aggregatedGraphData) {
+      return;
+    }
+    const exists = aggregatedGraphData.nodes.some(
+      (node) => node.isAggregate && node.id === graphSelectedAggregateId,
+    );
+    if (!exists) {
+      setGraphSelectedAggregateId("");
+    }
+  }, [aggregatedGraphData, graphAggregateMode, graphSelectedAggregateId]);
 
   const graphSearchHits = useMemo(() => {
     const query = graphSearchQuery.trim().toLowerCase();
@@ -2578,8 +2685,13 @@ export default function App() {
     } catch (error) {
       console.error(error);
       const pdfErrorMessage = error instanceof Error ? error.message : String(error);
+      const normalizedPdfError = pdfErrorMessage.toLowerCase();
       // PDF 摄入一般不依赖 OCR，但若后端返回"未检测到"类错误也给出友好提示
-      if (pdfErrorMessage.includes("未检测到")) {
+      if (
+        pdfErrorMessage.includes("未检测到")
+        && !normalizedPdfError.includes("pdftoppm")
+        && !normalizedPdfError.includes("poppler")
+      ) {
         setStatusMessage(`OCR 工具未找到：${pdfErrorMessage}`);
         return;
       }
@@ -2714,6 +2826,50 @@ export default function App() {
     }
   };
 
+  const copyTextToClipboard = async (text: string): Promise<boolean> => {
+    try {
+      if (globalThis.navigator?.clipboard?.writeText) {
+        await globalThis.navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // 忽略后继续走降级路径
+    }
+
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleCopySearchDebug = async (
+    messageId: string,
+    searchDebug: import("./types").QuerySearchDebug,
+  ) => {
+    const payload = JSON.stringify(searchDebug, null, 2);
+    const copied = await copyTextToClipboard(payload);
+    if (!copied) {
+      setStatusMessage("复制失败：当前环境不支持写入剪贴板。");
+      return;
+    }
+    setSearchDebugCopiedMessageId(messageId);
+    setStatusMessage("已复制检索调试 JSON。");
+    window.setTimeout(() => {
+      setSearchDebugCopiedMessageId((current) => (current === messageId ? "" : current));
+    }, 1500);
+  };
+
   const handleQueryAsk = async () => {
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法执行查询。");
@@ -2790,6 +2946,7 @@ export default function App() {
                   answerStrategy: result.answer_strategy,
                   topK: nextTopK,
                   matchedPages: result.matched_pages.length,
+                  searchDebug: result.search_debug ?? null,
                 },
               }
             : message,
@@ -3154,7 +3311,10 @@ export default function App() {
   const handleGraphNodeClick = (node: object) => {
     const graphNode = node as any;
     if (graphNode?.isAggregate) {
-      setStatusMessage(`已选中聚合节点「${graphNode.label || graphNode.id}」，请关闭聚合模式后查看具体页面。`);
+      setGraphSelectedNodeId("");
+      setGraphSelectedAggregateId(graphNode.id);
+      setGraphNeighborOnly(false);
+      setStatusMessage(`已选中聚合节点「${graphNode.label || graphNode.id}」，可在右侧展开成员页。`);
       return;
     }
     const pagePath = resolveGraphNodePagePath(graphNode);
@@ -3163,6 +3323,7 @@ export default function App() {
       return;
     }
     setGraphSelectedNodeId(pagePath);
+    setGraphSelectedAggregateId("");
 
     // 自动聚焦到点击的节点
     if (graphRef.current && typeof graphNode.x === "number" && typeof graphNode.y === "number") {
@@ -3220,6 +3381,41 @@ export default function App() {
     }
     setActiveModule("wiki");
     await handleOpenWikiPage(graphSelectedNode.id);
+  };
+
+  const handleOpenAggregateMemberPage = async (memberPath: string) => {
+    if (!memberPath.trim()) {
+      return;
+    }
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+    setGraphSelectedNodeId(memberPath);
+    setActiveModule("wiki");
+    await handleOpenWikiPage(memberPath);
+  };
+
+  const handleExpandSelectedAggregateNode = () => {
+    if (!graphSelectedAggregateNode) {
+      return;
+    }
+    const targetGroup = graphSelectedAggregateNode.id;
+    const nextSelected = graphSelectedAggregateMembers[0]?.id ?? "";
+    setGraphAggregateMode(false);
+    setGraphGroupFilter(targetGroup);
+    setGraphNeighborOnly(false);
+    setGraphSelectedAggregateId("");
+    if (nextSelected) {
+      setGraphSelectedNodeId(nextSelected);
+      setStatusMessage(`已切回明细模式，分组「${targetGroup}」包含 ${graphSelectedAggregateMembers.length} 个页面。`);
+    } else {
+      setStatusMessage(`已切回明细模式，但分组「${targetGroup}」暂无可展示页面。`);
+    }
+  };
+
+  const handleExitAggregateMode = () => {
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+    setStatusMessage("已切回明细模式。");
   };
 
   const handleGraphZoomToFit = () => {
@@ -5097,6 +5293,70 @@ export default function App() {
                             </div>
                           )}
 
+                          {message.role === "assistant" &&
+                            !message.streaming &&
+                            askSearchDebugVisible &&
+                            message.meta?.searchDebug &&
+                            message.meta.searchDebug.routes.length > 0 && (
+                              <details className="ask-message__debug">
+                                <summary>
+                                  检索调试：{formatQuerySearchStrategyLabel(
+                                    message.meta.searchDebug.strategy,
+                                  )}
+                                  {typeof message.meta.searchDebug.rrf_k === "number" &&
+                                    `（k=${message.meta.searchDebug.rrf_k}）`}
+                                </summary>
+                                <div className="ask-message__debug-actions">
+                                  <button
+                                    type="button"
+                                    className="ask-message__debug-copy"
+                                    onClick={() =>
+                                      void handleCopySearchDebug(
+                                        message.id,
+                                        message.meta!.searchDebug!,
+                                      )
+                                    }
+                                  >
+                                    {searchDebugCopiedMessageId === message.id ? "已复制" : "复制 JSON"}
+                                  </button>
+                                </div>
+                                <div className="ask-message__debug-routes">
+                                  {message.meta.searchDebug.routes.map((route) => (
+                                    <article
+                                      key={`${message.id}-${route.route}`}
+                                      className="ask-message__debug-route"
+                                    >
+                                      <div className="ask-message__debug-route-head">
+                                        <strong>{formatQuerySearchRouteLabel(route.route)}</strong>
+                                        <span>
+                                          候选 {route.candidate_count} / 贡献{" "}
+                                          {route.contributed_paths.length}
+                                        </span>
+                                      </div>
+                                      {route.contributed_paths.length > 0 && (
+                                        <p>
+                                          贡献路径：
+                                          {route.contributed_paths
+                                            .slice(0, 3)
+                                            .map((path) => resolveDisplayPath({ page_path: path }))
+                                            .join("，")}
+                                        </p>
+                                      )}
+                                      {route.top_candidates.length > 0 && (
+                                        <p>
+                                          候选示例：
+                                          {route.top_candidates
+                                            .slice(0, 3)
+                                            .map((path) => resolveDisplayPath({ page_path: path }))
+                                            .join("，")}
+                                        </p>
+                                      )}
+                                    </article>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+
                           {/* 保存到 Wiki（仅最后一条 assistant 消息） */}
                           {isLastAssistant && queryResult && (
                             <div className="ask-message__actions">
@@ -5135,6 +5395,14 @@ export default function App() {
                         value={queryTopK}
                         onChange={(e) => setQueryTopK(Number(e.target.value))}
                       />
+                    </label>
+                    <label className="ask-advanced__toggle">
+                      <input
+                        type="checkbox"
+                        checked={askSearchDebugVisible}
+                        onChange={(event) => setAskSearchDebugVisible(event.target.checked)}
+                      />
+                      显示检索调试区
                     </label>
                     <button
                       type="button"
@@ -5727,6 +5995,7 @@ export default function App() {
                           setGraphNeighborOnly(false);
                           setGraphLayoutFrozen(false);
                           setGraphAggregateMode(false);
+                          setGraphSelectedAggregateId("");
                         }}
                       >
                         重置筛选
@@ -5898,7 +6167,11 @@ export default function App() {
                               <li key={node.id}>
                                 <button
                                   type="button"
-                                  className={`graph-neighbors__item ${graphSelectedNodeId === node.id ? "graph-neighbors__item--active" : ""}`}
+                                  className={`graph-neighbors__item ${
+                                    graphSelectedNodeId === node.id || graphSelectedAggregateId === node.id
+                                      ? "graph-neighbors__item--active"
+                                      : ""
+                                  }`}
                                   onClick={() => handleGraphNodeClick(node)}
                                   title={node.id}
                                 >
@@ -5916,9 +6189,68 @@ export default function App() {
 
                   <div className="graph-sidepanel__head">
                     <h3>节点详情</h3>
-                    <span>{graphSelectedNode ? "已选中" : "未选中"} · {graphViewMode === "local" ? "Local" : "Global"}</span>
+                    <span>
+                      {graphSelectedNode || graphSelectedAggregateNode ? "已选中" : "未选中"} ·{" "}
+                      {graphViewMode === "local" ? "Local" : "Global"}
+                    </span>
                   </div>
-                  {!graphSelectedNode ? (
+                  {graphSelectedAggregateNode ? (
+                    <>
+                      <div className="graph-node-card">
+                        <p className="graph-node-card__title">
+                          {graphSelectedAggregateNode.label || graphSelectedAggregateNode.id}
+                        </p>
+                        <code className="graph-node-card__path">{graphSelectedAggregateNode.id}</code>
+                        <div className="graph-node-card__stats">
+                          <span className="pill">{`聚合节点`}</span>
+                          <span className="pill">{`成员 ${graphSelectedAggregateMembers.length}`}</span>
+                        </div>
+                        <div className="graph-node-card__actions">
+                          <button
+                            type="button"
+                            className="dev-panel__button dev-panel__button--accent"
+                            onClick={handleExpandSelectedAggregateNode}
+                          >
+                            展开查看成员页
+                          </button>
+                          <button
+                            type="button"
+                            className="dev-panel__button"
+                            onClick={handleExitAggregateMode}
+                          >
+                            切回明细模式
+                          </button>
+                        </div>
+                      </div>
+                      <div className="graph-neighbors">
+                        <div className="graph-neighbors__head">
+                          <h4>成员页面</h4>
+                          <span>{graphSelectedAggregateMembers.length}</span>
+                        </div>
+                        {graphSelectedAggregateMembers.length === 0 ? (
+                          <p className="graph-sidepanel__hint">该聚合节点暂无可展开成员。</p>
+                        ) : (
+                          <ul className="graph-neighbors__list">
+                            {graphSelectedAggregateMembers.slice(0, 20).map((member) => (
+                              <li key={member.id}>
+                                <button
+                                  type="button"
+                                  className="graph-neighbors__item"
+                                  onClick={() => {
+                                    void handleOpenAggregateMemberPage(member.id);
+                                  }}
+                                  title={member.id}
+                                >
+                                  <span>{member.label}</span>
+                                  <code>{member.group || "未分组"}</code>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </>
+                  ) : !graphSelectedNode ? (
                     <p className="graph-sidepanel__hint">点击左侧节点可查看标题、度数和关联页面。</p>
                   ) : (
                     <>

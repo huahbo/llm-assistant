@@ -1213,6 +1213,18 @@ describe("PDF 摄入错误文案映射", () => {
     );
     expect(result).toContain("当前解析器暂不兼容该结构");
   });
+
+  it("pdftoppm/Poppler 缺失时映射为安装引导提示", () => {
+    const result = formatPdfIngestErrorMessage("spawn pdftoppm ENOENT: poppler is not installed");
+    expect(result).toContain("未检测到 pdftoppm（Poppler）");
+    expect(result).toContain("（原因：");
+  });
+
+  it("后端提示已自动 OCR 回退时不使用失败前缀", () => {
+    const result = formatPdfIngestErrorMessage("PDF 结构不兼容，已自动 OCR 回退并继续处理。");
+    expect(result).toContain("PDF 摄入提示：");
+    expect(result).not.toContain("PDF 摄入失败：");
+  });
 });
 
 describe("Lint 展示辅助函数", () => {

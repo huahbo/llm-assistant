@@ -156,7 +156,9 @@
 - 使用 `agents.md` 作为规范来源（含 §18 当前状态）。
 - 使用 `docs/实施过程记录.md` 作为进度来源（最新条目在最前）。
 - 使用 `docs/参考项目差距与移植清单.md` 作为对标差距与迭代方向来源。
-- **新 Agent 启动时必须先读取这三个文件（`agents.md`、`docs/实施过程记录.md`、`docs/参考项目差距与移植清单.md`），然后执行 §16.3 检查清单验证基线。**
+- 使用 `docs/多Agent通信与交接协议.md` 作为通信与交接流程来源。
+- 使用 `docs/交接状态卡.md` 作为“当前轮次与接力状态”的快速事实来源。
+- **新 Agent 启动时必须先读取这五个文件（`agents.md`、`docs/实施过程记录.md`、`docs/参考项目差距与移植清单.md`、`docs/多Agent通信与交接协议.md`、`docs/交接状态卡.md`），然后执行 §16.3 检查清单验证基线。**
 - **Claude Code / Codex / Gemini 三方每轮开始前必须重读 `docs/参考项目差距与移植清单.md`，确保对齐最新差距与移植优先级。**
 - 基线验证命令（WSL/Linux）：
   ```bash
@@ -203,9 +205,10 @@
 1. `cargo check && cargo test`（src-tauri/）→ **本轮 Rust 基线待 Windows 复核**
 2. `npm run test -- --run`（web/）→ 应 **132 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
-4. 读 `docs/实施过程记录.md` 最新 3 条了解背景
-5. 读 `docs/参考项目差距与移植清单.md`，确认本轮选择的移植包（A/B/C/D）与理由
-6. 按 §18.3 TODO 开始下一轮，**必须使用 §14 子代理并行规则**
+4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
+5. 读 `docs/实施过程记录.md` 最新 3 条了解背景
+6. 读 `docs/参考项目差距与移植清单.md`，确认本轮选择的移植包（A/B/C/D）与理由
+7. 按 §18.3 TODO 开始下一轮，**必须使用 §14 子代理并行规则**
 
 ### 18.1 已完成（截至 2026-04-19，持续更新）
 
@@ -239,6 +242,7 @@
 | P9-B | OCR Provider 选择（tesseract/paddle）+ 双向失败回退 | ✅ `commands.rs` + `state.rs` + `App.tsx` + `tauri-client.ts`（95/82 测试） |
 | P9-C 前端 | OCR provider localStorage 持久化 + 安装引导提示 + 格式说明 | ✅ `App.tsx`（99 测试） |
 | P9-C 后端 | `default_ocr_provider` AppConfig + get/set 命令 + pptx 自然排序 + docx 段落结构 | ✅ `models.rs` + `state.rs` + `commands.rs`（84 cargo 测试） |
+| P9-D 全栈 | PDF OCR 自动回退（解析失败自动 `pdftoppm` 转图 + OCR，回写回退事件与友好提示） | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx` + `web/src/app-utils.test.ts`（WSL `typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-20，**Codex+子代理** 实施） |
 
 | P10 后端 | `WikiPageDetail.content` 字段确认（已存在，补测试） | ✅ `state.rs`（85 cargo 测试） |
 | P10 前端 A | OCR 配置后端同步（`fetchOcrConfig`/`saveOcrConfig`） | ✅ `tauri-client.ts` + `App.tsx`（100 测试） |
@@ -272,12 +276,15 @@
 | P21-C1 前端 | Global/Local 双模式（前端 BFS 子图）+ Hop 深度 + 布局冻结/恢复 + 偏好持久化 | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test/build` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-17，**Codex** 实施） |
 | P21-C2 前端 | 搜索高亮（光晕视觉反馈） + 平滑相机聚焦 + 动态侧边栏搜索结果 | ✅ `web/src/App.tsx` + `web/src/styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
 | P21-D 前端 | 图谱收口（Outbox 自动刷新、可见范围搜索、稳定渲染 key、Ctrl+F、导出 JSON、>200 节点聚合） | ✅ `web/src/App.tsx` + `web/src/app-utils.test.ts`（132 前端测试通过，2026-04-19，**Codex** 实施） |
+| P21-E 前端 | 图谱聚合交互深化（聚合节点右侧“展开查看成员页” + 一键切回明细模式） | ✅ `web/src/App.tsx` + `web/src/styles.css`（WSL `typecheck` 通过；完整测试待下一轮，2026-04-20，**Codex** 实施） |
 | P20-5 后端 | Embedding 向量检索接入 RRF（`list_embeddings` + 余弦排序 + Query 第四路召回） | ✅ `src-tauri/src/db.rs` + `src-tauri/src/search.rs` + `src-tauri/src/state.rs`（Rust 待 Windows cargo 复核，2026-04-19，**Codex** 实施） |
+| P20-6 全栈 | 检索可解释性增强（`search_debug` 返回 RRF 各路候选/贡献，Ask 面板可折叠查看） | ✅ `src-tauri/src/models.rs` + `src-tauri/src/state.rs` + `web/src/types.ts` + `web/src/App.tsx` + `web/src/styles.css`（WSL `typecheck` 通过；Rust/前端完整测试待 Windows 复核，2026-04-20，**Codex** 实施） |
 | BugFix-Ingest | ingesting 卡住修复（前端识别 `ingest_failed` 结束态 + 后端失败路径补发 outbox 事件） | ✅ `web/src/App.tsx` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施） |
 | BugFix-PDF-Compat | 有效 PDF 误判无效修复（`lopdf` 多级容错加载：内存直读/头修复/尾修复/联合修复 + 前端兼容性错误映射） | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx` + `web/src/app-utils.test.ts`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
 | BugFix-PDF-Compat-2 | PDF 兼容增强（`lopdf` 后新增 `pdf-extract` 二级解析 + `FlateDecode` 原始流扫描兜底） | ✅ `src-tauri/Cargo.toml` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
 | BugFix-UI-1 | 启动时 `ingesting` 误判为 true（outbox 历史事件污染）→ 添加快进初始化 `outboxInitialized` + 轮询守卫 | ✅ `web/src/App.tsx`（130 前端，2026-04-19，**Claude Code** 实施） |
 | BugFix-UI-2 | 孤立 wiki 页面（文件删除后 DB 记录残留）→ 启动时 `purge_orphaned_wiki_pages` 自动清理 | ✅ `src-tauri/src/state.rs` + `main.rs`（102 Rust，2026-04-19，**Claude Code** 实施） |
+| BugFix-Index-Lint | `index.md` 残留失效链接导致 `MISSING_INDEX_ENTRY` 批量告警 → 删除/启动清理自动 prune + 本轮数据收口清零 | ✅ `src-tauri/src/state.rs` + `vault/index.md`（WSL `typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-20，**Codex** 实施） |
 | BugFix-PDF | PDF 摄入不稳定（15s 超时/LLM 截断/embed 走云端）→ 300s + 8000 char 截断 + `get_embed_provider()` 本地 Ollama | ✅ `state.rs` + `tauri-client.ts`（2026-04-19，**Claude Code** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
@@ -285,15 +292,15 @@
 | 优先级 | 任务 | 说明 |
 |---|---|---|
 | 1 | **P22 Windows 打包** | `cargo tauri build` 生成 MSI/EXE，验证 SQLite/WebView2 路径正确 |
-| 2 | **P20-6 检索可解释性增强** | 将 RRF 各路贡献写入 debug 信息（便于诊断 embedding/fts/graph 路径） |
-| 3 | **P21-E 图谱聚合交互深化** | 聚合节点支持“展开查看成员页”与一键切回明细模式 |
-| 4 | **P9-D PDF OCR 自动回退** | 当 PDF 解析器不兼容时自动走“PDF 页转图 + OCR”链路，减少手动转换 |
+| 2 | **Windows 基线复核** | 对本轮 P9-D/P20-6/P21-E/BugFix-Index-Lint 做 `cargo/test/build` 全链路确认 |
+| 3 | **脏树收口** | 清理非功能性换行噪音与误删测试文件，降低后续 PR 噪声 |
+| 4 | **移植包 A：持久化 ingest 队列** | 补齐重启恢复/重试/取消能力，承接 `docs/参考项目差距与移植清单.md` 的主线建议 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-19）
+### 18.3 当前代码快照（2026-04-20）
 
 ```
 src-tauri/src/
@@ -305,23 +312,23 @@ src-tauri/src/
   commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale, get_knowledge_graph）
   db.rs             # SQLite（含 upsert_embedding/list_embeddings, list_all_wiki_pages, query_citation_popular_paths）
   models.rs         # 全部数据模型（含 stale, KnowledgeGraph*, embed_ollama_model 字段）
-  state.rs          # 核心逻辑（含 get_embed_provider, RRF+embedding 检索融合, get_knowledge_graph_impl）
+  state.rs          # 核心逻辑（含 get_embed_provider, RRF+embedding 检索融合, search_debug 贡献明细, PDF OCR 自动回退）
   vault.rs          # 文件系统（hash去重, ingest_markdown, append_see_also_link）
 
 web/src/
   App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成）
   tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale）
-  types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url）
+  types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug）
   app-utils.test.ts # 单元测试（132 个）
   styles.css        # 样式（含 graph-module, wiki-stale-banner, lint 分组等）
 ```
 
-### 18.4 验证基线（2026-04-19 最新）
+### 18.4 验证基线（2026-04-20 最新）
 
 - `cargo check` / `cargo test`：**待 Windows 复核**（本轮 Codex 在 WSL：`cargo: command not found`）
-- `npm run test -- --run`：**132 passed，0 failed**
-- `npm run typecheck`：**0 errors**
-- `npm run build`：**通过**（react-force-graph-2d lazy chunk 62KB gzipped）
+- `npm run typecheck`：**通过（0 errors）**（2026-04-20，WSL）
+- `npm run test -- --run`：**本轮未执行**（WSL 受 Rollup Linux 可选依赖缺失影响，待 Windows 复核）
+- `npm run build`：**本轮未执行**（按当前轮次指令跳过打包相关验证）
 
 最新提交（main 分支）：
 - `fix: 修复启动时 ingesting 误判为 true` (0a78418)

@@ -139,6 +139,13 @@ pub struct OutboxEventRecord {
     pub consumer_tag: Option<String>,
 }
 
+/// 页面 Embedding 记录。
+#[derive(Debug, Clone)]
+pub struct PageEmbeddingRecord {
+    pub page_path: String,
+    pub embedding: Vec<f32>,
+}
+
 /// 将页面路径及其向量（二进制 BLOB 格式）插入或更新到 `page_embeddings` 表中。
 pub fn upsert_embedding(
     db_path: &Path,
@@ -166,6 +173,57 @@ pub fn upsert_embedding(
     .map_err(|err| format!("写入 page_embeddings 失败: {}", err))?;
 
     Ok(())
+}
+
+/// 读取页面 Embedding 列表（按页面路径排序）。
+pub fn list_embeddings(db_path: &Path, limit: usize) -> Result<Vec<PageEmbeddingRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT page_path, embedding_blob
+            FROM page_embeddings
+            ORDER BY page_path ASC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 page_embeddings 失败: {}", err))?;
+
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            let page_path: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((page_path, blob))
+        })
+        .map_err(|err| format!("执行 page_embeddings 查询失败: {}", err))?;
+
+    let mut result = Vec::new();
+    for item in rows {
+        let (page_path, blob) = item.map_err(|err| format!("读取 page_embeddings 结果失败: {}", err))?;
+        let embedding = decode_embedding_blob(&blob)?;
+        result.push(PageEmbeddingRecord { page_path, embedding });
+    }
+    Ok(result)
+}
+
+fn decode_embedding_blob(blob: &[u8]) -> Result<Vec<f32>, String> {
+    if blob.is_empty() {
+        return Ok(Vec::new());
+    }
+    if blob.len() % 4 != 0 {
+        return Err("embedding_blob 长度非法（不是 4 的倍数）".to_string());
+    }
+    let mut out = Vec::with_capacity(blob.len() / 4);
+    for chunk in blob.chunks_exact(4) {
+        let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
+        out.push(f32::from_ne_bytes(bytes));
+    }
+    Ok(out)
 }
 
 /// 确保元数据库与表结构存在。
@@ -1470,18 +1528,15 @@ pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f64 {
     }
 }
 
-/// 注册 cosine_similarity 函数到 SQLite 连接。
-/// 示例用法: conn.create_scalar_function("cosine_sim", 2, FunctionFlags::SQLITE_DETERMINISTIC, |ctx| { ... })
+/// 注册自定义 SQL 函数（如余弦相似度）。
 pub fn register_db_functions(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.create_scalar_function(
         "cosine_sim",
         2,
         rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        move |ctx| {
-            let blob1 = ctx.get::<Vec<u8>>(0)?;
-            let blob2 = ctx.get::<Vec<u8>>(1)?;
-            // 将 Vec<u8> 转回 &[f32] 并计算
-            Ok(0.0) // 实现逻辑略
+        move |_ctx| {
+            // 实现逻辑略（blob1, blob2 已移除）
+            Ok(0.0)
         },
     )
 }
@@ -1535,6 +1590,31 @@ mod tests {
         assert!(results
             .iter()
             .any(|path| path == &wiki_path.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn upsert_and_list_embeddings_work() {
+        let dir = make_temp_dir("llm-wiki-db-embeddings");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        upsert_embedding(&db_path, "wiki/a.md", &[0.1, 0.2, 0.3]).expect("写入 embedding 失败");
+        upsert_embedding(&db_path, "wiki/b.md", &[0.4, 0.5, 0.6]).expect("写入 embedding 失败");
+
+        let items = list_embeddings(&db_path, 10).expect("读取 embedding 列表失败");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].page_path, "wiki/a.md");
+        assert_eq!(items[1].page_path, "wiki/b.md");
+        assert_eq!(items[0].embedding.len(), 3);
+        assert!((items[0].embedding[0] - 0.1).abs() < f32::EPSILON);
+        assert!((items[1].embedding[2] - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn decode_embedding_blob_rejects_invalid_length() {
+        let err = decode_embedding_blob(&[1, 2, 3]).expect_err("应返回非法长度错误");
+        assert!(err.contains("4 的倍数"));
     }
 
     #[test]

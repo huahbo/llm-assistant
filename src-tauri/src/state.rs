@@ -24,8 +24,9 @@ use crate::{
         LintPatchEventItem, LintPatchPreview, LintPatchSuggestion, LintReport, LintSeverityStats,
         LlmProviderConfig, LlmStatus, LogEntry, LogLevel, ModeChangeResult, OutboxAckResult,
         OutboxEventItem, ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation,
-        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
-        WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
+        QuerySearchDebug, QuerySearchRouteDebug, QuerySettings, SaveQueryAnswerInput,
+        SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem, WikiPageDetail,
+        WikiPageFrontmatter, WikiPageItem,
     },
     vault,
 };
@@ -35,6 +36,8 @@ const QUERY_TOP_K_MIN: usize = 1;
 const QUERY_TOP_K_MAX: usize = 8;
 const QUERY_TOP_K_DEFAULT: usize = 3;
 const QUERY_EMBED_ROUTE_MAX_CANDIDATES: usize = 5000;
+const QUERY_RRF_K: f64 = 60.0;
+const QUERY_ROUTE_DEBUG_TOP_CANDIDATES: usize = 5;
 
 /// 默认摘要最大 token 数量
 const LLM_SUMMARY_MAX_TOKENS: usize = 200;
@@ -1289,16 +1292,53 @@ impl AppState {
         let extracted_text = match extract_text_from_pdf(&source_path_buf) {
             Ok(text) => text,
             Err(err) => {
-                let message = if err.contains("扫描件") || err.contains("未识别到可用文本") {
-                    format!(
-                        "{}。若为图片型 PDF，请先转图片后使用“文件摄入 + OCR（tesseract/paddle）”。",
-                        err
-                    )
-                } else {
-                    err
-                };
-                self.record_ingest_failed_event(&source_path_text, &message);
-                return Err(message);
+                if should_fallback_to_pdf_ocr(&err) {
+                    let primary_provider = {
+                        let guard = self.inner.lock().expect("状态锁已被污染");
+                        normalize_ocr_provider(guard.default_ocr_provider.as_deref())
+                    };
+
+                    match extract_text_from_pdf_via_ocr(&source_path_buf, primary_provider) {
+                        Ok(ocr_output) => {
+                            self.record_outbox_event(
+                                "ingest_pdf_ocr_fallback",
+                                serde_json::json!({
+                                    "source_path": source_path_text.clone(),
+                                    "primary_provider": primary_provider.as_str(),
+                                    "page_count": ocr_output.page_count,
+                                }),
+                            );
+                            return self
+                                .ingest_text_via_temp_markdown(
+                                    &source_path_buf,
+                                    ocr_output.text,
+                                    "pdf_ocr",
+                                )
+                                .await
+                                .map(|mut result| {
+                                    result.message = format!(
+                                        "{}（已自动 OCR 回退：provider={}，页数={}）",
+                                        result.message,
+                                        primary_provider.as_str(),
+                                        ocr_output.page_count
+                                    );
+                                    result
+                                })
+                                .map_err(|ingest_err| {
+                                    self.record_ingest_failed_event(&source_path_text, &ingest_err);
+                                    ingest_err
+                                });
+                        }
+                        Err(ocr_err) => {
+                            let message = build_pdf_ocr_fallback_failure_message(&err, &ocr_err);
+                            self.record_ingest_failed_event(&source_path_text, &message);
+                            return Err(message);
+                        }
+                    }
+                }
+
+                self.record_ingest_failed_event(&source_path_text, &err);
+                return Err(err);
             }
         };
         self.ingest_text_via_temp_markdown(&source_path_buf, extracted_text, "pdf")
@@ -2671,9 +2711,9 @@ Wiki 页面：\n{}",
         let extra_routes = if embedding_paths.is_empty() {
             Vec::new()
         } else {
-            vec![embedding_paths]
+            vec![("embedding".to_string(), embedding_paths)]
         };
-        let (matches, search_strategy, fts_error) = search_wiki_matches_rrf_with_extra_routes(
+        let (matches, search_strategy, fts_error, search_debug) = search_wiki_matches_rrf_with_extra_routes(
             &db_path,
             &wiki_dir,
             &tokens,
@@ -2746,6 +2786,7 @@ Wiki 页面：\n{}",
                 "search_strategy": search_strategy,
                 "answer_strategy": answer_strategy.clone(),
                 "top_k": top_k,
+                "search_debug": search_debug.clone(),
             }),
         );
 
@@ -2758,6 +2799,7 @@ Wiki 页面：\n{}",
             checked_at: current_timestamp_ms(),
             search_strategy: search_strategy.to_string(),
             answer_strategy,
+            search_debug,
         })
     }
 
@@ -3004,11 +3046,20 @@ Wiki 页面：\n{}",
             guard.vault_path.clone()
         };
 
+        let mut pruned_index_links = 0usize;
         if let Some(vault_path) = vault_path {
             let db_path = vault_path.join(".app").join("meta.db");
             if db_path.exists() {
                 if let Err(err) = db::delete_wiki_page_from_db(&db_path, file_path) {
                     self.push_log(LogLevel::Warn, format!("数据库清理失败（降级）：{err}"));
+                }
+            }
+            match prune_missing_index_links(&vault_path) {
+                Ok(removed) => {
+                    pruned_index_links = removed;
+                }
+                Err(err) => {
+                    self.push_log(LogLevel::Warn, format!("index.md 清理失败（降级）：{err}"));
                 }
             }
         }
@@ -3017,12 +3068,17 @@ Wiki 页面：\n{}",
             "wiki_page_deleted",
             serde_json::json!({
                 "path": path,
+                "pruned_index_links": pruned_index_links,
             }),
         );
 
         Ok(crate::models::DeleteWikiPageResult {
             path: path.to_string(),
-            message: format!("已删除：{path}"),
+            message: if pruned_index_links > 0 {
+                format!("已删除：{path}（同步清理 index.md 失效链接 {pruned_index_links} 条）")
+            } else {
+                format!("已删除：{path}")
+            },
         })
     }
 
@@ -3066,8 +3122,21 @@ Wiki 页面：\n{}",
             }
         }
 
+        let mut pruned_index_links = 0usize;
+        match prune_missing_index_links(&vault_path) {
+            Ok(removed) => {
+                pruned_index_links = removed;
+            }
+            Err(err) => {
+                eprintln!("[purge_orphaned] index.md 清理失败: {err}");
+            }
+        }
+
         if purged > 0 {
             eprintln!("[purge_orphaned] 启动清理完成，共删除 {purged} 条孤立 wiki 页面记录");
+        }
+        if pruned_index_links > 0 {
+            eprintln!("[purge_orphaned] 启动清理完成，index.md 共移除 {pruned_index_links} 条失效链接");
         }
     }
 
@@ -3248,9 +3317,9 @@ Wiki 页面：\n{}",
         let extra_routes = if embedding_paths.is_empty() {
             Vec::new()
         } else {
-            vec![embedding_paths]
+            vec![("embedding".to_string(), embedding_paths)]
         };
-        let (matches, search_strategy, fts_error) = search_wiki_matches_rrf_with_extra_routes(
+        let (matches, search_strategy, fts_error, search_debug) = search_wiki_matches_rrf_with_extra_routes(
             &db_path,
             &wiki_dir,
             &tokens,
@@ -3387,6 +3456,7 @@ Wiki 页面：\n{}",
                 "search_strategy": search_strategy,
                 "answer_strategy": answer_strategy.clone(),
                 "top_k": top_k,
+                "search_debug": search_debug.clone(),
             }),
         );
 
@@ -3399,6 +3469,7 @@ Wiki 页面：\n{}",
             checked_at: current_timestamp_ms(),
             search_strategy: search_strategy.to_string(),
             answer_strategy,
+            search_debug,
         })
     }
 
@@ -4160,6 +4231,148 @@ fn extract_text_from_pdf(source_path: &Path) -> Result<String, String> {
     Err("提取 PDF 文本失败：未识别到可用文本，可能是扫描件或字体编码不兼容".to_string())
 }
 
+#[derive(Debug)]
+struct PdfOcrFallbackOutput {
+    text: String,
+    page_count: usize,
+}
+
+/// 仅在“解析兼容/无文本/扫描件”类场景启用 PDF OCR 回退。
+fn should_fallback_to_pdf_ocr(error_message: &str) -> bool {
+    [
+        "解析器暂不兼容",
+        "未识别到可用文本",
+        "扫描件",
+        "字体编码不兼容",
+        "未从原始流中提取到可用文本",
+    ]
+    .iter()
+    .any(|keyword| error_message.contains(keyword))
+}
+
+/// 拼装 PDF OCR 回退失败文案，统一包含安装指引。
+fn build_pdf_ocr_fallback_failure_message(parse_error: &str, ocr_error: &str) -> String {
+    format!(
+        "PDF 文本解析失败：{}；自动 OCR 回退失败：{}。安装指引：请安装 Poppler（确保 `pdftoppm` 可执行并已加入 PATH）；并安装 tesseract 或 paddleocr（至少一种）并加入 PATH。",
+        shorten_error_snippet(parse_error.trim(), 160),
+        shorten_error_snippet(ocr_error.trim(), 200)
+    )
+}
+
+fn extract_text_from_pdf_via_ocr(
+    source_path: &Path,
+    primary_provider: OcrProvider,
+) -> Result<PdfOcrFallbackOutput, String> {
+    let temp_dir = std::env::temp_dir().join(format!("llm_wiki_pdf_ocr_{}", uuid_v4_short()));
+    fs::create_dir_all(&temp_dir).map_err(|err| format!("创建 PDF OCR 临时目录失败：{}", err))?;
+
+    let run_result = (|| {
+        let output_prefix = temp_dir.join("page");
+        let command_output = run_pdftoppm_png_command(source_path, &output_prefix)?;
+        if !command_output.status.success() {
+            let stderr = String::from_utf8_lossy(&command_output.stderr);
+            let short_reason = shorten_error_snippet(stderr.trim(), 160);
+            return Err(format!(
+                "pdftoppm 转图失败：{}",
+                if short_reason.is_empty() {
+                    "请确认 PDF 文件可读且 Poppler 已正确安装"
+                } else {
+                    short_reason.as_str()
+                }
+            ));
+        }
+
+        let page_images = collect_pdftoppm_generated_pngs(&temp_dir, "page")?;
+        let mut page_texts = Vec::new();
+        let mut page_errors = Vec::new();
+
+        for (page_number, image_path) in page_images.iter() {
+            match extract_text_from_image_with_fallback(image_path, primary_provider) {
+                Ok(text) => page_texts.push(format!("[第 {} 页]\n{}", page_number, text)),
+                Err(err) => page_errors.push(format!(
+                    "第 {} 页：{}",
+                    page_number,
+                    shorten_error_snippet(err.trim(), 120)
+                )),
+            }
+        }
+
+        if page_texts.is_empty() {
+            let mut details = page_errors.join("；");
+            if details.is_empty() {
+                details = "未提取到任何页面文本".to_string();
+            }
+            return Err(format!("PDF OCR 未提取到可用文本：{}", details));
+        }
+
+        Ok(PdfOcrFallbackOutput {
+            text: page_texts.join("\n\n"),
+            page_count: page_images.len(),
+        })
+    })();
+
+    let _ = fs::remove_dir_all(&temp_dir);
+    run_result
+}
+
+fn run_pdftoppm_png_command(
+    source_path: &Path,
+    output_prefix: &Path,
+) -> Result<std::process::Output, String> {
+    std::process::Command::new("pdftoppm")
+        .arg("-png")
+        .arg("-r")
+        .arg("220")
+        .arg(source_path)
+        .arg(output_prefix)
+        .output()
+        .map_err(|err| format_pdftoppm_spawn_error(&err))
+}
+
+fn format_pdftoppm_spawn_error(err: &io::Error) -> String {
+    if err.kind() == io::ErrorKind::NotFound {
+        "未检测到 pdftoppm 命令，请先安装 Poppler 并将 pdftoppm 加入 PATH".to_string()
+    } else {
+        format!(
+            "调用 pdftoppm 失败：{}",
+            shorten_error_snippet(&err.to_string(), 80)
+        )
+    }
+}
+
+fn collect_pdftoppm_generated_pngs(
+    temp_dir: &Path,
+    output_prefix: &str,
+) -> Result<Vec<(usize, PathBuf)>, String> {
+    let mut pages = Vec::new();
+    let entries = fs::read_dir(temp_dir).map_err(|err| format!("读取 PDF 页图目录失败：{}", err))?;
+    let expected_prefix = format!("{}-", output_prefix);
+
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("读取 PDF 页图条目失败：{}", err))?;
+        let path = entry.path();
+        if path.extension().and_then(|v| v.to_str()) != Some("png") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        let Some(page_number_raw) = stem.strip_prefix(&expected_prefix) else {
+            continue;
+        };
+        let Ok(page_number) = page_number_raw.parse::<usize>() else {
+            continue;
+        };
+        pages.push((page_number, path));
+    }
+
+    pages.sort_by_key(|(page_number, _)| *page_number);
+    if pages.is_empty() {
+        return Err("pdftoppm 未生成可识别的 PNG 页面文件".to_string());
+    }
+    Ok(pages)
+}
+
 /// 兼容加载 PDF：标准加载失败后，尝试对二进制做轻量修复再重试。
 /// 目的：避免“阅读器可打开但解析器严格失败”的误判。
 fn load_pdf_document_with_fallback(
@@ -4915,6 +5128,14 @@ fn resolve_wiki_page_candidate(vault_path: &Path, raw_path: &str) -> Result<Path
     if trimmed.is_empty() {
         return Err("页面路径不能为空".to_string());
     }
+    // 外部 URL 不是 wiki 页面路径，直接拒绝
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("ftp://")
+        || trimmed.starts_with("mailto:")
+    {
+        return Err("外部 URL 不是 wiki 页面路径".to_string());
+    }
 
     let input_path = PathBuf::from(trimmed);
     Ok(if input_path.is_absolute() {
@@ -5010,6 +5231,75 @@ fn append_index_link_if_missing(
     updated.push_str(&format!("- {}\n", link));
     fs::write(index_path, updated).map_err(|err| format!("写入 index.md 失败: {}", err))?;
     Ok(true)
+}
+
+/// 清理 index.md 中指向不存在 wiki 页面的链接行，避免 lint 持续报 MISSING_INDEX_ENTRY。
+fn prune_missing_index_links(vault_path: &Path) -> Result<usize, String> {
+    let index_path = vault_path.join("index.md");
+    if !index_path.exists() {
+        return Ok(0);
+    }
+
+    let content =
+        fs::read_to_string(&index_path).map_err(|err| format!("读取 index.md 失败: {}", err))?;
+    let (updated, removed) = prune_missing_index_links_from_content(vault_path, &content);
+    if removed > 0 {
+        fs::write(&index_path, updated).map_err(|err| format!("写入 index.md 失败: {}", err))?;
+    }
+    Ok(removed)
+}
+
+fn prune_missing_index_links_from_content(vault_path: &Path, content: &str) -> (String, usize) {
+    let wiki_link_re = regex::Regex::new(r"\[\[([^|\]]+)(?:\|[^\]]+)?\]\]")
+        .expect("wiki link regex 应可编译");
+    let markdown_link_re =
+        regex::Regex::new(r"\[[^\]]+\]\(([^)]+)\)").expect("markdown link regex 应可编译");
+    let mut kept_lines = Vec::new();
+    let mut removed = 0usize;
+
+    for line in content.lines() {
+        let mut should_remove_line = false;
+        for capture in wiki_link_re.captures_iter(line) {
+            let raw_target = capture.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            if raw_target.is_empty() {
+                continue;
+            }
+            if !is_existing_wiki_page_target(vault_path, raw_target)
+                && resolve_wiki_page_candidate(vault_path, raw_target).is_ok()
+            {
+                should_remove_line = true;
+                break;
+            }
+        }
+
+        if !should_remove_line {
+            for capture in markdown_link_re.captures_iter(line) {
+                let raw_target = capture.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                if raw_target.is_empty() {
+                    continue;
+                }
+                if !is_existing_wiki_page_target(vault_path, raw_target)
+                    && resolve_wiki_page_candidate(vault_path, raw_target).is_ok()
+                {
+                    should_remove_line = true;
+                    break;
+                }
+            }
+        }
+
+        if should_remove_line {
+            removed += 1;
+        } else {
+            kept_lines.push(line);
+        }
+    }
+
+    let updated = if content.ends_with('\n') {
+        format!("{}\n", kept_lines.join("\n"))
+    } else {
+        kept_lines.join("\n")
+    };
+    (updated, removed)
 }
 
 fn rewrite_broken_wiki_links_in_page(vault_path: &Path, page_path: &Path) -> Result<usize, String> {
@@ -5272,27 +5562,103 @@ fn search_wiki_matches_with_fts(
     tokens: &[String],
     question: &str,
     limit: usize,
-) -> Result<(Vec<WikiMatch>, &'static str, Option<String>), String> {
+) -> Result<(Vec<WikiMatch>, &'static str, Option<String>, Option<QuerySearchDebug>), String> {
     if tokens.is_empty() {
-        return Ok((Vec::new(), "empty", None));
+        return Ok((Vec::new(), "empty", None, None));
     }
 
     match db::search_fts_page_paths(db_path, tokens, 64) {
         Ok(paths) if !paths.is_empty() => {
             let matches = search_wiki_matches_from_paths(&paths, tokens, question, limit)?;
             if !matches.is_empty() {
-                return Ok((matches, "fts", None));
+                let contributed_paths = matches
+                    .iter()
+                    .map(|item| item.page_path.clone())
+                    .collect::<Vec<_>>();
+                let debug = QuerySearchDebug {
+                    strategy: "fts".to_string(),
+                    rrf_k: None,
+                    fused_top_paths: contributed_paths.clone(),
+                    routes: vec![QuerySearchRouteDebug {
+                        route: "fts".to_string(),
+                        candidate_count: paths.len(),
+                        top_candidates: paths
+                            .iter()
+                            .take(QUERY_ROUTE_DEBUG_TOP_CANDIDATES)
+                            .cloned()
+                            .collect(),
+                        contributed_paths,
+                    }],
+                };
+                return Ok((matches, "fts", None, Some(debug)));
             }
             let fallback = search_wiki_matches(wiki_dir, tokens, question, limit)?;
-            Ok((fallback, "scan", None))
+            let contributed_paths = fallback
+                .iter()
+                .map(|item| item.page_path.clone())
+                .collect::<Vec<_>>();
+            let debug = QuerySearchDebug {
+                strategy: "scan".to_string(),
+                rrf_k: None,
+                fused_top_paths: contributed_paths.clone(),
+                routes: vec![QuerySearchRouteDebug {
+                    route: "scan".to_string(),
+                    candidate_count: contributed_paths.len(),
+                    top_candidates: contributed_paths
+                        .iter()
+                        .take(QUERY_ROUTE_DEBUG_TOP_CANDIDATES)
+                        .cloned()
+                        .collect(),
+                    contributed_paths,
+                }],
+            };
+            Ok((fallback, "scan", None, Some(debug)))
         }
         Ok(_) => {
             let fallback = search_wiki_matches(wiki_dir, tokens, question, limit)?;
-            Ok((fallback, "scan", None))
+            let contributed_paths = fallback
+                .iter()
+                .map(|item| item.page_path.clone())
+                .collect::<Vec<_>>();
+            let debug = QuerySearchDebug {
+                strategy: "scan".to_string(),
+                rrf_k: None,
+                fused_top_paths: contributed_paths.clone(),
+                routes: vec![QuerySearchRouteDebug {
+                    route: "scan".to_string(),
+                    candidate_count: contributed_paths.len(),
+                    top_candidates: contributed_paths
+                        .iter()
+                        .take(QUERY_ROUTE_DEBUG_TOP_CANDIDATES)
+                        .cloned()
+                        .collect(),
+                    contributed_paths,
+                }],
+            };
+            Ok((fallback, "scan", None, Some(debug)))
         }
         Err(err) => {
             let fallback = search_wiki_matches(wiki_dir, tokens, question, limit)?;
-            Ok((fallback, "scan", Some(err)))
+            let contributed_paths = fallback
+                .iter()
+                .map(|item| item.page_path.clone())
+                .collect::<Vec<_>>();
+            let debug = QuerySearchDebug {
+                strategy: "scan".to_string(),
+                rrf_k: None,
+                fused_top_paths: contributed_paths.clone(),
+                routes: vec![QuerySearchRouteDebug {
+                    route: "scan".to_string(),
+                    candidate_count: contributed_paths.len(),
+                    top_candidates: contributed_paths
+                        .iter()
+                        .take(QUERY_ROUTE_DEBUG_TOP_CANDIDATES)
+                        .cloned()
+                        .collect(),
+                    contributed_paths,
+                }],
+            };
+            Ok((fallback, "scan", Some(err), Some(debug)))
         }
     }
 }
@@ -5306,10 +5672,10 @@ fn search_wiki_matches_rrf_with_extra_routes(
     tokens: &[String],
     question: &str,
     limit: usize,
-    extra_routes: &[Vec<String>],
-) -> Result<(Vec<WikiMatch>, &'static str, Option<String>), String> {
+    extra_routes: &[(String, Vec<String>)],
+) -> Result<(Vec<WikiMatch>, &'static str, Option<String>, Option<QuerySearchDebug>), String> {
     if tokens.is_empty() {
-        return Ok((Vec::new(), "empty", None));
+        return Ok((Vec::new(), "empty", None, None));
     }
 
     // 路径1：FTS5（多取 4x 供融合使用）
@@ -5328,12 +5694,21 @@ fn search_wiki_matches_rrf_with_extra_routes(
     // 路径3：Citation 热度
     let popular_paths = db::query_citation_popular_paths(db_path, limit * 4).unwrap_or_default();
 
-    let mut routes = vec![fts_paths.clone(), link_paths, popular_paths];
-    for route in extra_routes {
-        if !route.is_empty() {
-            routes.push(route.clone());
+    let mut named_routes = vec![
+        ("fts".to_string(), fts_paths.clone()),
+        ("linked".to_string(), link_paths),
+        ("popular".to_string(), popular_paths),
+    ];
+    for (route_name, route_paths) in extra_routes {
+        if !route_paths.is_empty() {
+            named_routes.push((route_name.clone(), route_paths.clone()));
         }
     }
+
+    let routes = named_routes
+        .iter()
+        .map(|(_, paths)| paths.clone())
+        .collect::<Vec<_>>();
 
     // 如果所有路径全空，降级到原有单路逻辑
     if routes.iter().all(|route| route.is_empty()) {
@@ -5341,7 +5716,7 @@ fn search_wiki_matches_rrf_with_extra_routes(
     }
 
     // RRF 融合
-    let fused = reciprocal_rank_fusion(&routes, 60.0);
+    let fused = reciprocal_rank_fusion(&routes, QUERY_RRF_K);
 
     // 取 top-(limit*2) 的路径，再用 search_wiki_matches_from_paths 提取摘要和评分
     let top_paths: Vec<String> = fused
@@ -5361,7 +5736,45 @@ fn search_wiki_matches_rrf_with_extra_routes(
         return search_wiki_matches_with_fts(db_path, wiki_dir, tokens, question, limit);
     }
 
-    Ok((matches, "rrf", fts_error))
+    let matched_set = matches
+        .iter()
+        .map(|item| item.page_path.clone())
+        .collect::<HashSet<_>>();
+    let route_debug = named_routes
+        .into_iter()
+        .map(|(route, route_paths)| {
+            let mut contributed_paths = route_paths
+                .iter()
+                .filter(|path| matched_set.contains(*path))
+                .cloned()
+                .collect::<Vec<_>>();
+            contributed_paths.sort();
+            contributed_paths.dedup();
+            QuerySearchRouteDebug {
+                route,
+                candidate_count: route_paths.len(),
+                top_candidates: route_paths
+                    .iter()
+                    .take(QUERY_ROUTE_DEBUG_TOP_CANDIDATES)
+                    .cloned()
+                    .collect(),
+                contributed_paths,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let search_debug = QuerySearchDebug {
+        strategy: "rrf".to_string(),
+        rrf_k: Some(QUERY_RRF_K),
+        fused_top_paths: top_paths
+            .iter()
+            .take(QUERY_ROUTE_DEBUG_TOP_CANDIDATES)
+            .cloned()
+            .collect(),
+        routes: route_debug,
+    };
+
+    Ok((matches, "rrf", fts_error, Some(search_debug)))
 }
 
 /// 三路 RRF 融合检索：FTS5 + 链接扩展 + Citation 热度。
@@ -5371,7 +5784,7 @@ fn search_wiki_matches_rrf(
     tokens: &[String],
     question: &str,
     limit: usize,
-) -> Result<(Vec<WikiMatch>, &'static str, Option<String>), String> {
+) -> Result<(Vec<WikiMatch>, &'static str, Option<String>, Option<QuerySearchDebug>), String> {
     search_wiki_matches_rrf_with_extra_routes(db_path, wiki_dir, tokens, question, limit, &[])
 }
 
@@ -6380,6 +6793,30 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn should_fallback_to_pdf_ocr_matches_supported_error_patterns() {
+        assert!(should_fallback_to_pdf_ocr(
+            "提取 PDF 文本失败：未识别到可用文本，可能是扫描件或字体编码不兼容"
+        ));
+        assert!(should_fallback_to_pdf_ocr(
+            "读取 PDF 失败：当前解析器暂不兼容该文件结构"
+        ));
+        assert!(!should_fallback_to_pdf_ocr("读取 PDF 原始字节失败：permission denied"));
+    }
+
+    #[test]
+    fn build_pdf_ocr_fallback_failure_message_contains_install_hints() {
+        let message = build_pdf_ocr_fallback_failure_message(
+            "读取 PDF 失败：当前解析器暂不兼容该文件结构",
+            "未检测到 pdftoppm 命令",
+        );
+        assert!(message.contains("自动 OCR 回退失败"));
+        assert!(message.contains("Poppler"));
+        assert!(message.contains("pdftoppm"));
+        assert!(message.contains("tesseract"));
+        assert!(message.contains("paddleocr"));
+    }
+
     #[tokio::test]
     async fn ingest_pdf_impl_rejects_invalid_pdf_content_with_readable_error() {
         let vault_dir = make_temp_dir("llm-wiki-ingest-pdf-invalid");
@@ -6532,6 +6969,50 @@ mod tests {
         let index_content =
             fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
         assert!(index_content.contains("[[wiki/standalone.md|standalone]]"));
+    }
+
+    #[test]
+    fn prune_missing_index_links_from_content_removes_only_missing_targets() {
+        let vault_dir = make_temp_dir("llm-wiki-prune-index-content");
+        let _guard = TempDirGuard(vault_dir.clone());
+        fs::create_dir_all(vault_dir.join("wiki")).expect("创建 wiki 目录失败");
+        fs::write(vault_dir.join("wiki").join("kept.md"), "# kept").expect("写入 kept 页面失败");
+
+        let content = [
+            "# Index",
+            "- [[wiki/kept.md|kept]]",
+            "- [[wiki/missing.md|missing]]",
+            "- [missing-md](wiki/missing2.md)",
+            "- [external](https://example.com)",
+        ]
+        .join("\n");
+
+        let (updated, removed) = prune_missing_index_links_from_content(&vault_dir, &content);
+        assert_eq!(removed, 2);
+        assert!(updated.contains("[[wiki/kept.md|kept]]"));
+        assert!(!updated.contains("[[wiki/missing.md|missing]]"));
+        assert!(!updated.contains("wiki/missing2.md"));
+        assert!(updated.contains("https://example.com"));
+    }
+
+    #[test]
+    fn prune_missing_index_links_updates_file_and_returns_removed_count() {
+        let vault_dir = make_temp_dir("llm-wiki-prune-index-file");
+        let _guard = TempDirGuard(vault_dir.clone());
+        fs::create_dir_all(vault_dir.join("wiki")).expect("创建 wiki 目录失败");
+        fs::write(vault_dir.join("wiki").join("exists.md"), "# exists").expect("写入页面失败");
+        fs::write(
+            vault_dir.join("index.md"),
+            "- [[wiki/exists.md|exists]]\n- [[wiki/gone.md|gone]]\n",
+        )
+        .expect("写入 index 失败");
+
+        let removed = prune_missing_index_links(&vault_dir).expect("清理 index 链接失败");
+        assert_eq!(removed, 1);
+
+        let updated = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index 失败");
+        assert!(updated.contains("[[wiki/exists.md|exists]]"));
+        assert!(!updated.contains("[[wiki/gone.md|gone]]"));
     }
 
     #[test]
@@ -7365,12 +7846,13 @@ entities:
         db::upsert_fts_page(&db_path, &wiki_path, "fts-hit", content).expect("写入 fts 索引失败");
 
         let tokens = tokenize_query("Rust backend");
-        let (matches, strategy, fts_error) =
+        let (matches, strategy, fts_error, search_debug) =
             search_wiki_matches_with_fts(&db_path, &wiki_dir, &tokens, "Rust backend", 3)
                 .expect("执行检索失败");
 
         assert!(fts_error.is_none());
         assert_eq!(strategy, "fts");
+        assert!(search_debug.is_some());
         assert!(!matches.is_empty());
         assert!(matches
             .iter()
@@ -8084,7 +8566,7 @@ entities:
         // 应该不 panic，返回空结果
         let result = search_wiki_matches_rrf(&db_path, &wiki_dir, &tokens, "test", 3);
         assert!(result.is_ok());
-        let (matches, _, _) = result.unwrap();
+        let (matches, _, _, _) = result.unwrap();
         assert!(matches.is_empty());
     }
 
@@ -8100,7 +8582,10 @@ entities:
         fs::write(&page_path, "# Embedding\n\nRust embedding recall path").unwrap();
 
         let tokens = vec!["rust".to_string()];
-        let extra_routes = vec![vec![page_path.to_string_lossy().to_string()]];
+        let extra_routes = vec![(
+            "embedding".to_string(),
+            vec![page_path.to_string_lossy().to_string()],
+        )];
         let result = search_wiki_matches_rrf_with_extra_routes(
             &db_path,
             &wiki_dir,
@@ -8114,6 +8599,8 @@ entities:
         assert_eq!(result.1, "rrf");
         assert_eq!(result.0.len(), 1);
         assert!(result.0[0].page_path.ends_with("embedding-only.md"));
+        let debug = result.3.expect("应返回检索调试信息");
+        assert!(debug.routes.iter().any(|item| item.route == "embedding"));
     }
 
     #[test]

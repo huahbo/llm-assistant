@@ -1192,6 +1192,79 @@ input, select, textarea { font: inherit; }
   opacity: 0.8;
 }
 
+/* ── 检索调试信息 ── */
+.ask-message__debug {
+  margin-top: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-content);
+  padding: 6px 8px;
+}
+
+.ask-message__debug > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  user-select: none;
+}
+
+.ask-message__debug-actions {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ask-message__debug-copy {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ask-message__debug-copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.ask-message__debug-routes {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ask-message__debug-route {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  background: var(--bg-card);
+}
+
+.ask-message__debug-route-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.ask-message__debug-route-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ask-message__debug-route p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
 /* ── 保存到 Wiki 按钮 ── */
 .ask-message__actions {
   display: flex;
@@ -1276,6 +1349,20 @@ input, select, textarea { font: inherit; }
 .ask-advanced__save-btn:hover:not(:disabled) {
   background: var(--bg-content);
   color: var(--text);
+}
+
+.ask-advanced__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.ask-advanced__toggle input {
+  width: 14px;
+  height: 14px;
 }
 
 /* 输入框 */

@@ -312,6 +312,37 @@ pub struct QueryCitation {
     pub excerpt: String,
 }
 
+/// Query 检索路径调试项（用于解释多路召回贡献）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySearchRouteDebug {
+    /// 路径标识，如 fts / linked / popular / embedding。
+    pub route: String,
+    /// 该路径提供的候选数量。
+    pub candidate_count: usize,
+    /// 候选路径前若干项（用于快速诊断）。
+    #[serde(default)]
+    pub top_candidates: Vec<String>,
+    /// 最终命中页中由该路径贡献的路径。
+    #[serde(default)]
+    pub contributed_paths: Vec<String>,
+}
+
+/// Query 检索调试信息（用于解释 RRF 各路融合结果）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySearchDebug {
+    /// 检索策略（如 rrf / fts / scan / empty）。
+    pub strategy: String,
+    /// RRF 常量 k；非 RRF 策略为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rrf_k: Option<f64>,
+    /// 融合后前若干路径。
+    #[serde(default)]
+    pub fused_top_paths: Vec<String>,
+    /// 各路径贡献详情。
+    #[serde(default)]
+    pub routes: Vec<QuerySearchRouteDebug>,
+}
+
 /// Query 回答结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryAnswerResult {
@@ -325,6 +356,8 @@ pub struct QueryAnswerResult {
     pub search_strategy: String,
     #[serde(default = "default_query_answer_strategy")]
     pub answer_strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_debug: Option<QuerySearchDebug>,
 }
 
 fn default_query_search_strategy() -> String {

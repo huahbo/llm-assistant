@@ -74,11 +74,26 @@ export interface QueryCitation {
 export type QueryAnswerStrategy = "llm" | "rule";
 export type LegacyQueryAnswerStrategy = "llm_synthesis" | "rule_fallback";
 
+export interface QuerySearchRouteDebug {
+  route: string;
+  candidate_count: number;
+  top_candidates: string[];
+  contributed_paths: string[];
+}
+
+export interface QuerySearchDebug {
+  strategy: string;
+  rrf_k?: number | null;
+  fused_top_paths: string[];
+  routes: QuerySearchRouteDebug[];
+}
+
 export interface QueryAnswerResult {
   question: string;
   answer: string;
   search_strategy?: string | null;
   answer_strategy?: QueryAnswerStrategy | LegacyQueryAnswerStrategy | null;
+  search_debug?: QuerySearchDebug | null;
   citations: QueryCitation[];
   matched_pages: string[];
   mode: BackendAppMode;
