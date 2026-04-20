@@ -105,6 +105,64 @@ const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
 
+const ingestSupportedFileExtensions = new Set([
+  "md",
+  "markdown",
+  "pdf",
+  "docx",
+  "pptx",
+  "txt",
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "bmp",
+  "gif",
+  "tif",
+  "tiff",
+]);
+
+export type DroppedIngestPathsResult = {
+  accepted: string[];
+  rejected: string[];
+  duplicateCount: number;
+};
+
+/**
+ * 解析窗口拖拽文件路径：保留受支持扩展名并去重，返回被忽略条目用于提示。
+ */
+export const parseDroppedIngestPaths = (paths: string[]): DroppedIngestPathsResult => {
+  const seen = new Set<string>();
+  const accepted: string[] = [];
+  const rejected: string[] = [];
+  let duplicateCount = 0;
+
+  for (const rawPath of paths) {
+    const path = rawPath.trim();
+    if (!path) {
+      continue;
+    }
+
+    // Windows 路径大小写不敏感，统一小写比较去重。
+    const normalizedKey = path.replaceAll("\\", "/").toLowerCase();
+    if (seen.has(normalizedKey)) {
+      duplicateCount += 1;
+      continue;
+    }
+    seen.add(normalizedKey);
+
+    const fileName = path.split(/[/\\]/).pop() ?? "";
+    const extension = fileName.includes(".") ? (fileName.split(".").pop() ?? "").toLowerCase() : "";
+    if (!extension || !ingestSupportedFileExtensions.has(extension)) {
+      rejected.push(path);
+      continue;
+    }
+    accepted.push(path);
+  }
+
+  return { accepted, rejected, duplicateCount };
+};
+
 const modeIdToBackendMode: Record<ModeId, BackendAppMode> = {
   hybrid: "Hybrid",
   "strict-local": "StrictLocal",
@@ -152,6 +210,13 @@ const searchRouteLabels: Record<string, string> = {
   popular: "引用热度",
   embedding: "Embedding",
   scan: "文件扫描",
+};
+
+const graphInsightKindLabels: Record<GraphInsightKind, string> = {
+  "isolated-node": "孤立页",
+  "sparse-group": "稀疏分组",
+  "bridge-node": "桥接节点",
+  "surprising-link": "异常连接",
 };
 
 const wikiSortModeLabels: Record<WikiSortMode, string> = {
@@ -419,6 +484,30 @@ export type GraphNormalizedEdge = {
   targetId: string;
 };
 
+export type GraphInsightKind = "isolated-node" | "sparse-group" | "bridge-node" | "surprising-link";
+
+export type GraphInsightItem = {
+  kind: GraphInsightKind;
+  title: string;
+  description: string;
+  suggestion: string;
+  nodeIds: string[];
+  group?: string;
+  score: number;
+  evidence: string[];
+};
+
+export type GraphInsightConfig = {
+  isolatedMaxDegree: number;
+  sparseGroupMinSize: number;
+  sparseDensityThreshold: number;
+  bridgeMinGroups: number;
+  bridgeCandidateLimit: number;
+  surprisingMaxJaccard: number;
+  surprisingMinConfidence: number;
+  surprisingCandidateLimit: number;
+};
+
 // ---- 图谱聚合模式类型与常量 ----
 
 /** 大图聚合模式触发阈值（节点数超过此值时可启用） */
@@ -529,12 +618,36 @@ export type GraphTraversalDirection = "both" | "out" | "in";
 export const GRAPH_VIEW_MODE_STORAGE_KEY = "llm_wiki_graph_view_mode_v1";
 export const GRAPH_LOCAL_DEPTH_STORAGE_KEY = "llm_wiki_graph_local_depth_v1";
 export const GRAPH_LOCAL_DIRECTION_STORAGE_KEY = "llm_wiki_graph_local_direction_v1";
+export const GRAPH_INSIGHT_SPARSE_DENSITY_STORAGE_KEY = "llm_wiki_graph_insight_sparse_density_v1";
+export const GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_STORAGE_KEY = "llm_wiki_graph_insight_bridge_min_groups_v1";
+export const GRAPH_INSIGHT_SURPRISING_JACCARD_STORAGE_KEY = "llm_wiki_graph_insight_surprising_jaccard_v1";
+export const GRAPH_INSIGHT_SURPRISING_CONFIDENCE_STORAGE_KEY =
+  "llm_wiki_graph_insight_surprising_confidence_v1";
 export const GRAPH_LOCAL_DEPTH_MIN = 1;
 export const GRAPH_LOCAL_DEPTH_MAX = 3;
 export const GRAPH_LOCAL_BACKEND_NODE_THRESHOLD = 1200;
 export const GRAPH_LOCAL_BACKEND_LINK_THRESHOLD = 4000;
 export const GRAPH_LOCAL_BACKEND_MAX_NODES = 1500;
 export const GRAPH_LOCAL_BACKEND_MAX_LINKS = 8000;
+export const GRAPH_INSIGHT_SPARSE_DENSITY_MIN = 0.05;
+export const GRAPH_INSIGHT_SPARSE_DENSITY_MAX = 0.6;
+export const GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MIN = 2;
+export const GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MAX = 6;
+export const GRAPH_INSIGHT_SURPRISING_JACCARD_MIN = 0;
+export const GRAPH_INSIGHT_SURPRISING_JACCARD_MAX = 0.6;
+export const GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MIN = 0.3;
+export const GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MAX = 0.95;
+
+export const DEFAULT_GRAPH_INSIGHT_CONFIG: GraphInsightConfig = {
+  isolatedMaxDegree: 1,
+  sparseGroupMinSize: 3,
+  sparseDensityThreshold: 0.15,
+  bridgeMinGroups: 3,
+  bridgeCandidateLimit: 3,
+  surprisingMaxJaccard: 0.1,
+  surprisingMinConfidence: 0.55,
+  surprisingCandidateLimit: 3,
+};
 
 export const isGraphViewMode = (value: string): value is GraphViewMode =>
   value === "global" || value === "local";
@@ -619,6 +732,42 @@ export const writeGraphLocalDirectionToStorage = (direction: GraphTraversalDirec
 export const clampGraphLocalDepth = (depth: number) =>
   Math.max(GRAPH_LOCAL_DEPTH_MIN, Math.min(GRAPH_LOCAL_DEPTH_MAX, depth));
 
+export const clampGraphInsightSparseDensity = (value: number) =>
+  Math.max(
+    GRAPH_INSIGHT_SPARSE_DENSITY_MIN,
+    Math.min(
+      GRAPH_INSIGHT_SPARSE_DENSITY_MAX,
+      Number.isFinite(value) ? Number(value.toFixed(2)) : DEFAULT_GRAPH_INSIGHT_CONFIG.sparseDensityThreshold,
+    ),
+  );
+
+export const clampGraphInsightBridgeMinGroups = (value: number) =>
+  Math.max(
+    GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MIN,
+    Math.min(
+      GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MAX,
+      Number.isFinite(value) ? Math.round(value) : DEFAULT_GRAPH_INSIGHT_CONFIG.bridgeMinGroups,
+    ),
+  );
+
+export const clampGraphInsightSurprisingJaccard = (value: number) =>
+  Math.max(
+    GRAPH_INSIGHT_SURPRISING_JACCARD_MIN,
+    Math.min(
+      GRAPH_INSIGHT_SURPRISING_JACCARD_MAX,
+      Number.isFinite(value) ? Number(value.toFixed(2)) : DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMaxJaccard,
+    ),
+  );
+
+export const clampGraphInsightSurprisingConfidence = (value: number) =>
+  Math.max(
+    GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MIN,
+    Math.min(
+      GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MAX,
+      Number.isFinite(value) ? Number(value.toFixed(2)) : DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMinConfidence,
+    ),
+  );
+
 export const readGraphLocalDepthFromStorage = (): number => {
   try {
     const storage = globalThis.localStorage;
@@ -646,6 +795,134 @@ export const writeGraphLocalDepthToStorage = (depth: number) => {
       return;
     }
     storage.setItem(GRAPH_LOCAL_DEPTH_STORAGE_KEY, String(clampGraphLocalDepth(depth)));
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
+export const readGraphInsightSparseDensityFromStorage = (): number => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.sparseDensityThreshold;
+    }
+    const raw = storage.getItem(GRAPH_INSIGHT_SPARSE_DENSITY_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.sparseDensityThreshold;
+    }
+    const parsed = Number(raw);
+    return clampGraphInsightSparseDensity(parsed);
+  } catch {
+    return DEFAULT_GRAPH_INSIGHT_CONFIG.sparseDensityThreshold;
+  }
+};
+
+export const writeGraphInsightSparseDensityToStorage = (value: number) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(
+      GRAPH_INSIGHT_SPARSE_DENSITY_STORAGE_KEY,
+      String(clampGraphInsightSparseDensity(value)),
+    );
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
+export const readGraphInsightBridgeMinGroupsFromStorage = (): number => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.bridgeMinGroups;
+    }
+    const raw = storage.getItem(GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.bridgeMinGroups;
+    }
+    const parsed = Number(raw);
+    return clampGraphInsightBridgeMinGroups(parsed);
+  } catch {
+    return DEFAULT_GRAPH_INSIGHT_CONFIG.bridgeMinGroups;
+  }
+};
+
+export const writeGraphInsightBridgeMinGroupsToStorage = (value: number) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(
+      GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_STORAGE_KEY,
+      String(clampGraphInsightBridgeMinGroups(value)),
+    );
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
+export const readGraphInsightSurprisingJaccardFromStorage = (): number => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMaxJaccard;
+    }
+    const raw = storage.getItem(GRAPH_INSIGHT_SURPRISING_JACCARD_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMaxJaccard;
+    }
+    const parsed = Number(raw);
+    return clampGraphInsightSurprisingJaccard(parsed);
+  } catch {
+    return DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMaxJaccard;
+  }
+};
+
+export const writeGraphInsightSurprisingJaccardToStorage = (value: number) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(
+      GRAPH_INSIGHT_SURPRISING_JACCARD_STORAGE_KEY,
+      String(clampGraphInsightSurprisingJaccard(value)),
+    );
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
+
+export const readGraphInsightSurprisingConfidenceFromStorage = (): number => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMinConfidence;
+    }
+    const raw = storage.getItem(GRAPH_INSIGHT_SURPRISING_CONFIDENCE_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMinConfidence;
+    }
+    const parsed = Number(raw);
+    return clampGraphInsightSurprisingConfidence(parsed);
+  } catch {
+    return DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMinConfidence;
+  }
+};
+
+export const writeGraphInsightSurprisingConfidenceToStorage = (value: number) => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
+    storage.setItem(
+      GRAPH_INSIGHT_SURPRISING_CONFIDENCE_STORAGE_KEY,
+      String(clampGraphInsightSurprisingConfidence(value)),
+    );
   } catch {
     // 本地存储不可用时静默降级
   }
@@ -786,6 +1063,376 @@ export const buildGraphLocalData = (input: {
     nodes: visibleNodes,
     links: visibleEdges,
   };
+};
+
+const GRAPH_STRUCTURAL_PAGE_NAMES = new Set(["index", "log", "overview"]);
+
+const resolveGraphNodeLeafName = (id: string) =>
+  id
+    .trim()
+    .replaceAll("\\", "/")
+    .split("/")
+    .pop()
+    ?.replace(/\.md$/i, "")
+    .toLowerCase() ?? "";
+
+const isGraphStructuralNode = (node: KnowledgeGraphNode) =>
+  GRAPH_STRUCTURAL_PAGE_NAMES.has(resolveGraphNodeLeafName(node.id));
+
+const buildUndirectedEdgeKey = (left: string, right: string) =>
+  left < right ? `${left}:::${right}` : `${right}:::${left}`;
+
+/**
+ * 基于当前图谱结构计算可操作洞察：
+ * - 孤立页（度数 <= 1）
+ * - 稀疏分组（同组密度低于阈值）
+ * - 桥接节点（邻居覆盖分组数高于阈值）
+ * - 异常连接（跨组且共同邻居相似度低）
+ */
+export const buildGraphInsights = (
+  nodes: KnowledgeGraphNode[],
+  edges: GraphNormalizedEdge[],
+  limit: number = 8,
+  configOverrides?: Partial<GraphInsightConfig>,
+): GraphInsightItem[] => {
+  if (nodes.length === 0) {
+    return [];
+  }
+
+  const mergedConfig: GraphInsightConfig = {
+    ...DEFAULT_GRAPH_INSIGHT_CONFIG,
+    ...(configOverrides ?? {}),
+  };
+  const config: GraphInsightConfig = {
+    isolatedMaxDegree: Math.max(0, Math.round(mergedConfig.isolatedMaxDegree)),
+    sparseGroupMinSize: Math.max(2, Math.round(mergedConfig.sparseGroupMinSize)),
+    sparseDensityThreshold: clampGraphInsightSparseDensity(mergedConfig.sparseDensityThreshold),
+    bridgeMinGroups: clampGraphInsightBridgeMinGroups(mergedConfig.bridgeMinGroups),
+    bridgeCandidateLimit: Math.max(1, Math.round(mergedConfig.bridgeCandidateLimit)),
+    surprisingMaxJaccard: clampGraphInsightSurprisingJaccard(mergedConfig.surprisingMaxJaccard),
+    surprisingMinConfidence: clampGraphInsightSurprisingConfidence(mergedConfig.surprisingMinConfidence),
+    surprisingCandidateLimit: Math.max(1, Math.round(mergedConfig.surprisingCandidateLimit)),
+  };
+
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const degreeMap = new Map<string, number>(nodes.map((node) => [node.id, 0]));
+  const adjacency = new Map<string, Set<string>>(nodes.map((node) => [node.id, new Set<string>()]));
+  const undirectedEdges = new Set<string>();
+
+  for (const edge of edges) {
+    const sourceId = edge.sourceId.trim();
+    const targetId = edge.targetId.trim();
+    if (!nodeMap.has(sourceId) || !nodeMap.has(targetId) || sourceId === targetId) {
+      continue;
+    }
+    degreeMap.set(sourceId, (degreeMap.get(sourceId) ?? 0) + 1);
+    degreeMap.set(targetId, (degreeMap.get(targetId) ?? 0) + 1);
+    adjacency.get(sourceId)?.add(targetId);
+    adjacency.get(targetId)?.add(sourceId);
+    undirectedEdges.add(buildUndirectedEdgeKey(sourceId, targetId));
+  }
+
+  const insights: GraphInsightItem[] = [];
+  const visibleNonStructuralNodes = nodes.filter((node) => !isGraphStructuralNode(node));
+  const visibleNonStructuralNodeIds = new Set(visibleNonStructuralNodes.map((node) => node.id));
+  const groupLabel = (group: string) => (group === "__ungrouped__" ? "未分组" : group);
+  const resolveNodeLabel = (nodeId: string) =>
+    nodeMap.get(nodeId)?.label?.trim() || resolveGraphNodeLeafName(nodeId);
+  const toTokenSet = (value: string) => {
+    const normalized = value
+      .toLowerCase()
+      .replace(/\.md$/i, "")
+      .replace(/[_\-\\/]+/g, " ");
+    const tokens = normalized
+      .split(/[^a-z0-9\u4e00-\u9fa5]+/i)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 2);
+    return new Set(tokens);
+  };
+  const buildNeighborSetWithoutPair = (nodeId: string, excludeId: string) => {
+    const neighbors = adjacency.get(nodeId);
+    if (!neighbors) {
+      return new Set<string>();
+    }
+    const next = new Set<string>();
+    for (const neighborId of neighbors) {
+      if (!isSameWikiPagePath(neighborId, excludeId)) {
+        next.add(neighborId);
+      }
+    }
+    return next;
+  };
+  const calcJaccard = (left: Set<string>, right: Set<string>) => {
+    if (left.size === 0 && right.size === 0) {
+      return 0;
+    }
+    let intersection = 0;
+    for (const item of left) {
+      if (right.has(item)) {
+        intersection += 1;
+      }
+    }
+    const union = left.size + right.size - intersection;
+    return union > 0 ? intersection / union : 0;
+  };
+
+  const calcLexicalDistance = (sourceId: string, targetId: string) => {
+    const sourceLabel = resolveNodeLabel(sourceId);
+    const targetLabel = resolveNodeLabel(targetId);
+    const sourceTokens = toTokenSet(`${sourceLabel} ${resolveGraphNodeLeafName(sourceId)}`);
+    const targetTokens = toTokenSet(`${targetLabel} ${resolveGraphNodeLeafName(targetId)}`);
+    if (sourceTokens.size === 0 && targetTokens.size === 0) {
+      return 1;
+    }
+    const overlap = calcJaccard(sourceTokens, targetTokens);
+    return 1 - overlap;
+  };
+
+  const isolatedNodes = visibleNonStructuralNodes.filter(
+    (node) => (degreeMap.get(node.id) ?? 0) <= config.isolatedMaxDegree,
+  );
+  if (isolatedNodes.length > 0) {
+    const previewLabels = isolatedNodes
+      .slice(0, 5)
+      .map((node) => node.label || resolveGraphNodeLeafName(node.id));
+    insights.push({
+      kind: "isolated-node",
+      title: `${isolatedNodes.length} 个孤立页面`,
+      description:
+        previewLabels.join("、") +
+        (isolatedNodes.length > 5 ? ` 等 ${isolatedNodes.length} 个页面连接较弱。` : " 连接较弱。"),
+      suggestion: "为这些页面补充 [[wiki-link]] 或补充相关引用，提升知识可达性。",
+      nodeIds: isolatedNodes.map((node) => node.id),
+      score: isolatedNodes.length,
+      evidence: [
+        `命中条件：度数 ≤ ${config.isolatedMaxDegree}`,
+        `当前命中：${isolatedNodes.length} 个页面`,
+      ],
+    });
+  }
+
+  const groupedNodeIds = new Map<string, string[]>();
+  for (const node of visibleNonStructuralNodes) {
+    const group = node.group.trim();
+    if (!group) {
+      continue;
+    }
+    const bucket = groupedNodeIds.get(group) ?? [];
+    bucket.push(node.id);
+    groupedNodeIds.set(group, bucket);
+  }
+
+  for (const [group, memberIds] of groupedNodeIds) {
+    if (memberIds.length < config.sparseGroupMinSize) {
+      continue;
+    }
+    let internalEdges = 0;
+    for (let left = 0; left < memberIds.length; left += 1) {
+      for (let right = left + 1; right < memberIds.length; right += 1) {
+        if (undirectedEdges.has(buildUndirectedEdgeKey(memberIds[left], memberIds[right]))) {
+          internalEdges += 1;
+        }
+      }
+    }
+    const possibleEdges = (memberIds.length * (memberIds.length - 1)) / 2;
+    const density = possibleEdges > 0 ? internalEdges / possibleEdges : 0;
+    if (density <= config.sparseDensityThreshold) {
+      insights.push({
+        kind: "sparse-group",
+        title: `稀疏分组：${group}`,
+        description: `${memberIds.length} 个页面，组内密度 ${density.toFixed(2)}，内部连接偏弱。`,
+        suggestion: "优先补齐该分组内部页面互链，减少知识断层。",
+        nodeIds: memberIds,
+        group,
+        score: 1 + (config.sparseDensityThreshold - density),
+        evidence: [
+          `命中条件：密度 ≤ ${config.sparseDensityThreshold.toFixed(2)}，分组大小 ≥ ${config.sparseGroupMinSize}`,
+          `当前密度：${density.toFixed(2)}（${internalEdges}/${possibleEdges}）`,
+        ],
+      });
+    }
+  }
+
+  const bridgeCandidates = visibleNonStructuralNodes
+    .map((node) => {
+      const neighborIds = adjacency.get(node.id);
+      if (!neighborIds || neighborIds.size === 0) {
+        return null;
+      }
+      const neighborGroups = new Set<string>();
+      for (const neighborId of neighborIds) {
+        const neighbor = nodeMap.get(neighborId);
+        if (!neighbor) {
+          continue;
+        }
+        const groupName = neighbor.group.trim() || "__ungrouped__";
+        neighborGroups.add(groupName);
+      }
+      if (neighborGroups.size < config.bridgeMinGroups) {
+        return null;
+      }
+      return {
+        node,
+        groupCount: neighborGroups.size,
+        degree: degreeMap.get(node.id) ?? 0,
+      };
+    })
+    .filter((item): item is { node: KnowledgeGraphNode; groupCount: number; degree: number } => item !== null)
+    .sort((left, right) => {
+      if (left.groupCount !== right.groupCount) {
+        return right.groupCount - left.groupCount;
+      }
+      return right.degree - left.degree;
+    })
+    .slice(0, config.bridgeCandidateLimit);
+
+  for (const candidate of bridgeCandidates) {
+    insights.push({
+      kind: "bridge-node",
+      title: `关键桥接页：${candidate.node.label || resolveGraphNodeLeafName(candidate.node.id)}`,
+      description: `连接 ${candidate.groupCount} 个分组，总连接数 ${candidate.degree}。`,
+      suggestion: "该页面是关键通路，建议优先维护并补充上下游引用。",
+      nodeIds: [candidate.node.id],
+      score: candidate.groupCount,
+      evidence: [
+        `命中条件：邻居分组数 ≥ ${config.bridgeMinGroups}`,
+        `当前分组覆盖：${candidate.groupCount}，节点度数：${candidate.degree}`,
+      ],
+    });
+  }
+
+  const surprisingCandidates: Array<{
+    sourceId: string;
+    targetId: string;
+    sourceGroup: string;
+    targetGroup: string;
+    sourceDegree: number;
+    targetDegree: number;
+    jaccard: number;
+    lexicalDistance: number;
+    crossGroupRarity: number;
+    confidence: number;
+    score: number;
+  }> = [];
+  const visitedSurprisingKeys = new Set<string>();
+  const groupPairEdgeCount = new Map<string, number>();
+  for (const edge of edges) {
+    const sourceId = edge.sourceId.trim();
+    const targetId = edge.targetId.trim();
+    if (!sourceId || !targetId || sourceId === targetId) {
+      continue;
+    }
+    if (!visibleNonStructuralNodeIds.has(sourceId) || !visibleNonStructuralNodeIds.has(targetId)) {
+      continue;
+    }
+    const sourceNode = nodeMap.get(sourceId);
+    const targetNode = nodeMap.get(targetId);
+    if (!sourceNode || !targetNode) {
+      continue;
+    }
+    const sourceGroup = sourceNode.group.trim() || "__ungrouped__";
+    const targetGroup = targetNode.group.trim() || "__ungrouped__";
+    if (sourceGroup === targetGroup) {
+      continue;
+    }
+    const pairKey = buildUndirectedEdgeKey(sourceGroup, targetGroup);
+    groupPairEdgeCount.set(pairKey, (groupPairEdgeCount.get(pairKey) ?? 0) + 1);
+  }
+  for (const edge of edges) {
+    const sourceId = edge.sourceId.trim();
+    const targetId = edge.targetId.trim();
+    if (!sourceId || !targetId || sourceId === targetId) {
+      continue;
+    }
+    if (!visibleNonStructuralNodeIds.has(sourceId) || !visibleNonStructuralNodeIds.has(targetId)) {
+      continue;
+    }
+    const dedupKey = buildUndirectedEdgeKey(sourceId, targetId);
+    if (visitedSurprisingKeys.has(dedupKey)) {
+      continue;
+    }
+    visitedSurprisingKeys.add(dedupKey);
+    const sourceNode = nodeMap.get(sourceId);
+    const targetNode = nodeMap.get(targetId);
+    if (!sourceNode || !targetNode) {
+      continue;
+    }
+    const sourceGroup = sourceNode.group.trim() || "__ungrouped__";
+    const targetGroup = targetNode.group.trim() || "__ungrouped__";
+    if (sourceGroup === targetGroup) {
+      continue;
+    }
+    const sourceNeighbors = buildNeighborSetWithoutPair(sourceId, targetId);
+    const targetNeighbors = buildNeighborSetWithoutPair(targetId, sourceId);
+    const jaccard = calcJaccard(sourceNeighbors, targetNeighbors);
+    if (jaccard > config.surprisingMaxJaccard) {
+      continue;
+    }
+    const sourceDegree = degreeMap.get(sourceId) ?? 0;
+    const targetDegree = degreeMap.get(targetId) ?? 0;
+    const lexicalDistance = calcLexicalDistance(sourceId, targetId);
+    const pairKey = buildUndirectedEdgeKey(sourceGroup, targetGroup);
+    const groupPairCount = groupPairEdgeCount.get(pairKey) ?? 1;
+    const crossGroupRarity = 1 / Math.sqrt(groupPairCount);
+    const confidence = Number(
+      (
+        (1 - jaccard) * 0.55 +
+        lexicalDistance * 0.25 +
+        crossGroupRarity * 0.2
+      ).toFixed(2),
+    );
+    if (confidence < config.surprisingMinConfidence) {
+      continue;
+    }
+    const score = confidence * 2 + Math.min((sourceDegree + targetDegree) / 8, 1);
+    surprisingCandidates.push({
+      sourceId,
+      targetId,
+      sourceGroup,
+      targetGroup,
+      sourceDegree,
+      targetDegree,
+      jaccard,
+      lexicalDistance,
+      crossGroupRarity,
+      confidence,
+      score,
+    });
+  }
+
+  surprisingCandidates
+    .sort((left, right) => right.score - left.score)
+    .slice(0, config.surprisingCandidateLimit)
+    .forEach((candidate) => {
+      insights.push({
+        kind: "surprising-link",
+        title: `异常连接：${resolveNodeLabel(candidate.sourceId)} ↔ ${resolveNodeLabel(candidate.targetId)}`,
+        description: `${groupLabel(candidate.sourceGroup)} 与 ${groupLabel(candidate.targetGroup)} 存在低相似跨组连接。`,
+        suggestion: "建议核查该连接的引用依据，确认是高价值桥接还是误链。",
+        nodeIds: [candidate.sourceId, candidate.targetId],
+        score: candidate.score,
+        evidence: [
+          `命中条件：Jaccard ≤ ${config.surprisingMaxJaccard.toFixed(2)} 且置信度 ≥ ${config.surprisingMinConfidence.toFixed(2)}`,
+          `当前：Jaccard=${candidate.jaccard.toFixed(2)}，词汇距离=${candidate.lexicalDistance.toFixed(2)}，跨组稀有度=${candidate.crossGroupRarity.toFixed(2)}`,
+          `当前置信度：${candidate.confidence.toFixed(2)}，度数：${candidate.sourceDegree}/${candidate.targetDegree}`,
+        ],
+      });
+    });
+
+  return insights
+    .sort((left, right) => {
+      if (left.kind === right.kind) {
+        return right.score - left.score;
+      }
+      const weight: Record<GraphInsightKind, number> = {
+        "surprising-link": 4,
+        "bridge-node": 3,
+        "isolated-node": 2,
+        "sparse-group": 1,
+      };
+      return weight[right.kind] - weight[left.kind];
+    })
+    .slice(0, limit);
 };
 
 export const shouldAutoDismissStatusMessage = (message: string) => {
@@ -1780,11 +2427,24 @@ export default function App() {
   const [graphLocalDirection, setGraphLocalDirection] = useState<GraphTraversalDirection>(
     () => readGraphLocalDirectionFromStorage(),
   );
+  const [graphInsightSparseDensity, setGraphInsightSparseDensity] = useState(() =>
+    readGraphInsightSparseDensityFromStorage(),
+  );
+  const [graphInsightBridgeMinGroups, setGraphInsightBridgeMinGroups] = useState(() =>
+    readGraphInsightBridgeMinGroupsFromStorage(),
+  );
+  const [graphInsightSurprisingJaccard, setGraphInsightSurprisingJaccard] = useState(() =>
+    readGraphInsightSurprisingJaccardFromStorage(),
+  );
+  const [graphInsightSurprisingConfidence, setGraphInsightSurprisingConfidence] = useState(() =>
+    readGraphInsightSurprisingConfidenceFromStorage(),
+  );
   const [graphGroupFilter, setGraphGroupFilter] = useState("__all__");
   const [graphShowOrphans, setGraphShowOrphans] = useState(true);
   const [graphNeighborOnly, setGraphNeighborOnly] = useState(false);
   const [graphLayoutFrozen, setGraphLayoutFrozen] = useState(false);
   const [graphSearchQuery, setGraphSearchQuery] = useState("");
+  const [ingestDragActive, setIngestDragActive] = useState(false);
   const [outboxLastId, setOutboxLastId] = useState(0);
   const [outboxInitialized, setOutboxInitialized] = useState(false);
   const [ingesting, setIngesting] = useState(false);
@@ -2101,6 +2761,22 @@ export default function App() {
   }, [graphLocalDirection]);
 
   useEffect(() => {
+    writeGraphInsightSparseDensityToStorage(graphInsightSparseDensity);
+  }, [graphInsightSparseDensity]);
+
+  useEffect(() => {
+    writeGraphInsightBridgeMinGroupsToStorage(graphInsightBridgeMinGroups);
+  }, [graphInsightBridgeMinGroups]);
+
+  useEffect(() => {
+    writeGraphInsightSurprisingJaccardToStorage(graphInsightSurprisingJaccard);
+  }, [graphInsightSurprisingJaccard]);
+
+  useEffect(() => {
+    writeGraphInsightSurprisingConfidenceToStorage(graphInsightSurprisingConfidence);
+  }, [graphInsightSurprisingConfidence]);
+
+  useEffect(() => {
     writeAskSearchDebugVisibleToStorage(askSearchDebugVisible);
   }, [askSearchDebugVisible]);
 
@@ -2211,6 +2887,41 @@ export default function App() {
     }
     return hits;
   }, [graphSearchQuery, graphSearchableNodes]);
+
+  const graphVisibleNormalizedEdges = useMemo(() => {
+    if (!graphVisibleData) {
+      return [] as GraphNormalizedEdge[];
+    }
+    return graphVisibleData.links
+      .map((link) => ({
+        sourceId: resolveGraphLinkNodeId(link.source as string | KnowledgeGraphNode | null | undefined),
+        targetId: resolveGraphLinkNodeId(link.target as string | KnowledgeGraphNode | null | undefined),
+      }))
+      .filter((edge) => edge.sourceId && edge.targetId);
+  }, [graphVisibleData]);
+
+  const graphInsightConfig = useMemo<GraphInsightConfig>(
+    () => ({
+      ...DEFAULT_GRAPH_INSIGHT_CONFIG,
+      sparseDensityThreshold: clampGraphInsightSparseDensity(graphInsightSparseDensity),
+      bridgeMinGroups: clampGraphInsightBridgeMinGroups(graphInsightBridgeMinGroups),
+      surprisingMaxJaccard: clampGraphInsightSurprisingJaccard(graphInsightSurprisingJaccard),
+      surprisingMinConfidence: clampGraphInsightSurprisingConfidence(graphInsightSurprisingConfidence),
+    }),
+    [
+      graphInsightBridgeMinGroups,
+      graphInsightSparseDensity,
+      graphInsightSurprisingConfidence,
+      graphInsightSurprisingJaccard,
+    ],
+  );
+
+  const graphInsights = useMemo(() => {
+    if (!graphVisibleData) {
+      return [] as GraphInsightItem[];
+    }
+    return buildGraphInsights(graphVisibleData.nodes, graphVisibleNormalizedEdges, 8, graphInsightConfig);
+  }, [graphInsightConfig, graphVisibleData, graphVisibleNormalizedEdges]);
 
   useEffect(() => {
     if ((graphVisibleData?.nodes.length ?? 0) <= GRAPH_AGGREGATE_THRESHOLD && graphAggregateMode) {
@@ -2714,23 +3425,18 @@ export default function App() {
     }
   };
 
-  const handleFileIngest = async () => {
-    setStatusMessage("收到通用文件摄入请求，正在调用后端...");
+  const runIngestFilePaths = async (pathsToIngest: string[], sourceLabel: "manual" | "drag") => {
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法执行通用文件摄入。");
       return;
     }
-
-    const pathsToIngest = ingestFilePickedPaths.length > 0
-      ? ingestFilePickedPaths
-      : [ingestFilePath.trim()].filter(Boolean);
     if (pathsToIngest.length === 0) {
       setStatusMessage("请选择或输入要摄入的文件路径（支持 md/pdf/docx/pptx/txt/图片）。");
       return;
     }
 
     setDevAction("ingest_file");
-    setStatusMessage("摄入中...");
+    setStatusMessage(sourceLabel === "drag" ? "检测到拖拽文件，摄入中..." : "摄入中...");
     let unlisten: (() => void) | null = null;
 
     try {
@@ -2779,13 +3485,30 @@ export default function App() {
         setStatusMessage(formatPdfIngestErrorMessage(message));
         return;
       }
-      // 检测 OCR 工具未找到的特征字符串，给出安装引导提示
-      const isOcrNotFound =
-        message.includes("未检测到 tesseract") ||
-        message.includes("未检测到 paddleocr") ||
-        message.includes("not found") ||
-        message.includes("No such file");
-      if (isOcrNotFound) {
+      const normalizedMessage = message.toLowerCase();
+      const isTesseractLanguageMissing =
+        normalizedMessage.includes("缺少可用语言包")
+        || normalizedMessage.includes("chi_sim")
+        || normalizedMessage.includes("traineddata")
+        || normalizedMessage.includes("failed loading language");
+      if (isTesseractLanguageMissing) {
+        setStatusMessage(
+          "Tesseract 已安装，但缺少语言包（chi_sim/eng）。请安装语言包，或在 OCR 下拉切换到 PaddleOCR。",
+        );
+        return;
+      }
+      // 仅按当前选中的 provider 判断“命令缺失”，避免被 fallback provider 的缺失误判。
+      const isPrimaryProviderMissing =
+        ingestFileOcrProvider === "paddle"
+          ? (
+            message.includes("未检测到 paddleocr 命令")
+            || (normalizedMessage.includes("is not recognized") && normalizedMessage.includes("paddleocr"))
+          )
+          : (
+            message.includes("未检测到 tesseract 命令")
+            || (normalizedMessage.includes("is not recognized") && normalizedMessage.includes("tesseract"))
+          );
+      if (isPrimaryProviderMissing) {
         const guide =
           ingestFileOcrProvider === "paddle"
             ? "PaddleOCR 未安装，请运行：pip install paddleocr paddlepaddle"
@@ -2801,6 +3524,14 @@ export default function App() {
       setIngesting(false);
       setDevAction(null);
     }
+  };
+
+  const handleFileIngest = async () => {
+    setStatusMessage("收到通用文件摄入请求，正在调用后端...");
+    const pathsToIngest = ingestFilePickedPaths.length > 0
+      ? ingestFilePickedPaths
+      : [ingestFilePath.trim()].filter(Boolean);
+    await runIngestFilePaths(pathsToIngest, "manual");
   };
 
   const handleRunLint = async (): Promise<boolean> => {
@@ -3427,6 +4158,30 @@ export default function App() {
     setStatusMessage("已切回明细模式。");
   };
 
+  const handleApplyGraphInsight = (insight: GraphInsightItem) => {
+    if (insight.group) {
+      setGraphGroupFilter(insight.group);
+    }
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+    setGraphSearchQuery("");
+    if (insight.nodeIds.length === 0) {
+      setStatusMessage(`已定位洞察：${insight.title}`);
+      return;
+    }
+
+    const targetNodeId = insight.nodeIds[0];
+    setGraphSelectedNodeId(targetNodeId);
+    setGraphNeighborOnly(insight.kind === "bridge-node" || insight.kind === "surprising-link");
+    if (insight.kind === "surprising-link" && insight.nodeIds.length > 1) {
+      const pairedNodeId = insight.nodeIds[1];
+      const pairedLabel = graphNodeById.get(pairedNodeId)?.label || resolveGraphNodeLeafName(pairedNodeId);
+      setStatusMessage(`已定位洞察：${insight.title}（配对节点：${pairedLabel}）`);
+      return;
+    }
+    setStatusMessage(`已定位洞察：${insight.title}`);
+  };
+
   const handleGraphZoomToFit = () => {
     graphRef.current?.zoomToFit?.(350, 40);
   };
@@ -3450,6 +4205,22 @@ export default function App() {
       return;
     }
     setGraphLocalDirection(value);
+  };
+
+  const handleGraphInsightSparseDensityChange = (value: number) => {
+    setGraphInsightSparseDensity(clampGraphInsightSparseDensity(value));
+  };
+
+  const handleGraphInsightBridgeMinGroupsChange = (value: number) => {
+    setGraphInsightBridgeMinGroups(clampGraphInsightBridgeMinGroups(value));
+  };
+
+  const handleGraphInsightSurprisingJaccardChange = (value: number) => {
+    setGraphInsightSurprisingJaccard(clampGraphInsightSurprisingJaccard(value));
+  };
+
+  const handleGraphInsightSurprisingConfidenceChange = (value: number) => {
+    setGraphInsightSurprisingConfidence(clampGraphInsightSurprisingConfidence(value));
   };
 
   const handleToggleGraphLayoutFreeze = () => {
@@ -4503,6 +5274,62 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/window")
+      .then(async ({ getCurrentWindow }) => {
+        if (disposed) {
+          return;
+        }
+        unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setIngestDragActive(true);
+            return;
+          }
+          if (event.payload.type === "leave") {
+            setIngestDragActive(false);
+            return;
+          }
+          setIngestDragActive(false);
+          if (event.payload.type !== "drop") {
+            return;
+          }
+          if (devAction === "ingest_file" || ingesting) {
+            setStatusMessage("当前正在摄入中，已忽略本次拖拽文件。");
+            return;
+          }
+          const parsed = parseDroppedIngestPaths(event.payload.paths);
+          if (parsed.accepted.length === 0) {
+            setStatusMessage("未检测到可摄入文件（支持 md/pdf/docx/pptx/txt/图片）。");
+            return;
+          }
+
+          setActiveModule("inbox");
+          setIngestFilePickedPaths(parsed.accepted);
+          setIngestFilePath(parsed.accepted[0] ?? "");
+          const ignoredMsg = parsed.rejected.length > 0 ? `，忽略 ${parsed.rejected.length} 项` : "";
+          const duplicateMsg = parsed.duplicateCount > 0 ? `，去重 ${parsed.duplicateCount} 项` : "";
+          setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，开始摄入...`);
+          void runIngestFilePaths(parsed.accepted, "drag");
+        });
+      })
+      .catch((error) => {
+        console.warn("注册拖拽摄入监听失败。", error);
+      });
+
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [devAction, ingestFileOcrProvider, ingesting]);
+
   // 侧边栏导航项定义
   const navItems: { id: ModuleId; icon: string; label: string }[] = [
     { id: "inbox",    icon: "⊞", label: "概览" },
@@ -4570,6 +5397,11 @@ export default function App() {
                 ✕
               </button>
             )}
+          </div>
+        ) : null}
+        {ingestDragActive ? (
+          <div className="status-bar status-bar--dragging">
+            <span>释放鼠标即可开始摄入（支持 md/pdf/docx/pptx/txt/图片）。</span>
           </div>
         ) : null}
 
@@ -6046,6 +6878,12 @@ export default function App() {
                           setGraphGroupFilter("__all__");
                           setGraphShowOrphans(true);
                           setGraphNeighborOnly(false);
+                          setGraphInsightSparseDensity(DEFAULT_GRAPH_INSIGHT_CONFIG.sparseDensityThreshold);
+                          setGraphInsightBridgeMinGroups(DEFAULT_GRAPH_INSIGHT_CONFIG.bridgeMinGroups);
+                          setGraphInsightSurprisingJaccard(DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMaxJaccard);
+                          setGraphInsightSurprisingConfidence(
+                            DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMinConfidence,
+                          );
                           setGraphLayoutFrozen(false);
                           setGraphAggregateMode(false);
                           setGraphSelectedAggregateId("");
@@ -6239,6 +7077,104 @@ export default function App() {
                       <hr className="graph-sidepanel__divider" />
                     </div>
                   )}
+
+                  <div className="graph-insight-config">
+                    <div className="graph-sidepanel__head">
+                      <h3>洞察阈值</h3>
+                      <span>本地持久化</span>
+                    </div>
+                    <label className="graph-insight-config__item" htmlFor="graph-insight-sparse-density">
+                      <span>稀疏密度 ≤ {graphInsightSparseDensity.toFixed(2)}</span>
+                      <input
+                        id="graph-insight-sparse-density"
+                        type="range"
+                        min={GRAPH_INSIGHT_SPARSE_DENSITY_MIN}
+                        max={GRAPH_INSIGHT_SPARSE_DENSITY_MAX}
+                        step={0.05}
+                        value={graphInsightSparseDensity}
+                        onChange={(event) => handleGraphInsightSparseDensityChange(Number(event.target.value))}
+                      />
+                    </label>
+                    <label className="graph-insight-config__item" htmlFor="graph-insight-bridge-min-groups">
+                      <span>桥接分组数 ≥ {graphInsightBridgeMinGroups}</span>
+                      <input
+                        id="graph-insight-bridge-min-groups"
+                        type="range"
+                        min={GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MIN}
+                        max={GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MAX}
+                        step={1}
+                        value={graphInsightBridgeMinGroups}
+                        onChange={(event) => handleGraphInsightBridgeMinGroupsChange(Number(event.target.value))}
+                      />
+                    </label>
+                    <label className="graph-insight-config__item" htmlFor="graph-insight-surprising-jaccard">
+                      <span>异常连接相似度 ≤ {graphInsightSurprisingJaccard.toFixed(2)}</span>
+                      <input
+                        id="graph-insight-surprising-jaccard"
+                        type="range"
+                        min={GRAPH_INSIGHT_SURPRISING_JACCARD_MIN}
+                        max={GRAPH_INSIGHT_SURPRISING_JACCARD_MAX}
+                        step={0.05}
+                        value={graphInsightSurprisingJaccard}
+                        onChange={(event) => handleGraphInsightSurprisingJaccardChange(Number(event.target.value))}
+                      />
+                    </label>
+                    <label
+                      className="graph-insight-config__item"
+                      htmlFor="graph-insight-surprising-confidence"
+                    >
+                      <span>异常连接置信度 ≥ {graphInsightSurprisingConfidence.toFixed(2)}</span>
+                      <input
+                        id="graph-insight-surprising-confidence"
+                        type="range"
+                        min={GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MIN}
+                        max={GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MAX}
+                        step={0.05}
+                        value={graphInsightSurprisingConfidence}
+                        onChange={(event) =>
+                          handleGraphInsightSurprisingConfidenceChange(Number(event.target.value))
+                        }
+                      />
+                    </label>
+                    <hr className="graph-sidepanel__divider" />
+                  </div>
+
+                  <div className="graph-insights">
+                    <div className="graph-sidepanel__head">
+                      <h3>图谱洞察</h3>
+                      <span>{graphInsights.length} 条</span>
+                    </div>
+                    {graphInsights.length === 0 ? (
+                      <p className="graph-sidepanel__hint">当前视图未发现明显结构风险。</p>
+                    ) : (
+                      <ul className="graph-insights__list">
+                        {graphInsights.map((insight) => (
+                          <li key={`${insight.kind}-${insight.title}`}>
+                            <button
+                              type="button"
+                              className="graph-insights__item"
+                              onClick={() => handleApplyGraphInsight(insight)}
+                            >
+                              <div className="graph-insights__head">
+                                <strong>{insight.title}</strong>
+                                <span className="pill">{graphInsightKindLabels[insight.kind]}</span>
+                              </div>
+                              <p>{insight.description}</p>
+                              {insight.evidence.length > 0 ? (
+                                <ul className="graph-insights__evidence">
+                                  {insight.evidence.map((item) => (
+                                    <li key={item}>{item}</li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                              <p className="graph-insights__suggestion">{insight.suggestion}</p>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <hr className="graph-sidepanel__divider" />
+                  </div>
 
                   <div className="graph-sidepanel__head">
                     <h3>节点详情</h3>

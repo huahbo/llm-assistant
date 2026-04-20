@@ -3752,10 +3752,10 @@ Wiki 页面：\n{}",
         db::db_update_ingest_queue_status(&conn, id, "queued", None, &now)
     }
 
-    /// 启动队列 worker（tokio::spawn 串行消费）。
+    /// 启动队列 worker（tauri 异步运行时串行消费）。
     /// 通过 tauri::AppHandle 获取托管的 AppState，避免另建独立实例。
     pub fn start_queue_worker(handle: tauri::AppHandle) {
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             // 启动时重置上次崩溃遗留的 running 任务
             {
                 let state = handle.state::<AppState>();
@@ -4066,6 +4066,16 @@ fn extract_text_from_image_with_tesseract(source_path: &Path) -> Result<String, 
     let output = run_tesseract_ocr_command(source_path)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_lower = stderr.to_lowercase();
+        if stderr_lower.contains("failed loading language")
+            || stderr_lower.contains("chi_sim")
+            || stderr_lower.contains("traineddata")
+        {
+            return Err(
+                "Tesseract 已安装，但缺少可用语言包（chi_sim/eng）。请安装对应 traineddata 或在设置中改用 PaddleOCR"
+                    .to_string(),
+            );
+        }
         let short_reason = shorten_error_snippet(stderr.trim(), 80);
         if short_reason.is_empty() {
             return Err("Tesseract OCR 失败，请确认图片可读且已安装中文/英文语言包".to_string());
@@ -4093,14 +4103,79 @@ fn extract_text_from_image_with_paddle(source_path: &Path) -> Result<String, Str
     normalize_extracted_doc_text(extracted_text, "图片 OCR")
 }
 
+/// 生成 tesseract 命令候选列表：
+/// - 先尝试 PATH 中的 `tesseract`
+/// - 再尝试 Windows 常见安装目录，避免 PATH 尚未刷新的场景
+fn build_tesseract_command_candidates() -> Vec<String> {
+    let mut candidates = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+
+    let mut push_candidate = |value: String| {
+        let normalized = value.trim().to_lowercase();
+        if normalized.is_empty() || !seen.insert(normalized) {
+            return;
+        }
+        candidates.push(value);
+    };
+
+    push_candidate("tesseract".to_string());
+
+    if cfg!(target_os = "windows") {
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            push_candidate(format!(r"{}\Tesseract-OCR\tesseract.exe", program_files));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            push_candidate(format!(r"{}\Tesseract-OCR\tesseract.exe", program_files_x86));
+        }
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            push_candidate(format!(
+                r"{}\Programs\Tesseract-OCR\tesseract.exe",
+                local_app_data
+            ));
+        }
+        // 环境变量缺失时的硬编码兜底路径（Windows 默认安装位置）
+        push_candidate(r"C:\Program Files\Tesseract-OCR\tesseract.exe".to_string());
+        push_candidate(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe".to_string());
+    }
+
+    candidates
+}
+
 fn run_tesseract_ocr_command(source_path: &Path) -> Result<std::process::Output, String> {
-    std::process::Command::new("tesseract")
-        .arg(source_path)
-        .arg("stdout")
-        .arg("-l")
-        .arg("chi_sim+eng")
-        .output()
-        .map_err(|err| format_tesseract_spawn_error(&err))
+    let candidates = build_tesseract_command_candidates();
+    let mut last_not_found: Option<io::Error> = None;
+
+    for candidate in &candidates {
+        match std::process::Command::new(candidate)
+            .arg(source_path)
+            .arg("stdout")
+            .arg("-l")
+            .arg("chi_sim+eng")
+            .output()
+        {
+            Ok(output) => return Ok(output),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                last_not_found = Some(err);
+            }
+            Err(err) => {
+                return Err(format!(
+                    "调用 tesseract 失败（{}）：{}",
+                    candidate,
+                    shorten_error_snippet(&err.to_string(), 80)
+                ));
+            }
+        }
+    }
+
+    let base_message = match last_not_found.as_ref() {
+        Some(err) => format_tesseract_spawn_error(err),
+        None => "调用 tesseract 失败：未知错误".to_string(),
+    };
+    Err(format!(
+        "{}；已尝试命令：{}",
+        base_message,
+        candidates.join(" | ")
+    ))
 }
 
 fn run_paddle_ocr_command(source_path: &Path) -> Result<std::process::Output, String> {

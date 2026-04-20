@@ -16,17 +16,34 @@ import {
   isWikiSortMode,
   parseLegacyImportedAtFromContent,
   buildGraphVisibleData,
+  buildGraphInsights,
   buildGraphLocalData,
   clampGraphLocalDepth,
   GRAPH_LOCAL_DEPTH_STORAGE_KEY,
   GRAPH_LOCAL_DIRECTION_STORAGE_KEY,
+  GRAPH_INSIGHT_SPARSE_DENSITY_STORAGE_KEY,
+  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_STORAGE_KEY,
+  GRAPH_INSIGHT_SURPRISING_JACCARD_STORAGE_KEY,
+  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_STORAGE_KEY,
   GRAPH_VIEW_MODE_STORAGE_KEY,
   isSameWikiPagePath,
   isGraphTraversalDirection,
   isGraphViewMode,
+  clampGraphInsightSparseDensity,
+  clampGraphInsightBridgeMinGroups,
+  clampGraphInsightSurprisingJaccard,
+  clampGraphInsightSurprisingConfidence,
   normalizeWikiPathForCompare,
   shouldUseBackendSubgraph,
   buildAggregatedGraphData,
+  readGraphInsightSparseDensityFromStorage,
+  readGraphInsightBridgeMinGroupsFromStorage,
+  readGraphInsightSurprisingJaccardFromStorage,
+  readGraphInsightSurprisingConfidenceFromStorage,
+  writeGraphInsightSparseDensityToStorage,
+  writeGraphInsightBridgeMinGroupsToStorage,
+  writeGraphInsightSurprisingJaccardToStorage,
+  writeGraphInsightSurprisingConfidenceToStorage,
   readGraphLocalDirectionFromStorage,
   readGraphLocalDepthFromStorage,
   readGraphViewModeFromStorage,
@@ -61,6 +78,7 @@ import {
   readQueryHistoryFromStorage,
   writeQueryHistoryToStorage,
   normalizeQueryHistoryItems,
+  parseDroppedIngestPaths,
   mergeQueryHistoryItems,
   filterQueryHistoryItems,
   formatAskHistoryCreatedAt,
@@ -112,6 +130,7 @@ import {
   resolveLintSeverityStats,
   writeLintFilterState,
 } from "./lint-utils";
+import type { IngestQueueItem, IngestQueueStatus } from "./types";
 
 describe("格式化函数", () => {
   it("格式化运行模式", () => {
@@ -123,6 +142,146 @@ describe("格式化函数", () => {
     expect(formatLogLevel("Info")).toBe("Info");
     expect(formatLogLevel("Warn")).toBe("Warn");
     expect(formatLogLevel("Error")).toBe("Error");
+  });
+});
+
+describe("图谱洞察构建", () => {
+  it("识别孤立页、稀疏分组、桥接节点与异常连接", () => {
+    const nodes = [
+      { id: "wiki/index.md", label: "Index", group: "" },
+      { id: "wiki/a.md", label: "A", group: "alpha" },
+      { id: "wiki/b.md", label: "B", group: "alpha" },
+      { id: "wiki/c.md", label: "C", group: "alpha" },
+      { id: "wiki/g.md", label: "G", group: "alpha" },
+      { id: "wiki/h.md", label: "H", group: "alpha" },
+      { id: "wiki/bridge.md", label: "Bridge", group: "hub" },
+      { id: "wiki/d.md", label: "D", group: "beta" },
+      { id: "wiki/e.md", label: "E", group: "gamma" },
+      { id: "wiki/f.md", label: "F", group: "delta" },
+      { id: "wiki/orphan.md", label: "Orphan", group: "" },
+    ];
+    const edges = [
+      { sourceId: "wiki/a.md", targetId: "wiki/b.md" },
+      { sourceId: "wiki/bridge.md", targetId: "wiki/d.md" },
+      { sourceId: "wiki/bridge.md", targetId: "wiki/e.md" },
+      { sourceId: "wiki/bridge.md", targetId: "wiki/f.md" },
+    ];
+
+    const insights = buildGraphInsights(nodes, edges, 8);
+    const kinds = new Set(insights.map((item) => item.kind));
+    expect(kinds.has("isolated-node")).toBe(true);
+    expect(kinds.has("sparse-group")).toBe(true);
+    expect(kinds.has("bridge-node")).toBe(true);
+    expect(kinds.has("surprising-link")).toBe(true);
+
+    const bridgeInsight = insights.find((item) => item.kind === "bridge-node");
+    expect(bridgeInsight?.nodeIds[0]).toBe("wiki/bridge.md");
+  });
+
+  it("忽略结构页，不把 index/log 计入孤立页", () => {
+    const nodes = [
+      { id: "wiki/index.md", label: "Index", group: "" },
+      { id: "wiki/log.md", label: "Log", group: "" },
+      { id: "wiki/solo.md", label: "Solo", group: "" },
+    ];
+    const insights = buildGraphInsights(nodes, [], 8);
+    const isolated = insights.find((item) => item.kind === "isolated-node");
+    expect(isolated?.nodeIds).toEqual(["wiki/solo.md"]);
+  });
+
+  it("支持通过阈值配置关闭稀疏分组洞察", () => {
+    const nodes = [
+      { id: "wiki/a.md", label: "A", group: "alpha" },
+      { id: "wiki/b.md", label: "B", group: "alpha" },
+      { id: "wiki/c.md", label: "C", group: "alpha" },
+      { id: "wiki/d.md", label: "D", group: "alpha" },
+      { id: "wiki/e.md", label: "E", group: "alpha" },
+    ];
+    const edges = [{ sourceId: "wiki/a.md", targetId: "wiki/b.md" }];
+    const insights = buildGraphInsights(nodes, edges, 8, {
+      sparseDensityThreshold: 0.05,
+    });
+    expect(insights.some((item) => item.kind === "sparse-group")).toBe(false);
+  });
+
+  it("支持通过阈值配置关闭异常连接洞察", () => {
+    const nodes = [
+      { id: "wiki/a.md", label: "A", group: "alpha" },
+      { id: "wiki/b.md", label: "B", group: "beta" },
+      { id: "wiki/c.md", label: "C", group: "gamma" },
+      { id: "wiki/d.md", label: "D", group: "alpha" },
+      { id: "wiki/e.md", label: "E", group: "beta" },
+      { id: "wiki/f.md", label: "F", group: "gamma" },
+    ];
+    const edges = [
+      { sourceId: "wiki/a.md", targetId: "wiki/b.md" },
+      { sourceId: "wiki/a.md", targetId: "wiki/c.md" },
+      { sourceId: "wiki/b.md", targetId: "wiki/c.md" },
+      { sourceId: "wiki/a.md", targetId: "wiki/d.md" },
+      { sourceId: "wiki/b.md", targetId: "wiki/e.md" },
+      { sourceId: "wiki/c.md", targetId: "wiki/f.md" },
+    ];
+    const enabled = buildGraphInsights(nodes, edges, 8, {
+      surprisingMaxJaccard: 0.4,
+    });
+    expect(enabled.some((item) => item.kind === "surprising-link")).toBe(true);
+    const disabled = buildGraphInsights(nodes, edges, 8, {
+      surprisingMaxJaccard: 0.2,
+    });
+    expect(disabled.some((item) => item.kind === "surprising-link")).toBe(false);
+  });
+
+  it("支持通过最小置信度阈值过滤异常连接噪声", () => {
+    const nodes = [
+      { id: "wiki/a.md", label: "A", group: "alpha" },
+      { id: "wiki/b.md", label: "B", group: "beta" },
+      { id: "wiki/c.md", label: "C", group: "gamma" },
+      { id: "wiki/d.md", label: "D", group: "alpha" },
+      { id: "wiki/e.md", label: "E", group: "beta" },
+      { id: "wiki/f.md", label: "F", group: "gamma" },
+    ];
+    const edges = [
+      { sourceId: "wiki/a.md", targetId: "wiki/b.md" },
+      { sourceId: "wiki/a.md", targetId: "wiki/c.md" },
+      { sourceId: "wiki/b.md", targetId: "wiki/c.md" },
+      { sourceId: "wiki/a.md", targetId: "wiki/d.md" },
+      { sourceId: "wiki/b.md", targetId: "wiki/e.md" },
+      { sourceId: "wiki/c.md", targetId: "wiki/f.md" },
+    ];
+    const normal = buildGraphInsights(nodes, edges, 8, {
+      surprisingMaxJaccard: 0.4,
+      surprisingMinConfidence: 0.5,
+    });
+    expect(normal.some((item) => item.kind === "surprising-link")).toBe(true);
+    const strict = buildGraphInsights(nodes, edges, 8, {
+      surprisingMaxJaccard: 0.4,
+      surprisingMinConfidence: 0.9,
+    });
+    expect(strict.some((item) => item.kind === "surprising-link")).toBe(false);
+  });
+});
+
+describe("拖拽摄入路径解析", () => {
+  it("仅保留支持的文件扩展并按 Windows 路径去重", () => {
+    const result = parseDroppedIngestPaths([
+      "E:\\llm-wiki\\vault\\wiki\\a.md",
+      "e:/llm-wiki/vault/wiki/A.md",
+      "E:\\llm-wiki\\assets\\diagram.png",
+      "E:\\llm-wiki\\notes\\todo.docx",
+      "E:\\llm-wiki\\notes\\noext",
+      "E:\\llm-wiki\\notes\\archive.zip",
+      "   ",
+    ]);
+    expect(result.accepted).toEqual([
+      "E:\\llm-wiki\\vault\\wiki\\a.md",
+      "E:\\llm-wiki\\assets\\diagram.png",
+      "E:\\llm-wiki\\notes\\todo.docx",
+    ]);
+    expect(result.rejected).toEqual([
+      "E:\\llm-wiki\\notes\\noext",
+      "E:\\llm-wiki\\notes\\archive.zip",
+    ]);
+    expect(result.duplicateCount).toBe(1);
   });
 });
 
@@ -515,6 +674,34 @@ describe("图谱视图偏好持久化", () => {
     writeGraphLocalDirectionToStorage("in");
     expect(store.get(GRAPH_LOCAL_DIRECTION_STORAGE_KEY)).toBe("in");
     expect(readGraphLocalDirectionFromStorage()).toBe("in");
+  });
+
+  it("图谱洞察阈值可读写并自动裁剪", () => {
+    const { store } = installLocalStorageMock({
+      [GRAPH_INSIGHT_SPARSE_DENSITY_STORAGE_KEY]: "9",
+      [GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_STORAGE_KEY]: "99",
+      [GRAPH_INSIGHT_SURPRISING_JACCARD_STORAGE_KEY]: "-1",
+      [GRAPH_INSIGHT_SURPRISING_CONFIDENCE_STORAGE_KEY]: "9",
+    });
+    expect(readGraphInsightSparseDensityFromStorage()).toBe(0.6);
+    expect(readGraphInsightBridgeMinGroupsFromStorage()).toBe(6);
+    expect(readGraphInsightSurprisingJaccardFromStorage()).toBe(0);
+    expect(readGraphInsightSurprisingConfidenceFromStorage()).toBe(0.95);
+
+    expect(clampGraphInsightSparseDensity(0.01)).toBe(0.05);
+    expect(clampGraphInsightBridgeMinGroups(1)).toBe(2);
+    expect(clampGraphInsightSurprisingJaccard(9)).toBe(0.6);
+    expect(clampGraphInsightSurprisingConfidence(0.01)).toBe(0.3);
+
+    writeGraphInsightSparseDensityToStorage(0.23);
+    writeGraphInsightBridgeMinGroupsToStorage(4);
+    writeGraphInsightSurprisingJaccardToStorage(0.18);
+    writeGraphInsightSurprisingConfidenceToStorage(0.67);
+
+    expect(store.get(GRAPH_INSIGHT_SPARSE_DENSITY_STORAGE_KEY)).toBe("0.23");
+    expect(store.get(GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_STORAGE_KEY)).toBe("4");
+    expect(store.get(GRAPH_INSIGHT_SURPRISING_JACCARD_STORAGE_KEY)).toBe("0.18");
+    expect(store.get(GRAPH_INSIGHT_SURPRISING_CONFIDENCE_STORAGE_KEY)).toBe("0.67");
   });
 });
 
@@ -2017,7 +2204,7 @@ describe("查询历史 dedup 与存储 key", () => {
 
 describe("IngestQueueItem 结构字段校验", () => {
   it("合法 queued 状态的 IngestQueueItem 结构字段完整", () => {
-    const item = {
+    const item: IngestQueueItem = {
       id: 1,
       source_type: "file",
       source_path: "/tmp/a.md",
@@ -2036,7 +2223,7 @@ describe("IngestQueueItem 结构字段校验", () => {
   });
 
   it("failed 状态的 IngestQueueItem 可携带 error 字段", () => {
-    const item = {
+    const item: IngestQueueItem = {
       id: 2,
       source_type: "url",
       source_path: "https://example.com",
@@ -2051,7 +2238,7 @@ describe("IngestQueueItem 结构字段校验", () => {
   });
 
   it("cancelled 状态的 IngestQueueItem error 可选", () => {
-    const item = {
+    const item: IngestQueueItem = {
       id: 3,
       source_type: "markdown",
       source_path: "/tmp/note.md",
@@ -2065,7 +2252,7 @@ describe("IngestQueueItem 结构字段校验", () => {
   });
 
   it("IngestQueueStatus 合法值枚举覆盖", () => {
-    const validStatuses = ["queued", "running", "done", "failed", "cancelled"];
+    const validStatuses: IngestQueueStatus[] = ["queued", "running", "done", "failed", "cancelled"];
     for (const status of validStatuses) {
       expect(validStatuses).toContain(status);
     }

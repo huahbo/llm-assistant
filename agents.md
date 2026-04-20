@@ -280,6 +280,8 @@
 | P20-5 后端 | Embedding 向量检索接入 RRF（`list_embeddings` + 余弦排序 + Query 第四路召回） | ✅ `src-tauri/src/db.rs` + `src-tauri/src/search.rs` + `src-tauri/src/state.rs`（Rust 待 Windows cargo 复核，2026-04-19，**Codex** 实施） |
 | P23 全栈 | 持久化 ingest 队列（`ingest_queue_items` 表 + 状态机 + tokio worker + 队列面板 UI + 重启恢复/重试/取消） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs` + `App.tsx` + `tauri-client.ts` + `types.ts`（116 Rust / 142 前端，2026-04-20，**Claude Code + 子代理** 实施） |
 | P20-6 全栈 | 检索可解释性增强（`search_debug` 返回 RRF 各路候选/贡献，Ask 面板可折叠查看） | ✅ `src-tauri/src/models.rs` + `src-tauri/src/state.rs` + `web/src/types.ts` + `web/src/App.tsx` + `web/src/styles.css`（WSL `typecheck` 通过；Rust/前端完整测试待 Windows 复核，2026-04-20，**Codex** 实施） |
+| P24 前端 | 移植包 B（阶段一+二+三）图谱洞察层（孤立/稀疏/桥接/异常连接 + 阈值参数化 + 证据可解释 + 异常连接置信度降噪） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（WSL `typecheck` 通过；`npm test` 待 Windows 复核，2026-04-20，**Codex** 实施） |
+| P25 前端 | 拖拽摄入（窗口 drop 触发 ingest_file，扩展名过滤+去重+悬停提示） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（WSL `typecheck` 通过；`npm test` 待 Windows 复核，2026-04-20，**Codex** 实施） |
 | BugFix-Ingest | ingesting 卡住修复（前端识别 `ingest_failed` 结束态 + 后端失败路径补发 outbox 事件） | ✅ `web/src/App.tsx` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施） |
 | BugFix-PDF-Compat | 有效 PDF 误判无效修复（`lopdf` 多级容错加载：内存直读/头修复/尾修复/联合修复 + 前端兼容性错误映射） | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx` + `web/src/app-utils.test.ts`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
 | BugFix-PDF-Compat-2 | PDF 兼容增强（`lopdf` 后新增 `pdf-extract` 二级解析 + `FlateDecode` 原始流扫描兜底） | ✅ `src-tauri/Cargo.toml` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
@@ -287,6 +289,8 @@
 | BugFix-UI-2 | 孤立 wiki 页面（文件删除后 DB 记录残留）→ 启动时 `purge_orphaned_wiki_pages` 自动清理 | ✅ `src-tauri/src/state.rs` + `main.rs`（102 Rust，2026-04-19，**Claude Code** 实施） |
 | BugFix-Index-Lint | `index.md` 残留失效链接导致 `MISSING_INDEX_ENTRY` 批量告警 → 删除/启动清理自动 prune + 本轮数据收口清零 | ✅ `src-tauri/src/state.rs` + `vault/index.md`（WSL `typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-20，**Codex** 实施） |
 | BugFix-PDF | PDF 摄入不稳定（15s 超时/LLM 截断/embed 走云端）→ 300s + 8000 char 截断 + `get_embed_provider()` 本地 Ollama | ✅ `state.rs` + `tauri-client.ts`（2026-04-19，**Claude Code** 实施） |
+| BugFix-Startup-Reactor | 启动闪退（`there is no reactor running`）→ `start_queue_worker` 从 `tokio::spawn` 改为 `tauri::async_runtime::spawn` | ✅ `src-tauri/src/state.rs`（Windows 启动链路待复核，2026-04-20，**Codex** 实施） |
+| BugFix-OCR-Path | 已安装 Tesseract 但应用提示未找到 → OCR 调用增加 Windows 常见安装路径兜底与已尝试命令回显 | ✅ `src-tauri/src/state.rs`（Rust 待 Windows cargo 复核，2026-04-20，**Codex** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -295,9 +299,13 @@
 | ✅ | **P22 Windows 打包** | MSI + EXE 双产物生成，安装验证通过（2026-04-20） |
 | ✅ | **Windows 基线复核** | cargo test 113/0，npm test 138/0，typecheck 零错误（2026-04-20） |
 | ✅ | **P23 移植包 A：持久化 ingest 队列** | ingest_queue_items 表 + 状态机 + worker + 队列面板 UI，基线 116 Rust / 142 前端（2026-04-20） |
-| 1 | **脏树收口** | 清理非功能性换行噪音与误删测试文件，降低后续 PR 噪声 |
-| 2 | **移植包 B：图谱洞察层** | 孤立页/桥接节点/稀疏社区洞察卡片 + 图谱联动 |
-| 3 | **拖拽摄入（App 内）** | llm-wiki 应用窗口支持拖拽文件触发 ingest_file（图片/PDF/md） |
+| ✅ | **移植包 B：图谱洞察层（阶段一）** | 孤立页/桥接节点/稀疏社区洞察卡片 + 图谱联动（2026-04-20） |
+| ✅ | **移植包 B：图谱洞察层（阶段二）** | 异常连接洞察 + 阈值参数化 + 洞察来源可解释信息（2026-04-20） |
+| ✅ | **移植包 B：图谱洞察层（阶段三）** | 异常连接降噪（复合置信度 + 门槛阈值）与 UI 持久化调参（2026-04-20） |
+| ✅ | **拖拽摄入（App 内）** | llm-wiki 应用窗口支持拖拽文件触发 ingest_file（图片/PDF/md）（2026-04-20） |
+| 1 | **移植包 B：图谱洞察层（阶段四，可选）** | 后端语义打分（embedding/引用权重）+ AppConfig 同步阈值 |
+| 2 | **脏树收口** | 清理非功能性换行噪音与误删测试文件，降低后续 PR 噪声 |
+| 3 | **队列联动优化** | 拖拽摄入可选“直接入 ingest 队列”并给出批量反馈 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
@@ -322,8 +330,8 @@ web/src/
   App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成）
   tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale）
   types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug）
-  app-utils.test.ts # 单元测试（132 个）
-  styles.css        # 样式（含 graph-module, wiki-stale-banner, lint 分组等）
+  app-utils.test.ts # 单元测试（含图谱洞察新增用例，数量待 Windows 复核）
+  styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组等）
 ```
 
 ### 18.4 验证基线（2026-04-20 最新）
@@ -336,6 +344,7 @@ web/src/
 最新提交（main 分支）：
 - `fix: 修复启动时 ingesting 误判为 true` (0a78418)
 - `feat: 启动时自动清理孤立 wiki 页面` (4f02cd9)
+- `chore: 脏树收口——清零 compiler warnings` (e2c930d)
 
 ### 18.5 关键架构约束
 
