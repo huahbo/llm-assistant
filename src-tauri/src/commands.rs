@@ -427,3 +427,33 @@ pub fn get_knowledge_subgraph(
         limit_links.unwrap_or(2000),
     )
 }
+
+/// 将一个 ingest 任务加入持久化队列，立即返回队列 id。
+#[tauri::command]
+pub fn enqueue_ingest(
+    source_type: String,
+    source_path: String,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    state.enqueue_ingest(source_type, source_path)
+}
+
+/// 列出所有 ingest 队列记录。
+#[tauri::command]
+pub fn list_ingest_queue(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::IngestQueueItem>, String> {
+    state.list_ingest_queue()
+}
+
+/// 取消一条 queued 状态的 ingest 队列记录。
+#[tauri::command]
+pub fn cancel_ingest_item(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.cancel_ingest_item(id)
+}
+
+/// 将失败/取消的 ingest 队列记录重置为 queued 以重试。
+#[tauri::command]
+pub fn retry_ingest_item(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.retry_ingest_item(id)
+}

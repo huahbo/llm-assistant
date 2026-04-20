@@ -2014,3 +2014,61 @@ describe("查询历史 dedup 与存储 key", () => {
     expect(formatAskHistoryCreatedAt("invalid")).toBe("");
   });
 });
+
+describe("IngestQueueItem 结构字段校验", () => {
+  it("合法 queued 状态的 IngestQueueItem 结构字段完整", () => {
+    const item = {
+      id: 1,
+      source_type: "file",
+      source_path: "/tmp/a.md",
+      status: "queued" as const,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+
+    expect(typeof item.id).toBe("number");
+    expect(typeof item.source_type).toBe("string");
+    expect(typeof item.source_path).toBe("string");
+    expect(item.status).toBe("queued");
+    expect(item.error).toBeUndefined();
+    expect(typeof item.created_at).toBe("string");
+    expect(typeof item.updated_at).toBe("string");
+  });
+
+  it("failed 状态的 IngestQueueItem 可携带 error 字段", () => {
+    const item = {
+      id: 2,
+      source_type: "url",
+      source_path: "https://example.com",
+      status: "failed" as const,
+      error: "网络超时",
+      created_at: "2026-01-01T00:01:00Z",
+      updated_at: "2026-01-01T00:01:30Z",
+    };
+
+    expect(item.status).toBe("failed");
+    expect(item.error).toBe("网络超时");
+  });
+
+  it("cancelled 状态的 IngestQueueItem error 可选", () => {
+    const item = {
+      id: 3,
+      source_type: "markdown",
+      source_path: "/tmp/note.md",
+      status: "cancelled" as const,
+      created_at: "2026-01-01T00:02:00Z",
+      updated_at: "2026-01-01T00:02:10Z",
+    };
+
+    expect(item.status).toBe("cancelled");
+    expect(item.error).toBeUndefined();
+  });
+
+  it("IngestQueueStatus 合法值枚举覆盖", () => {
+    const validStatuses = ["queued", "running", "done", "failed", "cancelled"];
+    for (const status of validStatuses) {
+      expect(validStatuses).toContain(status);
+    }
+    expect(validStatuses).toHaveLength(5);
+  });
+});

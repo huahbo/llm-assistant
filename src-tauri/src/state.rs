@@ -7,7 +7,7 @@ use std::{
 };
 use flate2::read::ZlibDecoder;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     db,
@@ -3706,6 +3706,143 @@ Wiki 页面：\n{}",
                 format!("写入 lint_patch_events 失败: {}", err),
             );
         }
+    }
+
+    /// 同步入队一条 ingest 任务，返回新 id。
+    pub fn enqueue_ingest(&self, source_type: String, source_path: String) -> Result<i64, String> {
+        let db_path = self.outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化，无法入队".to_string())?;
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let now = current_timestamp_ms();
+        let id = db::db_enqueue_ingest(&conn, &source_type, &source_path, &now)?;
+        self.record_outbox_event(
+            "ingest_queue_enqueued",
+            serde_json::json!({ "id": id, "source_type": source_type, "source_path": source_path }),
+        );
+        Ok(id)
+    }
+
+    /// 列出所有 ingest 队列记录。
+    pub fn list_ingest_queue(&self) -> Result<Vec<crate::models::IngestQueueItem>, String> {
+        let db_path = self.outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化".to_string())?;
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        db::db_list_ingest_queue(&conn)
+    }
+
+    /// 取消一条 ingest 队列记录（queued → cancelled）。
+    pub fn cancel_ingest_item(&self, id: i64) -> Result<(), String> {
+        let db_path = self.outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化".to_string())?;
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let now = current_timestamp_ms();
+        db::db_update_ingest_queue_status(&conn, id, "cancelled", None, &now)
+    }
+
+    /// 重试一条失败/取消的 ingest 队列记录（failed/cancelled → queued）。
+    pub fn retry_ingest_item(&self, id: i64) -> Result<(), String> {
+        let db_path = self.outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化".to_string())?;
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let now = current_timestamp_ms();
+        db::db_update_ingest_queue_status(&conn, id, "queued", None, &now)
+    }
+
+    /// 启动队列 worker（tokio::spawn 串行消费）。
+    /// 通过 tauri::AppHandle 获取托管的 AppState，避免另建独立实例。
+    pub fn start_queue_worker(handle: tauri::AppHandle) {
+        tokio::spawn(async move {
+            loop {
+                let state = handle.state::<AppState>();
+
+                // 取下一条 queued item
+                let next = {
+                    let Some(db_path) = state.outbox_db_path() else {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    };
+                    let conn = match rusqlite::Connection::open(&db_path) {
+                        Ok(c) => c,
+                        Err(_) => {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            continue;
+                        }
+                    };
+                    match db::db_get_next_queued_item(&conn) {
+                        Ok(item) => item,
+                        Err(_) => {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            continue;
+                        }
+                    }
+                };
+
+                let item = match next {
+                    Some(i) => i,
+                    None => {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    }
+                };
+
+                let item_id = item.id;
+                let source_type = item.source_type.clone();
+                let source_path = item.source_path.clone();
+
+                // 更新 status -> running
+                {
+                    let Some(db_path) = state.outbox_db_path() else { continue; };
+                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        let now = current_timestamp_ms();
+                        let _ = db::db_update_ingest_queue_status(&conn, item_id, "running", None, &now);
+                    }
+                }
+                state.record_outbox_event(
+                    "ingest_queue_started",
+                    serde_json::json!({ "id": item_id, "source_type": source_type, "source_path": source_path }),
+                );
+
+                // 根据 source_type 调用对应 impl
+                let exec_result: Result<crate::models::IngestResult, String> = match source_type.as_str() {
+                    "file" => state.ingest_file_impl(&source_path, None).await,
+                    "url" => state.ingest_url_impl(&source_path).await,
+                    "markdown" => state.ingest_markdown(std::path::PathBuf::from(&source_path)).await,
+                    other => Err(format!("未知 source_type: {}", other)),
+                };
+
+                let now = current_timestamp_ms();
+                match exec_result {
+                    Ok(_) => {
+                        if let Some(db_path) = state.outbox_db_path() {
+                            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                                let _ = db::db_update_ingest_queue_status(&conn, item_id, "done", None, &now);
+                            }
+                        }
+                        state.record_outbox_event(
+                            "ingest_queue_done",
+                            serde_json::json!({ "id": item_id }),
+                        );
+                    }
+                    Err(err) => {
+                        if let Some(db_path) = state.outbox_db_path() {
+                            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                                let _ = db::db_update_ingest_queue_status(&conn, item_id, "failed", Some(err.as_str()), &now);
+                            }
+                        }
+                        state.record_outbox_event(
+                            "ingest_queue_failed",
+                            serde_json::json!({ "id": item_id, "error": err }),
+                        );
+                    }
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
     }
 }
 

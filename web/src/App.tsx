@@ -46,6 +46,10 @@ import {
   searchWikiPaths,
   saveQueryAnswer,
   get_outbox_events,
+  enqueueIngest,
+  listIngestQueue,
+  cancelIngestItem,
+  retryIngestItem,
   setBackendMode,
   setQueryTopK as persistQueryTopK,
   formatLlmStatusSummary,
@@ -70,6 +74,7 @@ import type {
   AppOverview,
   AskHistoryItem,
   BackendAppMode,
+  IngestQueueItem,
   KnowledgeGraphData,
   KnowledgeGraphLink,
   KnowledgeGraphNode,
@@ -1603,6 +1608,7 @@ const modules: ModuleItem[] = [
   { id: "lint", name: "Lint", description: "一致性检查、孤儿页与过期结论扫描。" },
   { id: "graph", name: "图谱", description: "Wiki 页面知识图谱可视化。" },
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
+  { id: "queue", name: "队列", description: "摄入任务队列。" },
 ];
 
 type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";
@@ -1792,6 +1798,9 @@ export default function App() {
   const [graphAggregateMode, setGraphAggregateMode] = useState(false);
   // 当前激活的导航模块
   const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
+  // 摄入队列面板状态
+  const [ingestQueue, setIngestQueue] = useState<IngestQueueItem[]>([]);
+  const [queueEnqueueing, setQueueEnqueueing] = useState(false);
 
   const filteredQueryHistoryItems = useMemo(
     () => filterQueryHistoryItems(queryHistoryItems, askHistoryKeyword),
@@ -4745,6 +4754,27 @@ export default function App() {
                         >
                           {devAction === "ingest_url" ? "摄入中..." : "URL 摄入"}
                         </button>
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={!isTauriRuntime() || queueEnqueueing || !ingestUrlInput.trim()}
+                          onClick={() => {
+                            if (!ingestUrlInput.trim()) return;
+                            setQueueEnqueueing(true);
+                            enqueueIngest("url", ingestUrlInput.trim())
+                              .then(() => {
+                                setActiveModule("queue");
+                              })
+                              .catch((err: unknown) => {
+                                console.error("加入队列失败:", err);
+                              })
+                              .finally(() => {
+                                setQueueEnqueueing(false);
+                              });
+                          }}
+                        >
+                          {queueEnqueueing ? "入队中..." : "加入队列"}
+                        </button>
                       </div>
                     </div>
 
@@ -4840,6 +4870,29 @@ export default function App() {
                           disabled={!isTauriRuntime() || devAction !== null}
                         >
                           {devAction === "ingest_file" ? "摄入中..." : "文件摄入"}
+                        </button>
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={!isTauriRuntime() || queueEnqueueing || (ingestFilePickedPaths.length === 0 && !ingestFilePath.trim())}
+                          onClick={() => {
+                            const paths = ingestFilePickedPaths.length > 0 ? ingestFilePickedPaths : [ingestFilePath.trim()];
+                            const validPaths = paths.filter(Boolean);
+                            if (validPaths.length === 0) return;
+                            setQueueEnqueueing(true);
+                            Promise.all(validPaths.map((p) => enqueueIngest("file", p)))
+                              .then(() => {
+                                setActiveModule("queue");
+                              })
+                              .catch((err: unknown) => {
+                                console.error("加入队列失败:", err);
+                              })
+                              .finally(() => {
+                                setQueueEnqueueing(false);
+                              });
+                          }}
+                        >
+                          {queueEnqueueing ? "入队中..." : "加入队列"}
                         </button>
                       </div>
                     </div>
@@ -6461,8 +6514,129 @@ export default function App() {
               </section>
             </>
           )}
+          {/* ---- 摄入队列模块 ---- */}
+          {activeModule === "queue" && (
+            <QueuePanel
+              queue={ingestQueue}
+              onRefresh={() => {
+                listIngestQueue()
+                  .then((items) => setIngestQueue(items))
+                  .catch(() => {});
+              }}
+              onCancel={(id) => {
+                cancelIngestItem(id)
+                  .then(() => listIngestQueue())
+                  .then((items) => setIngestQueue(items))
+                  .catch(() => {});
+              }}
+              onRetry={(id) => {
+                retryIngestItem(id)
+                  .then(() => listIngestQueue())
+                  .then((items) => setIngestQueue(items))
+                  .catch(() => {});
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+// ---- 队列面板组件 ----
+
+const queueStatusBadgeClass: Record<string, string> = {
+  queued: "queue-badge queue-badge--queued",
+  running: "queue-badge queue-badge--running",
+  done: "queue-badge queue-badge--done",
+  failed: "queue-badge queue-badge--failed",
+  cancelled: "queue-badge queue-badge--cancelled",
+};
+
+const queueStatusLabel: Record<string, string> = {
+  queued: "等待",
+  running: "运行中",
+  done: "完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+function QueuePanel({
+  queue,
+  onRefresh,
+  onCancel,
+  onRetry,
+}: {
+  queue: IngestQueueItem[];
+  onRefresh: () => void;
+  onCancel: (id: number) => void;
+  onRetry: (id: number) => void;
+}) {
+  useEffect(() => {
+    onRefresh();
+    const timer = setInterval(() => {
+      onRefresh();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [onRefresh]);
+
+  return (
+    <>
+      <div className="module-header">
+        <h1 className="module-header__title">摄入队列</h1>
+        <p className="module-header__sub">后台摄入任务状态，每 3 秒自动刷新</p>
+      </div>
+      <section className="panel">
+        <div className="section-head">
+          <h2>任务列表</h2>
+          <span className="section-head__hint">{queue.length} 条任务</span>
+        </div>
+        {queue.length === 0 ? (
+          <p className="empty-state">暂无摄入队列任务。请在 Inbox 面板点击"加入队列"。</p>
+        ) : (
+          <div className="queue-list">
+            {queue.map((item) => (
+              <div key={item.id} className="queue-item">
+                <div className="queue-item__main">
+                  <span className={queueStatusBadgeClass[item.status] ?? "queue-badge"}>
+                    {queueStatusLabel[item.status] ?? item.status}
+                  </span>
+                  <span className="queue-item__path" title={item.source_path}>
+                    {item.source_path.split(/[/\\]/).pop() ?? item.source_path}
+                  </span>
+                  <span className="queue-item__type">{item.source_type}</span>
+                  <time className="queue-item__time" dateTime={item.updated_at}>
+                    {item.updated_at.slice(0, 16).replace("T", " ")}
+                  </time>
+                </div>
+                {item.status === "failed" && item.error && (
+                  <p className="queue-item__error">{item.error}</p>
+                )}
+                <div className="queue-item__actions">
+                  {(item.status === "queued" || item.status === "running") && (
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => onCancel(item.id)}
+                    >
+                      取消
+                    </button>
+                  )}
+                  {item.status === "failed" && (
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => onRetry(item.id)}
+                    >
+                      重试
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
   );
 }

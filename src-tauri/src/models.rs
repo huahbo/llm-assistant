@@ -626,3 +626,49 @@ pub struct SemanticHealthReport {
     pub average_entities_per_page: f64,
     pub stale_pages_count: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IngestQueueStatus {
+    Queued,
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+impl std::fmt::Display for IngestQueueStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Queued => write!(f, "queued"),
+            Self::Running => write!(f, "running"),
+            Self::Done => write!(f, "done"),
+            Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl std::str::FromStr for IngestQueueStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "done" => Ok(Self::Done),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(format!("unknown status: {}", other)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestQueueItem {
+    pub id: i64,
+    pub source_type: String,  // "file" | "url" | "markdown"
+    pub source_path: String,
+    pub status: String,       // queued/running/done/failed/cancelled
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}

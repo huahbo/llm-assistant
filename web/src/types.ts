@@ -7,7 +7,7 @@ export interface ModeOption {
   badge: string;
 }
 
-export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings";
+export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings" | "queue";
 
 export interface ModuleItem {
   id: ModuleId;
@@ -353,4 +353,16 @@ export interface OutboxEventItem {
   created_at: string;
   processed_at?: string | null;
   consumer_tag?: string | null;
+}
+
+export type IngestQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface IngestQueueItem {
+  id: number;
+  source_type: string;   // "file" | "url" | "markdown"
+  source_path: string;
+  status: IngestQueueStatus;
+  error?: string;
+  created_at: string;
+  updated_at: string;
 }

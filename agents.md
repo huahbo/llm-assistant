@@ -278,6 +278,7 @@
 | P21-D 前端 | 图谱收口（Outbox 自动刷新、可见范围搜索、稳定渲染 key、Ctrl+F、导出 JSON、>200 节点聚合） | ✅ `web/src/App.tsx` + `web/src/app-utils.test.ts`（132 前端测试通过，2026-04-19，**Codex** 实施） |
 | P21-E 前端 | 图谱聚合交互深化（聚合节点右侧“展开查看成员页” + 一键切回明细模式） | ✅ `web/src/App.tsx` + `web/src/styles.css`（WSL `typecheck` 通过；完整测试待下一轮，2026-04-20，**Codex** 实施） |
 | P20-5 后端 | Embedding 向量检索接入 RRF（`list_embeddings` + 余弦排序 + Query 第四路召回） | ✅ `src-tauri/src/db.rs` + `src-tauri/src/search.rs` + `src-tauri/src/state.rs`（Rust 待 Windows cargo 复核，2026-04-19，**Codex** 实施） |
+| P23 全栈 | 持久化 ingest 队列（`ingest_queue_items` 表 + 状态机 + tokio worker + 队列面板 UI + 重启恢复/重试/取消） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs` + `App.tsx` + `tauri-client.ts` + `types.ts`（116 Rust / 142 前端，2026-04-20，**Claude Code + 子代理** 实施） |
 | P20-6 全栈 | 检索可解释性增强（`search_debug` 返回 RRF 各路候选/贡献，Ask 面板可折叠查看） | ✅ `src-tauri/src/models.rs` + `src-tauri/src/state.rs` + `web/src/types.ts` + `web/src/App.tsx` + `web/src/styles.css`（WSL `typecheck` 通过；Rust/前端完整测试待 Windows 复核，2026-04-20，**Codex** 实施） |
 | BugFix-Ingest | ingesting 卡住修复（前端识别 `ingest_failed` 结束态 + 后端失败路径补发 outbox 事件） | ✅ `web/src/App.tsx` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施） |
 | BugFix-PDF-Compat | 有效 PDF 误判无效修复（`lopdf` 多级容错加载：内存直读/头修复/尾修复/联合修复 + 前端兼容性错误映射） | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx` + `web/src/app-utils.test.ts`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
@@ -293,8 +294,9 @@
 |---|---|---|
 | ✅ | **P22 Windows 打包** | MSI + EXE 双产物生成，安装验证通过（2026-04-20） |
 | ✅ | **Windows 基线复核** | cargo test 113/0，npm test 138/0，typecheck 零错误（2026-04-20） |
+| ✅ | **P23 移植包 A：持久化 ingest 队列** | ingest_queue_items 表 + 状态机 + worker + 队列面板 UI，基线 116 Rust / 142 前端（2026-04-20） |
 | 1 | **脏树收口** | 清理非功能性换行噪音与误删测试文件，降低后续 PR 噪声 |
-| 2 | **移植包 A：持久化 ingest 队列** | 补齐重启恢复/重试/取消能力，承接 `docs/参考项目差距与移植清单.md` 的主线建议 |
+| 2 | **移植包 B：图谱洞察层** | 孤立页/桥接节点/稀疏社区洞察卡片 + 图谱联动 |
 | 3 | **拖拽摄入（App 内）** | llm-wiki 应用窗口支持拖拽文件触发 ingest_file（图片/PDF/md） |
 
 **开发规则（每轮必读）：**

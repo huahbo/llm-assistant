@@ -3,6 +3,7 @@ import type {
   AskHistoryItem,
   BackendAppMode,
   DefaultPaths,
+  IngestQueueItem,
   IngestResult,
   KnowledgeGraphData,
   KnowledgeSubgraphData,
@@ -1239,4 +1240,24 @@ export async function get_outbox_events(options: {
   } catch {
     return [];
   }
+}
+
+export async function enqueueIngest(sourceType: string, sourcePath: string): Promise<number> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<number>("enqueue_ingest", { sourceType, sourcePath });
+}
+
+export async function listIngestQueue(): Promise<IngestQueueItem[]> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<IngestQueueItem[]>("list_ingest_queue");
+}
+
+export async function cancelIngestItem(id: number): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<void>("cancel_ingest_item", { id });
+}
+
+export async function retryIngestItem(id: number): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<void>("retry_ingest_item", { id });
 }

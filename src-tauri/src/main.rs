@@ -19,6 +19,8 @@ fn main() {
             app.state::<AppState>().set_app_handle(app.handle().clone());
             // 启动时清理孤立 wiki 页面（文件已删但 DB 记录残留）
             app.state::<AppState>().purge_orphaned_wiki_pages();
+            // 启动持久化 ingest 队列 worker
+            crate::state::AppState::start_queue_worker(app.handle().clone());
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -66,7 +68,11 @@ fn main() {
             commands::clear_ask_session,
             commands::mark_page_stale,
             commands::get_knowledge_graph,
-            commands::get_knowledge_subgraph
+            commands::get_knowledge_subgraph,
+            commands::enqueue_ingest,
+            commands::list_ingest_queue,
+            commands::cancel_ingest_item,
+            commands::retry_ingest_item
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

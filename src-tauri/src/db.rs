@@ -1166,6 +1166,16 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_ask_history_created_at
             ON ask_history(created_at);
+
+        CREATE TABLE IF NOT EXISTS ingest_queue_items (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'queued',
+            error       TEXT,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -1470,6 +1480,106 @@ pub fn ack_outbox_events(
             params![processed_at, normalized_consumer_tag, up_to_id],
         )
         .map_err(|err| format!("更新 wiki_outbox ack 失败: {}", err))?;
+    Ok(affected)
+}
+
+/// 插入一条 queued 记录，返回新 id。
+pub fn db_enqueue_ingest(conn: &Connection, source_type: &str, source_path: &str, now: &str) -> Result<i64, String> {
+    conn.execute(
+        r#"
+        INSERT INTO ingest_queue_items (source_type, source_path, status, created_at, updated_at)
+        VALUES (?1, ?2, 'queued', ?3, ?3)
+        "#,
+        params![source_type, source_path, now],
+    )
+    .map_err(|err| format!("写入 ingest_queue_items 失败: {}", err))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 查询全部 ingest_queue_items，按 created_at DESC。
+pub fn db_list_ingest_queue(conn: &Connection) -> Result<Vec<crate::models::IngestQueueItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, source_type, source_path, status, error, created_at, updated_at
+            FROM ingest_queue_items
+            ORDER BY created_at DESC
+            "#,
+        )
+        .map_err(|err| format!("准备查询 ingest_queue_items 失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(crate::models::IngestQueueItem {
+                id: row.get(0)?,
+                source_type: row.get(1)?,
+                source_path: row.get(2)?,
+                status: row.get(3)?,
+                error: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|err| format!("查询 ingest_queue_items 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 ingest_queue_items 失败: {}", err))
+}
+
+/// 取最旧一条 queued 记录。
+pub fn db_get_next_queued_item(conn: &Connection) -> Result<Option<crate::models::IngestQueueItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, source_type, source_path, status, error, created_at, updated_at
+            FROM ingest_queue_items
+            WHERE status = 'queued'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 ingest_queue_items 失败: {}", err))?;
+    match stmt.query_row([], |row| {
+        Ok(crate::models::IngestQueueItem {
+            id: row.get(0)?,
+            source_type: row.get(1)?,
+            source_path: row.get(2)?,
+            status: row.get(3)?,
+            error: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    }) {
+        Ok(item) => Ok(Some(item)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(format!("查询 ingest_queue_items 失败: {}", err)),
+    }
+}
+
+/// 更新 ingest_queue_items 的 status + error + updated_at。
+pub fn db_update_ingest_queue_status(conn: &Connection, id: i64, status: &str, error: Option<&str>, now: &str) -> Result<(), String> {
+    conn.execute(
+        r#"
+        UPDATE ingest_queue_items
+        SET status = ?1, error = ?2, updated_at = ?3
+        WHERE id = ?4
+        "#,
+        params![status, error, now, id],
+    )
+    .map_err(|err| format!("更新 ingest_queue_items 失败: {}", err))?;
+    Ok(())
+}
+
+/// 把所有 running → queued（启动恢复用），返回影响行数。
+pub fn db_reset_stale_running(conn: &Connection, now: &str) -> Result<usize, String> {
+    let affected = conn
+        .execute(
+            r#"
+            UPDATE ingest_queue_items
+            SET status = 'queued', updated_at = ?1
+            WHERE status = 'running'
+            "#,
+            params![now],
+        )
+        .map_err(|err| format!("重置 running 记录失败: {}", err))?;
     Ok(affected)
 }
 
@@ -2082,5 +2192,73 @@ mod tests {
 
         let rows = list_ask_history(&db_path, 10).expect("读取 Ask 历史失败");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn enqueue_and_list_ingest_queue_works() {
+        let dir = make_temp_dir("llm-wiki-db-ingest-queue-enqueue");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        let id = db_enqueue_ingest(&conn, "file", "/tmp/a.md", "2026-01-01T00:00:00Z")
+            .expect("入队失败");
+        assert!(id > 0, "返回的 id 应大于 0");
+
+        let items = db_list_ingest_queue(&conn).expect("读取队列失败");
+        assert_eq!(items.len(), 1, "应有 1 条记录");
+        assert_eq!(items[0].source_type, "file");
+        assert_eq!(items[0].source_path, "/tmp/a.md");
+        assert_eq!(items[0].status, "queued");
+        assert!(items[0].error.is_none());
+    }
+
+    #[test]
+    fn reset_stale_running_resets_to_queued() {
+        let dir = make_temp_dir("llm-wiki-db-ingest-queue-reset");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        // 入队一条，再手动设为 running
+        let id = db_enqueue_ingest(&conn, "url", "https://example.com", "2026-01-01T00:00:00Z")
+            .expect("入队失败");
+        conn.execute(
+            "UPDATE ingest_queue_items SET status = 'running' WHERE id = ?1",
+            params![id],
+        )
+        .expect("手动更新为 running 失败");
+
+        // 重置 stale running → queued
+        let count = db_reset_stale_running(&conn, "2026-01-01T00:01:00Z")
+            .expect("重置 stale running 失败");
+        assert_eq!(count, 1, "应重置 1 条记录");
+
+        // 再次 list，验证 status 已恢复 queued
+        let items = db_list_ingest_queue(&conn).expect("读取队列失败");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, "queued");
+    }
+
+    #[test]
+    fn cancel_ingest_item_sets_cancelled() {
+        let dir = make_temp_dir("llm-wiki-db-ingest-queue-cancel");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        let id = db_enqueue_ingest(&conn, "markdown", "/tmp/note.md", "2026-01-01T00:00:00Z")
+            .expect("入队失败");
+
+        db_update_ingest_queue_status(&conn, id, "cancelled", None, "2026-01-01T00:02:00Z")
+            .expect("更新状态为 cancelled 失败");
+
+        let items = db_list_ingest_queue(&conn).expect("读取队列失败");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, "cancelled");
+        assert!(items[0].error.is_none());
     }
 }
