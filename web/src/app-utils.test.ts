@@ -51,6 +51,8 @@ import {
   readOcrProviderFromStorage,
   writeOcrProviderToStorage,
   formatEditorCharCount,
+  resolveWikiAutocompleteMatch,
+  applyWikiAutocompleteSelection,
   QUERY_HISTORY_STORAGE_KEY,
   QUERY_HISTORY_MAX,
   parseQueryProgressPayload,
@@ -1155,6 +1157,31 @@ describe("Wiki 编辑未保存判断", () => {
     expect(hasUnsavedWikiEditChanges(true, "A", "A")).toBe(false);
     expect(hasUnsavedWikiEditChanges(true, "A", "B")).toBe(true);
     expect(hasUnsavedWikiEditChanges(true, "A", null)).toBe(true);
+  });
+});
+
+describe("Wiki 内链自动补全辅助函数", () => {
+  it("能识别光标前 [[query 触发上下文", () => {
+    expect(resolveWikiAutocompleteMatch("before [[spi")).toEqual({
+      triggerStart: 7,
+      query: "spi",
+    });
+  });
+
+  it("光标前没有 [[ 时返回 null", () => {
+    expect(resolveWikiAutocompleteMatch("before [link]")).toBeNull();
+  });
+
+  it("可将光标前 [[query 替换为 [[path]] 并更新光标", () => {
+    const result = applyWikiAutocompleteSelection({
+      content: "A [[spi and more",
+      cursor: 7,
+      path: "wiki/spine.md",
+    });
+    expect(result).toEqual({
+      content: "A [[wiki/spine.md]] and more",
+      cursor: "A [[wiki/spine.md]]".length,
+    });
   });
 });
 

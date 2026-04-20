@@ -263,6 +263,7 @@
 | P19-1 | Ask 历史管理增强（时间显示 + 关键词过滤 + 清空入口） | ✅ `db.rs` + `state.rs` + `commands.rs` + `main.rs` + `tauri-client.ts` + `App.tsx` + `styles.css` + `app-utils.test.ts`（118 前端；Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P19-2 | Wiki 文件树增强（📂图标化 + 全部折叠/展开 + 自动定位 Auto-Reveal） | ✅ `App.tsx` + `styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
 | P19-3 | 标签维度增强（多标签 AND 交集筛选 + 标签计数显示） | ✅ `App.tsx` + `styles.css`（130 前端测试通过，2026-04-17，**Gemini** 实施） |
+| P19-4 前端 | 内链补全体验收口（`[[` 光标锚点定位 + 查询竞态保护 + `Tab/Enter` 插入 + 空结果提示） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（`typecheck` 通过；WSL `test` 因 Rollup Linux 可选依赖缺失待 Windows 复核，2026-04-20，**Codex** 实施） |
 | P20-0 | 调研闸门（MCP/Skills/Workflows 清单与理由） | ✅ 已提交简报（见 2026-04-17 18:15 记录） |
 | P20-1 后端 | Outbox 事件流基础（`wiki_outbox` + 导出/ack 命令 + 关键路径事件写入） | ✅ `db.rs` + `models.rs` + `state.rs` + `commands.rs` + `main.rs`（Rust 待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
 | P20-2 后端 | Wiki-link 级 lint（`broken_wikilink` / `orphan` / `xref_missing`）+ patch preview/apply 最小可用 | ✅ `state.rs`（新增 2 条 Rust 单测；待 Windows cargo 复核，2026-04-17，**Codex** 实施） |
@@ -284,10 +285,9 @@
 | 优先级 | 任务 | 说明 |
 |---|---|---|
 | 1 | **P22 Windows 打包** | `cargo tauri build` 生成 MSI/EXE，验证 SQLite/WebView2 路径正确 |
-| 2 | **P19-4 内链补全体验** | 已实现 `[[` 触发，需验证 dropdown 定位和光标位置 |
-| 3 | **P20-6 检索可解释性增强** | 将 RRF 各路贡献写入 debug 信息（便于诊断 embedding/fts/graph 路径） |
-| 4 | **P21-E 图谱聚合交互深化** | 聚合节点支持“展开查看成员页”与一键切回明细模式 |
-| 5 | **P9-D PDF OCR 自动回退** | 当 PDF 解析器不兼容时自动走“PDF 页转图 + OCR”链路，减少手动转换 |
+| 2 | **P20-6 检索可解释性增强** | 将 RRF 各路贡献写入 debug 信息（便于诊断 embedding/fts/graph 路径） |
+| 3 | **P21-E 图谱聚合交互深化** | 聚合节点支持“展开查看成员页”与一键切回明细模式 |
+| 4 | **P9-D PDF OCR 自动回退** | 当 PDF 解析器不兼容时自动走“PDF 页转图 + OCR”链路，减少手动转换 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
