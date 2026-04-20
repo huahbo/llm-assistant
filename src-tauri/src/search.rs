@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::db::PageEmbeddingRecord;
 
 /// 页面检索评分结构
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageScore {
     pub page_path: String,

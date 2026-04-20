@@ -2142,7 +2142,7 @@ impl AppState {
             }
         }
 
-        let (broken_wiki_links, outbound_wiki_links, inbound_wiki_link_counts) =
+        let (_broken_wiki_links, outbound_wiki_links, inbound_wiki_link_counts) =
             collect_wiki_link_graph(vault_path, &wiki_page_paths);
 
         // 注意：collect_wiki_link_graph 返回的 broken_wiki_links 与我们手动实现的逻辑重叠，建议优先使用其中之一或整合。
@@ -3756,6 +3756,16 @@ Wiki 页面：\n{}",
     /// 通过 tauri::AppHandle 获取托管的 AppState，避免另建独立实例。
     pub fn start_queue_worker(handle: tauri::AppHandle) {
         tokio::spawn(async move {
+            // 启动时重置上次崩溃遗留的 running 任务
+            {
+                let state = handle.state::<AppState>();
+                if let Some(db_path) = state.outbox_db_path() {
+                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        let now = current_timestamp_ms();
+                        let _ = db::db_reset_stale_running(&conn, &now);
+                    }
+                }
+            }
             loop {
                 let state = handle.state::<AppState>();
 
@@ -5915,6 +5925,7 @@ fn search_wiki_matches_rrf_with_extra_routes(
 }
 
 /// 三路 RRF 融合检索：FTS5 + 链接扩展 + Citation 热度。
+#[allow(dead_code)]
 fn search_wiki_matches_rrf(
     db_path: &Path,
     wiki_dir: &Path,

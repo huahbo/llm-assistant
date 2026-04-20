@@ -26,6 +26,7 @@ pub enum ProviderPreset {
     Custom,
 }
 
+#[allow(dead_code)]
 impl ProviderPreset {
     /// 获取预设的默认 API 地址与模型
     pub fn get_defaults(&self) -> (&str, &str) {

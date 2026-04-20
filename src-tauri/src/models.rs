@@ -402,15 +402,6 @@ pub struct SaveQueryAnswerResult {
     pub message: String,
 }
 
-/// Wiki 页面保存请求。
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct SaveWikiPageInput {
-    /// vault 内的相对路径（如 "vault/foo.md"）或绝对路径
-    pub path: String,
-    /// 新的 Markdown 内容
-    pub content: String,
-}
-
 /// Wiki 页面保存结果。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SaveWikiPageResult {
@@ -546,11 +537,6 @@ pub struct WikiPageCitationItem {
     pub target_exists: bool,
 }
 
-/// URL ingest 输入
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct IngestUrlInput {
-    pub url: String,
-}
 
 /// 知识图谱节点（对应一个 Wiki 页面）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -613,20 +599,7 @@ pub struct KnowledgeSubgraphData {
     pub meta: KnowledgeSubgraphMeta,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TagStats {
-    pub tag: String,
-    pub count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SemanticHealthReport {
-    pub total_pages: usize,
-    pub pages_with_entities: usize,
-    pub average_entities_per_page: f64,
-    pub stale_pages_count: usize,
-}
-
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IngestQueueStatus {
     Queued,

@@ -107,6 +107,7 @@ pub struct OllamaProvider {
     client: Client,
 }
 
+#[allow(dead_code)]
 impl OllamaProvider {
     /// 创建新的 Ollama Provider 实例
     ///

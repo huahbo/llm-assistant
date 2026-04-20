@@ -136,7 +136,6 @@ pub async fn get_llm_status(state: State<'_, AppState>) -> Result<LlmStatus, Str
 /// 返回 LLM Provider 预设模型描述列表。
 #[tauri::command]
 pub fn get_llm_provider_presets() -> Vec<(String, String, String)> {
-    use crate::llm::openai::ProviderPreset;
     vec![
         ("OpenAI".to_string(), "https://api.openai.com/v1".to_string(), "gpt-4o-mini".to_string()),
         ("DeepSeek".to_string(), "https://api.deepseek.com".to_string(), "deepseek-chat".to_string()),

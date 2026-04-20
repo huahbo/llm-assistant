@@ -1638,18 +1638,6 @@ pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f64 {
     }
 }
 
-/// 注册自定义 SQL 函数（如余弦相似度）。
-pub fn register_db_functions(conn: &Connection) -> Result<(), rusqlite::Error> {
-    conn.create_scalar_function(
-        "cosine_sim",
-        2,
-        rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        move |_ctx| {
-            // 实现逻辑略（blob1, blob2 已移除）
-            Ok(0.0)
-        },
-    )
-}
 
 #[cfg(test)]
 mod tests {
