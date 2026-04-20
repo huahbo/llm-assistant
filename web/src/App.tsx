@@ -47,6 +47,7 @@ import {
   saveQueryAnswer,
   get_outbox_events,
   enqueueIngest,
+  getPageEmbeddingPairs,
   listIngestQueue,
   cancelIngestItem,
   retryIngestItem,
@@ -1094,6 +1095,7 @@ export const buildGraphInsights = (
   edges: GraphNormalizedEdge[],
   limit: number = 8,
   configOverrides?: Partial<GraphInsightConfig>,
+  embeddingSim?: Record<string, number>,
 ): GraphInsightItem[] => {
   if (nodes.length === 0) {
     return [];
@@ -1313,6 +1315,7 @@ export const buildGraphInsights = (
     crossGroupRarity: number;
     confidence: number;
     score: number;
+    embSim: number | null;
   }> = [];
   const visitedSurprisingKeys = new Set<string>();
   const groupPairEdgeCount = new Map<string, number>();
@@ -1374,10 +1377,15 @@ export const buildGraphInsights = (
     const pairKey = buildUndirectedEdgeKey(sourceGroup, targetGroup);
     const groupPairCount = groupPairEdgeCount.get(pairKey) ?? 1;
     const crossGroupRarity = 1 / Math.sqrt(groupPairCount);
+    // 优先使用 embedding 余弦相似度计算语义因子，无外部数据时回退词汇距离。
+    const embSimKey =
+      sourceId < targetId ? `${sourceId}||${targetId}` : `${targetId}||${sourceId}`;
+    const embSim = embeddingSim ? (embeddingSim[embSimKey] ?? null) : null;
+    const semanticFactor = embSim !== null ? 1 - embSim : lexicalDistance;
     const confidence = Number(
       (
         (1 - jaccard) * 0.55 +
-        lexicalDistance * 0.25 +
+        semanticFactor * 0.25 +
         crossGroupRarity * 0.2
       ).toFixed(2),
     );
@@ -1397,6 +1405,7 @@ export const buildGraphInsights = (
       crossGroupRarity,
       confidence,
       score,
+      embSim,
     });
   }
 
@@ -1404,6 +1413,10 @@ export const buildGraphInsights = (
     .sort((left, right) => right.score - left.score)
     .slice(0, config.surprisingCandidateLimit)
     .forEach((candidate) => {
+      const semanticLabel =
+        candidate.embSim !== null
+          ? `语义相似度: ${candidate.embSim.toFixed(2)}`
+          : `词汇距离=${candidate.lexicalDistance.toFixed(2)}`;
       insights.push({
         kind: "surprising-link",
         title: `异常连接：${resolveNodeLabel(candidate.sourceId)} ↔ ${resolveNodeLabel(candidate.targetId)}`,
@@ -1413,7 +1426,7 @@ export const buildGraphInsights = (
         score: candidate.score,
         evidence: [
           `命中条件：Jaccard ≤ ${config.surprisingMaxJaccard.toFixed(2)} 且置信度 ≥ ${config.surprisingMinConfidence.toFixed(2)}`,
-          `当前：Jaccard=${candidate.jaccard.toFixed(2)}，词汇距离=${candidate.lexicalDistance.toFixed(2)}，跨组稀有度=${candidate.crossGroupRarity.toFixed(2)}`,
+          `当前：Jaccard=${candidate.jaccard.toFixed(2)}，${semanticLabel}，跨组稀有度=${candidate.crossGroupRarity.toFixed(2)}`,
           `当前置信度：${candidate.confidence.toFixed(2)}，度数：${candidate.sourceDegree}/${candidate.targetDegree}`,
         ],
       });
@@ -1747,6 +1760,34 @@ export const writeWikiSortModeToStorage = (mode: WikiSortMode) => {
 
 export const OCR_PROVIDER_STORAGE_KEY = "llm_wiki_ocr_provider_v1";
 export const ASK_SEARCH_DEBUG_VISIBLE_STORAGE_KEY = "llm_wiki_ask_search_debug_visible_v1";
+export const DROP_MODE_STORAGE_KEY = "llm-wiki-drop-mode";
+
+export type DropMode = "direct" | "queue";
+
+export const isDropMode = (value: string): value is DropMode =>
+  value === "direct" || value === "queue";
+
+export const readDropModeFromStorage = (): DropMode => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return "direct";
+    const raw = storage.getItem(DROP_MODE_STORAGE_KEY);
+    if (!raw) return "direct";
+    return isDropMode(raw) ? raw : "direct";
+  } catch {
+    return "direct";
+  }
+};
+
+export const writeDropModeToStorage = (mode: DropMode): void => {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    storage.setItem(DROP_MODE_STORAGE_KEY, mode);
+  } catch {
+    // 本地存储不可用时静默降级
+  }
+};
 
 export const QUERY_HISTORY_STORAGE_KEY = "llm_wiki_query_history";
 export const QUERY_HISTORY_MAX = 30;
@@ -2338,6 +2379,7 @@ export default function App() {
   const [ingestFileOcrProvider, setIngestFileOcrProvider] = useState<OcrProvider>(
     () => readOcrProviderFromStorage(),
   );
+  const [dropMode, setDropMode] = useState<DropMode>(() => readDropModeFromStorage());
   // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
   const [ingestUrlInput, setIngestUrlInput] = useState("");
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
@@ -2413,6 +2455,7 @@ export default function App() {
   const [llmConfigEmbedBaseUrl, setLlmConfigEmbedBaseUrl] = useState("");
   const [llmConfigSaving, setLlmConfigSaving] = useState(false);
   // 知识图谱模块状态
+  const [graphEmbeddingSim, setGraphEmbeddingSim] = useState<Record<string, number> | undefined>(undefined);
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState("");
@@ -2916,12 +2959,36 @@ export default function App() {
     ],
   );
 
+  // 图谱加载后异步拉取 embedding 相似度（静默降级）
+  useEffect(() => {
+    if (!graphVisibleData) {
+      return;
+    }
+    const paths = graphVisibleData.nodes.map((n) => n.id);
+    if (paths.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    getPageEmbeddingPairs(paths)
+      .then((result) => {
+        if (!cancelled) {
+          setGraphEmbeddingSim(Object.keys(result).length > 0 ? result : undefined);
+        }
+      })
+      .catch(() => {
+        // 静默降级：embedding 不可用时保持词汇距离
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [graphVisibleData]);
+
   const graphInsights = useMemo(() => {
     if (!graphVisibleData) {
       return [] as GraphInsightItem[];
     }
-    return buildGraphInsights(graphVisibleData.nodes, graphVisibleNormalizedEdges, 8, graphInsightConfig);
-  }, [graphInsightConfig, graphVisibleData, graphVisibleNormalizedEdges]);
+    return buildGraphInsights(graphVisibleData.nodes, graphVisibleNormalizedEdges, 8, graphInsightConfig, graphEmbeddingSim);
+  }, [graphEmbeddingSim, graphInsightConfig, graphVisibleData, graphVisibleNormalizedEdges]);
 
   useEffect(() => {
     if ((graphVisibleData?.nodes.length ?? 0) <= GRAPH_AGGREGATE_THRESHOLD && graphAggregateMode) {
@@ -5309,13 +5376,26 @@ export default function App() {
             return;
           }
 
-          setActiveModule("inbox");
-          setIngestFilePickedPaths(parsed.accepted);
-          setIngestFilePath(parsed.accepted[0] ?? "");
           const ignoredMsg = parsed.rejected.length > 0 ? `，忽略 ${parsed.rejected.length} 项` : "";
           const duplicateMsg = parsed.duplicateCount > 0 ? `，去重 ${parsed.duplicateCount} 项` : "";
-          setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，开始摄入...`);
-          void runIngestFilePaths(parsed.accepted, "drag");
+
+          if (dropMode === "queue") {
+            setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，加入队列...`);
+            Promise.all(parsed.accepted.map((p) => enqueueIngest("file", p)))
+              .then(() => {
+                setActiveModule("queue");
+              })
+              .catch((err: unknown) => {
+                console.error("拖拽入队失败:", err);
+                setStatusMessage("拖拽入队失败，请检查后端日志。");
+              });
+          } else {
+            setActiveModule("inbox");
+            setIngestFilePickedPaths(parsed.accepted);
+            setIngestFilePath(parsed.accepted[0] ?? "");
+            setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，开始摄入...`);
+            void runIngestFilePaths(parsed.accepted, "drag");
+          }
         });
       })
       .catch((error) => {
@@ -5328,7 +5408,7 @@ export default function App() {
         unlisten();
       }
     };
-  }, [devAction, ingestFileOcrProvider, ingesting]);
+  }, [devAction, dropMode, ingestFileOcrProvider, ingesting]);
 
   // 侧边栏导航项定义
   const navItems: { id: ModuleId; icon: string; label: string }[] = [
@@ -7429,6 +7509,25 @@ export default function App() {
                         placeholder="http://localhost:11434（默认）"
                         spellCheck={false}
                       />
+                    </div>
+                  </div>
+                  <div className="settings-panel__section-title" style={{marginTop: "16px", fontWeight: 600, fontSize: "13px", color: "var(--text-secondary)"}}>拖拽行为</div>
+                  <div className="settings-panel__fields">
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="drop-mode">拖拽行为</label>
+                      <select
+                        id="drop-mode"
+                        className="dev-panel__input"
+                        value={dropMode}
+                        onChange={(event) => {
+                          const mode: DropMode = event.target.value === "queue" ? "queue" : "direct";
+                          setDropMode(mode);
+                          writeDropModeToStorage(mode);
+                        }}
+                      >
+                        <option value="direct">立即摄入</option>
+                        <option value="queue">加入队列</option>
+                      </select>
                     </div>
                   </div>
                   <div className="settings-panel__save">

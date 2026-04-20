@@ -1247,6 +1247,24 @@ export async function enqueueIngest(sourceType: string, sourcePath: string): Pro
   return invoke<number>("enqueue_ingest", { sourceType, sourcePath });
 }
 
+/**
+ * 获取页面对之间的 embedding 余弦相似度。
+ * key 格式："pathA||pathB"（路径顺序无关，内部已规范化）。
+ * 非 Tauri 环境或后端命令不可用时返回空对象（静默降级）。
+ */
+export async function getPageEmbeddingPairs(paths: string[]): Promise<Record<string, number>> {
+  if (!isTauriRuntime()) return {};
+  if (paths.length === 0) return {};
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const result = await invoke<Record<string, number>>("get_page_embedding_similarities", { paths });
+    return result ?? {};
+  } catch {
+    // 后端命令尚未实现时静默降级，不影响前端已有功能。
+    return {};
+  }
+}
+
 export async function listIngestQueue(): Promise<IngestQueueItem[]> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<IngestQueueItem[]>("list_ingest_queue");
