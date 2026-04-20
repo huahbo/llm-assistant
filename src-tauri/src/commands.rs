@@ -456,3 +456,13 @@ pub fn cancel_ingest_item(id: i64, state: State<'_, AppState>) -> Result<(), Str
 pub fn retry_ingest_item(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     state.retry_ingest_item(id)
 }
+
+/// 计算给定页面路径列表中存在 embedding 的页面对余弦相似度。
+/// 返回 key="pathA||pathB"（字典序），value=相似度（仅返回 >= 0.25 的对，最多 1000 对）。
+#[tauri::command]
+pub fn get_page_embedding_similarities(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, f64>, String> {
+    state.get_page_embedding_similarities(paths)
+}

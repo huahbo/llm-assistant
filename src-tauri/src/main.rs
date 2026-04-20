@@ -72,7 +72,8 @@ fn main() {
             commands::enqueue_ingest,
             commands::list_ingest_queue,
             commands::cancel_ingest_item,
-            commands::retry_ingest_item
+            commands::retry_ingest_item,
+            commands::get_page_embedding_similarities
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

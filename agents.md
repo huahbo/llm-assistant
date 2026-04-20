@@ -202,7 +202,7 @@
 
 ### 18.0 快速恢复步骤
 
-1. `cargo check && cargo test`（src-tauri/）→ **本轮 Rust 基线待 Windows 复核**
+1. `cargo test`（src-tauri/）→ 应 **118 passed**
 2. `npm run test -- --run`（web/）→ 应 **149 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
 4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
@@ -283,6 +283,7 @@
 | P24 前端 | 移植包 B（阶段一+二+三）图谱洞察层（孤立/稀疏/桥接/异常连接 + 阈值参数化 + 证据可解释 + 异常连接置信度降噪） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（WSL `typecheck` 通过；`npm test` 待 Windows 复核，2026-04-20，**Codex** 实施） |
 | P25 前端 | 拖拽摄入（窗口 drop 触发 ingest_file，扩展名过滤+去重+悬停提示） | ✅ `web/src/App.tsx` + `web/src/styles.css` + `web/src/app-utils.test.ts`（WSL `typecheck` 通过；`npm test` 待 Windows 复核，2026-04-20，**Codex** 实施） |
 | P25-B 前端 | 拖拽模式切换（直接摄入/加入队列）+ 移植包 B 阶段四 embedding 相似度接入异常连接洞察 | ✅ `web/src/App.tsx` + `web/src/tauri-client.ts`（116 Rust / 149 前端 / typecheck 0 errors，Windows 验证通过，2026-04-20，**Claude Code 子代理** 实施） |
+| P25-B 后端 | `get_page_embedding_similarities` Tauri 命令（DB embedding → 余弦对，MIN_SIM=0.25，MAX_PAIRS=1000） | ✅ `src-tauri/src/state.rs` + `src-tauri/src/commands.rs` + `src-tauri/src/main.rs`（118 Rust / 149 前端，2026-04-20，**Claude Code** 实施） |
 | BugFix-Ingest | ingesting 卡住修复（前端识别 `ingest_failed` 结束态 + 后端失败路径补发 outbox 事件） | ✅ `web/src/App.tsx` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施） |
 | BugFix-PDF-Compat | 有效 PDF 误判无效修复（`lopdf` 多级容错加载：内存直读/头修复/尾修复/联合修复 + 前端兼容性错误映射） | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx` + `web/src/app-utils.test.ts`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
 | BugFix-PDF-Compat-2 | PDF 兼容增强（`lopdf` 后新增 `pdf-extract` 二级解析 + `FlateDecode` 原始流扫描兜底） | ✅ `src-tauri/Cargo.toml` + `src-tauri/src/state.rs`（2026-04-19，**Codex** 实施；Rust 待 Windows cargo 复核） |
@@ -306,8 +307,8 @@
 | ✅ | **拖拽摄入（App 内）** | llm-wiki 应用窗口支持拖拽文件触发 ingest_file（图片/PDF/md）（2026-04-20） |
 | ✅ | **移植包 B：图谱洞察层（阶段四）** | 前端 embedding 相似度接入异常连接洞察（可选 `embeddingSim` param），证据显示语义相似度；`getPageEmbeddingPairs` tauri-client 封装（2026-04-20） |
 | ✅ | **拖拽模式切换（直接/队列）** | `DROP_MODE_STORAGE_KEY` + Settings `<select>` + drop 时按模式路由（2026-04-20） |
-| 1 | **移植包 B 阶段四后端** | `get_page_embedding_similarities` Tauri 命令（真实 embedding cosine 对；前端已 graceful fallback） |
-| 2 | **移植包 D** | Deep Research、项目模板、Clipper |
+| ✅ | **移植包 B 阶段四后端** | `get_page_embedding_similarities` Tauri 命令：拉取 DB embedding → 余弦相似度 → HashMap key=`pathA\|\|pathB`，MIN_SIM=0.25，MAX_PAIRS=1000，2 新 Rust 测试（118/149，2026-04-20） |
+| 1 | **移植包 D** | Deep Research、项目模板、Clipper |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码

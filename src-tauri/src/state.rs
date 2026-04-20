@@ -3752,6 +3752,49 @@ Wiki 页面：\n{}",
         db::db_update_ingest_queue_status(&conn, id, "queued", None, &now)
     }
 
+    /// 计算给定页面路径列表中所有存在 embedding 的页面对的余弦相似度。
+    /// 返回 HashMap，key 为 "pathA||pathB"（路径字典序排列），value 为余弦相似度。
+    /// 仅返回相似度 >= min_sim（默认 0.25）的对，最多 max_pairs（默认 1000）对。
+    pub fn get_page_embedding_similarities(
+        &self,
+        paths: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, f64>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化".to_string())?;
+
+        let all_records = db::list_embeddings(&db_path, 2000)?;
+        let path_set: std::collections::HashSet<&str> =
+            paths.iter().map(|s| s.as_str()).collect();
+
+        let records: Vec<_> = all_records
+            .iter()
+            .filter(|r| path_set.contains(r.page_path.as_str()))
+            .collect();
+
+        const MIN_SIM: f64 = 0.25;
+        const MAX_PAIRS: usize = 1000;
+
+        let mut pairs = std::collections::HashMap::new();
+        'outer: for i in 0..records.len() {
+            for j in (i + 1)..records.len() {
+                let sim = db::cosine_similarity(&records[i].embedding, &records[j].embedding);
+                if sim >= MIN_SIM {
+                    let (a, b) = if records[i].page_path <= records[j].page_path {
+                        (&records[i].page_path, &records[j].page_path)
+                    } else {
+                        (&records[j].page_path, &records[i].page_path)
+                    };
+                    pairs.insert(format!("{}||{}", a, b), sim);
+                    if pairs.len() >= MAX_PAIRS {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        Ok(pairs)
+    }
+
     /// 启动队列 worker（tauri 异步运行时串行消费）。
     /// 通过 tauri::AppHandle 获取托管的 AppState，避免另建独立实例。
     pub fn start_queue_worker(handle: tauri::AppHandle) {
@@ -8840,5 +8883,46 @@ entities:
         let result = set_frontmatter_stale_field(content, false);
         assert!(!result.contains("stale:"), "应移除 stale 字段");
         assert!(result.contains("title:"), "不应丢失 title");
+    }
+
+    #[test]
+    fn get_page_embedding_similarities_returns_high_sim_pairs() {
+        let dir = make_temp_dir("llm-wiki-emb-sim");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        state.init_vault(dir.clone()).unwrap();
+
+        let db_path = dir.join(".app").join("meta.db");
+        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/c.md", &[0.0_f32, 1.0, 0.0]).unwrap();
+
+        let paths = vec!["wiki/a.md".to_string(), "wiki/b.md".to_string(), "wiki/c.md".to_string()];
+        let result = state.get_page_embedding_similarities(paths).unwrap();
+
+        assert!(result.contains_key("wiki/a.md||wiki/b.md"), "a-b 对应包含");
+        let sim = result["wiki/a.md||wiki/b.md"];
+        assert!((sim - 1.0).abs() < 1e-6, "a-b 相似度应为 1.0，实际: {}", sim);
+        assert!(!result.contains_key("wiki/a.md||wiki/c.md"), "a-c 直交不应包含");
+        assert!(!result.contains_key("wiki/b.md||wiki/c.md"), "b-c 直交不应包含");
+    }
+
+    #[test]
+    fn get_page_embedding_similarities_filters_to_requested_paths() {
+        let dir = make_temp_dir("llm-wiki-emb-sim-filter");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        state.init_vault(dir.clone()).unwrap();
+
+        let db_path = dir.join(".app").join("meta.db");
+        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/c.md", &[1.0_f32, 0.0]).unwrap();
+
+        // 只请求 a 和 b，c 不在路径列表中
+        let paths = vec!["wiki/a.md".to_string(), "wiki/b.md".to_string()];
+        let result = state.get_page_embedding_similarities(paths).unwrap();
+        assert!(result.contains_key("wiki/a.md||wiki/b.md"));
+        assert!(!result.keys().any(|k| k.contains("wiki/c.md")));
     }
 }
