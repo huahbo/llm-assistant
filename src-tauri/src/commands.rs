@@ -5,8 +5,9 @@ use crate::models::{
     KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult,
     LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport,
     LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult, OutboxEventItem,
-    QueryAnswerResult, QueryAskOptions, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
-    VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput,
+    SaveQueryAnswerResult, SearchConfig, VaultInitResult, WikiPageCitationItem, WikiPageDetail,
+    WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -465,4 +466,42 @@ pub fn get_page_embedding_similarities(
     state: State<'_, AppState>,
 ) -> Result<std::collections::HashMap<String, f64>, String> {
     state.get_page_embedding_similarities(paths)
+}
+
+// ─── Deep Research Commands ───────────────────────────────────────────────────
+
+/// 启动 Deep Research 任务，返回 task_id。
+#[tauri::command]
+pub async fn start_research(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    topic: String,
+    depth: i32,
+    breadth: i32,
+) -> Result<i64, String> {
+    state.start_research(app_handle, topic, depth, breadth)
+}
+
+/// 列出最近研究任务。
+#[tauri::command]
+pub fn list_research_tasks(state: State<'_, AppState>) -> Result<Vec<ResearchTaskItem>, String> {
+    state.list_research_tasks()
+}
+
+/// 取消指定研究任务。
+#[tauri::command]
+pub fn cancel_research_task(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.cancel_research_task(id)
+}
+
+/// 获取搜索配置。
+#[tauri::command]
+pub fn get_search_config(state: State<'_, AppState>) -> SearchConfig {
+    state.get_search_config()
+}
+
+/// 更新搜索配置。
+#[tauri::command]
+pub fn set_search_config(state: State<'_, AppState>, config: SearchConfig) -> Result<(), String> {
+    state.set_search_config(config)
 }

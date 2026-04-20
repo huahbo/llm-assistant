@@ -84,6 +84,8 @@ import {
   formatAskHistoryCreatedAt,
   readQueryHistoryItemsFromStorage,
   writeQueryHistoryItemsToStorage,
+  getResearchStatusLabel,
+  getResearchStatusColor,
 } from "./App";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
@@ -2257,5 +2259,30 @@ describe("IngestQueueItem 结构字段校验", () => {
       expect(validStatuses).toContain(status);
     }
     expect(validStatuses).toHaveLength(5);
+  });
+});
+
+describe("Deep Research 纯函数", () => {
+  it("getResearchStatusLabel 返回每个状态的中文标签", () => {
+    expect(getResearchStatusLabel("queued")).toBe("等待");
+    expect(getResearchStatusLabel("decomposing")).toBe("分解中");
+    expect(getResearchStatusLabel("searching")).toBe("搜索中");
+    expect(getResearchStatusLabel("synthesizing")).toBe("合成中");
+    expect(getResearchStatusLabel("saving")).toBe("保存中");
+    expect(getResearchStatusLabel("done")).toBe("完成");
+    expect(getResearchStatusLabel("failed")).toBe("失败");
+    expect(getResearchStatusLabel("cancelled")).toBe("已取消");
+  });
+
+  it("getResearchStatusColor 返回正确的 CSS class", () => {
+    expect(getResearchStatusColor("done")).toBe("research-badge--done");
+    expect(getResearchStatusColor("failed")).toBe("research-badge--failed");
+    expect(getResearchStatusColor("cancelled")).toBe("research-badge--cancelled");
+    expect(getResearchStatusColor("queued")).toBe("research-badge--queued");
+    // 进行中状态均返回 running 变体
+    expect(getResearchStatusColor("decomposing")).toBe("research-badge--running");
+    expect(getResearchStatusColor("searching")).toBe("research-badge--running");
+    expect(getResearchStatusColor("synthesizing")).toBe("research-badge--running");
+    expect(getResearchStatusColor("saving")).toBe("research-badge--running");
   });
 });

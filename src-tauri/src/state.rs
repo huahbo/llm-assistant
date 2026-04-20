@@ -54,6 +54,8 @@ pub struct AppState {
     ask_sessions: Mutex<std::collections::HashMap<String, Vec<crate::models::AskTurn>>>,
     /// 会话取消标志（session_id -> AtomicBool）
     ask_cancel_flags: Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// 搜索配置（Deep Research 用）
+    search_config: Mutex<crate::models::SearchConfig>,
 }
 
 /// 状态快照。
@@ -118,6 +120,7 @@ impl AppState {
             embed_ollama_model: config.embed_ollama_model.clone(),
             embed_ollama_base_url: config.embed_ollama_base_url.clone(),
         });
+        let search_config = Self::load_search_config_from_path(&config_path);
         Self {
             inner: Mutex::new(AppStateData {
                 mode,
@@ -142,6 +145,7 @@ impl AppState {
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
+            search_config: Mutex::new(search_config),
         }
     }
 
@@ -195,6 +199,7 @@ impl AppState {
             },
         ];
 
+        let search_config = Self::load_search_config_from_path(&config_path);
         Self {
             inner: Mutex::new(AppStateData {
                 mode,
@@ -219,12 +224,46 @@ impl AppState {
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
+            search_config: Mutex::new(search_config),
         }
     }
 
     /// 注入 Tauri AppHandle（在应用 setup hook 中调用一次）。
     pub fn set_app_handle(&self, handle: AppHandle) {
         let _ = self.app_handle.set(handle);
+    }
+
+    /// 从 config_path 相邻的 search-config.json 文件加载搜索配置（不存在则返回默认值）。
+    fn load_search_config_from_path(config_path: &Path) -> crate::models::SearchConfig {
+        let search_config_path = config_path
+            .parent()
+            .map(|p| p.join("search-config.json"))
+            .unwrap_or_else(|| PathBuf::from("search-config.json"));
+        if let Ok(content) = fs::read_to_string(&search_config_path) {
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            crate::models::SearchConfig::default()
+        }
+    }
+
+    /// 获取当前搜索配置。
+    pub fn get_search_config(&self) -> crate::models::SearchConfig {
+        self.search_config.lock().expect("搜索配置锁已被污染").clone()
+    }
+
+    /// 更新搜索配置并持久化到 search-config.json。
+    pub fn set_search_config(&self, cfg: crate::models::SearchConfig) -> Result<(), String> {
+        let search_config_path = self
+            .config_path
+            .parent()
+            .map(|p| p.join("search-config.json"))
+            .unwrap_or_else(|| PathBuf::from("search-config.json"));
+        let json = serde_json::to_string_pretty(&cfg)
+            .map_err(|e| format!("序列化搜索配置失败: {}", e))?;
+        fs::write(&search_config_path, json)
+            .map_err(|e| format!("写入搜索配置文件失败: {}", e))?;
+        *self.search_config.lock().expect("搜索配置锁已被污染") = cfg;
+        Ok(())
     }
 
     /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。
@@ -3897,6 +3936,79 @@ Wiki 页面：\n{}",
             }
         });
     }
+
+    // ─── Deep Research Public API ────────────────────────────────────────────
+
+    /// 创建研究任务记录并在后台 spawn 研究管线，返回 task_id。
+    pub fn start_research(
+        &self,
+        app_handle: tauri::AppHandle,
+        topic: String,
+        depth: i32,
+        breadth: i32,
+    ) -> Result<i64, String> {
+        let db_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先初始化 Vault".to_string())?
+                .join(".app")
+                .join("meta.db")
+        };
+        // 确保 schema 存在
+        db::ensure_meta_db(&db_path)?;
+
+        let now = current_timestamp_ms();
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let task_id = db::db_create_research_task(&conn, &topic, &now)?;
+
+        // 构造搜索配置（用传入的 depth/breadth 覆盖 config 中的默认值）
+        let mut cfg = self.get_search_config();
+        cfg.depth = depth;
+        cfg.breadth = breadth;
+
+        tauri::async_runtime::spawn(async move {
+            start_research_task(app_handle, task_id, topic, cfg).await;
+        });
+
+        Ok(task_id)
+    }
+
+    /// 列出最近研究任务。
+    pub fn list_research_tasks(&self) -> Result<Vec<crate::models::ResearchTaskItem>, String> {
+        let db_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先初始化 Vault".to_string())?
+                .join(".app")
+                .join("meta.db")
+        };
+        db::ensure_meta_db(&db_path)?;
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        db::db_list_research_tasks(&conn)
+    }
+
+    /// 取消研究任务（将状态设为 cancelled）。
+    pub fn cancel_research_task(&self, id: i64) -> Result<(), String> {
+        let db_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先初始化 Vault".to_string())?
+                .join(".app")
+                .join("meta.db")
+        };
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let now = current_timestamp_ms();
+        db::db_update_research_task(&conn, id, "cancelled", "[]", 0, None, None, &now)
+    }
 }
 
 fn validate_ingest_source_path(source_path: &Path) -> Result<(), String> {
@@ -6606,6 +6718,512 @@ fn llm_health_error_message(err: &LlmError) -> String {
     }
 }
 
+// ─── Deep Research Pipeline ──────────────────────────────────────────────────
+
+/// Tavily 搜索。
+async fn search_tavily(
+    query: &str,
+    api_key: &str,
+    max_results: usize,
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+        "search_depth": "advanced"
+    });
+    let resp = client
+        .post("https://api.tavily.com/search")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Tavily 请求失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Tavily 响应解析失败: {}", e))?;
+    let results = data["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for item in results.iter().take(max_results) {
+        let title = item["title"].as_str().unwrap_or("").to_string();
+        let url = item["url"].as_str().unwrap_or("").to_string();
+        let snippet = item["content"].as_str().unwrap_or("").to_string();
+        let source = url_hostname(&url);
+        out.push(crate::models::WebSearchResult {
+            title,
+            url,
+            snippet,
+            source,
+        });
+    }
+    Ok(out)
+}
+
+/// SearXNG 搜索。
+async fn search_searxng(
+    query: &str,
+    base_url: &str,
+    max_results: usize,
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/search", base_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .query(&[("q", query), ("format", "json")])
+        .send()
+        .await
+        .map_err(|e| format!("SearXNG 请求失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("SearXNG 响应解析失败: {}", e))?;
+    let results = data["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for item in results.iter().take(max_results) {
+        let title = item["title"].as_str().unwrap_or("").to_string();
+        let url_str = item["url"].as_str().unwrap_or("").to_string();
+        let snippet = item["content"].as_str().unwrap_or("").to_string();
+        let source = url_hostname(&url_str);
+        out.push(crate::models::WebSearchResult {
+            title,
+            url: url_str,
+            snippet,
+            source,
+        });
+    }
+    Ok(out)
+}
+
+/// 从 URL 提取 hostname。
+fn url_hostname(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .to_string()
+}
+
+/// 生成 slug（小写字母数字 + 横线，最多 50 字符）。
+fn make_research_slug(topic: &str) -> String {
+    let raw: String = topic
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    // 去重连续横线
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for c in raw.chars() {
+        if c == '-' {
+            if !prev_dash {
+                slug.push(c);
+            }
+            prev_dash = true;
+        } else {
+            slug.push(c);
+            prev_dash = false;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    slug.chars().take(50).collect()
+}
+
+/// 去除 <think>/<thinking> 标签及其内容。
+fn strip_think_tags(text: &str) -> String {
+    let mut result = text.to_string();
+    for tag in &["think", "thinking"] {
+        let open = format!("<{}>", tag);
+        let close = format!("</{}>", tag);
+        while let Some(start) = result.find(&open) {
+            if let Some(rel_end) = result[start..].find(&close) {
+                let end = start + rel_end + close.len();
+                result.replace_range(start..end, "");
+            } else {
+                result.replace_range(start.., "");
+                break;
+            }
+        }
+    }
+    result.trim().to_string()
+}
+
+/// 执行搜索（按 provider 路由）。
+async fn do_search(
+    query: &str,
+    config: &crate::models::SearchConfig,
+    max_results: usize,
+) -> Vec<crate::models::WebSearchResult> {
+    match config.search_provider.as_str() {
+        "tavily" if !config.tavily_api_key.is_empty() => {
+            search_tavily(query, &config.tavily_api_key, max_results)
+                .await
+                .unwrap_or_default()
+        }
+        "searxng" => {
+            search_searxng(query, &config.searxng_url, max_results)
+                .await
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Deep Research 主管线（后台 task）。
+async fn start_research_task(
+    app_handle: tauri::AppHandle,
+    task_id: i64,
+    topic: String,
+    config: crate::models::SearchConfig,
+) {
+    let state = app_handle.state::<AppState>();
+
+    // 辅助：获取 db_path
+    let db_path_opt = state.outbox_db_path();
+    // 如果没有 db（vault 未初始化），直接失败
+    let db_path = match db_path_opt {
+        Some(p) => p,
+        None => {
+            let _ = app_handle.emit(
+                "research_error",
+                serde_json::json!({ "task_id": task_id, "error": "Vault 未初始化" }),
+            );
+            return;
+        }
+    };
+
+    // 辅助宏（闭包）：更新 DB 并 emit 错误
+    let fail = |msg: String| {
+        let conn_r = rusqlite::Connection::open(&db_path);
+        if let Ok(conn) = conn_r {
+            let now = current_timestamp_ms();
+            let _ = db::db_update_research_task(
+                &conn,
+                task_id,
+                "failed",
+                "[]",
+                0,
+                None,
+                Some(msg.as_str()),
+                &now,
+            );
+        }
+        let _ = app_handle.emit(
+            "research_error",
+            serde_json::json!({ "task_id": task_id, "error": msg }),
+        );
+    };
+
+    // ── Step 1: Decomposing ──────────────────────────────────────────────────
+    {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => { fail(format!("DB 打开失败: {}", e)); return; }
+        };
+        let now = current_timestamp_ms();
+        let _ = db::db_update_research_task(&conn, task_id, "decomposing", "[]", 0, None, None, &now);
+    }
+    let _ = app_handle.emit(
+        "research_progress",
+        serde_json::json!({
+            "task_id": task_id,
+            "stage": "decomposing",
+            "message": "正在分解研究主题..."
+        }),
+    );
+
+    // 获取 LLM provider（提前释放锁）
+    let provider_opt = state.get_llm_provider();
+    let provider = match provider_opt {
+        Some(p) => p,
+        None => { fail("LLM Provider 不可用".to_string()); return; }
+    };
+
+    let decompose_prompt = format!(
+        "你是研究助手。请为研究主题「{}」生成 {} 条具体搜索查询（一行一条，仅输出查询词，不要编号）。",
+        topic, config.breadth
+    );
+    let decompose_result = provider.complete(&decompose_prompt).await;
+    let decompose_text = match decompose_result {
+        Ok(t) => t,
+        Err(e) => { fail(format!("LLM 分解主题失败: {:?}", e)); return; }
+    };
+
+    let mut sub_queries: Vec<String> = decompose_text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .take(config.breadth as usize)
+        .collect();
+    // 不足 breadth 条时用 topic 本身补齐
+    while sub_queries.len() < config.breadth as usize {
+        sub_queries.push(topic.clone());
+    }
+
+    let sub_queries_json = serde_json::to_string(&sub_queries).unwrap_or_else(|_| "[]".to_string());
+    {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => { fail(format!("DB 打开失败: {}", e)); return; }
+        };
+        let now = current_timestamp_ms();
+        let _ = db::db_update_research_task(
+            &conn, task_id, "searching", &sub_queries_json, 0, None, None, &now,
+        );
+    }
+
+    // ── Step 2: Searching ────────────────────────────────────────────────────
+    let _ = app_handle.emit(
+        "research_progress",
+        serde_json::json!({
+            "task_id": task_id,
+            "stage": "searching",
+            "message": format!("正在搜索 {} 条查询...", sub_queries.len())
+        }),
+    );
+
+    let max_per_query = (config.breadth as usize).max(3);
+    let mut all_results: Vec<crate::models::WebSearchResult> = Vec::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for query in &sub_queries {
+        let results = do_search(query, &config, max_per_query).await;
+        for r in results {
+            if seen_urls.insert(r.url.clone()) {
+                all_results.push(r);
+                if all_results.len() >= (config.breadth as usize) * 5 {
+                    break;
+                }
+            }
+        }
+        if all_results.len() >= (config.breadth as usize) * 5 {
+            break;
+        }
+    }
+
+    let web_results_count = all_results.len() as i32;
+    {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => { fail(format!("DB 打开失败: {}", e)); return; }
+        };
+        let now = current_timestamp_ms();
+        let _ = db::db_update_research_task(
+            &conn, task_id, "synthesizing", &sub_queries_json, web_results_count, None, None, &now,
+        );
+    }
+
+    // ── Step 3: Synthesizing ─────────────────────────────────────────────────
+    let _ = app_handle.emit(
+        "research_progress",
+        serde_json::json!({
+            "task_id": task_id,
+            "stage": "synthesizing",
+            "message": "正在综合..."
+        }),
+    );
+
+    let search_context = all_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("[{}] {} ({})\n{}", i + 1, r.title, r.source, r.snippet))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // 读取现有 wiki index（尽力而为，失败则空字符串）
+    let wiki_index = {
+        let vault_path = {
+            let guard = state.inner.lock().expect("状态锁");
+            guard.vault_path.clone()
+        };
+        vault_path
+            .and_then(|vp| {
+                let index_path = vp.join("wiki").join("index.md");
+                fs::read_to_string(index_path).ok()
+            })
+            .unwrap_or_default()
+    };
+    let wiki_index_excerpt: String = wiki_index.chars().take(2000).collect();
+
+    let synth_prompt = format!(
+        "你是研究助手。请将以下搜索结果综合成一篇完整的 Markdown Wiki 页面。语言与主题语言一致。\n\n## 搜索结果\n{}\n\n## 现有 Wiki 摘要（用于交叉引用，可选）\n{}\n\n## 要求\n- 结构清晰（标题/子标题/列表）\n- 在正文内适当引用来源编号 [N]\n- 不要输出思考过程",
+        search_context, wiki_index_excerpt
+    );
+
+    let synth_result = provider.complete(&synth_prompt).await;
+    let mut synthesized = match synth_result {
+        Ok(t) => t,
+        Err(e) => { fail(format!("LLM 综合失败: {:?}", e)); return; }
+    };
+
+    // ── Phase C: depth >= 2 ──────────────────────────────────────────────────
+    if config.depth >= 2 {
+        let gap_prompt = format!(
+            "根据以上综合结果，指出 3 个仍需深入研究的具体问题，一行一条：\n\n{}",
+            synthesized
+        );
+        if let Ok(gap_text) = provider.complete(&gap_prompt).await {
+            let gap_queries: Vec<String> = gap_text
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .take(3)
+                .collect();
+
+            let mut gap_results: Vec<crate::models::WebSearchResult> = Vec::new();
+            let mut gap_seen: std::collections::HashSet<String> = seen_urls.clone();
+            for q in &gap_queries {
+                let rs = do_search(q, &config, max_per_query).await;
+                for r in rs {
+                    if gap_seen.insert(r.url.clone()) {
+                        gap_results.push(r);
+                    }
+                }
+            }
+
+            if !gap_results.is_empty() {
+                let combined_context = {
+                    let gap_ctx = gap_results
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            let idx = all_results.len() + i + 1;
+                            format!("[{}] {} ({})\n{}", idx, r.title, r.source, r.snippet)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    format!("{}\n\n## 补充搜索\n{}", search_context, gap_ctx)
+                };
+                let re_synth_prompt = format!(
+                    "你是研究助手。请将以下搜索结果综合成一篇完整的 Markdown Wiki 页面。语言与主题语言一致。\n\n## 搜索结果\n{}\n\n## 现有 Wiki 摘要（用于交叉引用，可选）\n{}\n\n## 要求\n- 结构清晰（标题/子标题/列表）\n- 在正文内适当引用来源编号 [N]\n- 不要输出思考过程",
+                    combined_context, wiki_index_excerpt
+                );
+                if let Ok(new_synth) = provider.complete(&re_synth_prompt).await {
+                    synthesized = new_synth;
+                    all_results.extend(gap_results);
+                }
+            }
+        }
+    }
+
+    // ── Step 4: Saving ───────────────────────────────────────────────────────
+    {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => { fail(format!("DB 打开失败: {}", e)); return; }
+        };
+        let now = current_timestamp_ms();
+        let _ = db::db_update_research_task(
+            &conn,
+            task_id,
+            "saving",
+            &sub_queries_json,
+            all_results.len() as i32,
+            None,
+            None,
+            &now,
+        );
+    }
+
+    // 清理 <think> 标签
+    let cleaned = strip_think_tags(&synthesized);
+
+    // 获取当前日期
+    let date_str = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // 简单日期格式 yyyy-mm-dd（UTC）
+        let days = secs / 86400;
+        let years = 1970 + days / 365;
+        let month_day = days % 365;
+        let month = (month_day / 30).min(11) + 1;
+        let day = (month_day % 30) + 1;
+        format!("{:04}-{:02}-{:02}", years, month, day)
+    };
+
+    // 组装 frontmatter
+    let frontmatter = format!(
+        "---\ntype: query\ntitle: \"Research: {}\"\ncreated: {}\norigin: deep-research\ntags: [research]\n---\n\n",
+        topic, date_str
+    );
+
+    // 组装 References 节
+    let references = {
+        let mut refs = "\n\n## References\n".to_string();
+        for (i, r) in all_results.iter().enumerate() {
+            refs.push_str(&format!("{}. [{}]({})\n", i + 1, r.title, r.url));
+        }
+        refs
+    };
+
+    let final_content = format!("{}{}{}", frontmatter, cleaned, references);
+
+    // 确定保存路径
+    let vault_path_opt = {
+        let guard = state.inner.lock().expect("状态锁");
+        guard.vault_path.clone()
+    };
+    let vault_path = match vault_path_opt {
+        Some(p) => p,
+        None => { fail("Vault 路径不存在".to_string()); return; }
+    };
+
+    let slug = make_research_slug(&topic);
+    let filename = format!("research-{}-{}.md", slug, date_str);
+    let queries_dir = vault_path.join("wiki").join("queries");
+    if let Err(e) = fs::create_dir_all(&queries_dir) {
+        fail(format!("创建 queries 目录失败: {}", e));
+        return;
+    }
+    let save_path = queries_dir.join(&filename);
+    if let Err(e) = fs::write(&save_path, &final_content) {
+        fail(format!("写入研究文件失败: {}", e));
+        return;
+    }
+
+    let saved_path_str = save_path.to_string_lossy().to_string();
+
+    {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => { fail(format!("DB 打开失败: {}", e)); return; }
+        };
+        let now = current_timestamp_ms();
+        let _ = db::db_update_research_task(
+            &conn,
+            task_id,
+            "done",
+            &sub_queries_json,
+            all_results.len() as i32,
+            Some(saved_path_str.as_str()),
+            None,
+            &now,
+        );
+    }
+
+    // 调用 ingest_markdown 让实体/链接管线处理（忽略错误）
+    let _ = state.ingest_markdown(save_path).await;
+
+    let _ = app_handle.emit(
+        "research_done",
+        serde_json::json!({
+            "task_id": task_id,
+            "saved_path": saved_path_str
+        }),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8662,6 +9280,7 @@ entities:
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
+            search_config: Mutex::new(crate::models::SearchConfig::default()),
         };
         // 注入已有的 MockQueryProvider
         let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(

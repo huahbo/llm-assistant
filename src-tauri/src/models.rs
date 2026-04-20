@@ -645,3 +645,92 @@ pub struct IngestQueueItem {
     pub created_at: String,
     pub updated_at: String,
 }
+
+/// Deep Research 任务状态。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub enum ResearchTaskStatus {
+    Queued,
+    Decomposing,
+    Searching,
+    Synthesizing,
+    Saving,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+impl std::fmt::Display for ResearchTaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Queued => write!(f, "queued"),
+            Self::Decomposing => write!(f, "decomposing"),
+            Self::Searching => write!(f, "searching"),
+            Self::Synthesizing => write!(f, "synthesizing"),
+            Self::Saving => write!(f, "saving"),
+            Self::Done => write!(f, "done"),
+            Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchTaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "decomposing" => Ok(Self::Decomposing),
+            "searching" => Ok(Self::Searching),
+            "synthesizing" => Ok(Self::Synthesizing),
+            "saving" => Ok(Self::Saving),
+            "done" => Ok(Self::Done),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(format!("unknown research status: {}", other)),
+        }
+    }
+}
+
+/// Deep Research 任务记录（前端显示用）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResearchTaskItem {
+    pub id: i64,
+    pub topic: String,
+    pub status: String,
+    pub sub_queries: Vec<String>,
+    pub web_results_count: i32,
+    pub saved_path: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 搜索配置。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchConfig {
+    pub search_provider: String,
+    pub tavily_api_key: String,
+    pub searxng_url: String,
+    pub breadth: i32,
+    pub depth: i32,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            search_provider: "none".into(),
+            tavily_api_key: "".into(),
+            searxng_url: "http://localhost:8080".into(),
+            breadth: 3,
+            depth: 1,
+        }
+    }
+}
+
+/// Web 搜索结果（内部使用）。
+pub struct WebSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub source: String,
+}

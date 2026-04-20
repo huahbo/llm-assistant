@@ -24,8 +24,10 @@ import type {
   QueryAnswerResult,
   QueryAskOptions,
   QuerySettings,
+  ResearchTaskItem,
   SaveQueryAnswerInput,
   SaveQueryAnswerResult,
+  SearchConfig,
   DeleteWikiPageResult,
   RenameWikiPageResult,
   SaveWikiPageResult,
@@ -1278,4 +1280,122 @@ export async function cancelIngestItem(id: number): Promise<void> {
 export async function retryIngestItem(id: number): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<void>("retry_ingest_item", { id });
+}
+
+// ---- Deep Research API ----
+
+/** 研究进度事件载荷 */
+export interface ResearchProgressPayload {
+  task_id: number;
+  stage: string;
+  message: string;
+}
+
+/** 研究完成事件载荷 */
+export interface ResearchDonePayload {
+  task_id: number;
+  saved_path: string;
+}
+
+/** 研究错误事件载荷 */
+export interface ResearchErrorPayload {
+  task_id: number;
+  error: string;
+}
+
+/** 监听研究进度事件（research_progress / research_done / research_error）。非 Tauri 环境为空操作。 */
+export async function listenResearchProgress(
+  handler: (payload: ResearchProgressPayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchProgressPayload>("research_progress", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
+export async function listenResearchDone(
+  handler: (payload: ResearchDonePayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchDonePayload>("research_done", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
+export async function listenResearchError(
+  handler: (payload: ResearchErrorPayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchErrorPayload>("research_error", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
+/** 启动研究任务，返回 task_id。非 Tauri 环境返回 -1。 */
+export async function startResearch(
+  topic: string,
+  depth: number,
+  breadth: number,
+): Promise<number> {
+  if (!isTauriRuntime()) return -1;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<number>("start_research", { topic, depth, breadth });
+}
+
+/** 列出历史研究任务（最多 100 条，倒序）。非 Tauri 环境返回 []。 */
+export async function listResearchTasks(): Promise<ResearchTaskItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<ResearchTaskItem[]>("list_research_tasks");
+  } catch {
+    return [];
+  }
+}
+
+/** 取消研究任务（queued 状态）。非 Tauri 环境静默忽略。 */
+export async function cancelResearchTask(id: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke<void>("cancel_research_task", { id });
+  } catch {
+    // 静默忽略
+  }
+}
+
+const defaultSearchConfig: SearchConfig = {
+  search_provider: "none",
+  tavily_api_key: "",
+  searxng_url: "http://localhost:8080",
+  breadth: 3,
+  depth: 1,
+};
+
+/** 获取搜索配置。非 Tauri 环境返回默认值。 */
+export async function getSearchConfig(): Promise<SearchConfig> {
+  if (!isTauriRuntime()) return { ...defaultSearchConfig };
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<SearchConfig>("get_search_config");
+  } catch {
+    return { ...defaultSearchConfig };
+  }
+}
+
+/** 保存搜索配置。非 Tauri 环境静默忽略。 */
+export async function setSearchConfig(config: SearchConfig): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke<void>("set_search_config", { config });
+  } catch {
+    // 静默忽略
+  }
 }

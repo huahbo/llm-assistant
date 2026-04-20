@@ -1176,6 +1176,18 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS research_tasks (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic             TEXT NOT NULL,
+            status            TEXT NOT NULL DEFAULT 'queued',
+            sub_queries       TEXT NOT NULL DEFAULT '[]',
+            web_results_count INTEGER NOT NULL DEFAULT 0,
+            saved_path        TEXT,
+            error             TEXT,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL
+        );
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -1635,6 +1647,140 @@ pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f64 {
         0.0
     } else {
         (dot / (mag1 * mag2)) as f64
+    }
+}
+
+// ─── Research Tasks ───────────────────────────────────────────────────────────
+
+/// 创建一条 research_tasks 记录，返回新记录 id。
+pub fn db_create_research_task(conn: &Connection, topic: &str, now: &str) -> Result<i64, String> {
+    conn.execute(
+        r#"
+        INSERT INTO research_tasks (topic, status, sub_queries, web_results_count, created_at, updated_at)
+        VALUES (?1, 'queued', '[]', 0, ?2, ?2)
+        "#,
+        params![topic, now],
+    )
+    .map_err(|err| format!("写入 research_tasks 失败: {}", err))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 查询最近 100 条 research_tasks，按 created_at DESC。
+pub fn db_list_research_tasks(conn: &Connection) -> Result<Vec<crate::models::ResearchTaskItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, topic, status, sub_queries, web_results_count, saved_path, error, created_at, updated_at
+            FROM research_tasks
+            ORDER BY created_at DESC
+            LIMIT 100
+            "#,
+        )
+        .map_err(|err| format!("准备查询 research_tasks 失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let sub_queries_json: String = row.get(3)?;
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                sub_queries_json,
+                row.get::<_, i32>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        })
+        .map_err(|err| format!("查询 research_tasks 失败: {}", err))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let (id, topic, status, sub_queries_json, web_results_count, saved_path, error, created_at, updated_at) =
+            row.map_err(|err| format!("读取 research_tasks 失败: {}", err))?;
+        let sub_queries: Vec<String> =
+            serde_json::from_str(&sub_queries_json).unwrap_or_default();
+        result.push(crate::models::ResearchTaskItem {
+            id,
+            topic,
+            status,
+            sub_queries,
+            web_results_count,
+            saved_path,
+            error,
+            created_at,
+            updated_at,
+        });
+    }
+    Ok(result)
+}
+
+/// 更新 research_tasks 记录状态及相关字段。
+#[allow(clippy::too_many_arguments)]
+pub fn db_update_research_task(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    sub_queries_json: &str,
+    web_results_count: i32,
+    saved_path: Option<&str>,
+    error: Option<&str>,
+    now: &str,
+) -> Result<(), String> {
+    conn.execute(
+        r#"
+        UPDATE research_tasks
+        SET status = ?1, sub_queries = ?2, web_results_count = ?3, saved_path = ?4, error = ?5, updated_at = ?6
+        WHERE id = ?7
+        "#,
+        params![status, sub_queries_json, web_results_count, saved_path, error, now, id],
+    )
+    .map_err(|err| format!("更新 research_tasks 失败: {}", err))?;
+    Ok(())
+}
+
+/// 按 id 查询单条 research_tasks 记录。
+pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, topic, status, sub_queries, web_results_count, saved_path, error, created_at, updated_at
+            FROM research_tasks
+            WHERE id = ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 research_tasks 失败: {}", err))?;
+    match stmt.query_row(params![id], |row| {
+        let sub_queries_json: String = row.get(3)?;
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            sub_queries_json,
+            row.get::<_, i32>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+        ))
+    }) {
+        Ok((id, topic, status, sub_queries_json, web_results_count, saved_path, error, created_at, updated_at)) => {
+            let sub_queries: Vec<String> =
+                serde_json::from_str(&sub_queries_json).unwrap_or_default();
+            Ok(Some(crate::models::ResearchTaskItem {
+                id,
+                topic,
+                status,
+                sub_queries,
+                web_results_count,
+                saved_path,
+                error,
+                created_at,
+                updated_at,
+            }))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(format!("查询 research_tasks 失败: {}", err)),
     }
 }
 

@@ -56,6 +56,14 @@ import {
   formatLlmStatusSummary,
   resolveDisplayPath,
   listenProgress,
+  startResearch,
+  listResearchTasks,
+  cancelResearchTask,
+  getSearchConfig,
+  setSearchConfig,
+  listenResearchProgress,
+  listenResearchDone,
+  listenResearchError,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -92,6 +100,9 @@ import type {
   ModeId,
   ProgressPayload,
   QueryAnswerResult,
+  ResearchTaskItem,
+  ResearchTaskStatus,
+  SearchConfig,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageItem,
@@ -196,6 +207,37 @@ const lintSeverityFilterLabels: Record<LintSeverityFilter, string> = {
   error: "错误",
   warning: "警告",
   info: "信息",
+};
+
+// ---- Deep Research 纯函数 ----
+
+export const getResearchStatusLabel = (status: ResearchTaskStatus): string => {
+  const labels: Record<ResearchTaskStatus, string> = {
+    queued: "等待",
+    decomposing: "分解中",
+    searching: "搜索中",
+    synthesizing: "合成中",
+    saving: "保存中",
+    done: "完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  return labels[status] ?? status;
+};
+
+export const getResearchStatusColor = (status: ResearchTaskStatus): string => {
+  switch (status) {
+    case "done":
+      return "research-badge--done";
+    case "failed":
+      return "research-badge--failed";
+    case "cancelled":
+      return "research-badge--cancelled";
+    case "queued":
+      return "research-badge--queued";
+    default:
+      return "research-badge--running";
+  }
 };
 
 const searchStrategyLabels: Record<string, string> = {
@@ -5417,6 +5459,7 @@ export default function App() {
     { id: "ask",      icon: "💬", label: "Ask" },
     { id: "lint",     icon: "🔍", label: "Lint" },
     { id: "graph",    icon: "🕸", label: "图谱" },
+    { id: "research", icon: "🔬", label: "研究" },
     { id: "settings", icon: "⚙", label: "设置" },
   ];
 
@@ -7547,6 +7590,7 @@ export default function App() {
                   </p>
                 </div>
               </section>
+              <SearchConfigPanel />
             </>
           )}
           {/* ---- 摄入队列模块 ---- */}
@@ -7568,6 +7612,20 @@ export default function App() {
                 retryIngestItem(id)
                   .then(() => listIngestQueue())
                   .then((items) => setIngestQueue(items))
+                  .catch(() => {});
+              }}
+            />
+          )}
+          {/* ---- Deep Research 模块 ---- */}
+          {activeModule === "research" && (
+            <ResearchPanel
+              onOpenWikiPage={(path) => {
+                fetchWikiPageDetail(path)
+                  .then((detail) => {
+                    if (detail) {
+                      setActiveModule("wiki");
+                    }
+                  })
                   .catch(() => {});
               }}
             />
@@ -7673,5 +7731,442 @@ function QueuePanel({
         )}
       </section>
     </>
+  );
+}
+
+// ---- Deep Research 面板 ----
+
+function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => void }) {
+  const [topic, setTopic] = useState("");
+  const [depth, setDepth] = useState(1);
+  const [breadth, setBreadth] = useState(3);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [researchTasks, setResearchTasks] = useState<ResearchTaskItem[]>([]);
+  const [taskProgress, setTaskProgress] = useState<Record<number, string>>({});
+  const [starting, setStarting] = useState(false);
+
+  // 初始化：加载历史任务
+  useEffect(() => {
+    listResearchTasks()
+      .then((tasks) => setResearchTasks(tasks))
+      .catch(() => {});
+  }, []);
+
+  // 事件监听
+  useEffect(() => {
+    let unlistenProgress: (() => void) | null = null;
+    let unlistenDone: (() => void) | null = null;
+    let unlistenError: (() => void) | null = null;
+
+    listenResearchProgress((payload) => {
+      setTaskProgress((prev) => ({ ...prev, [payload.task_id]: payload.message }));
+      setResearchTasks((prev) =>
+        prev.map((t) =>
+          t.id === payload.task_id ? { ...t, status: payload.stage as ResearchTaskStatus } : t,
+        ),
+      );
+    })
+      .then((fn) => {
+        unlistenProgress = fn;
+      })
+      .catch(() => {});
+
+    listenResearchDone((payload) => {
+      listResearchTasks()
+        .then((tasks) => setResearchTasks(tasks))
+        .catch(() => {});
+      setTaskProgress((prev) => {
+        const next = { ...prev };
+        delete next[payload.task_id];
+        return next;
+      });
+    })
+      .then((fn) => {
+        unlistenDone = fn;
+      })
+      .catch(() => {});
+
+    listenResearchError((payload) => {
+      listResearchTasks()
+        .then((tasks) => setResearchTasks(tasks))
+        .catch(() => {});
+      setTaskProgress((prev) => {
+        const next = { ...prev };
+        delete next[payload.task_id];
+        return next;
+      });
+    })
+      .then((fn) => {
+        unlistenError = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      unlistenProgress?.();
+      unlistenDone?.();
+      unlistenError?.();
+    };
+  }, []);
+
+  const handleStartResearch = async () => {
+    const trimmed = topic.trim();
+    if (!trimmed) return;
+    setStarting(true);
+    try {
+      const taskId = await startResearch(trimmed, depth, breadth);
+      const optimisticTask: ResearchTaskItem = {
+        id: taskId,
+        topic: trimmed,
+        status: "queued",
+        sub_queries: [],
+        web_results_count: 0,
+        saved_path: null,
+        error: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setResearchTasks((prev) => [optimisticTask, ...prev]);
+      setTopic("");
+    } catch {
+      // 启动失败静默
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const handleCancel = (id: number) => {
+    cancelResearchTask(id)
+      .then(() => listResearchTasks())
+      .then((tasks) => setResearchTasks(tasks))
+      .catch(() => {});
+  };
+
+  const runningCount = researchTasks.filter(
+    (t) => !["done", "failed", "cancelled"].includes(t.status),
+  ).length;
+  const doneCount = researchTasks.filter((t) =>
+    ["done", "failed", "cancelled"].includes(t.status),
+  ).length;
+
+  return (
+    <>
+      <div className="module-header">
+        <h1 className="module-header__title">Deep Research</h1>
+        <p className="module-header__sub">自动分解主题、搜索互联网并合成 Wiki 页面</p>
+      </div>
+
+      {/* 输入区 */}
+      <section className="panel">
+        <div className="section-head">
+          <h2>新建研究任务</h2>
+        </div>
+        <div className="dev-panel__field" style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+          <input
+            className="dev-panel__input"
+            style={{ flex: 1 }}
+            type="text"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="输入研究主题，如：大模型 RAG 架构演进"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !starting) void handleStartResearch();
+            }}
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            className="dev-panel__button dev-panel__button--accent"
+            onClick={() => void handleStartResearch()}
+            disabled={starting || !topic.trim()}
+          >
+            {starting ? "启动中..." : "开始研究"}
+          </button>
+        </div>
+
+        {/* 高级选项 */}
+        <div style={{ marginBottom: "8px" }}>
+          <button
+            type="button"
+            className="dev-panel__button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            style={{ fontSize: "12px" }}
+          >
+            {showAdvanced ? "▲ 收起高级选项" : "▼ 展开高级选项"}
+          </button>
+        </div>
+        {showAdvanced && (
+          <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "8px" }}>
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="research-depth">研究深度</label>
+              <select
+                id="research-depth"
+                className="dev-panel__input"
+                value={depth}
+                onChange={(e) => setDepth(Number(e.target.value))}
+              >
+                <option value={1}>1 - 标准</option>
+                <option value={2}>2 - 深度</option>
+              </select>
+            </div>
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="research-breadth">搜索广度</label>
+              <select
+                id="research-breadth"
+                className="dev-panel__input"
+                value={breadth}
+                onChange={(e) => setBreadth(Number(e.target.value))}
+              >
+                <option value={2}>2</option>
+                <option value={3}>3</option>
+                <option value={4}>4</option>
+                <option value={5}>5</option>
+              </select>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* 任务列表 */}
+      <section className="panel">
+        <div className="section-head">
+          <h2>任务列表</h2>
+          <span className="section-head__hint">
+            运行中 {runningCount} 条 · 历史 {doneCount} 条
+          </span>
+        </div>
+        {researchTasks.length === 0 ? (
+          <p className="empty-state">暂无研究任务。输入研究主题后点击"开始研究"。</p>
+        ) : (
+          <div className="queue-list">
+            {researchTasks.map((task) => (
+              <div key={task.id} className="queue-item">
+                <div className="queue-item__main">
+                  <span className={`queue-badge ${getResearchStatusColor(task.status)}`}>
+                    {getResearchStatusLabel(task.status)}
+                  </span>
+                  <span className="queue-item__path" title={task.topic}>
+                    {task.topic}
+                  </span>
+                  {task.web_results_count > 0 && (
+                    <span className="queue-item__type">{task.web_results_count} 条结果</span>
+                  )}
+                  <time className="queue-item__time" dateTime={task.updated_at}>
+                    {task.updated_at.slice(0, 16).replace("T", " ")}
+                  </time>
+                </div>
+
+                {/* 进度消息 */}
+                {taskProgress[task.id] && (
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: "4px 0 0" }}>
+                    {taskProgress[task.id]}
+                  </p>
+                )}
+
+                {/* 子查询标签（searching 后显示） */}
+                {task.sub_queries.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
+                    {task.sub_queries.map((q, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          fontSize: "11px",
+                          background: "var(--bg-secondary, #f0f0f0)",
+                          borderRadius: "4px",
+                          padding: "1px 6px",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {q}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* 完成后 saved_path 链接 */}
+                {task.status === "done" && task.saved_path && (
+                  <p style={{ fontSize: "12px", margin: "4px 0 0" }}>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      style={{ fontSize: "12px" }}
+                      onClick={() => onOpenWikiPage(task.saved_path!)}
+                    >
+                      打开 Wiki 页面 →
+                    </button>
+                  </p>
+                )}
+
+                {/* 错误信息 */}
+                {task.status === "failed" && task.error && (
+                  <p className="queue-item__error">{task.error}</p>
+                )}
+
+                {/* 取消按钮 */}
+                {task.status === "queued" && (
+                  <div className="queue-item__actions">
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => handleCancel(task.id)}
+                    >
+                      取消
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+// ---- 搜索配置面板（Settings 内嵌） ----
+
+function SearchConfigPanel() {
+  const [config, setConfig] = useState<SearchConfig>({
+    search_provider: "none",
+    tavily_api_key: "",
+    searxng_url: "http://localhost:8080",
+    breadth: 3,
+    depth: 1,
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getSearchConfig()
+      .then((cfg) => setConfig(cfg))
+      .catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await setSearchConfig(config);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // 静默
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <h2>搜索配置（Deep Research）</h2>
+        <span className="section-head__hint">
+          {isTauriRuntime() ? "本地配置文件" : "浏览器预览"}
+        </span>
+      </div>
+      <div className="settings-panel">
+        <div className="settings-panel__fields">
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="search-provider">搜索提供商</label>
+            <select
+              id="search-provider"
+              className="dev-panel__input"
+              value={config.search_provider}
+              onChange={(e) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  search_provider: e.target.value as SearchConfig["search_provider"],
+                }))
+              }
+            >
+              <option value="none">无（禁用联网搜索）</option>
+              <option value="tavily">Tavily</option>
+              <option value="searxng">SearXNG（自托管）</option>
+            </select>
+          </div>
+
+          {config.search_provider === "tavily" && (
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="tavily-api-key">Tavily API Key</label>
+              <input
+                id="tavily-api-key"
+                className="dev-panel__input"
+                type="password"
+                value={config.tavily_api_key}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, tavily_api_key: e.target.value }))
+                }
+                placeholder="tvly-..."
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </div>
+          )}
+
+          {config.search_provider === "searxng" && (
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="searxng-url">SearXNG 地址</label>
+              <input
+                id="searxng-url"
+                className="dev-panel__input"
+                type="text"
+                value={config.searxng_url}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, searxng_url: e.target.value }))
+                }
+                placeholder="http://localhost:8080"
+                spellCheck={false}
+              />
+            </div>
+          )}
+
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="default-depth">默认研究深度</label>
+            <select
+              id="default-depth"
+              className="dev-panel__input"
+              value={config.depth}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, depth: Number(e.target.value) }))
+              }
+            >
+              <option value={1}>1 - 标准</option>
+              <option value={2}>2 - 深度</option>
+            </select>
+          </div>
+
+          <div className="dev-panel__field">
+            <label className="dev-panel__label" htmlFor="default-breadth">默认搜索广度</label>
+            <select
+              id="default-breadth"
+              className="dev-panel__input"
+              value={config.breadth}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, breadth: Number(e.target.value) }))
+              }
+            >
+              <option value={2}>2</option>
+              <option value={3}>3</option>
+              <option value={4}>4</option>
+              <option value={5}>5</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="settings-panel__save">
+          <button
+            type="button"
+            className="dev-panel__button dev-panel__button--accent"
+            onClick={() => void handleSave()}
+            disabled={saving || !isTauriRuntime()}
+          >
+            {saved ? "已保存" : saving ? "保存中..." : "保存搜索配置"}
+          </button>
+        </div>
+        <p className="settings-panel__hint">
+          {isTauriRuntime()
+            ? "搜索配置用于 Deep Research 模块的联网搜索。Tavily 需要申请 API Key；SearXNG 为自托管搜索引擎。"
+            : "浏览器预览模式下无法保存配置。"}
+        </p>
+      </div>
+    </section>
   );
 }

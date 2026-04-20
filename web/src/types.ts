@@ -7,7 +7,7 @@ export interface ModeOption {
   badge: string;
 }
 
-export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings" | "queue";
+export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings" | "queue" | "research";
 
 export interface ModuleItem {
   id: ModuleId;
@@ -356,6 +356,36 @@ export interface OutboxEventItem {
 }
 
 export type IngestQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export type ResearchTaskStatus =
+  | "queued"
+  | "decomposing"
+  | "searching"
+  | "synthesizing"
+  | "saving"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface ResearchTaskItem {
+  id: number;
+  topic: string;
+  status: ResearchTaskStatus;
+  sub_queries: string[];
+  web_results_count: number;
+  saved_path: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SearchConfig {
+  search_provider: "tavily" | "searxng" | "none";
+  tavily_api_key: string;
+  searxng_url: string;
+  breadth: number;
+  depth: number;
+}
 
 export interface IngestQueueItem {
   id: number;

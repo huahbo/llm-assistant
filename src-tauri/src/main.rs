@@ -73,7 +73,12 @@ fn main() {
             commands::list_ingest_queue,
             commands::cancel_ingest_item,
             commands::retry_ingest_item,
-            commands::get_page_embedding_similarities
+            commands::get_page_embedding_similarities,
+            commands::start_research,
+            commands::list_research_tasks,
+            commands::cancel_research_task,
+            commands::get_search_config,
+            commands::set_search_config
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

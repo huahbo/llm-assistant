@@ -203,7 +203,7 @@
 ### 18.0 快速恢复步骤
 
 1. `cargo test`（src-tauri/）→ 应 **118 passed**
-2. `npm run test -- --run`（web/）→ 应 **149 passed**
+2. `npm run test -- --run`（web/）→ 应 **151 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
 4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
 5. 读 `docs/实施过程记录.md` 最新 3 条了解背景
@@ -308,7 +308,9 @@
 | ✅ | **移植包 B：图谱洞察层（阶段四）** | 前端 embedding 相似度接入异常连接洞察（可选 `embeddingSim` param），证据显示语义相似度；`getPageEmbeddingPairs` tauri-client 封装（2026-04-20） |
 | ✅ | **拖拽模式切换（直接/队列）** | `DROP_MODE_STORAGE_KEY` + Settings `<select>` + drop 时按模式路由（2026-04-20） |
 | ✅ | **移植包 B 阶段四后端** | `get_page_embedding_similarities` Tauri 命令：拉取 DB embedding → 余弦相似度 → HashMap key=`pathA\|\|pathB`，MIN_SIM=0.25，MAX_PAIRS=1000，2 新 Rust 测试（118/149，2026-04-20） |
-| 1 | **移植包 D** | Deep Research、项目模板、Clipper |
+| ✅ | **移植包 D：Deep Research 全栈** | Tavily 搜索 + LLM 自动分解子查询(breadth) + 可选深度 Phase C + 持久化 research_tasks + ResearchPanel UI + SearchConfigPanel（118 Rust / 151 前端，2026-04-20，**Claude Code 并行子代理**） |
+| 1 | **移植包 D：SearXNG 本地搜索** | 配置字段已就位，搜索实现待用户 Docker 就绪后激活 |
+| 2 | **移植包 D：项目模板 / Clipper** | 模板化项目初始化、Web Clipper HTTP 接口 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
