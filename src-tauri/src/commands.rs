@@ -528,3 +528,20 @@ pub fn get_search_config(state: State<'_, AppState>) -> SearchConfig {
 pub fn set_search_config(state: State<'_, AppState>, config: SearchConfig) -> Result<(), String> {
     state.set_search_config(config)
 }
+
+/// 保存 Deep Research 导出的 Word 文档（HTML .doc 格式）到用户指定路径。
+#[tauri::command]
+pub fn save_research_doc(path: String, content: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("保存路径不能为空".to_string());
+    }
+    let target = std::path::PathBuf::from(trimmed);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    std::fs::write(&target, content)
+        .map_err(|e| format!("写入 Word 文件失败: {}", e))?;
+    Ok(())
+}

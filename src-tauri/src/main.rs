@@ -84,7 +84,8 @@ fn main() {
             commands::list_research_tasks,
             commands::cancel_research_task,
             commands::get_search_config,
-            commands::set_search_config
+            commands::set_search_config,
+            commands::save_research_doc
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

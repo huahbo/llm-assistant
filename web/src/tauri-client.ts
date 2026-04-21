@@ -78,6 +78,21 @@ export async function pickFolder(): Promise<string | null> {
   return Array.isArray(result) ? (result[0] as string) : (result as string);
 }
 
+/** 打开保存文件对话框，返回保存路径（取消返回 null） */
+export async function pickSaveFile(options: {
+  defaultPath?: string;
+  filters?: Array<{ name: string; extensions: string[] }>;
+}): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const result = await save({
+    defaultPath: options.defaultPath,
+    filters: options.filters,
+  });
+  if (!result) return null;
+  return result as string;
+}
+
 type DisplayPathSource = {
   display_path?: string | null;
   displayPath?: string | null;
@@ -1413,6 +1428,13 @@ export async function setSearchConfig(config: SearchConfig): Promise<void> {
   } catch {
     // 静默忽略
   }
+}
+
+/** 保存 Deep Research 导出的 Word 文档（HTML .doc）到指定路径。 */
+export async function saveResearchDoc(path: string, content: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke<void>("save_research_doc", { path, content });
 }
 
 /** 获取 Web Clipper HTTP 服务状态字符串（如 "running:19827" 或 "stopped"）。非 Tauri 环境返回空字符串。 */

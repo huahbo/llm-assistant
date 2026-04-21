@@ -61,6 +61,8 @@ import {
   cancelResearchTask,
   getSearchConfig,
   setSearchConfig,
+  pickSaveFile,
+  saveResearchDoc,
   initVaultWithTemplate,
   listenResearchProgress,
   listenResearchDone,
@@ -7934,6 +7936,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const handleDownloadWord = async (task: ResearchTaskItem) => {
     if (!task.saved_path) return;
     try {
+      setDownloadError(null);
       const detail = await fetchWikiPageDetail(task.saved_path);
       if (!detail) return;
 
@@ -7947,11 +7950,29 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         </html>
       `;
 
-      const blob = new Blob([documentHtml], { type: 'application/msword' });
+      const safeTitle =
+        (detail.title || "research-result")
+          .replace(/[\\/:*?"<>|]/g, "-")
+          .trim() || "research-result";
+      const defaultFileName = `${safeTitle}.doc`;
+
+      if (isTauriRuntime()) {
+        const targetPath = await pickSaveFile({
+          defaultPath: defaultFileName,
+          filters: [{ name: "Word Document", extensions: ["doc"] }],
+        });
+        if (!targetPath) {
+          return;
+        }
+        await saveResearchDoc(targetPath, documentHtml);
+        return;
+      }
+
+      const blob = new Blob([documentHtml], { type: "application/msword" });
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
+      const link = document.createElement("a");
       link.href = url;
-      link.download = `${detail.title || 'research-result'}.doc`;
+      link.download = defaultFileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
