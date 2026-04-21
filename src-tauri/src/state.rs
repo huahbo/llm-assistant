@@ -4032,15 +4032,16 @@ Wiki 页面：\n{}",
         // 确保 schema 存在
         db::ensure_meta_db(&db_path)?;
 
+        // 先校验搜索配置，避免创建必然失败的任务记录。
+        let mut cfg = self.get_search_config();
+        cfg.depth = depth;
+        cfg.breadth = breadth;
+        validate_search_config(&cfg)?;
+
         let now = current_timestamp_ms();
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("打开数据库失败: {}", e))?;
         let task_id = db::db_create_research_task(&conn, &topic, depth, breadth, &now)?;
-
-        // 构造搜索配置（用传入的 depth/breadth 覆盖 config 中的默认值）
-        let mut cfg = self.get_search_config();
-        cfg.depth = depth;
-        cfg.breadth = breadth;
 
         tauri::async_runtime::spawn(async move {
             start_research_task(app_handle, task_id, topic, cfg).await;
@@ -6821,20 +6822,44 @@ async fn search_tavily(
     Ok(out)
 }
 
-/// SearXNG 搜索。
-async fn search_searxng(
+/// 规范化 SearXNG 地址：
+/// - 自动补全缺失的 `http://`
+/// - 去掉末尾 `/`
+fn normalize_searxng_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    }
+}
+
+/// 将用户输入统一为 SearXNG 根地址（剥离可能附带的 `/search`）。
+fn searxng_base_root(base_url: &str) -> String {
+    normalize_searxng_base_url(base_url)
+        .trim_end_matches("/search")
+        .to_string()
+}
+
+async fn search_searxng_endpoint(
     client: &reqwest::Client,
+    endpoint: &str,
     query: &str,
-    base_url: &str,
     max_results: usize,
 ) -> Result<Vec<crate::models::WebSearchResult>, String> {
-    let url = format!("{}/search", base_url.trim_end_matches('/'));
     let resp = client
-        .get(&url)
-        .query(&[("q", query), ("format", "json")])
+        .get(endpoint)
+        .query(&[("q", query), ("format", "json"), ("language", "auto")])
         .send()
         .await
         .map_err(|e| format!("SearXNG 请求失败: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(120).collect();
+        return Err(format!("SearXNG HTTP {}: {}", status.as_u16(), preview));
+    }
+
     let data: serde_json::Value = resp
         .json()
         .await
@@ -6844,11 +6869,45 @@ async fn search_searxng(
     for item in results.iter().take(max_results) {
         let title = item["title"].as_str().unwrap_or("").to_string();
         let url_str = item["url"].as_str().unwrap_or("").to_string();
-        let snippet = item["content"].as_str().unwrap_or("").chars().take(300).collect();
+        let snippet = item["content"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(300)
+            .collect();
         let source = url_hostname(&url_str);
-        out.push(crate::models::WebSearchResult { title, url: url_str, snippet, source });
+        out.push(crate::models::WebSearchResult {
+            title,
+            url: url_str,
+            snippet,
+            source,
+        });
     }
     Ok(out)
+}
+
+/// SearXNG 搜索。
+async fn search_searxng(
+    client: &reqwest::Client,
+    query: &str,
+    base_url: &str,
+    max_results: usize,
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    let base_root = searxng_base_root(base_url);
+    let primary_url = format!("{}/search", base_root);
+    match search_searxng_endpoint(client, &primary_url, query, max_results).await {
+        Ok(results) => Ok(results),
+        Err(primary_err) => {
+            // 兼容部分实例把 `/` 作为查询入口。
+            match search_searxng_endpoint(client, &base_root, query, max_results).await {
+                Ok(results) => Ok(results),
+                Err(fallback_err) => Err(format!(
+                    "SearXNG 主端点失败（{}）；回退端点失败（{}）",
+                    primary_err, fallback_err
+                )),
+            }
+        }
+    }
 }
 
 /// 从 URL 提取 hostname。
@@ -6912,19 +6971,67 @@ async fn do_search(
     query: &str,
     config: &crate::models::SearchConfig,
     max_results: usize,
-) -> Vec<crate::models::WebSearchResult> {
-    match config.search_provider.as_str() {
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    match normalize_search_provider(&config.search_provider) {
         "tavily" if !config.tavily_api_key.is_empty() => {
             search_tavily(client, query, &config.tavily_api_key, max_results)
                 .await
-                .unwrap_or_default()
         }
-        "searxng" if !config.searxng_url.is_empty() => {
+        "tavily" => Err("搜索配置错误：已选择 Tavily，但未填写 API Key".to_string()),
+        "searxng" if !config.searxng_url.trim().is_empty() => {
             search_searxng(client, query, &config.searxng_url, max_results)
                 .await
-                .unwrap_or_default()
         }
-        _ => Vec::new(),
+        "searxng" => Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string()),
+        "none" => Err("搜索配置错误：未启用搜索 Provider".to_string()),
+        other => Err(format!("搜索配置错误：不支持的搜索 Provider `{}`", other)),
+    }
+}
+
+fn compact_error_message(err: &str, max_chars: usize) -> String {
+    let compact = err.replace('\n', " ").replace('\r', " ");
+    let mut short: String = compact.chars().take(max_chars).collect();
+    if compact.chars().count() > max_chars {
+        short.push_str("...");
+    }
+    short
+}
+
+fn summarize_round_errors(errors: &[String], max_items: usize) -> String {
+    if errors.is_empty() {
+        return String::new();
+    }
+    let mut parts: Vec<String> = errors
+        .iter()
+        .take(max_items)
+        .map(|err| compact_error_message(err, 140))
+        .collect();
+    if errors.len() > max_items {
+        parts.push(format!("其余 {} 条错误已省略", errors.len() - max_items));
+    }
+    parts.join(" | ")
+}
+
+fn normalize_search_provider(provider: &str) -> &str {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "tavily" => "tavily",
+        "searxng" => "searxng",
+        "none" => "none",
+        _ => provider.trim(),
+    }
+}
+
+fn validate_search_config(config: &crate::models::SearchConfig) -> Result<(), String> {
+    match normalize_search_provider(&config.search_provider) {
+        "tavily" if config.tavily_api_key.trim().is_empty() => {
+            Err("搜索配置错误：已选择 Tavily，但未填写 API Key".to_string())
+        }
+        "searxng" if config.searxng_url.trim().is_empty() => {
+            Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string())
+        }
+        "none" => Err("搜索配置错误：未启用搜索 Provider".to_string()),
+        "tavily" | "searxng" => Ok(()),
+        other => Err(format!("搜索配置错误：不支持的搜索 Provider `{}`", other)),
     }
 }
 
@@ -7026,6 +7133,11 @@ async fn start_research_task(
         }));
     };
 
+    if let Err(err) = validate_search_config(&config) {
+        report_research_failure(&db_path, &app_handle, task_id, &err);
+        return;
+    }
+
     let provider = match state.get_llm_provider() {
         Some(p) => p,
         None => { report_research_failure(&db_path, &app_handle, task_id, "LLM Provider 不可用"); return; }
@@ -7090,28 +7202,62 @@ async fn start_research_task(
             let query = query.clone();
             let config_clone = config.clone();
             handles.push(tokio::task::spawn(async move {
-                do_search(&client, &query, &config_clone, breadth_limit).await
+                let result = do_search(&client, &query, &config_clone, breadth_limit).await;
+                (query, result)
             }));
         }
 
         let mut round_results: Vec<crate::models::WebSearchResult> = Vec::new();
-        for (i, handle) in handles.into_iter().enumerate() {
-            if let Some(q) = current_queries.get(i) {
-                emit_progress("searching", format!("✓ {}", q));
-            }
-            if let Ok(results) = handle.await {
-                for r in results {
-                    if seen_urls.insert(r.url.clone()) {
-                        round_results.push(r);
+        let mut round_errors: Vec<String> = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok((query, Ok(results))) => {
+                    emit_progress("searching", format!("✓ {}（{} 条）", query, results.len()));
+                    for r in results {
+                        if seen_urls.insert(r.url.clone()) {
+                            round_results.push(r);
+                        }
                     }
+                }
+                Ok((query, Err(err))) => {
+                    emit_progress(
+                        "searching",
+                        format!("✗ {}（{}）", query, compact_error_message(&err, 80)),
+                    );
+                    round_errors.push(format!("{}: {}", query, err));
+                }
+                Err(join_err) => {
+                    let err = format!("查询任务并发执行失败: {}", join_err);
+                    emit_progress("searching", format!("✗ {}", compact_error_message(&err, 90)));
+                    round_errors.push(err);
                 }
             }
         }
         all_used_queries.extend(current_queries.iter().cloned());
 
         if round_results.is_empty() {
+            if depth == 1 && !round_errors.is_empty() {
+                let summary = summarize_round_errors(&round_errors, 3);
+                report_research_failure(
+                    &db_path,
+                    &app_handle,
+                    task_id,
+                    &format!("搜索阶段失败：{}", summary),
+                );
+                return;
+            }
             if depth > 1 {
-                emit_progress("searching", "本轮未发现新资料，提前结束搜索。".to_string());
+                if round_errors.is_empty() {
+                    emit_progress("searching", "本轮未发现新资料，提前结束搜索。".to_string());
+                } else {
+                    emit_progress(
+                        "searching",
+                        format!(
+                            "本轮无新资料，且存在 {} 条搜索错误，提前结束。",
+                            round_errors.len()
+                        ),
+                    );
+                }
             }
             break;
         }
@@ -9721,6 +9867,47 @@ entities:
     fn make_research_slug_max_50_chars() {
         let long = "a".repeat(100);
         assert_eq!(make_research_slug(&long).len(), 50);
+    }
+
+    #[test]
+    fn normalize_searxng_base_url_adds_http_when_missing_scheme() {
+        assert_eq!(
+            normalize_searxng_base_url("localhost:8080"),
+            "http://localhost:8080"
+        );
+    }
+
+    #[test]
+    fn normalize_searxng_base_url_keeps_https() {
+        assert_eq!(
+            normalize_searxng_base_url("https://searx.local/"),
+            "https://searx.local"
+        );
+    }
+
+    #[test]
+    fn searxng_base_root_strips_search_suffix() {
+        assert_eq!(
+            searxng_base_root("http://127.0.0.1:8080/search/"),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn validate_search_config_rejects_missing_searxng_url() {
+        let mut cfg = crate::models::SearchConfig::default();
+        cfg.search_provider = "searxng".to_string();
+        cfg.searxng_url = "   ".to_string();
+        let err = validate_search_config(&cfg).expect_err("应拒绝空 searxng 地址");
+        assert!(err.contains("SearXNG"));
+    }
+
+    #[test]
+    fn validate_search_config_accepts_valid_searxng_url() {
+        let mut cfg = crate::models::SearchConfig::default();
+        cfg.search_provider = "searxng".to_string();
+        cfg.searxng_url = "localhost:8080".to_string();
+        assert!(validate_search_config(&cfg).is_ok());
     }
 
     #[test]
