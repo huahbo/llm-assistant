@@ -1119,6 +1119,25 @@ impl AppState {
             }),
         );
 
+        // 重置上次崩溃遗留的 running ingest 队列项（使其重新排队）。
+        // 此处是可靠触发点：vault_path 刚写入，DB 路径已确定。
+        // start_queue_worker 中的同名调用在 vault 初始化前触发，会因 outbox_db_path()=None
+        // 而静默跳过，因此必须在此补做一次。
+        if let Some(db_path) = self.outbox_db_path() {
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                let now = current_timestamp_ms();
+                match db::db_reset_stale_running(&conn, &now) {
+                    Ok(n) if n > 0 => {
+                        self.push_log(
+                            LogLevel::Info,
+                            format!("重启恢复：已将 {} 条中断的 ingest 任务重新排队", n),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         Ok(result)
     }
 
@@ -7042,9 +7061,18 @@ async fn start_research_task(
                 .filter(|l| !l.is_empty())
                 .take(config.breadth as usize)
                 .collect();
-            if qs.is_empty() { vec![topic.clone()] } else { qs }
+            if qs.is_empty() {
+                emit_progress("decomposing", "LLM 未生成子查询，使用原始主题搜索".to_string());
+                vec![topic.clone()]
+            } else {
+                emit_progress("decomposing", format!("生成了 {} 个研究子查询", qs.len()));
+                qs
+            }
         }
-        Err(_) => vec![topic.clone()],
+        Err(_) => {
+            emit_progress("decomposing", "查询分解失败，使用原始主题搜索".to_string());
+            vec![topic.clone()]
+        }
     };
 
     // ── Phase 2: 迭代式并发搜索 + 学习提取 ──────────────────────────────────
@@ -7211,6 +7239,30 @@ async fn start_research_task(
     let save_dir = vault_path.join("wiki").join("research");
     let _ = fs::create_dir_all(&save_dir);
     let save_path = save_dir.join(&filename);
+
+    // 防止 topic 含 ../ 等构造导致路径越权写入 vault 外
+    match save_path.canonicalize().or_else(|_| {
+        // 文件尚不存在时 canonicalize 会失败，改为规范化父目录
+        save_dir.canonicalize().map(|d| d.join(&filename))
+    }) {
+        Ok(canonical) => {
+            let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
+            if !canonical.starts_with(&canonical_vault) {
+                report_research_failure(
+                    &db_path, &app_handle, task_id,
+                    "保存路径越权：topic 包含非法路径字符，已拒绝写入",
+                );
+                return;
+            }
+        }
+        Err(e) => {
+            report_research_failure(
+                &db_path, &app_handle, task_id,
+                &format!("保存路径解析失败: {}", e),
+            );
+            return;
+        }
+    }
 
     if let Err(e) = fs::write(&save_path, &final_content) {
         report_research_failure(&db_path, &app_handle, task_id, &format!("写入文件失败: {}", e));
@@ -9766,6 +9818,30 @@ entities:
         assert_eq!(tasks[0].status, "done", "done 任务不应被 cancel 覆盖");
         assert_eq!(tasks[0].web_results_count, 3, "web_results_count 不应被重置");
         assert_eq!(tasks[0].saved_path.as_deref(), Some("/p.md"), "saved_path 不应被清空");
+    }
+
+    #[test]
+    fn ingest_queue_stale_running_reset_on_vault_init() {
+        let vault_dir = make_temp_dir("llm-wiki-restart-recovery");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init_vault 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("打开数据库失败");
+
+        // 模拟上次崩溃遗留的 running 任务
+        db::db_enqueue_ingest(&conn, "file", "/some/path.md", "100").expect("enqueue 失败");
+        let items = db::db_list_ingest_queue(&conn).expect("list 失败");
+        let id = items[0].id;
+        let now = current_timestamp_ms();
+        db::db_update_ingest_queue_status(&conn, id, "running", None, &now).expect("set running 失败");
+
+        // 重新 init_vault 模拟重启
+        state.init_vault(vault_dir.clone()).expect("第二次 init_vault 失败");
+
+        let items = db::db_list_ingest_queue(&conn).expect("list after restart 失败");
+        assert_eq!(items[0].status, "queued", "重启后 running 任务应被重置为 queued");
     }
 
     #[test]
