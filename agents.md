@@ -297,6 +297,8 @@
 | Opt-SearXNG-Activation | SearXNG 本地搜索激活增强（URL 规范化、`/search`→`/` 回退、配置前置校验、搜索错误可见化） | ✅ `src-tauri/src/state.rs`（新增 5 条 Rust 单测；待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-Logs | Deep Research 失败“无日志可看” + 报告生成瞬时失败易中断 → 报告阶段自动重试一次 + 失败态任务卡展示日志流 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-WordExport | Deep Research “导出 Word”按钮在 Tauri 下无响应 → 改为保存对话框选路径 + 后端写盘，浏览器模式保留 Blob 回退 | ✅ `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/tauri-client.ts` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
+| BugFix-Research-TaskDelete | Deep Research 任务删除能力（终态任务删除 + 可选同步删除关联 Wiki + 运行中任务禁止直删） | ✅ `src-tauri/src/db.rs` + `src-tauri/src/state.rs` + `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/App.tsx` + `web/src/tauri-client.ts`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
+| BugFix-Research-DeleteConfirm | 任务删除确认链路稳定化（删除参数兼容 + 时间显示统一 + Tauri 原生 confirm 二次确认，取消后保留任务） | ✅ `src-tauri/src/commands.rs` + `src-tauri/capabilities/default.json` + `web/src/App.tsx` + `web/src/tauri-client.ts`（用户手测通过，2026-04-21，**Codex** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -317,9 +319,10 @@
 | ✅ | **ingest 队列重启恢复修复** | init_vault 后重置遗留 running 任务 + 路径安全检查 + decompose fallback 日志（142 Rust，2026-04-21） |
 | 1 | **Clipper JSON 修复 Windows 复核** | 重启 `tauri:dev` + 重载扩展后验证 `Clip to Wiki` 不再出现 JSON parse 报错 |
 | ✅ | **移植包 D：SearXNG 本地搜索（后端激活增强）** | 已补齐 URL/端点容错与错误可见化；待 Windows + Docker 端到端复核（2026-04-21） |
-| 2 | **Deep Research 导出能力复核** | 验证 “导出 Word” 在 Tauri 下弹保存对话框并成功落盘 |
-| 3 | **Deep Research 失败态体验复核** | 验证失败任务卡日志展示与“自动重试一次”提示是否正常 |
-| 4 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
+| ✅ | **Deep Research 导出能力复核** | 已验证 “导出 Word” 在 Tauri 下弹保存对话框并成功落盘（2026-04-21） |
+| ✅ | **Deep Research 失败态体验复核** | 失败任务卡日志展示与“自动重试一次”提示已可见（2026-04-21） |
+| ✅ | **Deep Research 任务删除耦合确认复核** | 已验证删除任务二次确认与“是否同步删除 Wiki”确认链路（2026-04-21） |
+| 2 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
@@ -357,9 +360,10 @@ web/src/
 - `npm run build`：**本轮未执行**（按当前轮次指令跳过打包相关验证）
 
 最新提交（main 分支）：
-- `fix: 修复启动时 ingesting 误判为 true` (0a78418)
-- `feat: 启动时自动清理孤立 wiki 页面` (4f02cd9)
-- `chore: 脏树收口——清零 compiler warnings` (e2c930d)
+- `feat: 收口 deep research 任务删除与确认交互` (d7648b0)
+- `fix: 修复 deep research 导出 word 无响应` (4073abe)
+- `fix: 提升 deep research 失败可见性与报告生成韧性` (b0e3606)
+- `feat: 激活并增强 searxng 本地搜索链路` (0f7e5de)
 
 ### 18.5 关键架构约束
 
