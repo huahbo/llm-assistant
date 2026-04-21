@@ -10,10 +10,20 @@ const projectSelect = document.getElementById("projectSelect");
 let extractedContent = "";
 let pageUrl = "";
 
+async function parseJsonResponse(res) {
+  const raw = await res.text();
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    const preview = raw.slice(0, 180).replace(/\s+/g, " ").trim();
+    throw new Error(`${err.message}${preview ? ` | response: ${preview}` : ""}`);
+  }
+}
+
 async function checkConnection() {
   try {
     const res = await fetch(`${API_URL}/status`, { method: "GET" });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data.ok) {
       statusBar.className = "status connected";
       statusBar.textContent = "✓ Connected to LLM Wiki";
@@ -31,7 +41,7 @@ async function checkConnection() {
 async function loadProjects() {
   try {
     const res = await fetch(`${API_URL}/projects`, { method: "GET" });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data.ok && data.projects?.length > 0) {
       projectSelect.innerHTML = "";
       for (const proj of data.projects) {
@@ -47,7 +57,7 @@ async function loadProjects() {
   // Fallback to current project
   try {
     const res = await fetch(`${API_URL}/project`, { method: "GET" });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data.ok && data.path) {
       const name = data.path.replace(/\\/g, "/").split("/").pop() || data.path;
       projectSelect.innerHTML = `<option value="${data.path}">${name}</option>`;
@@ -223,7 +233,7 @@ async function sendClip() {
       }),
     });
 
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
 
     if (data.ok) {
       const projectName = projectSelect.options[projectSelect.selectedIndex]?.textContent || "project";

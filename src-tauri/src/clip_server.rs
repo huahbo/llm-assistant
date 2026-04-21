@@ -8,6 +8,10 @@ use serde_json;
 
 const PORT: u16 = 19827;
 
+fn normalize_display_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 pub fn start_clip_server(app_handle: AppHandle) {
     thread::spawn(move || {
         let server = match Server::http(format!("127.0.0.1:{}", PORT)) {
@@ -50,7 +54,8 @@ pub fn start_clip_server(app_handle: AppHandle) {
                 (&Method::Get, "/project") => {
                     let state = app_handle.state::<AppState>();
                     let overview = state.overview();
-                    let body = format!(r#"{{"ok":true,"path":"{}"}}"#, overview.vault_path.replace('\\', "/"));
+                    let path = normalize_display_path(&overview.vault_path);
+                    let body = serde_json::json!({"ok": true, "path": path}).to_string();
                     let mut response = Response::from_string(body);
                     for h in &cors_headers { response.add_header(h.clone()); }
                     let _ = request.respond(response);
@@ -58,9 +63,12 @@ pub fn start_clip_server(app_handle: AppHandle) {
                 (&Method::Get, "/projects") => {
                     let state = app_handle.state::<AppState>();
                     let overview = state.overview();
-                    let path = overview.vault_path.replace('\\', "/");
-                    let name = path.split('/').last().unwrap_or("Current Project");
-                    let body = format!(r#"{{"ok":true,"projects":[{{"name":"{}","path":"{}","current":true}}]}}"#, name, path);
+                    let path = normalize_display_path(&overview.vault_path);
+                    let name = path.split('/').last().unwrap_or("Current Project").to_string();
+                    let body = serde_json::json!({
+                        "ok": true,
+                        "projects": [{"name": name, "path": path, "current": true}]
+                    }).to_string();
                     let mut response = Response::from_string(body);
                     for h in &cors_headers { response.add_header(h.clone()); }
                     let _ = request.respond(response);
@@ -68,7 +76,7 @@ pub fn start_clip_server(app_handle: AppHandle) {
                 (&Method::Post, "/clip") => {
                     let mut body = String::new();
                     if let Err(e) = request.as_reader().read_to_string(&mut body) {
-                        let err = format!(r#"{{"ok":false,"error":"Read failed: {}"}}"#, e);
+                        let err = serde_json::json!({"ok": false, "error": format!("Read failed: {}", e)}).to_string();
                         let mut response = Response::from_string(err).with_status_code(400);
                         for h in &cors_headers { response.add_header(h.clone()); }
                         let _ = request.respond(response);
@@ -77,13 +85,14 @@ pub fn start_clip_server(app_handle: AppHandle) {
 
                     match handle_clip(&body, &app_handle) {
                         Ok(path) => {
-                            let resp_body = format!(r#"{{"ok":true,"path":"{}"}}"#, path);
+                            let display_path = normalize_display_path(&path);
+                            let resp_body = serde_json::json!({"ok": true, "path": display_path}).to_string();
                             let mut response = Response::from_string(resp_body).with_status_code(200);
                             for h in &cors_headers { response.add_header(h.clone()); }
                             let _ = request.respond(response);
                         }
                         Err(err) => {
-                            let resp_body = format!(r#"{{"ok":false,"error":"{}"}}"#, err);
+                            let resp_body = serde_json::json!({"ok": false, "error": err}).to_string();
                             let mut response = Response::from_string(resp_body).with_status_code(500);
                             for h in &cors_headers { response.add_header(h.clone()); }
                             let _ = request.respond(response);
@@ -210,4 +219,31 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
         .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
 
     Ok(relative_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_display_path;
+
+    #[test]
+    fn normalize_display_path_rewrites_windows_separators() {
+        let raw = r#"E:\llm-wiki\vault\raw\clips\demo.md"#;
+        let normalized = normalize_display_path(raw);
+        assert_eq!(normalized, "E:/llm-wiki/vault/raw/clips/demo.md");
+    }
+
+    #[test]
+    fn clip_json_response_is_valid_after_path_normalization() {
+        let body = serde_json::json!({
+            "ok": true,
+            "path": normalize_display_path(r#"E:\llm-wiki\vault\raw\clips\demo.md"#)
+        })
+        .to_string();
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("response must be valid json");
+        assert_eq!(
+            parsed.get("path").and_then(|v| v.as_str()),
+            Some("E:/llm-wiki/vault/raw/clips/demo.md")
+        );
+    }
 }
