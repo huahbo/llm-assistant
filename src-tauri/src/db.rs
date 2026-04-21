@@ -1751,6 +1751,18 @@ pub fn db_update_research_task(
     Ok(())
 }
 
+/// 仅更新任务状态为 cancelled，不重置其他字段。
+/// 幂等：已 done/failed/cancelled 的任务不受影响。
+pub fn db_cancel_research_task(conn: &Connection, id: i64, now: &str) -> Result<(), String> {
+    conn.execute(
+        r#"UPDATE research_tasks SET status = 'cancelled', updated_at = ?1
+           WHERE id = ?2 AND status NOT IN ('done', 'failed', 'cancelled')"#,
+        params![now, id],
+    )
+    .map_err(|err| format!("取消 research_tasks 失败: {}", err))?;
+    Ok(())
+}
+
 /// 按 id 查询单条 research_tasks 记录（供未来命令扩展使用）。
 #[allow(dead_code)]
 pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {

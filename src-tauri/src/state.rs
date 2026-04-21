@@ -4032,36 +4032,20 @@ Wiki 页面：\n{}",
 
     /// 列出最近研究任务。
     pub fn list_research_tasks(&self) -> Result<Vec<crate::models::ResearchTaskItem>, String> {
-        let db_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先初始化 Vault".to_string())?
-                .join(".app")
-                .join("meta.db")
-        };
+        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
         db::ensure_meta_db(&db_path)?;
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("打开数据库失败: {}", e))?;
         db::db_list_research_tasks(&conn)
     }
 
-    /// 取消研究任务（将状态设为 cancelled）。
+    /// 取消研究任务（幂等，不重置已有字段）。
     pub fn cancel_research_task(&self, id: i64) -> Result<(), String> {
-        let db_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先初始化 Vault".to_string())?
-                .join(".app")
-                .join("meta.db")
-        };
+        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("打开数据库失败: {}", e))?;
         let now = current_timestamp_ms();
-        db::db_update_research_task(&conn, id, "cancelled", "[]", 0, None, None, &now)
+        db::db_cancel_research_task(&conn, id, &now)
     }
 }
 
@@ -6776,11 +6760,11 @@ fn llm_health_error_message(err: &LlmError) -> String {
 
 /// Tavily 搜索。
 async fn search_tavily(
+    client: &reqwest::Client,
     query: &str,
     api_key: &str,
     max_results: usize,
 ) -> Result<Vec<crate::models::WebSearchResult>, String> {
-    let client = reqwest::Client::new();
     let body = serde_json::json!({
         "api_key": api_key,
         "query": query,
@@ -6798,33 +6782,33 @@ async fn search_tavily(
         .json()
         .await
         .map_err(|e| format!("Tavily 响应解析失败: {}", e))?;
-    let results = data["results"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let results = data["results"].as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
     for item in results.iter().take(max_results) {
         let title = item["title"].as_str().unwrap_or("").to_string();
         let url = item["url"].as_str().unwrap_or("").to_string();
-        let snippet = item["content"].as_str().unwrap_or("").to_string();
+        // prefer raw_content for higher fidelity, fall back to content snippet
+        let snippet = item["raw_content"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| item["content"].as_str())
+            .unwrap_or("")
+            .chars()
+            .take(300)
+            .collect();
         let source = url_hostname(&url);
-        out.push(crate::models::WebSearchResult {
-            title,
-            url,
-            snippet,
-            source,
-        });
+        out.push(crate::models::WebSearchResult { title, url, snippet, source });
     }
     Ok(out)
 }
 
 /// SearXNG 搜索。
 async fn search_searxng(
+    client: &reqwest::Client,
     query: &str,
     base_url: &str,
     max_results: usize,
 ) -> Result<Vec<crate::models::WebSearchResult>, String> {
-    let client = reqwest::Client::new();
     let url = format!("{}/search", base_url.trim_end_matches('/'));
     let resp = client
         .get(&url)
@@ -6836,22 +6820,14 @@ async fn search_searxng(
         .json()
         .await
         .map_err(|e| format!("SearXNG 响应解析失败: {}", e))?;
-    let results = data["results"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let results = data["results"].as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
     for item in results.iter().take(max_results) {
         let title = item["title"].as_str().unwrap_or("").to_string();
         let url_str = item["url"].as_str().unwrap_or("").to_string();
-        let snippet = item["content"].as_str().unwrap_or("").to_string();
+        let snippet = item["content"].as_str().unwrap_or("").chars().take(300).collect();
         let source = url_hostname(&url_str);
-        out.push(crate::models::WebSearchResult {
-            title,
-            url: url_str,
-            snippet,
-            source,
-        });
+        out.push(crate::models::WebSearchResult { title, url: url_str, snippet, source });
     }
     Ok(out)
 }
@@ -6913,18 +6889,19 @@ fn strip_think_tags(text: &str) -> String {
 
 /// 执行搜索（按 provider 路由）。
 async fn do_search(
+    client: &reqwest::Client,
     query: &str,
     config: &crate::models::SearchConfig,
     max_results: usize,
 ) -> Vec<crate::models::WebSearchResult> {
     match config.search_provider.as_str() {
         "tavily" if !config.tavily_api_key.is_empty() => {
-            search_tavily(query, &config.tavily_api_key, max_results)
+            search_tavily(client, query, &config.tavily_api_key, max_results)
                 .await
                 .unwrap_or_default()
         }
-        "searxng" => {
-            search_searxng(query, &config.searxng_url, max_results)
+        "searxng" if !config.searxng_url.is_empty() => {
+            search_searxng(client, query, &config.searxng_url, max_results)
                 .await
                 .unwrap_or_default()
         }
@@ -6933,6 +6910,7 @@ async fn do_search(
 }
 
 /// Deep Research 主管线（后台 task）。
+/// 算法参考 dzhng/deep-research：迭代式学习提取 + 并发搜索 + 知识缺口驱动的下一轮查询生成。
 async fn start_research_task(
     app_handle: tauri::AppHandle,
     task_id: i64,
@@ -6940,8 +6918,7 @@ async fn start_research_task(
     config: crate::models::SearchConfig,
 ) {
     let state = app_handle.state::<AppState>();
-    let db_path_opt = state.outbox_db_path();
-    let db_path = match db_path_opt {
+    let db_path = match state.outbox_db_path() {
         Some(p) => p,
         None => {
             let _ = app_handle.emit("research_error", serde_json::json!({ "task_id": task_id, "error": "Vault 未初始化" }));
@@ -6949,116 +6926,222 @@ async fn start_research_task(
         }
     };
 
-    let fail = |msg: String| {
-        let conn_r = rusqlite::Connection::open(&db_path);
-        if let Ok(conn) = conn_r {
-            let now = current_timestamp_ms();
-            let _ = db::db_update_research_task(&conn, task_id, "failed", "[]", 0, None, Some(msg.as_str()), &now);
+    let fail = {
+        let db_path = db_path.clone();
+        let app_handle = app_handle.clone();
+        move |msg: String| {
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                let now = current_timestamp_ms();
+                let _ = db::db_update_research_task(&conn, task_id, "failed", "[]", 0, None, Some(msg.as_str()), &now);
+            }
+            let _ = app_handle.emit("research_error", serde_json::json!({ "task_id": task_id, "error": msg }));
         }
-        let _ = app_handle.emit("research_error", serde_json::json!({ "task_id": task_id, "error": msg }));
     };
 
-    let report_step = |step: &str, msg: String| {
-        let _ = app_handle.emit("research_progress", serde_json::json!({ "task_id": task_id, "stage": step, "message": msg }));
+    let emit_progress = |stage: &str, msg: String| {
+        let _ = app_handle.emit("research_progress", serde_json::json!({
+            "task_id": task_id, "stage": stage, "message": msg
+        }));
     };
 
-    // 获取 LLM
     let provider = match state.get_llm_provider() {
         Some(p) => p,
         None => { fail("LLM Provider 不可用".to_string()); return; }
     };
 
+    // 共享 HTTP 客户端，统一设置 30s 超时
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => Arc::new(c),
+        Err(e) => { fail(format!("HTTP 客户端初始化失败: {}", e)); return; }
+    };
+
     let mut all_results: Vec<crate::models::WebSearchResult> = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
-    let mut current_sub_queries: Vec<String> = Vec::new();
-    let mut research_context = String::new(); // 累积的研究上下文
+    // 累积的结构化学习成果（参考 dzhng/deep-research 的 learnings 模型）
+    let mut learnings: Vec<String> = Vec::new();
+    let mut all_used_queries: Vec<String> = Vec::new();
 
-    // ── Phase 1: Initial Decomposition ────────────────────────────────────────
-    report_step("decomposing", "正在规划研究路径...".to_string());
+    // ── Phase 1: 初始查询分解 ─────────────────────────────────────────────────
+    emit_progress("decomposing", "正在规划研究路径...".to_string());
     let decompose_prompt = format!(
-        "你是一个资深研究员。请针对主题「{}」生成 {} 个深入研究的具体搜索查询。一行一条，不要编号，不要废话。",
-        topic, config.breadth
+        "You are an expert researcher. Generate {breadth} specific, diverse search queries to thoroughly investigate: \"{topic}\"\nOutput one query per line, no numbering, no extra text.",
+        breadth = config.breadth,
+        topic = topic
     );
-    if let Ok(text) = provider.complete(&decompose_prompt).await {
-        current_sub_queries = text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).take(config.breadth as usize).collect();
-    }
-    if current_sub_queries.is_empty() { current_sub_queries.push(topic.clone()); }
+    let mut current_queries: Vec<String> = match provider.complete(&decompose_prompt).await {
+        Ok(text) => {
+            let qs: Vec<String> = strip_think_tags(&text)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .take(config.breadth as usize)
+                .collect();
+            if qs.is_empty() { vec![topic.clone()] } else { qs }
+        }
+        Err(_) => vec![topic.clone()],
+    };
 
-    // ── Iterative Research Loop ──────────────────────────────────────────────
+    // ── Phase 2: 迭代式并发搜索 + 学习提取 ──────────────────────────────────
     let max_depth = config.depth.clamp(1, 5);
-    for current_depth in 1..=max_depth {
-        report_step("searching", format!("第 {}/{} 轮：正在执行搜索...", current_depth, max_depth));
-        
-        let mut new_round_results = Vec::new();
-        for query in &current_sub_queries {
-            report_step("searching", format!("正在搜索：{}", query));
-            let results = do_search(query, &config, config.breadth as usize).await;
-            for r in results {
-                if seen_urls.insert(r.url.clone()) {
-                    new_round_results.push(r);
+    for depth in 1..=max_depth {
+        emit_progress("searching", format!(
+            "第 {}/{} 轮：{} 个查询并发搜索中...", depth, max_depth, current_queries.len()
+        ));
+
+        // 并发执行本轮所有查询
+        let breadth_limit = config.breadth as usize;
+        let mut handles = Vec::new();
+        for query in &current_queries {
+            let client = Arc::clone(&client);
+            let query = query.clone();
+            let config_clone = config.clone();
+            handles.push(tokio::task::spawn(async move {
+                do_search(&client, &query, &config_clone, breadth_limit).await
+            }));
+        }
+
+        let mut round_results: Vec<crate::models::WebSearchResult> = Vec::new();
+        for (i, handle) in handles.into_iter().enumerate() {
+            if let Some(q) = current_queries.get(i) {
+                emit_progress("searching", format!("✓ {}", q));
+            }
+            if let Ok(results) = handle.await {
+                for r in results {
+                    if seen_urls.insert(r.url.clone()) {
+                        round_results.push(r);
+                    }
                 }
             }
         }
+        all_used_queries.extend(current_queries.iter().cloned());
 
-        if new_round_results.is_empty() && current_depth > 1 {
-            report_step("searching", "本轮未发现新资料，提前结束搜索。".to_string());
+        if round_results.is_empty() {
+            if depth > 1 {
+                emit_progress("searching", "本轮未发现新资料，提前结束搜索。".to_string());
+            }
             break;
         }
 
-        // 提取本轮事实（如果 Tavily 给了 Raw Content，优先使用）
-        let round_facts = new_round_results.iter().map(|r| {
-            format!("来源: {} ({})\n内容: {}", r.title, r.source, r.snippet)
-        }).collect::<Vec<_>>().join("\n\n");
-        
-        research_context.push_str(&format!("\n\n### 第 {} 轮搜索事实\n{}", current_depth, round_facts));
-        all_results.extend(new_round_results);
+        // 构建本轮摘要（每条来源截取 300 字符，避免 token 溢出）
+        let round_snippets: String = round_results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let snip: String = r.snippet.chars().take(300).collect();
+                format!("[{}] {} ({}): {}", i + 1, r.title, r.source, snip)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
-        // 如果还没到最后一轮，评估下一步
-        if current_depth < max_depth {
-            report_step("synthesizing", format!("正在评估第 {} 轮结果并寻找知识缺口...", current_depth));
-            let gap_prompt = format!(
-                "已知研究背景：\n{}\n\n当前已收集事实：\n{}\n\n请分析以上内容，指出 2-3 个仍需进一步挖掘的深层问题或知识盲点。一行一条，仅输出搜索查询。",
-                topic, research_context
+        all_results.extend(round_results);
+
+        if depth < max_depth {
+            // 提取结构化学习 + 生成知识缺口查询（参考 dzhng/deep-research processSerpResult）
+            emit_progress("synthesizing", format!("第 {} 轮：提取关键发现并识别知识缺口...", depth));
+            let extract_prompt = format!(
+                "Research topic: {topic}\n\nSearch results (round {depth}):\n{snippets}\n\nExisting learnings:\n{existing}\n\nTask:\n1. Extract 3-5 NEW key learnings not already in existing learnings (format: LEARNING: <insight>)\n2. Generate {next_breadth} follow-up search queries to fill knowledge gaps (format: FOLLOWUP: <query>)\n\nOutput only LEARNING: and FOLLOWUP: lines, nothing else.",
+                topic = topic,
+                depth = depth,
+                snippets = round_snippets,
+                existing = if learnings.is_empty() { "none yet".to_string() } else { learnings.join("\n") },
+                next_breadth = (config.breadth as usize).min(3),
             );
-            if let Ok(gap_text) = provider.complete(&gap_prompt).await {
-                current_sub_queries = gap_text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).take(3).collect();
-                if current_sub_queries.is_empty() { break; }
-            } else {
-                break;
+
+            match provider.complete(&extract_prompt).await {
+                Ok(text) => {
+                    let cleaned = strip_think_tags(&text);
+                    let mut next_queries = Vec::new();
+                    for line in cleaned.lines() {
+                        let line = line.trim();
+                        if let Some(l) = line.strip_prefix("LEARNING: ") {
+                            if !l.is_empty() { learnings.push(l.to_string()); }
+                        } else if let Some(q) = line.strip_prefix("FOLLOWUP: ") {
+                            if !q.is_empty() { next_queries.push(q.to_string()); }
+                        }
+                    }
+                    if next_queries.is_empty() {
+                        emit_progress("searching", "无新知识缺口，提前结束迭代。".to_string());
+                        break;
+                    }
+                    current_queries = next_queries;
+                }
+                Err(_) => break,
+            }
+        } else {
+            // 最后一轮：直接提取学习成果，不再生成新查询
+            let final_extract_prompt = format!(
+                "Research topic: {topic}\n\nFinal round search results:\n{snippets}\n\nExtract 5-8 key learnings. Format: LEARNING: <insight>",
+                topic = topic,
+                snippets = round_snippets,
+            );
+            if let Ok(text) = provider.complete(&final_extract_prompt).await {
+                let cleaned = strip_think_tags(&text);
+                for line in cleaned.lines() {
+                    if let Some(l) = line.trim().strip_prefix("LEARNING: ") {
+                        if !l.is_empty() { learnings.push(l.to_string()); }
+                    }
+                }
             }
         }
     }
 
-    // ── Step 3: Final Synthesis ─────────────────────────────────────────────
-    report_step("synthesizing", "正在撰写最终研究报告...".to_string());
+    // ── Phase 3: 最终综合报告 ────────────────────────────────────────────────
+    emit_progress("synthesizing", format!("综合 {} 条关键发现，撰写研究报告...", learnings.len()));
+
     let wiki_index = {
         let guard = state.inner.lock().expect("状态锁");
-        guard.vault_path.as_ref().and_then(|vp| fs::read_to_string(vp.join("wiki").join("index.md")).ok()).unwrap_or_default()
+        guard.vault_path.as_ref()
+            .and_then(|vp| fs::read_to_string(vp.join("wiki").join("index.md")).ok())
+            .unwrap_or_default()
     };
-    let wiki_index_excerpt: String = wiki_index.chars().take(1000).collect();
+    let wiki_excerpt: String = wiki_index.chars().take(800).collect();
+
+    // 截断学习成果到 8000 字符防止 LLM token 溢出
+    let learnings_text = learnings
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{}. {}", i + 1, l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let context: String = learnings_text.chars().take(8000).collect();
 
     let synth_prompt = format!(
-        "你是一个专业的研究助理。请将以下深度研究收集的所有资料综合成一篇高质量的 Markdown Wiki 页面。\n\n## 研究主题\n{}\n\n## 收集的事实\n{}\n\n## 现有知识库概览\n{}\n\n要求：\n1. 结构严谨，包含摘要、核心发现、详细分析和结论。\n2. 在正文中使用 [N] 标注来源。\n3. 如果可以，请在结尾处加入针对现有知识库的交叉引用建议。\n4. 使用中文撰写，不要输出思考过程。",
-        topic, research_context, wiki_index_excerpt
+        "You are a professional research analyst. Write a comprehensive, well-structured Markdown wiki page based on the research findings.\n\nTopic: {topic}\n\nKey Learnings ({count} findings):\n{context}\n\nExisting Knowledge Base Overview:\n{wiki}\n\nRequirements:\n1. Sections: Abstract, Core Findings, Detailed Analysis, Conclusion\n2. Cite sources inline as [N] referencing the numbered learnings\n3. Suggest cross-references to existing wiki pages where relevant\n4. Write in the same language as the topic title\n5. Do not include reasoning or thinking process",
+        topic = topic,
+        count = learnings.len(),
+        context = context,
+        wiki = wiki_excerpt,
     );
 
     let synthesized = match provider.complete(&synth_prompt).await {
         Ok(t) => t,
-        Err(e) => { fail(format!("最终综合失败: {:?}", e)); return; }
+        Err(e) => { fail(format!("综合报告生成失败: {:?}", e)); return; }
     };
 
-    // ── Step 4: Saving ───────────────────────────────────────────────────────
-    report_step("saving", "正在保存到知识库...".to_string());
+    // ── Phase 4: 保存 ────────────────────────────────────────────────────────
+    emit_progress("saving", "正在保存到知识库...".to_string());
     let cleaned = strip_think_tags(&synthesized);
     let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-    
-    let references = all_results.iter().enumerate().map(|(i, r)| {
-        format!("{}. [{}]({})", i + 1, r.title, r.url)
-    }).collect::<Vec<_>>().join("\n");
+
+    let references = all_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. [{}]({})", i + 1, r.title, r.url))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let final_content = format!(
-        "---\ntype: research\ntitle: \"深度研究：{}\"\ncreated: {}\nupdated: {}\ndepth: {}\nbreadth: {}\ntags: [research, deep-research]\n---\n\n{}\n\n## 参考文献\n{}",
-        topic, date_str, date_str, config.depth, config.breadth, cleaned, references
+        "---\ntype: research\ntitle: \"{topic}\"\ncreated: {date}\nupdated: {date}\ndepth: {depth}\nbreadth: {breadth}\nsources: {count}\ntags: [research, deep-research]\n---\n\n{body}\n\n## References\n\n{refs}",
+        topic = topic,
+        date = date_str,
+        depth = config.depth,
+        breadth = config.breadth,
+        count = all_results.len(),
+        body = cleaned,
+        refs = references,
     );
 
     let vault_path = {
@@ -7088,14 +7171,20 @@ async fn start_research_task(
             Err(e) => { fail(format!("打开数据库失败: {}", e)); return; }
         };
         let now = current_timestamp_ms();
-        // 存储本轮实际使用的子查询（current_sub_queries 在最后一轮结束后保持为最后一组）
-        let sub_queries_json = serde_json::to_string(&current_sub_queries).unwrap_or_default();
-        let _ = db::db_update_research_task(&conn, task_id, "done", &sub_queries_json, all_results.len() as i32, Some(saved_path_str.as_str()), None, &now);
+        let queries_json = serde_json::to_string(&all_used_queries).unwrap_or_default();
+        let _ = db::db_update_research_task(
+            &conn, task_id, "done", &queries_json,
+            all_results.len() as i32, Some(saved_path_str.as_str()), None, &now,
+        );
     }
 
-    // 触发后续管线
     let _ = state.ingest_markdown(save_path).await;
-    let _ = app_handle.emit("research_done", serde_json::json!({ "task_id": task_id, "saved_path": saved_path_str }));
+    let _ = app_handle.emit("research_done", serde_json::json!({
+        "task_id": task_id,
+        "saved_path": saved_path_str,
+        "sources": all_results.len(),
+        "learnings": learnings.len(),
+    }));
 }
 
 #[cfg(test)]

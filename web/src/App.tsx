@@ -7775,8 +7775,12 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const [researchTasks, setResearchTasks] = useState<ResearchTaskItem[]>([]);
   const [taskLogs, setTaskLogs] = useState<Record<number, string[]>>({});
   const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  // 初始化：加载历史任务
+  // 初始化：加载历史任务 + 搜索配置
+  const [hasSearchProvider, setHasSearchProvider] = useState(true);
+
   const refreshTasks = useCallback(() => {
     listResearchTasks()
       .then((tasks) => setResearchTasks(tasks))
@@ -7785,6 +7789,9 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
 
   useEffect(() => {
     refreshTasks();
+    getSearchConfig()
+      .then((cfg) => setHasSearchProvider(cfg.search_provider !== "none"))
+      .catch(() => {});
   }, [refreshTasks]);
 
   // 事件监听
@@ -7834,6 +7841,11 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const handleStartResearch = async () => {
     const trimmed = topic.trim();
     if (!trimmed) return;
+    if (!hasSearchProvider) {
+      setStartError("请先在「搜索设置」中配置搜索提供商（Tavily 或 SearXNG）");
+      return;
+    }
+    setStartError(null);
     setStarting(true);
     try {
       const taskId = await startResearch(trimmed, depth, breadth);
@@ -7852,8 +7864,8 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       };
       setResearchTasks((prev) => [optimisticTask, ...prev]);
       setTopic("");
-    } catch {
-      // 启动失败静默
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : "启动研究任务失败，请重试");
     } finally {
       setStarting(false);
     }
@@ -7892,7 +7904,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("下载失败:", err);
+      setDownloadError(err instanceof Error ? err.message : "Word 文件下载失败");
     }
   };
 
@@ -7909,6 +7921,25 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         <h1 className="module-header__title">Deep Research</h1>
         <p className="module-header__sub">自动分解主题、搜索互联网并合成 Wiki 页面</p>
       </div>
+
+      {/* 无搜索提供商警告 */}
+      {!hasSearchProvider && (
+        <div className="panel" style={{ background: "var(--color-warning-bg, #fffbe6)", border: "1px solid var(--color-warning, #e6a817)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-warning-text, #7c5a00)" }}>
+          ⚠️ 尚未配置搜索提供商。请先在「搜索设置」中填写 Tavily API Key 或 SearXNG 地址。
+        </div>
+      )}
+
+      {/* 错误提示 */}
+      {startError && (
+        <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
+          ✕ {startError}
+        </div>
+      )}
+      {downloadError && (
+        <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
+          ✕ 导出失败：{downloadError}
+        </div>
+      )}
 
       {/* 输入区 */}
       <section className="panel">
