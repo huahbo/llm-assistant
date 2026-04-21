@@ -517,6 +517,44 @@ pub fn cancel_research_task(id: i64, state: State<'_, AppState>) -> Result<(), S
     state.cancel_research_task(id)
 }
 
+/// 删除指定研究任务；可选同时删除该任务关联 Wiki 页面。
+#[tauri::command]
+pub async fn delete_research_task(
+    state: State<'_, AppState>,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .or_else(|| {
+            payload
+                .get("input")
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_i64())
+        })
+        .ok_or_else(|| "delete_research_task 缺少有效 id".to_string())?;
+
+    let delete_saved_wiki = payload
+        .get("delete_saved_wiki")
+        .and_then(|v| v.as_bool())
+        .or_else(|| payload.get("deleteSavedWiki").and_then(|v| v.as_bool()))
+        .or_else(|| {
+            payload
+                .get("input")
+                .and_then(|v| v.get("delete_saved_wiki"))
+                .and_then(|v| v.as_bool())
+        })
+        .or_else(|| {
+            payload
+                .get("input")
+                .and_then(|v| v.get("deleteSavedWiki"))
+                .and_then(|v| v.as_bool())
+        })
+        .unwrap_or(false);
+
+    state.delete_research_task(id, delete_saved_wiki).await
+}
+
 /// 获取搜索配置。
 #[tauri::command]
 pub fn get_search_config(state: State<'_, AppState>) -> SearchConfig {

@@ -1763,6 +1763,17 @@ pub fn db_cancel_research_task(conn: &Connection, id: i64, now: &str) -> Result<
     Ok(())
 }
 
+/// 删除指定 research_tasks 记录。
+pub fn db_delete_research_task(conn: &Connection, id: i64) -> Result<(), String> {
+    let changed = conn
+        .execute("DELETE FROM research_tasks WHERE id = ?1", params![id])
+        .map_err(|err| format!("删除 research_tasks 失败: {}", err))?;
+    if changed == 0 {
+        return Err(format!("研究任务不存在: {}", id));
+    }
+    Ok(())
+}
+
 /// 按 id 查询单条 research_tasks 记录（供未来命令扩展使用）。
 #[allow(dead_code)]
 pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {

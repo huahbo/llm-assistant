@@ -93,6 +93,28 @@ export async function pickSaveFile(options: {
   return result as string;
 }
 
+/** 打开确认对话框（Tauri 原生）。浏览器环境回退到 window.confirm。 */
+export async function askConfirmDialog(
+  message: string,
+  options?: {
+    title?: string;
+    kind?: "info" | "warning" | "error";
+    okLabel?: string;
+    cancelLabel?: string;
+  },
+): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return globalThis.confirm(message);
+  }
+  const { confirm } = await import("@tauri-apps/plugin-dialog");
+  return await confirm(message, {
+    title: options?.title,
+    kind: options?.kind,
+    okLabel: options?.okLabel,
+    cancelLabel: options?.cancelLabel,
+  });
+}
+
 type DisplayPathSource = {
   display_path?: string | null;
   displayPath?: string | null;
@@ -1398,6 +1420,22 @@ export async function cancelResearchTask(id: number): Promise<void> {
   } catch {
     // 静默忽略
   }
+}
+
+/** 删除研究任务；可选同时删除关联的 Wiki 页面。 */
+export async function deleteResearchTask(
+  id: number,
+  deleteSavedWiki: boolean,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke<void>("delete_research_task", {
+    payload: {
+      id,
+      deleteSavedWiki,
+      delete_saved_wiki: deleteSavedWiki,
+    },
+  });
 }
 
 const defaultSearchConfig: SearchConfig = {

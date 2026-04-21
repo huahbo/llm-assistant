@@ -4067,6 +4067,45 @@ Wiki 页面：\n{}",
         let now = current_timestamp_ms();
         db::db_cancel_research_task(&conn, id, &now)
     }
+
+    /// 删除研究任务；可选同时删除该任务关联的 Wiki 页面。
+    pub async fn delete_research_task(&self, id: i64, delete_saved_wiki: bool) -> Result<(), String> {
+        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
+        db::ensure_meta_db(&db_path)?;
+
+        let task = {
+            let conn = rusqlite::Connection::open(&db_path)
+                .map_err(|e| format!("打开数据库失败: {}", e))?;
+            db::db_get_research_task(&conn, id)?
+                .ok_or_else(|| format!("研究任务不存在: {}", id))?
+        };
+
+        if !matches!(task.status.as_str(), "done" | "failed" | "cancelled") {
+            return Err("任务仍在运行中，请先取消后再删除".to_string());
+        }
+
+        if delete_saved_wiki {
+            if let Some(saved_path) = task.saved_path.as_deref() {
+                let _ = self.delete_wiki_page_impl(saved_path).await?;
+            }
+        }
+
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        db::db_delete_research_task(&conn, id)?;
+
+        self.record_outbox_event(
+            "research_task_deleted",
+            serde_json::json!({
+                "task_id": id,
+                "topic": task.topic,
+                "status": task.status,
+                "delete_saved_wiki": delete_saved_wiki,
+                "saved_path": task.saved_path,
+            }),
+        );
+        Ok(())
+    }
 }
 
 fn validate_ingest_source_path(source_path: &Path) -> Result<(), String> {
@@ -10035,6 +10074,24 @@ entities:
         assert_eq!(tasks[0].status, "done", "done 任务不应被 cancel 覆盖");
         assert_eq!(tasks[0].web_results_count, 3, "web_results_count 不应被重置");
         assert_eq!(tasks[0].saved_path.as_deref(), Some("/p.md"), "saved_path 不应被清空");
+    }
+
+    #[test]
+    fn research_task_delete_removes_row() {
+        let (_path, conn, _guard) = make_research_db();
+        let id = db::db_create_research_task(&conn, "delete test", 1, 1, "100").expect("create 失败");
+
+        db::db_delete_research_task(&conn, id).expect("delete 失败");
+
+        let task = db::db_get_research_task(&conn, id).expect("get 失败");
+        assert!(task.is_none(), "删除后任务应不存在");
+    }
+
+    #[test]
+    fn research_task_delete_missing_returns_error() {
+        let (_path, conn, _guard) = make_research_db();
+        let err = db::db_delete_research_task(&conn, 99999).expect_err("不存在任务应报错");
+        assert!(err.contains("研究任务不存在"), "错误信息应包含不存在提示");
     }
 
     #[test]

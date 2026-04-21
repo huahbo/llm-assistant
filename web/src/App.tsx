@@ -59,9 +59,11 @@ import {
   startResearch,
   listResearchTasks,
   cancelResearchTask,
+  deleteResearchTask,
   getSearchConfig,
   setSearchConfig,
   pickSaveFile,
+  askConfirmDialog,
   saveResearchDoc,
   initVaultWithTemplate,
   listenResearchProgress,
@@ -7820,18 +7822,22 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [taskActionError, setTaskActionError] = useState<string | null>(null);
 
   // 初始化：加载历史任务 + 搜索配置
   const [hasSearchProvider, setHasSearchProvider] = useState(true);
 
-  const refreshTasks = useCallback(() => {
-    listResearchTasks()
-      .then((tasks) => setResearchTasks(tasks))
-      .catch(() => {});
+  const refreshTasks = useCallback(async () => {
+    try {
+      const tasks = await listResearchTasks();
+      setResearchTasks(tasks);
+    } catch {
+      // 静默忽略，保持当前列表
+    }
   }, []);
 
   useEffect(() => {
-    refreshTasks();
+    void refreshTasks();
     getSearchConfig()
       .then((cfg) => setHasSearchProvider(cfg.search_provider !== "none"))
       .catch(() => {});
@@ -7868,7 +7874,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         if (logs[logs.length - 1] === message) return prev;
         return { ...prev, [payload.task_id]: [...logs, message].slice(-20) };
       });
-      refreshTasks();
+      void refreshTasks();
       // 成功后延迟清理日志，或者保留日志供查看
     })
       .then((fn) => { unlistenDone = fn; })
@@ -7881,7 +7887,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         if (logs[logs.length - 1] === message) return prev;
         return { ...prev, [payload.task_id]: [...logs, message].slice(-20) };
       });
-      refreshTasks();
+      void refreshTasks();
     })
       .then((fn) => { unlistenError = fn; })
       .catch(() => {});
@@ -7928,9 +7934,83 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
 
   const handleCancel = (id: number) => {
     cancelResearchTask(id)
-      .then(() => listResearchTasks())
-      .then((tasks) => setResearchTasks(tasks))
+      .then(() => refreshTasks())
       .catch(() => {});
+  };
+
+  const handleDeleteTask = async (task: ResearchTaskItem) => {
+    if (!isTauriRuntime()) return;
+
+    setTaskActionError(null);
+    const confirmedDeleteTask = await askConfirmDialog(
+      `确认删除研究任务「${task.topic}」吗？\n此操作会删除任务记录与该任务日志。`,
+      {
+        title: "删除研究任务",
+        kind: "warning",
+        okLabel: "删除",
+        cancelLabel: "取消",
+      },
+    );
+    if (!confirmedDeleteTask) {
+      return;
+    }
+
+    // 删除前先拉一次最新任务，避免前端旧状态导致遗漏关联 Wiki 二次确认。
+    let latestTask = task;
+    try {
+      const latestTasks = await listResearchTasks();
+      const matched = latestTasks.find((item) => item.id === task.id);
+      if (matched) {
+        latestTask = matched;
+      }
+    } catch {
+      // 拉取失败时继续使用当前任务快照，避免阻断删除流程。
+    }
+
+    let deleteSavedWiki = false;
+    const savedPath = (latestTask.saved_path ?? "").trim();
+    if (savedPath) {
+      deleteSavedWiki = await askConfirmDialog(
+        `该任务已关联 Wiki 页面：\n${savedPath}\n\n是否同时删除该 Wiki 页面？\n选择“取消”将只删除任务记录。`,
+        {
+          title: "同步删除 Wiki",
+          kind: "warning",
+          okLabel: "同时删除 Wiki",
+          cancelLabel: "仅删任务",
+        },
+      );
+    } else if (latestTask.status === "done") {
+      const confirmedContinue = await askConfirmDialog(
+        "该任务为完成态，但未读取到关联 Wiki 路径。\n将只删除任务记录，不删除任何 Wiki 页面。\n\n是否继续？",
+        {
+          title: "删除研究任务",
+          kind: "info",
+          okLabel: "继续删除",
+          cancelLabel: "取消",
+        },
+      );
+      if (!confirmedContinue) {
+        return;
+      }
+    }
+
+    try {
+      await deleteResearchTask(latestTask.id, deleteSavedWiki);
+      setTaskLogs((prev) => {
+        const next = { ...prev };
+        delete next[latestTask.id];
+        return next;
+      });
+      await refreshTasks();
+    } catch (err) {
+      if (err instanceof Error) {
+        setTaskActionError(err.message);
+      } else if (typeof err === "string") {
+        setTaskActionError(err);
+      } else {
+        setTaskActionError("删除任务失败");
+      }
+    }
   };
 
   const handleDownloadWord = async (task: ResearchTaskItem) => {
@@ -7978,7 +8058,17 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (err) {
-      setDownloadError(err instanceof Error ? err.message : "Word 文件下载失败");
+      if (err instanceof Error) {
+        setDownloadError(err.message);
+      } else if (typeof err === "string") {
+        setDownloadError(err);
+      } else {
+        try {
+          setDownloadError(JSON.stringify(err));
+        } catch {
+          setDownloadError("Word 文件下载失败");
+        }
+      }
     }
   };
 
@@ -8012,6 +8102,11 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       {downloadError && (
         <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
           ✕ 导出失败：{downloadError}
+        </div>
+      )}
+      {taskActionError && (
+        <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
+          ✕ 任务操作失败：{taskActionError}
         </div>
       )}
 
@@ -8111,7 +8206,8 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                   <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                     <span style={{ fontWeight: 600, fontSize: "14px" }}>{task.topic}</span>
                     <span style={{ fontSize: "10px", color: "var(--text-secondary)" }}>
-                      {task.created_at.slice(0, 16).replace("T", " ")} · 
+                      创建：{formatLintCheckedAt(task.created_at)} ·
+                      更新：{formatLintCheckedAt(task.updated_at)} ·
                       深度 {task.depth || 1} · 广度 {task.breadth || 3}
                     </span>
                   </div>
@@ -8200,6 +8296,16 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                       onClick={() => handleCancel(task.id)}
                     >
                       🛑 取消
+                    </button>
+                  )}
+                  {(task.status === "done" || task.status === "failed" || task.status === "cancelled") && (
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      style={{ fontSize: "12px" }}
+                      onClick={() => void handleDeleteTask(task)}
+                    >
+                      🗑 删除任务
                     </button>
                   )}
                 </div>

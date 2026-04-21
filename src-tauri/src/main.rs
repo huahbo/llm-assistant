@@ -83,6 +83,7 @@ fn main() {
             commands::start_research,
             commands::list_research_tasks,
             commands::cancel_research_task,
+            commands::delete_research_task,
             commands::get_search_config,
             commands::set_search_config,
             commands::save_research_doc
