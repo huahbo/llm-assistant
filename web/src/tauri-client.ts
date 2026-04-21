@@ -781,11 +781,26 @@ export async function initVault(vaultPath: string): Promise<VaultInitResult | nu
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return withTimeout(
-    invoke<VaultInitResult>("init_vault", {
-      ...createVaultInitArgs(vaultPath),
-    }),
-  );
+  return invoke<VaultInitResult>("init_vault", { vaultPath });
+}
+
+export async function initVaultWithTemplate(
+  vaultPath: string,
+  templateSchema: string,
+  templatePurpose: string,
+  extraDirs: string[],
+): Promise<VaultInitResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<VaultInitResult>("init_vault_with_template", {
+    vaultPath,
+    templateSchema,
+    templatePurpose,
+    extraDirs,
+  });
 }
 
 export async function ingestMarkdown(sourcePath: string): Promise<IngestResult | null> {

@@ -7,6 +7,7 @@ mod models;
 mod search;
 mod state;
 mod vault;
+mod clip_server;
 
 use state::AppState;
 use tauri::Manager;
@@ -15,12 +16,15 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
+            let app_handle = app.handle().clone();
             // 注入 AppHandle，供后续 emit 进度事件使用
-            app.state::<AppState>().set_app_handle(app.handle().clone());
+            app.state::<AppState>().set_app_handle(app_handle.clone());
             // 启动时清理孤立 wiki 页面（文件已删但 DB 记录残留）
             app.state::<AppState>().purge_orphaned_wiki_pages();
             // 启动持久化 ingest 队列 worker
-            crate::state::AppState::start_queue_worker(app.handle().clone());
+            crate::state::AppState::start_queue_worker(app_handle.clone());
+            // 启动本地剪藏服务器
+            clip_server::start_clip_server(app_handle);
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -43,6 +47,7 @@ fn main() {
             commands::get_llm_status,
             commands::get_llm_provider_presets,
             commands::init_vault,
+            commands::init_vault_with_template,
             commands::ingest_markdown,
             commands::ingest_file,
             commands::ingest_pdf,
@@ -55,6 +60,7 @@ fn main() {
             commands::set_llm_config,
             commands::get_ocr_config,
             commands::set_ocr_config,
+            commands::get_clip_server_status,
             commands::save_wiki_page,
             commands::rename_wiki_page,
             commands::delete_wiki_page,

@@ -154,6 +154,29 @@ pub fn init_vault(
     state.init_vault(std::path::PathBuf::from(vault_path))
 }
 
+/// 使用模板初始化 Vault。
+#[tauri::command]
+pub fn init_vault_with_template(
+    vault_path: String,
+    template_schema: String,
+    template_purpose: String,
+    extra_dirs: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<VaultInitResult, String> {
+    eprintln!("[init_vault_with_template] called with vault_path={}", vault_path);
+    state.init_vault_with_template(
+        std::path::PathBuf::from(vault_path),
+        template_schema,
+        template_purpose,
+        extra_dirs,
+    )
+}
+
+#[tauri::command]
+pub fn get_clip_server_status() -> String {
+    "running".to_string() // Currently we don't track status in a static like refer_project
+}
+
 /// 导入 Markdown。
 #[tauri::command]
 pub async fn ingest_markdown(

@@ -47,6 +47,16 @@ export interface VaultInitResult {
   message: string;
 }
 
+export interface WikiTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  schema: string;
+  purpose: string;
+  extraDirs: string[];
+}
+
 export interface IngestResult {
   source_path: string;
   raw_path: string;
@@ -373,6 +383,8 @@ export interface ResearchTaskItem {
   status: ResearchTaskStatus;
   sub_queries: string[];
   web_results_count: number;
+  depth: number;
+  breadth: number;
   saved_path: string | null;
   error: string | null;
   created_at: string;

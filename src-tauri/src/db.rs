@@ -1183,6 +1183,8 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             status            TEXT NOT NULL DEFAULT 'queued',
             sub_queries       TEXT NOT NULL DEFAULT '[]',
             web_results_count INTEGER NOT NULL DEFAULT 0,
+            depth             INTEGER NOT NULL DEFAULT 1,
+            breadth           INTEGER NOT NULL DEFAULT 3,
             saved_path        TEXT,
             error             TEXT,
             created_at        TEXT NOT NULL,
@@ -1653,13 +1655,19 @@ pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f64 {
 // ─── Research Tasks ───────────────────────────────────────────────────────────
 
 /// 创建一条 research_tasks 记录，返回新记录 id。
-pub fn db_create_research_task(conn: &Connection, topic: &str, now: &str) -> Result<i64, String> {
+pub fn db_create_research_task(
+    conn: &Connection,
+    topic: &str,
+    depth: i32,
+    breadth: i32,
+    now: &str,
+) -> Result<i64, String> {
     conn.execute(
         r#"
-        INSERT INTO research_tasks (topic, status, sub_queries, web_results_count, created_at, updated_at)
-        VALUES (?1, 'queued', '[]', 0, ?2, ?2)
+        INSERT INTO research_tasks (topic, depth, breadth, status, sub_queries, web_results_count, created_at, updated_at)
+        VALUES (?1, ?2, ?3, 'queued', '[]', 0, ?4, ?4)
         "#,
-        params![topic, now],
+        params![topic, depth, breadth, now],
     )
     .map_err(|err| format!("写入 research_tasks 失败: {}", err))?;
     Ok(conn.last_insert_rowid())
@@ -1670,7 +1678,7 @@ pub fn db_list_research_tasks(conn: &Connection) -> Result<Vec<crate::models::Re
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, topic, status, sub_queries, web_results_count, saved_path, error, created_at, updated_at
+            SELECT id, topic, status, sub_queries, web_results_count, depth, breadth, saved_path, error, created_at, updated_at
             FROM research_tasks
             ORDER BY created_at DESC
             LIMIT 100
@@ -1686,17 +1694,19 @@ pub fn db_list_research_tasks(conn: &Connection) -> Result<Vec<crate::models::Re
                 row.get::<_, String>(2)?,
                 sub_queries_json,
                 row.get::<_, i32>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
+                row.get::<_, i32>(5)?,
+                row.get::<_, i32>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
             ))
         })
         .map_err(|err| format!("查询 research_tasks 失败: {}", err))?;
 
     let mut result = Vec::new();
     for row in rows {
-        let (id, topic, status, sub_queries_json, web_results_count, saved_path, error, created_at, updated_at) =
+        let (id, topic, status, sub_queries_json, web_results_count, depth, breadth, saved_path, error, created_at, updated_at) =
             row.map_err(|err| format!("读取 research_tasks 失败: {}", err))?;
         let sub_queries: Vec<String> =
             serde_json::from_str(&sub_queries_json).unwrap_or_default();
@@ -1706,6 +1716,8 @@ pub fn db_list_research_tasks(conn: &Connection) -> Result<Vec<crate::models::Re
             status,
             sub_queries,
             web_results_count,
+            depth,
+            breadth,
             saved_path,
             error,
             created_at,
@@ -1739,12 +1751,13 @@ pub fn db_update_research_task(
     Ok(())
 }
 
-/// 按 id 查询单条 research_tasks 记录。
+/// 按 id 查询单条 research_tasks 记录（供未来命令扩展使用）。
+#[allow(dead_code)]
 pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, topic, status, sub_queries, web_results_count, saved_path, error, created_at, updated_at
+            SELECT id, topic, status, sub_queries, web_results_count, depth, breadth, saved_path, error, created_at, updated_at
             FROM research_tasks
             WHERE id = ?1
             "#,
@@ -1758,13 +1771,15 @@ pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::
             row.get::<_, String>(2)?,
             sub_queries_json,
             row.get::<_, i32>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, Option<String>>(6)?,
-            row.get::<_, String>(7)?,
-            row.get::<_, String>(8)?,
+            row.get::<_, i32>(5)?,
+            row.get::<_, i32>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
         ))
     }) {
-        Ok((id, topic, status, sub_queries_json, web_results_count, saved_path, error, created_at, updated_at)) => {
+        Ok((id, topic, status, sub_queries_json, web_results_count, depth, breadth, saved_path, error, created_at, updated_at)) => {
             let sub_queries: Vec<String> =
                 serde_json::from_str(&sub_queries_json).unwrap_or_default();
             Ok(Some(crate::models::ResearchTaskItem {
@@ -1773,6 +1788,8 @@ pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::
                 status,
                 sub_queries,
                 web_results_count,
+                depth,
+                breadth,
                 saved_path,
                 error,
                 created_at,

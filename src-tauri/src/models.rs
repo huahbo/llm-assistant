@@ -646,7 +646,8 @@ pub struct IngestQueueItem {
     pub updated_at: String,
 }
 
-/// Deep Research 任务状态。
+/// Deep Research 任务状态（Display/FromStr 供序列化使用，枚举供类型安全扩展）。
+#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum ResearchTaskStatus {
     Queued,
@@ -699,6 +700,8 @@ pub struct ResearchTaskItem {
     pub status: String,
     pub sub_queries: Vec<String>,
     pub web_results_count: i32,
+    pub depth: i32,
+    pub breadth: i32,
     pub saved_path: Option<String>,
     pub error: Option<String>,
     pub created_at: String,

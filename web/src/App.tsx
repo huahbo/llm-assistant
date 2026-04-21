@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -61,12 +61,14 @@ import {
   cancelResearchTask,
   getSearchConfig,
   setSearchConfig,
+  initVaultWithTemplate,
   listenResearchProgress,
   listenResearchDone,
   listenResearchError,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
+import { templates, getTemplate } from "./templates";
 import {
   filterLintIssuesByCode,
   filterLintIssuesByPath,
@@ -2414,6 +2416,7 @@ export default function App() {
   const [lintRunning, setLintRunning] = useState(false);
   const [queryRunning, setQueryRunning] = useState(false);
   const [vaultPath, setVaultPath] = useState(defaultVaultPath);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("general");
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
   const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
   const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
@@ -3340,7 +3343,19 @@ export default function App() {
     setStatusMessage("");
 
     try {
-      const result = await initVault(nextVaultPath);
+      let result;
+      if (selectedTemplateId === "general") {
+        result = await initVault(nextVaultPath);
+      } else {
+        const tpl = getTemplate(selectedTemplateId);
+        result = await initVaultWithTemplate(
+          nextVaultPath,
+          tpl.schema,
+          tpl.purpose,
+          tpl.extraDirs
+        );
+      }
+
       if (!result) {
         setStatusMessage("当前环境不支持 Vault 初始化。");
         return;
@@ -5660,8 +5675,24 @@ export default function App() {
                           📁
                         </button>
                       </div>
-                    </div>
-                    <button
+                      </div>
+                      <div className="dev-panel__field" style={{ flex: 1 }}>
+                      <label className="dev-panel__label">选择项目模板</label>
+                      <select
+                        className="dev-panel__input"
+                        value={selectedTemplateId}
+                        onChange={(e) => setSelectedTemplateId(e.target.value)}
+                        disabled={devAction !== null}
+                      >
+                        {templates.map((tpl) => (
+                          <option key={tpl.id} value={tpl.id}>
+                            {tpl.icon} {tpl.name} — {tpl.description}
+                          </option>
+                        ))}
+                      </select>
+                      </div>
+                      <button
+
                       type="button"
                       className="dev-panel__button dev-panel__vault-action"
                       onClick={() => void handleDemoIngest()}
@@ -7742,15 +7773,19 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const [breadth, setBreadth] = useState(3);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [researchTasks, setResearchTasks] = useState<ResearchTaskItem[]>([]);
-  const [taskProgress, setTaskProgress] = useState<Record<number, string>>({});
+  const [taskLogs, setTaskLogs] = useState<Record<number, string[]>>({});
   const [starting, setStarting] = useState(false);
 
   // 初始化：加载历史任务
-  useEffect(() => {
+  const refreshTasks = useCallback(() => {
     listResearchTasks()
       .then((tasks) => setResearchTasks(tasks))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    refreshTasks();
+  }, [refreshTasks]);
 
   // 事件监听
   useEffect(() => {
@@ -7759,46 +7794,34 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
     let unlistenError: (() => void) | null = null;
 
     listenResearchProgress((payload) => {
-      setTaskProgress((prev) => ({ ...prev, [payload.task_id]: payload.message }));
+      // 更新日志流
+      setTaskLogs((prev) => {
+        const logs = prev[payload.task_id] || [];
+        // 避免重复消息
+        if (logs[logs.length - 1] === payload.message) return prev;
+        return { ...prev, [payload.task_id]: [...logs, payload.message].slice(-10) };
+      });
+      // 更新任务状态
       setResearchTasks((prev) =>
         prev.map((t) =>
           t.id === payload.task_id ? { ...t, status: payload.stage as ResearchTaskStatus } : t,
         ),
       );
     })
-      .then((fn) => {
-        unlistenProgress = fn;
-      })
+      .then((fn) => { unlistenProgress = fn; })
       .catch(() => {});
 
     listenResearchDone((payload) => {
-      listResearchTasks()
-        .then((tasks) => setResearchTasks(tasks))
-        .catch(() => {});
-      setTaskProgress((prev) => {
-        const next = { ...prev };
-        delete next[payload.task_id];
-        return next;
-      });
+      refreshTasks();
+      // 成功后延迟清理日志，或者保留日志供查看
     })
-      .then((fn) => {
-        unlistenDone = fn;
-      })
+      .then((fn) => { unlistenDone = fn; })
       .catch(() => {});
 
     listenResearchError((payload) => {
-      listResearchTasks()
-        .then((tasks) => setResearchTasks(tasks))
-        .catch(() => {});
-      setTaskProgress((prev) => {
-        const next = { ...prev };
-        delete next[payload.task_id];
-        return next;
-      });
+      refreshTasks();
     })
-      .then((fn) => {
-        unlistenError = fn;
-      })
+      .then((fn) => { unlistenError = fn; })
       .catch(() => {});
 
     return () => {
@@ -7806,7 +7829,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       unlistenDone?.();
       unlistenError?.();
     };
-  }, []);
+  }, [refreshTasks]);
 
   const handleStartResearch = async () => {
     const trimmed = topic.trim();
@@ -7820,6 +7843,8 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         status: "queued",
         sub_queries: [],
         web_results_count: 0,
+        depth,
+        breadth,
         saved_path: null,
         error: null,
         created_at: new Date().toISOString(),
@@ -7839,6 +7864,36 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       .then(() => listResearchTasks())
       .then((tasks) => setResearchTasks(tasks))
       .catch(() => {});
+  };
+
+  const handleDownloadWord = async (task: ResearchTaskItem) => {
+    if (!task.saved_path) return;
+    try {
+      const detail = await fetchWikiPageDetail(task.saved_path);
+      if (!detail) return;
+
+      const htmlContent = await marked.parse(detail.content);
+      const sanitizedHtml = DOMPurify.sanitize(htmlContent);
+
+      const documentHtml = `
+        <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head><meta charset='utf-8'><title>${detail.title}</title></head>
+        <body>${sanitizedHtml}</body>
+        </html>
+      `;
+
+      const blob = new Blob([documentHtml], { type: 'application/msword' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${detail.title || 'research-result'}.doc`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("下载失败:", err);
+    }
   };
 
   const runningCount = researchTasks.filter(
@@ -7904,8 +7959,11 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                 value={depth}
                 onChange={(e) => setDepth(Number(e.target.value))}
               >
-                <option value={1}>1 - 标准</option>
-                <option value={2}>2 - 深度</option>
+                <option value={1}>1 - 标准 (快速)</option>
+                <option value={2}>2 - 进阶 (更全面)</option>
+                <option value={3}>3 - 深度 (多轮迭代)</option>
+                <option value={4}>4 - 极深</option>
+                <option value={5}>5 - 极限研究</option>
               </select>
             </div>
             <div className="dev-panel__field">
@@ -7939,80 +7997,92 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         ) : (
           <div className="queue-list">
             {researchTasks.map((task) => (
-              <div key={task.id} className="queue-item">
-                <div className="queue-item__main">
+              <div
+                key={task.id}
+                className="queue-item"
+                style={{ flexDirection: "column", alignItems: "stretch", padding: "12px" }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                    <span style={{ fontWeight: 600, fontSize: "14px" }}>{task.topic}</span>
+                    <span style={{ fontSize: "10px", color: "var(--text-secondary)" }}>
+                      {task.created_at.slice(0, 16).replace("T", " ")} · 
+                      深度 {task.depth || 1} · 广度 {task.breadth || 3}
+                    </span>
+                  </div>
                   <span className={`queue-badge ${getResearchStatusColor(task.status)}`}>
                     {getResearchStatusLabel(task.status)}
                   </span>
-                  <span className="queue-item__path" title={task.topic}>
-                    {task.topic}
-                  </span>
-                  {task.web_results_count > 0 && (
-                    <span className="queue-item__type">{task.web_results_count} 条结果</span>
-                  )}
-                  <time className="queue-item__time" dateTime={task.updated_at}>
-                    {task.updated_at.slice(0, 16).replace("T", " ")}
-                  </time>
                 </div>
 
-                {/* 进度消息 */}
-                {taskProgress[task.id] && (
-                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: "4px 0 0" }}>
-                    {taskProgress[task.id]}
-                  </p>
-                )}
-
-                {/* 子查询标签（searching 后显示） */}
-                {task.sub_queries.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
-                    {task.sub_queries.map((q, i) => (
-                      <span
-                        key={i}
-                        style={{
-                          fontSize: "11px",
-                          background: "var(--bg-secondary, #f0f0f0)",
-                          borderRadius: "4px",
-                          padding: "1px 6px",
-                          color: "var(--text-secondary)",
-                        }}
-                      >
-                        {q}
-                      </span>
+                {/* 运行中：显示终端日志 */}
+                {(task.status !== "done" && task.status !== "failed" && task.status !== "cancelled") && (
+                  <div
+                    style={{
+                      backgroundColor: "rgba(0,0,0,0.2)",
+                      padding: "8px",
+                      borderRadius: "4px",
+                      fontFamily: "monospace",
+                      fontSize: "11px",
+                      marginBottom: "8px",
+                      borderLeft: "3px solid var(--accent)",
+                      maxHeight: "80px",
+                      overflowY: "auto"
+                    }}
+                  >
+                    {(taskLogs[task.id] || ["正在初始化..."]).map((log, i, arr) => (
+                      <div key={i} style={{ color: "var(--text-secondary)", opacity: i === arr.length - 1 ? 1 : 0.5 }}>
+                        <span style={{ color: "var(--accent)", marginRight: "4px" }}>&gt;</span>
+                        {log}
+                      </div>
                     ))}
                   </div>
                 )}
 
-                {/* 完成后 saved_path 链接 */}
-                {task.status === "done" && task.saved_path && (
-                  <p style={{ fontSize: "12px", margin: "4px 0 0" }}>
+                {/* 完成后：显示结果统计 */}
+                {task.status === "done" && (
+                  <div style={{ marginBottom: "8px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                    ✨ 已从 {task.web_results_count} 个来源中提取并综合信息。
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", alignItems: "center" }}>
+                  {task.status === "done" && task.saved_path && (
+                    <>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        style={{ fontSize: "12px" }}
+                        onClick={() => onOpenWikiPage(task.saved_path!)}
+                      >
+                        📖 查看 Wiki
+                      </button>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        style={{ fontSize: "12px" }}
+                        onClick={() => void handleDownloadWord(task)}
+                      >
+                        📄 导出 Word
+                      </button>
+                    </>
+                  )}
+                  {task.status === "failed" && task.error && (
+                    <span style={{ fontSize: "11px", color: "var(--error)", marginRight: "auto" }}>
+                      错误: {task.error}
+                    </span>
+                  )}
+                  {(task.status === "queued" || task.status === "decomposing" || task.status === "searching" || task.status === "synthesizing") && (
                     <button
                       type="button"
                       className="dev-panel__button"
                       style={{ fontSize: "12px" }}
-                      onClick={() => onOpenWikiPage(task.saved_path!)}
-                    >
-                      打开 Wiki 页面 →
-                    </button>
-                  </p>
-                )}
-
-                {/* 错误信息 */}
-                {task.status === "failed" && task.error && (
-                  <p className="queue-item__error">{task.error}</p>
-                )}
-
-                {/* 取消按钮 */}
-                {task.status === "queued" && (
-                  <div className="queue-item__actions">
-                    <button
-                      type="button"
-                      className="dev-panel__button"
                       onClick={() => handleCancel(task.id)}
                     >
-                      取消
+                      🛑 取消
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -8128,8 +8198,11 @@ function SearchConfigPanel() {
                 setConfig((prev) => ({ ...prev, depth: Number(e.target.value) }))
               }
             >
-              <option value={1}>1 - 标准</option>
-              <option value={2}>2 - 深度</option>
+              <option value={1}>1 - 标准 (快速)</option>
+              <option value={2}>2 - 进阶 (更全面)</option>
+              <option value={3}>3 - 深度 (多轮迭代)</option>
+              <option value={4}>4 - 极深</option>
+              <option value={5}>5 - 极限研究</option>
             </select>
           </div>
 
