@@ -295,6 +295,7 @@
 | BugFix-OCR-Path | 已安装 Tesseract 但应用提示未找到 → OCR 调用增加 Windows 常见安装路径兜底与已尝试命令回显 | ✅ `src-tauri/src/state.rs`（Rust 待 Windows cargo 复核，2026-04-20，**Codex** 实施） |
 | BugFix-Clipper-JSON | 浏览器扩展剪藏报 `Bad escaped character in JSON` → clip server 路径响应统一标准化 + 扩展端安全 JSON 解析与错误片段回显 | ✅ `src-tauri/src/clip_server.rs` + `extension/popup.js`（WSL `node --check` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | Opt-SearXNG-Activation | SearXNG 本地搜索激活增强（URL 规范化、`/search`→`/` 回退、配置前置校验、搜索错误可见化） | ✅ `src-tauri/src/state.rs`（新增 5 条 Rust 单测；待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
+| BugFix-Research-Logs | Deep Research 失败“无日志可看” + 报告生成瞬时失败易中断 → 报告阶段自动重试一次 + 失败态任务卡展示日志流 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -315,7 +316,8 @@
 | ✅ | **ingest 队列重启恢复修复** | init_vault 后重置遗留 running 任务 + 路径安全检查 + decompose fallback 日志（142 Rust，2026-04-21） |
 | 1 | **Clipper JSON 修复 Windows 复核** | 重启 `tauri:dev` + 重载扩展后验证 `Clip to Wiki` 不再出现 JSON parse 报错 |
 | ✅ | **移植包 D：SearXNG 本地搜索（后端激活增强）** | 已补齐 URL/端点容错与错误可见化；待 Windows + Docker 端到端复核（2026-04-21） |
-| 2 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
+| 2 | **Deep Research 失败态体验复核** | 验证失败任务卡日志展示与“自动重试一次”提示是否正常 |
+| 3 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码

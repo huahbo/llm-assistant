@@ -7860,6 +7860,12 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       .catch(() => {});
 
     listenResearchDone((payload) => {
+      setTaskLogs((prev) => {
+        const logs = prev[payload.task_id] || [];
+        const message = `✓ 研究完成：${payload.saved_path}`;
+        if (logs[logs.length - 1] === message) return prev;
+        return { ...prev, [payload.task_id]: [...logs, message].slice(-20) };
+      });
       refreshTasks();
       // 成功后延迟清理日志，或者保留日志供查看
     })
@@ -7867,6 +7873,12 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       .catch(() => {});
 
     listenResearchError((payload) => {
+      setTaskLogs((prev) => {
+        const logs = prev[payload.task_id] || [];
+        const message = `✗ ${payload.error}`;
+        if (logs[logs.length - 1] === message) return prev;
+        return { ...prev, [payload.task_id]: [...logs, message].slice(-20) };
+      });
       refreshTasks();
     })
       .then((fn) => { unlistenError = fn; })
@@ -8087,8 +8099,9 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                   </span>
                 </div>
 
-                {/* 运行中：显示终端日志 */}
-                {(task.status !== "done" && task.status !== "failed" && task.status !== "cancelled") && (
+                {/* 日志区：运行中与失败任务均显示，便于定位失败原因 */}
+                {((taskLogs[task.id] && taskLogs[task.id].length > 0) ||
+                  (task.status !== "done" && task.status !== "cancelled")) && (
                   <div
                     style={{
                       backgroundColor: "rgba(0,0,0,0.2)",
@@ -8097,14 +8110,28 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                       fontFamily: "monospace",
                       fontSize: "11px",
                       marginBottom: "8px",
-                      borderLeft: "3px solid var(--accent)",
-                      maxHeight: "80px",
+                      borderLeft:
+                        task.status === "failed"
+                          ? "3px solid var(--error)"
+                          : "3px solid var(--accent)",
+                      maxHeight: task.status === "failed" ? "120px" : "80px",
                       overflowY: "auto"
                     }}
                   >
-                    {(taskLogs[task.id] || ["正在初始化..."]).map((log, i, arr) => (
+                    {((taskLogs[task.id] && taskLogs[task.id].length > 0)
+                      ? taskLogs[task.id]
+                      : task.status === "failed" && task.error
+                        ? [`✗ ${task.error}`]
+                        : ["正在初始化..."]).map((log, i, arr) => (
                       <div key={i} style={{ color: "var(--text-secondary)", opacity: i === arr.length - 1 ? 1 : 0.5 }}>
-                        <span style={{ color: "var(--accent)", marginRight: "4px" }}>&gt;</span>
+                        <span
+                          style={{
+                            color: task.status === "failed" ? "var(--error)" : "var(--accent)",
+                            marginRight: "4px",
+                          }}
+                        >
+                          &gt;
+                        </span>
                         {log}
                       </div>
                     ))}

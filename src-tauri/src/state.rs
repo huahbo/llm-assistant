@@ -6997,6 +6997,10 @@ fn compact_error_message(err: &str, max_chars: usize) -> String {
     short
 }
 
+fn compact_llm_error(err: &LlmError, max_chars: usize) -> String {
+    compact_error_message(&err.to_string(), max_chars)
+}
+
 fn summarize_round_errors(errors: &[String], max_items: usize) -> String {
     if errors.is_empty() {
         return String::new();
@@ -7343,10 +7347,36 @@ async fn start_research_task(
         wiki = wiki_excerpt,
     );
 
-    let synthesized = match provider.complete(&synth_prompt).await {
-        Ok(t) => t,
-        Err(e) => { report_research_failure(&db_path, &app_handle, task_id, &format!("综合报告生成失败: {:?}", e)); return; }
-    };
+    let mut synthesized = String::new();
+    let mut synth_last_err: Option<LlmError> = None;
+    for attempt in 1..=2 {
+        match provider.complete(&synth_prompt).await {
+            Ok(text) => {
+                synthesized = text;
+                synth_last_err = None;
+                break;
+            }
+            Err(err) => {
+                synth_last_err = Some(err.clone());
+                if attempt == 1 {
+                    emit_progress(
+                        "synthesizing",
+                        format!("综合报告生成失败，正在重试一次：{}", compact_llm_error(&err, 120)),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                }
+            }
+        }
+    }
+    if let Some(err) = synth_last_err {
+        report_research_failure(
+            &db_path,
+            &app_handle,
+            task_id,
+            &format!("综合报告生成失败: {}", err),
+        );
+        return;
+    }
 
     // ── Phase 4: 保存 ────────────────────────────────────────────────────────
     emit_progress("saving", "正在保存到知识库...".to_string());
