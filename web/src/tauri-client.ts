@@ -1414,3 +1414,10 @@ export async function setSearchConfig(config: SearchConfig): Promise<void> {
     // 静默忽略
   }
 }
+
+/** 获取 Web Clipper HTTP 服务状态字符串（如 "running:19827" 或 "stopped"）。非 Tauri 环境返回空字符串。 */
+export async function getClipServerStatus(): Promise<string> {
+  if (!isTauriRuntime()) return "";
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("get_clip_server_status");
+}

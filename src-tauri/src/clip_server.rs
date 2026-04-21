@@ -118,6 +118,20 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
         return Err("No vault is currently open".to_string());
     }
 
+    // 如果 extension 指定了 projectPath，校验它与当前 vault 匹配
+    if let Some(requested_path) = parsed["projectPath"].as_str() {
+        if !requested_path.is_empty() {
+            let norm_requested = requested_path.replace('\\', "/").trim_end_matches('/').to_string();
+            let norm_vault = vault_path_str.replace('\\', "/").trim_end_matches('/').to_string();
+            if norm_requested != norm_vault {
+                return Err(format!(
+                    "Requested project '{}' does not match active vault '{}'",
+                    norm_requested, norm_vault
+                ));
+            }
+        }
+    }
+
     let vault_path = PathBuf::from(&vault_path_str);
     if !vault_path.exists() {
         return Err(format!("Vault path does not exist: {}", vault_path_str));
@@ -164,6 +178,18 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
         url,
         content
     );
+
+    // 防止 slug 构造导致路径越权
+    let canonical_clips = clips_dir.canonicalize()
+        .unwrap_or_else(|_| clips_dir.clone());
+    let canonical_file = file_path.canonicalize()
+        .unwrap_or_else(|_| {
+            // 文件尚未创建时，规范化父目录后拼接文件名
+            canonical_clips.join(format!("{}.md", base_name))
+        });
+    if !canonical_file.starts_with(&canonical_clips) {
+        return Err("Clip path traversal detected: title contains illegal path characters".to_string());
+    }
 
     std::fs::write(&file_path, &markdown).map_err(|e| format!("Failed to write clip file: {}", e))?;
 

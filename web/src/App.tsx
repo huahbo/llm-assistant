@@ -65,6 +65,7 @@ import {
   listenResearchProgress,
   listenResearchDone,
   listenResearchError,
+  getClipServerStatus,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -2427,6 +2428,8 @@ export default function App() {
   const [dropMode, setDropMode] = useState<DropMode>(() => readDropModeFromStorage());
   // URL 摄入输入框的状态，避免与 ingestUrl 函数名冲突，使用 ingestUrlInput。
   const [ingestUrlInput, setIngestUrlInput] = useState("");
+  const CLIP_SERVER_PORT = 19827;
+  const [clipServerOnline, setClipServerOnline] = useState<boolean | null>(null);
   const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
   const [queryTopK, setQueryTopK] = useState(defaultQueryTopK);
   const [queryTopKMin, setQueryTopKMin] = useState(defaultQueryTopKMin);
@@ -2726,6 +2729,13 @@ export default function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [askMessages]);
+
+  // 应用启动时检查 clip server 状态
+  useEffect(() => {
+    getClipServerStatus()
+      .then((s) => setClipServerOnline(s === "running"))
+      .catch(() => setClipServerOnline(false));
+  }, []);
 
   // 切换到 graph 模块时加载图谱数据
   useEffect(() => {
@@ -5891,6 +5901,37 @@ export default function App() {
                       : "浏览器预览模式下按钮保持禁用，仅用于界面预览。"}
                   </p>
                 </div>
+              </section>
+
+              {/* Web Clipper 安装向导 */}
+              <section className="panel" style={{ marginTop: "16px" }}>
+                <div className="section-head">
+                  <h2>网页剪藏扩展</h2>
+                  <span style={{
+                    display: "inline-block", padding: "2px 8px", borderRadius: "12px",
+                    background: clipServerOnline === false ? "var(--color-warning-bg, #fffbe6)" : "var(--color-success-bg, #ecfdf5)",
+                    color: clipServerOnline === false ? "var(--color-warning-text, #7c5a00)" : "var(--color-success, #065f46)",
+                    fontSize: "12px", fontWeight: 600
+                  }}>
+                    {clipServerOnline === false ? "⚠ 服务未启动" : `● 服务运行中 :${CLIP_SERVER_PORT}`}
+                  </span>
+                </div>
+                <p style={{ marginBottom: "12px", color: "var(--color-text-2, #555)", fontSize: "13px" }}>
+                  浏览器扩展可将网页一键剪藏到知识库，并自动触发摄入。剪藏内容保存至 <code>raw/clips/</code>。
+                </p>
+                <div style={{ background: "var(--color-bg-2, #f5f5f5)", borderRadius: "8px", padding: "12px 16px" }}>
+                  <p style={{ fontWeight: 600, marginBottom: "8px", fontSize: "13px" }}>安装步骤（Chrome / Edge）：</p>
+                  <ol style={{ paddingLeft: "18px", fontSize: "13px", lineHeight: "2" }}>
+                    <li>打开浏览器，访问 <code>chrome://extensions</code></li>
+                    <li>启用右上角「<strong>开发者模式</strong>」</li>
+                    <li>点击「<strong>加载已解压的扩展程序</strong>」</li>
+                    <li>选择项目根目录下的 <code>extension/</code> 文件夹</li>
+                    <li>扩展安装后点击工具栏中的 📚 图标即可剪藏当前页面</li>
+                  </ol>
+                </div>
+                <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--color-text-3, #888)" }}>
+                  ℹ️ 确保应用保持运行，扩展通过 HTTP 与本应用通信（端口 {CLIP_SERVER_PORT}）
+                </p>
               </section>
 
               {/* 最近日志 */}
