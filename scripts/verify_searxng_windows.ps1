@@ -44,6 +44,38 @@ function Invoke-JsonNoProxy {
   }
 }
 
+function Format-UnresponsiveEngine {
+  param([object]$Item)
+
+  if ($null -eq $Item) { return "" }
+  if ($Item -is [string]) { return $Item }
+
+  # 常见结构：{name, reason} 或 {engine, reason}
+  $name = $null
+  $reason = $null
+  try { $name = $Item.name } catch {}
+  try { if (-not $name) { $name = $Item.engine } } catch {}
+  try { $reason = $Item.reason } catch {}
+
+  if ($name -and $reason) { return "$name ($reason)" }
+  if ($name) { return "$name" }
+
+  # 兜底：如果是数组/可枚举对象，拼接为字符串
+  if ($Item -is [System.Collections.IEnumerable]) {
+    $parts = @()
+    foreach ($p in $Item) {
+      if ($null -ne $p) {
+        $parts += [string]$p
+      }
+    }
+    if ($parts.Count -gt 0) {
+      return ($parts -join " ")
+    }
+  }
+
+  return [string]$Item
+}
+
 try {
   $normalized = $BaseUrl.TrimEnd("/")
   $url = "$normalized/search?q=$([uri]::EscapeDataString($Query))&format=json&language=auto"
@@ -71,8 +103,23 @@ try {
   Write-Host "query: $($resp.Json.query)"
   Write-Host "number_of_results: $($resp.Json.number_of_results)"
   Write-Host "results.count: $resultCount"
+  if ($resultCount -eq 0) {
+    Write-Warning "results.count=0：当前可用搜索引擎可能不足或被限流，建议检查 SearXNG engines 配置。"
+  }
   if ($resp.Json.unresponsive_engines) {
-    Write-Host "unresponsive_engines: $($resp.Json.unresponsive_engines -join ', ')"
+    $items = @($resp.Json.unresponsive_engines)
+    $formatted = @()
+    foreach ($item in $items) {
+      $line = Format-UnresponsiveEngine -Item $item
+      if ($line) {
+        $formatted += $line
+      }
+    }
+    if ($formatted.Count -gt 0) {
+      Write-Host "unresponsive_engines: $($formatted -join '; ')"
+    } else {
+      Write-Host "unresponsive_engines: (present but unparsable)"
+    }
   }
 
   Step "SearXNG 自检通过"
