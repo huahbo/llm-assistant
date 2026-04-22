@@ -44,7 +44,15 @@ pub fn start_clip_server(app_handle: AppHandle) {
             let url = request.url().to_string();
             match (request.method(), url.as_str()) {
                 (&Method::Get, "/status") => {
-                    let body = r#"{"ok":true,"version":"0.1.0"}"#;
+                    let state = app_handle.state::<AppState>();
+                    let overview = state.overview();
+                    let path = normalize_display_path(&overview.vault_path);
+                    let body = serde_json::json!({
+                        "ok": true,
+                        "version": "0.1.0",
+                        "vault_open": !path.is_empty(),
+                        "vault_path": path
+                    }).to_string();
                     let mut response = Response::from_string(body);
                     for h in &cors_headers {
                         response.add_header(h.clone());

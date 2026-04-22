@@ -24,6 +24,13 @@ async function checkConnection() {
   try {
     const res = await fetch(`${API_URL}/status`, { method: "GET" });
     const data = await parseJsonResponse(res);
+    if (data.ok && data.vault_open === false) {
+      statusBar.className = "status disconnected";
+      statusBar.textContent = "⚠ Connected, but no vault is open in app";
+      clipBtn.disabled = true;
+      await loadProjects();
+      return false;
+    }
     if (data.ok) {
       statusBar.className = "status connected";
       statusBar.textContent = "✓ Connected to LLM Wiki";
