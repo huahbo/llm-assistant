@@ -7974,63 +7974,75 @@ function ResearchDialog({
     awaiting_approval: "⏸️",
   };
 
+  const phaseLabel: Record<string, { text: string; color: string }> = {
+    running:           { text: "进行中...", color: "var(--accent)" },
+    "awaiting-approval": { text: "等待确认研究方向", color: "#d97706" },
+    synthesizing:      { text: "生成报告中...", color: "var(--accent)" },
+    done:              { text: "已完成", color: "#16a34a" },
+    failed:            { text: "失败", color: "var(--error, #dc2626)" },
+  };
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       style={{
         position: "fixed", inset: 0, zIndex: 9998,
-        background: "rgba(0,0,0,0.7)",
+        background: "rgba(15,23,42,0.55)",
+        backdropFilter: "blur(2px)",
         display: "flex", alignItems: "center", justifyContent: "center",
-        padding: "24px",
+        padding: "20px",
       }}
     >
-      <div
-        style={{
-          background: "var(--bg-content, #1e1e2e)",
-          border: "1.5px solid var(--border, #333)",
-          borderRadius: "12px",
-          width: "100%", maxWidth: "720px",
-          maxHeight: "88vh",
-          display: "flex", flexDirection: "column",
-          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
-        }}
-      >
+      <div style={{
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        borderRadius: "14px",
+        width: "100%", maxWidth: "740px",
+        maxHeight: "90vh",
+        display: "flex", flexDirection: "column",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
+      }}>
         {/* 标题栏 */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "14px 20px",
-          borderBottom: "1px solid var(--border, #333)",
+          padding: "14px 18px 14px 20px",
+          borderBottom: "1px solid var(--border-light)",
           flexShrink: 0,
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "16px" }}>🔬</span>
-            <span style={{ fontWeight: 700, fontSize: "15px" }}>深度研究</span>
-            {phase === "running" && (
-              <span style={{ fontSize: "11px", color: "var(--accent)", marginLeft: "4px" }}>进行中...</span>
-            )}
-            {phase === "awaiting-approval" && (
-              <span style={{ fontSize: "11px", color: "var(--color-warning, #e6a817)", marginLeft: "4px" }}>等待确认</span>
-            )}
-            {phase === "done" && (
-              <span style={{ fontSize: "11px", color: "#4ade80", marginLeft: "4px" }}>完成</span>
-            )}
-            {phase === "failed" && (
-              <span style={{ fontSize: "11px", color: "var(--error)", marginLeft: "4px" }}>失败</span>
-            )}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "18px" }}>🔬</span>
+            <span style={{ fontWeight: 700, fontSize: "15px", color: "var(--text)" }}>深度研究</span>
+            <span style={{
+              fontSize: "11px", fontWeight: 500,
+              color: phaseLabel[phase]?.color ?? "var(--text-muted)",
+              background: "var(--bg-page)",
+              padding: "2px 8px", borderRadius: "999px",
+              border: "1px solid var(--border-light)",
+            }}>
+              {phaseLabel[phase]?.text}
+            </span>
           </div>
           <button
             type="button"
             aria-label="关闭对话框（任务继续在后台运行）"
             onClick={onClose}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px", color: "var(--text-secondary)", padding: "2px 4px" }}
+            title="关闭（任务继续后台运行）"
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              fontSize: "16px", color: "var(--text-muted)",
+              padding: "4px 6px", borderRadius: "6px", lineHeight: 1,
+            }}
           >
             ✕
           </button>
         </div>
 
         {/* 消息列表 */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "20px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={{
+          flex: 1, overflowY: "auto", padding: "20px",
+          display: "flex", flexDirection: "column", gap: "14px",
+        }}>
 
           {messages.map((msg, i) => {
             if (msg.kind === "user") {
@@ -8038,11 +8050,12 @@ function ResearchDialog({
                 <div key={i} style={{ display: "flex", justifyContent: "flex-end" }}>
                   <div style={{
                     background: "var(--accent-grad)", color: "#fff",
-                    borderRadius: "12px 12px 2px 12px",
-                    padding: "10px 14px", maxWidth: "85%",
+                    borderRadius: "14px 14px 3px 14px",
+                    padding: "10px 16px", maxWidth: "80%",
+                    boxShadow: "0 2px 8px rgba(124,58,237,0.25)",
                   }}>
-                    <div style={{ fontWeight: 600, fontSize: "14px" }}>{msg.topic}</div>
-                    <div style={{ fontSize: "11px", opacity: 0.8, marginTop: "2px" }}>
+                    <div style={{ fontWeight: 600, fontSize: "14px", lineHeight: 1.4 }}>{msg.topic}</div>
+                    <div style={{ fontSize: "11px", opacity: 0.85, marginTop: "4px" }}>
                       深度 {msg.depth} · 广度 {msg.breadth}
                     </div>
                   </div>
@@ -8052,11 +8065,14 @@ function ResearchDialog({
 
             if (msg.kind === "progress") {
               return (
-                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                  <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>
-                    {stageIcon[msg.stage] ?? "🤖"}
+                <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "1px" }}>
+                    {stageIcon[msg.stage] ?? "💬"}
                   </span>
-                  <span style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                  <span style={{
+                    fontSize: "13px", color: "var(--text-muted)",
+                    lineHeight: 1.6, paddingTop: "1px",
+                  }}>
                     {msg.text}
                   </span>
                 </div>
@@ -8066,16 +8082,33 @@ function ResearchDialog({
             if (msg.kind === "queries") {
               const isActive = phase === "awaiting-approval";
               return (
-                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                  <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>⏸️</span>
+                <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "2px" }}>⏸️</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "10px" }}>
-                      已分解为 <strong style={{ color: "var(--text)" }}>{editableQueries.length}</strong> 个研究方向，可编辑后开始：
+                    <div style={{
+                      fontSize: "13px", color: "var(--text)",
+                      fontWeight: 500, marginBottom: "10px",
+                    }}>
+                      已分解为 {editableQueries.length} 个研究方向
+                      {isActive && <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>，可编辑后开始搜索</span>}
+                      ：
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
+                    <div style={{
+                      background: "var(--bg-page)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "10px", padding: "10px 12px",
+                      display: "flex", flexDirection: "column", gap: "6px",
+                      marginBottom: isActive ? "10px" : "0",
+                    }}>
                       {editableQueries.map((q, qi) => (
-                        <div key={qi} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                          <span style={{ fontSize: "11px", color: "var(--text-secondary)", minWidth: "16px" }}>{qi + 1}.</span>
+                        <div key={qi} style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <span style={{
+                            fontSize: "11px", fontWeight: 600,
+                            color: "var(--accent)", minWidth: "20px",
+                            background: "var(--bg-card)", borderRadius: "4px",
+                            padding: "1px 5px", textAlign: "center",
+                            border: "1px solid var(--border-light)",
+                          }}>{qi + 1}</span>
                           {isActive ? (
                             <input
                               type="text"
@@ -8086,19 +8119,30 @@ function ResearchDialog({
                                 setEditableQueries(updated);
                               }}
                               style={{
-                                flex: 1, background: "var(--bg-base, #16161e)",
-                                border: "1px solid var(--border)", borderRadius: "6px",
-                                padding: "5px 8px", fontSize: "13px", color: "var(--text)",
+                                flex: 1,
+                                background: "var(--bg-card)",
+                                border: "1.5px solid var(--border)",
+                                borderRadius: "7px",
+                                padding: "6px 10px",
+                                fontSize: "13px",
+                                color: "var(--text)",
+                                outline: "none",
                               }}
                             />
                           ) : (
-                            <span style={{ fontSize: "13px", color: "var(--text)" }}>{q}</span>
+                            <span style={{ fontSize: "13px", color: "var(--text)", flex: 1 }}>{q}</span>
                           )}
                           {isActive && editableQueries.length > 1 && (
                             <button
                               type="button"
+                              title="删除此方向"
                               onClick={() => setEditableQueries(editableQueries.filter((_, idx) => idx !== qi))}
-                              style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "var(--text-secondary)", padding: "0 2px" }}
+                              style={{
+                                background: "none", border: "1px solid var(--border)",
+                                borderRadius: "5px", cursor: "pointer",
+                                fontSize: "12px", color: "var(--text-muted)",
+                                padding: "3px 7px", lineHeight: 1,
+                              }}
                             >✕</button>
                           )}
                         </div>
@@ -8132,10 +8176,14 @@ function ResearchDialog({
 
             if (msg.kind === "done") {
               return (
-                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                  <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>✅</span>
-                  <div>
-                    <div style={{ fontSize: "13px", color: "#4ade80", fontWeight: 600, marginBottom: "8px" }}>
+                <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "2px" }}>✅</span>
+                  <div style={{
+                    flex: 1, background: "#f0fdf4",
+                    border: "1px solid #bbf7d0",
+                    borderRadius: "10px", padding: "12px 14px",
+                  }}>
+                    <div style={{ fontSize: "13px", color: "#15803d", fontWeight: 600, marginBottom: "10px" }}>
                       研究完成！已保存到知识库
                     </div>
                     <div style={{ display: "flex", gap: "8px" }}>
@@ -8163,14 +8211,14 @@ function ResearchDialog({
 
             if (msg.kind === "error") {
               return (
-                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                  <span style={{ fontSize: "16px", flexShrink: 0 }}>❌</span>
-                  <div>
-                    <div style={{
-                      background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
-                      borderRadius: "8px", padding: "10px 12px", fontSize: "13px",
-                      color: "var(--error, #f87171)", marginBottom: "8px",
-                    }}>
+                <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "2px" }}>❌</span>
+                  <div style={{
+                    flex: 1, background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    borderRadius: "10px", padding: "12px 14px",
+                  }}>
+                    <div style={{ fontSize: "13px", color: "#b91c1c", marginBottom: "10px", lineHeight: 1.5 }}>
                       {msg.text}
                     </div>
                     <button
@@ -8189,25 +8237,30 @@ function ResearchDialog({
             return null;
           })}
 
-          {/* 流式综合报告 */}
-          {(phase === "synthesizing" || (phase === "done" && synthesisContent)) && synthesisContent && (
-            <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-              <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>✍️</span>
+          {/* 流式综合报告预览 */}
+          {synthesisContent && (
+            <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+              <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "2px" }}>✍️</span>
               <div style={{
                 flex: 1,
-                background: "var(--bg-base, #16161e)",
+                background: "var(--bg-page)",
                 border: "1px solid var(--border)",
-                borderRadius: "8px", padding: "14px 16px",
-                fontSize: "13px", lineHeight: 1.7,
-                maxHeight: "400px", overflowY: "auto",
+                borderRadius: "10px", padding: "14px 16px",
+                maxHeight: "380px", overflowY: "auto",
               }}>
                 <div
                   className="wiki-content"
+                  style={{ fontSize: "13px", lineHeight: 1.75, color: "var(--text)" }}
                   // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(synthesisContent) }}
                 />
                 {phase === "synthesizing" && (
-                  <span style={{ display: "inline-block", width: "8px", height: "14px", background: "var(--accent)", borderRadius: "2px", animation: "blink 1s step-end infinite", marginLeft: "2px" }} />
+                  <span style={{
+                    display: "inline-block", width: "7px", height: "15px",
+                    background: "var(--accent)", borderRadius: "2px",
+                    animation: "blink 1s step-end infinite", marginLeft: "2px",
+                    verticalAlign: "middle",
+                  }} />
                 )}
               </div>
             </div>
