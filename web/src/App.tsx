@@ -7875,6 +7875,9 @@ function ResearchDialog({
   const [editableQueries, setEditableQueries] = useState<string[]>([]);
   const [approving, setApproving] = useState(false);
   const [synthesisContent, setSynthesisContent] = useState("");
+  const [doneSavedPath, setDoneSavedPath] = useState<string>(
+    initialTask?.status === "done" ? (initialTask.saved_path ?? "") : ""
+  );
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // 自动滚动到底部
@@ -7921,6 +7924,7 @@ function ResearchDialog({
     void listenResearchDone((p) => {
       if (p.task_id !== taskId) return;
       setPhase("done");
+      setDoneSavedPath(p.saved_path);
       setMessages((prev) => [
         ...prev,
         { kind: "done", savedPath: p.saved_path },
@@ -8149,7 +8153,7 @@ function ResearchDialog({
                       ))}
                     </div>
                     {isActive && (
-                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "4px" }}>
                         <button
                           type="button"
                           className="dev-panel__button"
@@ -8157,15 +8161,6 @@ function ResearchDialog({
                           onClick={() => setEditableQueries([...editableQueries, ""])}
                         >
                           + 添加方向
-                        </button>
-                        <button
-                          type="button"
-                          className="dev-panel__button dev-panel__button--accent"
-                          style={{ fontSize: "12px" }}
-                          disabled={approving || editableQueries.every((q) => !q.trim())}
-                          onClick={() => void handleApprove()}
-                        >
-                          {approving ? "提交中..." : "开始搜索 →"}
                         </button>
                       </div>
                     )}
@@ -8195,14 +8190,6 @@ function ResearchDialog({
                       >
                         📖 查看 Wiki
                       </button>
-                      <button
-                        type="button"
-                        className="dev-panel__button"
-                        style={{ fontSize: "12px" }}
-                        onClick={onClose}
-                      >
-                        关闭
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -8218,17 +8205,9 @@ function ResearchDialog({
                     border: "1px solid #fecaca",
                     borderRadius: "10px", padding: "12px 14px",
                   }}>
-                    <div style={{ fontSize: "13px", color: "#b91c1c", marginBottom: "10px", lineHeight: 1.5 }}>
+                    <div style={{ fontSize: "13px", color: "#b91c1c", lineHeight: 1.5 }}>
                       {msg.text}
                     </div>
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      style={{ fontSize: "12px" }}
-                      onClick={() => onRetry?.()}
-                    >
-                      🔄 用相同参数重试
-                    </button>
                   </div>
                 </div>
               );
@@ -8268,6 +8247,58 @@ function ResearchDialog({
 
           <div ref={bottomRef} />
         </div>
+
+        {/* 底部操作栏：根据阶段显示主操作按钮 */}
+        {(phase === "done" || phase === "failed" || phase === "awaiting-approval") && (
+          <div style={{
+            borderTop: "1px solid var(--border-light)",
+            padding: "10px 18px",
+            display: "flex", justifyContent: "flex-end", gap: "8px",
+            flexShrink: 0,
+            background: "var(--bg-card)",
+            borderRadius: "0 0 14px 14px",
+          }}>
+            {phase === "awaiting-approval" && (
+              <button
+                type="button"
+                className="dev-panel__button dev-panel__button--accent"
+                style={{ fontSize: "13px" }}
+                disabled={approving || editableQueries.every((q) => !q.trim())}
+                onClick={() => void handleApprove()}
+              >
+                {approving ? "提交中..." : "开始搜索 →"}
+              </button>
+            )}
+            {phase === "done" && doneSavedPath && (
+              <button
+                type="button"
+                className="dev-panel__button dev-panel__button--accent"
+                style={{ fontSize: "13px" }}
+                onClick={() => { onOpenWikiPage(doneSavedPath); onClose(); }}
+              >
+                📖 查看 Wiki
+              </button>
+            )}
+            {phase === "failed" && onRetry && (
+              <button
+                type="button"
+                className="dev-panel__button dev-panel__button--accent"
+                style={{ fontSize: "13px" }}
+                onClick={() => onRetry()}
+              >
+                🔄 重试
+              </button>
+            )}
+            <button
+              type="button"
+              className="dev-panel__button"
+              style={{ fontSize: "13px" }}
+              onClick={onClose}
+            >
+              关闭
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
