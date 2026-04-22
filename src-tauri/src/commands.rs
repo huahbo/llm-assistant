@@ -174,7 +174,11 @@ pub fn init_vault_with_template(
 
 #[tauri::command]
 pub fn get_clip_server_status() -> String {
-    "running".to_string() // Currently we don't track status in a static like refer_project
+    if crate::clip_server::is_clip_server_running() {
+        "running".to_string()
+    } else {
+        "stopped".to_string()
+    }
 }
 
 /// 导入 Markdown。

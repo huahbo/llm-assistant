@@ -3,10 +3,12 @@ use crate::state::AppState;
 use tiny_http::{Server, Response, Header, Method};
 use std::thread;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use chrono;
 use serde_json;
 
 const PORT: u16 = 19827;
+static CLIP_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn normalize_display_path(path: &str) -> String {
     path.replace('\\', "/")
@@ -14,6 +16,7 @@ fn normalize_display_path(path: &str) -> String {
 
 pub fn start_clip_server(app_handle: AppHandle) {
     thread::spawn(move || {
+        CLIP_SERVER_RUNNING.store(false, Ordering::Relaxed);
         let server = match Server::http(format!("127.0.0.1:{}", PORT)) {
             Ok(s) => s,
             Err(e) => {
@@ -22,6 +25,7 @@ pub fn start_clip_server(app_handle: AppHandle) {
             }
         };
 
+        CLIP_SERVER_RUNNING.store(true, Ordering::Relaxed);
         println!("[Clip Server] Listening on http://127.0.0.1:{}", PORT);
 
         for mut request in server.incoming_requests() {
@@ -114,7 +118,13 @@ pub fn start_clip_server(app_handle: AppHandle) {
                 }
             }
         }
+
+        CLIP_SERVER_RUNNING.store(false, Ordering::Relaxed);
     });
+}
+
+pub fn is_clip_server_running() -> bool {
+    CLIP_SERVER_RUNNING.load(Ordering::Relaxed)
 }
 
 fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {

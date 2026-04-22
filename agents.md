@@ -295,6 +295,8 @@
 | BugFix-OCR-Path | 已安装 Tesseract 但应用提示未找到 → OCR 调用增加 Windows 常见安装路径兜底与已尝试命令回显 | ✅ `src-tauri/src/state.rs`（Rust 待 Windows cargo 复核，2026-04-20，**Codex** 实施） |
 | BugFix-Clipper-JSON | 浏览器扩展剪藏报 `Bad escaped character in JSON` → clip server 路径响应统一标准化 + 扩展端安全 JSON 解析与错误片段回显 | ✅ `src-tauri/src/clip_server.rs` + `extension/popup.js`（WSL `node --check` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | Opt-Clipper-E2E | Clipper 端到端复核增强（`/status` 返回 `vault_open/vault_path` + 扩展端未开 Vault 提示 + Windows 自检脚本） | ✅ `src-tauri/src/clip_server.rs` + `extension/popup.js` + `scripts/verify_clipper_windows.ps1`（WSL `node --check` 通过；Windows 端脚本待复核，2026-04-22，**Codex** 实施） |
+| BugFix-Clipper-Status | `get_clip_server_status` 固定返回 running → 改为真实运行态（Atomic 标记） | ✅ `src-tauri/src/clip_server.rs` + `src-tauri/src/commands.rs`（Windows cargo 待复核，2026-04-22，**Codex** 实施） |
+| Opt-SearXNG-E2E-Script | SearXNG Windows 一键自检脚本（禁代理直连 + JSON 诊断输出） | ✅ `scripts/verify_searxng_windows.ps1`（2026-04-22，**Codex** 实施） |
 | Opt-SearXNG-Activation | SearXNG 本地搜索激活增强（URL 规范化、`/search`→`/` 回退、配置前置校验、搜索错误可见化） | ✅ `src-tauri/src/state.rs`（新增 5 条 Rust 单测；待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-Logs | Deep Research 失败“无日志可看” + 报告生成瞬时失败易中断 → 报告阶段自动重试一次 + 失败态任务卡展示日志流 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-WordExport | Deep Research “导出 Word”按钮在 Tauri 下无响应 → 改为保存对话框选路径 + 后端写盘，浏览器模式保留 Blob 回退 | ✅ `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/tauri-client.ts` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
@@ -322,11 +324,12 @@
 | ✅ | **移植包 D：Deep Research 全栈** | Tavily 搜索 + LLM 自动分解子查询(breadth) + 可选深度 Phase C + 持久化 research_tasks + ResearchPanel UI + SearchConfigPanel（118 Rust / 151 前端，2026-04-20，**Claude Code 并行子代理**） |
 | ✅ | **Deep Research 代码质量 A 级收口** | report_research_failure 具名化 + parse_learnings 多格式容忍 + 23 个单元测试（141 Rust，2026-04-21） |
 | ✅ | **ingest 队列重启恢复修复** | init_vault 后重置遗留 running 任务 + 路径安全检查 + decompose fallback 日志（142 Rust，2026-04-21） |
-| 1 | **Clipper Windows 端到端复核** | 执行 `scripts/verify_clipper_windows.ps1` + 重载扩展验证 `Clip to Wiki` 全链路成功 |
+| ✅ | **Clipper Windows 端到端复核** | 用户已回传 `scripts/verify_clipper_windows.ps1` 通过，并确认扩展写入与 Wiki 可见（2026-04-22） |
 | ✅ | **移植包 D：SearXNG 本地搜索（后端激活增强）** | 已补齐 URL/端点容错与错误可见化；待 Windows + Docker 端到端复核（2026-04-21） |
 | ✅ | **Deep Research 导出能力复核** | 已验证 “导出 Word” 在 Tauri 下弹保存对话框并成功落盘（2026-04-21） |
 | ✅ | **Deep Research 失败态体验复核** | 失败任务卡日志展示与“自动重试一次”提示已可见（2026-04-21） |
 | ✅ | **Deep Research 任务删除耦合确认复核** | 已验证删除任务二次确认与“是否同步删除 Wiki”确认链路（2026-04-21） |
+| 1 | **SearXNG Windows 端到端复核** | 执行 `scripts/verify_searxng_windows.ps1` + 应用内 Deep Research 实跑验证 |
 | 2 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
 | 3 | **Research `.md` 导出历史任务回归复核** | 验证无流式内容的历史 done 任务仍可见“导出 .md”并成功导出 |
 
