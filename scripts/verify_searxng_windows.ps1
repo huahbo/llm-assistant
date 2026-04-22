@@ -4,6 +4,7 @@ param(
   [string]$Language = "auto",
   [string]$Categories = "general",
   [int]$SafeSearch = 0,
+  [string]$ForwardedIp = "127.0.0.1",
   [switch]$DisableFallback
 )
 
@@ -11,6 +12,28 @@ $ErrorActionPreference = "Stop"
 
 function Step([string]$Message) {
   Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+function Get-ExceptionChainText {
+  param([System.Exception]$Exception)
+
+  if ($null -eq $Exception) {
+    return "unknown error"
+  }
+
+  $messages = @()
+  $current = $Exception
+  while ($null -ne $current) {
+    if ($current.Message) {
+      $messages += $current.Message
+    }
+    $current = $current.InnerException
+  }
+
+  if ($messages.Count -eq 0) {
+    return "unknown error"
+  }
+  return ($messages -join " | ")
 }
 
 function New-NoProxyHttpClient {
@@ -24,14 +47,24 @@ function New-NoProxyHttpClient {
 function Invoke-JsonNoProxy {
   param(
     [System.Net.Http.HttpClient]$Client,
-    [string]$Url
+    [string]$Url,
+    [string]$ForwardedIpValue
   )
 
   $request = New-Object System.Net.Http.HttpRequestMessage ([System.Net.Http.HttpMethod]::Get), $Url
   $request.Headers.TryAddWithoutValidation("Accept", "application/json") | Out-Null
   $request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 llm-wiki-searxng-check") | Out-Null
+  $request.Headers.TryAddWithoutValidation("X-Forwarded-For", $ForwardedIpValue) | Out-Null
+  $request.Headers.TryAddWithoutValidation("X-Real-IP", $ForwardedIpValue) | Out-Null
+  $request.Headers.TryAddWithoutValidation("X-Forwarded-Proto", "http") | Out-Null
 
-  $response = $Client.SendAsync($request).GetAwaiter().GetResult()
+  $response = $null
+  try {
+    $response = $Client.SendAsync($request).GetAwaiter().GetResult()
+  } catch {
+    $detail = Get-ExceptionChainText -Exception $_.Exception
+    throw "HTTP 请求失败（URL=$Url）：$detail"
+  }
   $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
   $json = $null
   try {
@@ -131,9 +164,12 @@ try {
     Step "检查 SearXNG 接口 ($($profile.Name))"
     Write-Host "URL: $url"
 
-    $resp = Invoke-JsonNoProxy -Client $client -Url $url
+    $resp = Invoke-JsonNoProxy -Client $client -Url $url -ForwardedIpValue $ForwardedIp
     if (-not $resp.IsSuccess) {
-      $preview = ($resp.Raw ?? "").ToString()
+      $preview = ""
+      if ($null -ne $resp.Raw) {
+        $preview = [string]$resp.Raw
+      }
       if ($preview.Length -gt 280) { $preview = $preview.Substring(0, 280) + "..." }
       $attemptErrors += "$($profile.Name): HTTP $($resp.StatusCode); body: $preview"
       continue
@@ -198,6 +234,7 @@ try {
 
   Step "SearXNG 自检通过"
 } catch {
-  Write-Host "SearXNG 自检失败: $($_.Exception.Message)" -ForegroundColor Red
+  $detail = Get-ExceptionChainText -Exception $_.Exception
+  Write-Host "SearXNG 自检失败: $detail" -ForegroundColor Red
   exit 1
 }

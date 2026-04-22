@@ -1,0 +1,41 @@
+use_default_settings: true
+
+general:
+  instance_name: "llm-wiki-searxng"
+
+search:
+  # 面向 Deep Research 的默认策略：尽量提高召回，允许 JSON 输出。
+  safe_search: 0
+  default_lang: "all"
+  formats:
+    - html
+    - json
+
+server:
+  # 本地单机使用，关闭限流与公网实例模式。
+  secret_key: "llm-wiki-local-searxng-change-this-secret-key"
+  limiter: false
+  public_instance: false
+
+engines:
+  # 以下引擎在当前 Windows 本地 Docker 场景下易触发限流/报错，默认禁用。
+  - name: brave
+    disabled: true
+  - name: brave.news
+    disabled: true
+  - name: karmasearch
+    disabled: true
+  - name: karmasearch news
+    disabled: true
+  - name: karmasearch videos
+    disabled: true
+  - name: qwant news
+    disabled: true
+  - name: yahoo news
+    disabled: true
+  - name: bing news
+    disabled: true
+
+  # DuckDuckGo 在部分网络下偶发超时，放宽超时时间。
+  - name: duckduckgo
+    timeout: 8.0

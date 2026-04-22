@@ -299,6 +299,8 @@
 | Opt-SearXNG-E2E-Script | SearXNG Windows 一键自检脚本（禁代理直连 + JSON 诊断输出） | ✅ `scripts/verify_searxng_windows.ps1`（2026-04-22，**Codex** 实施） |
 | Opt-SearXNG-Activation | SearXNG 本地搜索激活增强（URL 规范化、`/search`→`/` 回退、配置前置校验、搜索错误可见化） | ✅ `src-tauri/src/state.rs`（新增 5 条 Rust 单测；待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | Opt-SearXNG-Params | SearXNG 检索参数优化（语言优选 + `all/general,news` 回退 + 结果 URL 去重合并 + 不可用引擎提示增强） | ✅ `src-tauri/src/state.rs` + `scripts/verify_searxng_windows.ps1`（WSL 无 cargo/pwsh；待 Windows 复核，2026-04-22，**Codex** 实施） |
+| Opt-SearXNG-Windows-Template | SearXNG Windows 推荐配置模板（禁用高故障率引擎）+ PS7 一键启动脚本 | ✅ `configs/searxng/settings.windows.example.yml` + `scripts/run_searxng_windows.ps1` + `README.md`（2026-04-22，**Codex** 实施） |
+| BugFix-SearXNG-Script-Robust | SearXNG 脚本健壮性修复（容器就绪等待 + docker logs 排错 + verify 异常链路明细 + 默认配置自动回退） | ✅ `scripts/run_searxng_windows.ps1` + `scripts/verify_searxng_windows.ps1`（2026-04-22，**Codex** 实施） |
 | Docs-README-Services | README 增补模块依赖服务与安装配置速查（含 SearXNG/Clipper Windows 自检命令） | ✅ `README.md` + `docs/实施过程记录.md`（2026-04-22，**Codex** 实施） |
 | BugFix-Research-Logs | Deep Research 失败“无日志可看” + 报告生成瞬时失败易中断 → 报告阶段自动重试一次 + 失败态任务卡展示日志流 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-WordExport | Deep Research “导出 Word”按钮在 Tauri 下无响应 → 改为保存对话框选路径 + 后端写盘，浏览器模式保留 Blob 回退 | ✅ `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/tauri-client.ts` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
@@ -331,7 +333,7 @@
 | ✅ | **Deep Research 导出能力复核** | 已验证 “导出 Word” 在 Tauri 下弹保存对话框并成功落盘（2026-04-21） |
 | ✅ | **Deep Research 失败态体验复核** | 失败任务卡日志展示与“自动重试一次”提示已可见（2026-04-21） |
 | ✅ | **Deep Research 任务删除耦合确认复核** | 已验证删除任务二次确认与“是否同步删除 Wiki”确认链路（2026-04-21） |
-| 1 | **SearXNG Windows 端到端复核** | 执行 `scripts/verify_searxng_windows.ps1` + 应用内 Deep Research 实跑验证 |
+| ✅ | **SearXNG Windows 脚本链路复核** | 用户已在 PS7 回传 `run_searxng_windows.ps1` + `verify_searxng_windows.ps1` 自检通过（2026-04-22） |
 | 2 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
 | 3 | **Research `.md` 导出历史任务回归复核** | 验证无流式内容的历史 done 任务仍可见“导出 .md”并成功导出 |
 
@@ -369,6 +371,8 @@ web/src/
 - `npm run typecheck`：**通过（0 errors）**（2026-04-22，WSL）
 - `npm run test -- --run`：**本轮未执行**（WSL 受 Rollup Linux 可选依赖缺失影响，待 Windows 复核）
 - `npm run build`：**本轮未执行**（按当前轮次指令跳过打包相关验证）
+- `scripts/verify_clipper_windows.ps1`：**用户回传通过**（2026-04-22，Windows）
+- `scripts/verify_searxng_windows.ps1`：**用户回传通过**（2026-04-22，PS7）
 
 最新提交（main 分支）：
 - `feat: 完成 P1+P2 功能收口` (d1ab47c)

@@ -7025,6 +7025,12 @@ async fn search_searxng_endpoint_with_params(
     let resp = client
         .get(endpoint)
         .query(&req_params)
+        // 兼容 SearXNG 在本地风控链路下对客户端来源头的校验。
+        .header("Accept", "application/json")
+        .header("User-Agent", "Mozilla/5.0 llm-wiki-searxng-client")
+        .header("X-Forwarded-For", "127.0.0.1")
+        .header("X-Real-IP", "127.0.0.1")
+        .header("X-Forwarded-Proto", "http")
         .send()
         .await
         .map_err(|e| format!("SearXNG 请求失败: {}", e))?;

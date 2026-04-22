@@ -56,12 +56,9 @@
 ### 可选：启动本地 SearXNG（Deep Research）
 
 ```powershell
-# 启动容器（首次会自动拉取镜像）
-docker run -d --name searxng `
-  -p 8080:8080 `
-  -e SEARXNG_LIMITER=false `
-  -e SEARXNG_PUBLIC_INSTANCE=false `
-  searxng/searxng
+# 用仓库内推荐配置启动（PS7）
+Set-Location E:\llm-wiki
+.\scripts\run_searxng_windows.ps1 -Recreate
 
 # 自检（仓库内脚本，带无代理直连与最优参数档位探测）
 Set-Location E:\llm-wiki
@@ -70,6 +67,8 @@ Set-Location E:\llm-wiki
 
 - 应用中配置：`Settings → 搜索配置 → 搜索提供商 = searxng`，地址填 `http://127.0.0.1:8080`
 - 若脚本显示 `best.results.count = 0`，通常是搜索引擎被限流/不可用，需调整 SearXNG engines 配置。
+- 推荐模板路径：`configs/searxng/settings.windows.example.yml`
+- 建议将模板中的 `server.secret_key` 改为你自己的随机长字符串后再长期使用。
 
 ### 可选：Clipper 扩展（浏览器一键剪藏）
 
