@@ -1389,6 +1389,46 @@ export async function listenResearchError(
   return unlisten;
 }
 
+/** 子查询就绪事件载荷（用于用户审批） */
+export interface ResearchQueriesReadyPayload {
+  task_id: number;
+  queries: string[];
+}
+
+/** 综合报告流式块载荷 */
+export interface ResearchStreamChunkPayload {
+  task_id: number;
+  chunk: string;
+}
+
+export async function listenResearchQueriesReady(
+  handler: (payload: ResearchQueriesReadyPayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchQueriesReadyPayload>("research_queries_ready", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
+export async function listenResearchStreamChunk(
+  handler: (payload: ResearchStreamChunkPayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchStreamChunkPayload>("research_stream_chunk", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
+export async function approveResearchQueries(taskId: number, queries: string[]): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("approve_research_queries", { taskId, queries });
+}
+
 /** 启动研究任务，返回 task_id。非 Tauri 环境返回 -1。 */
 export async function startResearch(
   topic: string,

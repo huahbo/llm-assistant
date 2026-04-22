@@ -69,6 +69,9 @@ import {
   listenResearchProgress,
   listenResearchDone,
   listenResearchError,
+  listenResearchQueriesReady,
+  listenResearchStreamChunk,
+  approveResearchQueries,
   getClipServerStatus,
   type OcrProvider,
 } from "./tauri-client";
@@ -7810,6 +7813,373 @@ function QueuePanel({
   );
 }
 
+// ---- Deep Research 对话框 ----
+
+type DialogMsg =
+  | { kind: "user"; topic: string; depth: number; breadth: number }
+  | { kind: "progress"; stage: string; text: string }
+  | { kind: "queries"; queries: string[]; taskId: number }
+  | { kind: "synthesis"; content: string }
+  | { kind: "done"; savedPath: string; sources?: number; learnings?: number }
+  | { kind: "error"; text: string };
+
+function ResearchDialog({
+  taskId,
+  topic,
+  depth,
+  breadth,
+  onClose,
+  onOpenWikiPage,
+}: {
+  taskId: number;
+  topic: string;
+  depth: number;
+  breadth: number;
+  onClose: () => void;
+  onOpenWikiPage: (path: string) => void;
+}) {
+  const [messages, setMessages] = useState<DialogMsg[]>([
+    { kind: "user", topic, depth, breadth },
+  ]);
+  const [phase, setPhase] = useState<
+    "running" | "awaiting-approval" | "synthesizing" | "done" | "failed"
+  >("running");
+  const [editableQueries, setEditableQueries] = useState<string[]>([]);
+  const [approving, setApproving] = useState(false);
+  const [synthesisContent, setSynthesisContent] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 自动滚动到底部
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, synthesisContent]);
+
+  // 订阅所有研究事件，按 task_id 过滤
+  useEffect(() => {
+    const unlisteners: (() => void)[] = [];
+
+    void listenResearchProgress((p) => {
+      if (p.task_id !== taskId) return;
+      if (p.stage === "synthesizing") {
+        setPhase("synthesizing");
+      }
+      setMessages((prev) => {
+        // 合并同 stage 的连续进度消息，避免刷屏
+        const last = prev[prev.length - 1];
+        if (last?.kind === "progress" && last.stage === p.stage) {
+          return [...prev.slice(0, -1), { kind: "progress", stage: p.stage, text: p.message }];
+        }
+        return [...prev, { kind: "progress", stage: p.stage, text: p.message }];
+      });
+    }).then((u) => unlisteners.push(u));
+
+    void listenResearchQueriesReady((p) => {
+      if (p.task_id !== taskId) return;
+      setEditableQueries(p.queries);
+      setPhase("awaiting-approval");
+      setMessages((prev) => [
+        ...prev,
+        { kind: "queries", queries: p.queries, taskId: p.task_id },
+      ]);
+    }).then((u) => unlisteners.push(u));
+
+    void listenResearchStreamChunk((p) => {
+      if (p.task_id !== taskId) return;
+      setSynthesisContent((prev) => prev + p.chunk);
+    }).then((u) => unlisteners.push(u));
+
+    void listenResearchDone((p) => {
+      if (p.task_id !== taskId) return;
+      setPhase("done");
+      setMessages((prev) => [
+        ...prev,
+        { kind: "done", savedPath: p.saved_path },
+      ]);
+    }).then((u) => unlisteners.push(u));
+
+    void listenResearchError((p) => {
+      if (p.task_id !== taskId) return;
+      setPhase("failed");
+      setMessages((prev) => [...prev, { kind: "error", text: p.error }]);
+    }).then((u) => unlisteners.push(u));
+
+    return () => unlisteners.forEach((u) => u());
+  }, [taskId]);
+
+  const handleApprove = async () => {
+    const valid = editableQueries.map((q) => q.trim()).filter(Boolean);
+    if (valid.length === 0) return;
+    setApproving(true);
+    try {
+      await approveResearchQueries(taskId, valid);
+      setPhase("running");
+      // 更新 queries 消息为已审批状态
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.kind === "queries" && m.taskId === taskId
+            ? { ...m, queries: valid }
+            : m,
+        ),
+      );
+    } catch {
+      // 超时或已失效，不报错，继续
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const renderMarkdown = (md: string) => {
+    try {
+      return DOMPurify.sanitize(marked.parse(md, { async: false }) as string);
+    } catch {
+      return md;
+    }
+  };
+
+  const stageIcon: Record<string, string> = {
+    decomposing: "🔍",
+    searching: "🌐",
+    synthesizing: "✍️",
+    saving: "💾",
+    awaiting_approval: "⏸️",
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: "fixed", inset: 0, zIndex: 9998,
+        background: "rgba(0,0,0,0.7)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: "24px",
+      }}
+    >
+      <div
+        style={{
+          background: "var(--bg-content, #1e1e2e)",
+          border: "1.5px solid var(--border, #333)",
+          borderRadius: "12px",
+          width: "100%", maxWidth: "720px",
+          maxHeight: "88vh",
+          display: "flex", flexDirection: "column",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+        }}
+      >
+        {/* 标题栏 */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 20px",
+          borderBottom: "1px solid var(--border, #333)",
+          flexShrink: 0,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "16px" }}>🔬</span>
+            <span style={{ fontWeight: 700, fontSize: "15px" }}>深度研究</span>
+            {phase === "running" && (
+              <span style={{ fontSize: "11px", color: "var(--accent)", marginLeft: "4px" }}>进行中...</span>
+            )}
+            {phase === "awaiting-approval" && (
+              <span style={{ fontSize: "11px", color: "var(--color-warning, #e6a817)", marginLeft: "4px" }}>等待确认</span>
+            )}
+            {phase === "done" && (
+              <span style={{ fontSize: "11px", color: "#4ade80", marginLeft: "4px" }}>完成</span>
+            )}
+            {phase === "failed" && (
+              <span style={{ fontSize: "11px", color: "var(--error)", marginLeft: "4px" }}>失败</span>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-label="关闭对话框（任务继续在后台运行）"
+            onClick={onClose}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px", color: "var(--text-secondary)", padding: "2px 4px" }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* 消息列表 */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px", display: "flex", flexDirection: "column", gap: "16px" }}>
+
+          {messages.map((msg, i) => {
+            if (msg.kind === "user") {
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <div style={{
+                    background: "var(--accent-grad)", color: "#fff",
+                    borderRadius: "12px 12px 2px 12px",
+                    padding: "10px 14px", maxWidth: "85%",
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: "14px" }}>{msg.topic}</div>
+                    <div style={{ fontSize: "11px", opacity: 0.8, marginTop: "2px" }}>
+                      深度 {msg.depth} · 广度 {msg.breadth}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            if (msg.kind === "progress") {
+              return (
+                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>
+                    {stageIcon[msg.stage] ?? "🤖"}
+                  </span>
+                  <span style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                    {msg.text}
+                  </span>
+                </div>
+              );
+            }
+
+            if (msg.kind === "queries") {
+              const isActive = phase === "awaiting-approval";
+              return (
+                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>⏸️</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "10px" }}>
+                      已分解为 <strong style={{ color: "var(--text)" }}>{editableQueries.length}</strong> 个研究方向，可编辑后开始：
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
+                      {editableQueries.map((q, qi) => (
+                        <div key={qi} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)", minWidth: "16px" }}>{qi + 1}.</span>
+                          {isActive ? (
+                            <input
+                              type="text"
+                              value={q}
+                              onChange={(e) => {
+                                const updated = [...editableQueries];
+                                updated[qi] = e.target.value;
+                                setEditableQueries(updated);
+                              }}
+                              style={{
+                                flex: 1, background: "var(--bg-base, #16161e)",
+                                border: "1px solid var(--border)", borderRadius: "6px",
+                                padding: "5px 8px", fontSize: "13px", color: "var(--text)",
+                              }}
+                            />
+                          ) : (
+                            <span style={{ fontSize: "13px", color: "var(--text)" }}>{q}</span>
+                          )}
+                          {isActive && editableQueries.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setEditableQueries(editableQueries.filter((_, idx) => idx !== qi))}
+                              style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "var(--text-secondary)", padding: "0 2px" }}
+                            >✕</button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {isActive && (
+                      <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          style={{ fontSize: "12px" }}
+                          onClick={() => setEditableQueries([...editableQueries, ""])}
+                        >
+                          + 添加方向
+                        </button>
+                        <button
+                          type="button"
+                          className="dev-panel__button dev-panel__button--accent"
+                          style={{ fontSize: "12px" }}
+                          disabled={approving || editableQueries.every((q) => !q.trim())}
+                          onClick={() => void handleApprove()}
+                        >
+                          {approving ? "提交中..." : "开始搜索 →"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            if (msg.kind === "done") {
+              return (
+                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>✅</span>
+                  <div>
+                    <div style={{ fontSize: "13px", color: "#4ade80", fontWeight: 600, marginBottom: "8px" }}>
+                      研究完成！已保存到知识库
+                    </div>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        type="button"
+                        className="dev-panel__button dev-panel__button--accent"
+                        style={{ fontSize: "12px" }}
+                        onClick={() => { onOpenWikiPage(msg.savedPath); onClose(); }}
+                      >
+                        📖 查看 Wiki
+                      </button>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        style={{ fontSize: "12px" }}
+                        onClick={onClose}
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            if (msg.kind === "error") {
+              return (
+                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "16px", flexShrink: 0 }}>❌</span>
+                  <div style={{
+                    background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+                    borderRadius: "8px", padding: "10px 12px", fontSize: "13px",
+                    color: "var(--error, #f87171)",
+                  }}>
+                    {msg.text}
+                  </div>
+                </div>
+              );
+            }
+
+            return null;
+          })}
+
+          {/* 流式综合报告 */}
+          {(phase === "synthesizing" || (phase === "done" && synthesisContent)) && synthesisContent && (
+            <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+              <span style={{ fontSize: "16px", flexShrink: 0, marginTop: "1px" }}>✍️</span>
+              <div style={{
+                flex: 1,
+                background: "var(--bg-base, #16161e)",
+                border: "1px solid var(--border)",
+                borderRadius: "8px", padding: "14px 16px",
+                fontSize: "13px", lineHeight: 1.7,
+                maxHeight: "400px", overflowY: "auto",
+              }}>
+                <div
+                  className="wiki-content"
+                  // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(synthesisContent) }}
+                />
+                {phase === "synthesizing" && (
+                  <span style={{ display: "inline-block", width: "8px", height: "14px", background: "var(--accent)", borderRadius: "2px", animation: "blink 1s step-end infinite", marginLeft: "2px" }} />
+                )}
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Deep Research 面板 ----
 
 type DeleteModalOutcome = "cancel" | "task-only" | "task-and-wiki";
@@ -7831,6 +8201,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [taskActionError, setTaskActionError] = useState<string | null>(null);
   const [deleteModal, setDeleteModal] = useState<DeleteModalState | null>(null);
+  const [dialogTask, setDialogTask] = useState<{ taskId: number; topic: string; depth: number; breadth: number } | null>(null);
 
   // 初始化：加载历史任务 + 搜索配置
   const [hasSearchProvider, setHasSearchProvider] = useState(true);
@@ -7932,6 +8303,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
         updated_at: new Date().toISOString(),
       };
       setResearchTasks((prev) => [optimisticTask, ...prev]);
+      setDialogTask({ taskId, topic: trimmed, depth, breadth });
       setTopic("");
     } catch (err) {
       setStartError(err instanceof Error ? err.message : "启动研究任务失败，请重试");
@@ -8094,6 +8466,18 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
 
   return (
     <>
+      {/* 研究对话框 */}
+      {dialogTask && (
+        <ResearchDialog
+          taskId={dialogTask.taskId}
+          topic={dialogTask.topic}
+          depth={dialogTask.depth}
+          breadth={dialogTask.breadth}
+          onClose={() => { setDialogTask(null); void refreshTasks(); }}
+          onOpenWikiPage={onOpenWikiPage}
+        />
+      )}
+
       {/* 删除任务确认 Modal（支持三态：取消 / 仅删任务 / 删任务+Wiki） */}
       {deleteModal && (
         <div
@@ -8297,7 +8681,11 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                    <span style={{ fontWeight: 600, fontSize: "14px" }}>{task.topic}</span>
+                    <span
+                      style={{ fontWeight: 600, fontSize: "14px", cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: "3px" }}
+                      title="点击打开研究对话框"
+                      onClick={() => setDialogTask({ taskId: task.id, topic: task.topic, depth: task.depth ?? 1, breadth: task.breadth ?? 3 })}
+                    >{task.topic}</span>
                     <span style={{ fontSize: "10px", color: "var(--text-secondary)" }}>
                       创建：{formatLintCheckedAt(task.created_at)} ·
                       更新：{formatLintCheckedAt(task.updated_at)} ·

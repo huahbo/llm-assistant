@@ -567,6 +567,26 @@ pub fn set_search_config(state: State<'_, AppState>, config: SearchConfig) -> Re
     state.set_search_config(config)
 }
 
+/// 用户审批 Deep Research 子查询列表。
+#[tauri::command]
+pub async fn approve_research_queries(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+    queries: Vec<String>,
+) -> Result<(), String> {
+    let queries: Vec<String> = queries.into_iter()
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty())
+        .collect();
+    if queries.is_empty() {
+        return Err("至少需要一个研究方向".to_string());
+    }
+    if !state.approve_research_queries(task_id, queries) {
+        return Err("任务不存在或已超时，请重新开始研究".to_string());
+    }
+    Ok(())
+}
+
 /// 保存 Deep Research 导出的 Word 文档（HTML .doc 格式）到用户指定路径。
 #[tauri::command]
 pub fn save_research_doc(path: String, content: String) -> Result<(), String> {

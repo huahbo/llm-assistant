@@ -56,6 +56,8 @@ pub struct AppState {
     ask_cancel_flags: Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// 搜索配置（Deep Research 用）
     search_config: Mutex<crate::models::SearchConfig>,
+    /// 等待用户审批子查询的一次性 channel（task_id -> sender）
+    pending_query_approvals: Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Vec<String>>>>,
 }
 
 /// 状态快照。
@@ -146,6 +148,7 @@ impl AppState {
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(search_config),
+            pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -225,6 +228,7 @@ impl AppState {
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(search_config),
+            pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -264,6 +268,22 @@ impl AppState {
             .map_err(|e| format!("写入搜索配置文件失败: {}", e))?;
         *self.search_config.lock().expect("搜索配置锁已被污染") = cfg;
         Ok(())
+    }
+
+    /// 注册等待用户审批的子查询 channel，返回 receiver
+    pub fn register_query_approval(&self, task_id: i64) -> tokio::sync::oneshot::Receiver<Vec<String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_query_approvals.lock().expect("pending_query_approvals lock").insert(task_id, tx);
+        rx
+    }
+
+    /// 用户审批子查询（发送审批后的 queries 给 pipeline）
+    pub fn approve_research_queries(&self, task_id: i64, queries: Vec<String>) -> bool {
+        if let Some(tx) = self.pending_query_approvals.lock().expect("pending_query_approvals lock").remove(&task_id) {
+            tx.send(queries).is_ok()
+        } else {
+            false
+        }
     }
 
     /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。
@@ -7331,6 +7351,23 @@ async fn start_research_task(
         }
     };
 
+    // 暂停：通知前端子查询已就绪，等待用户审批（最多 5 分钟）
+    let rx = state.register_query_approval(task_id);
+    let _ = app_handle.emit("research_queries_ready", serde_json::json!({
+        "task_id": task_id,
+        "queries": current_queries,
+    }));
+    emit_progress("awaiting_approval", format!("已分解为 {} 个研究方向，等待确认...", current_queries.len()));
+
+    current_queries = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        rx,
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or_else(|| current_queries.clone());
+
     // ── Phase 2: 迭代式并发搜索 + 学习提取 ──────────────────────────────────
     let max_depth = config.depth.clamp(1, 5);
     for depth in 1..=max_depth {
@@ -7495,8 +7532,16 @@ async fn start_research_task(
         let mut buf = String::new();
         let stream_result = provider
             .complete_stream(&synth_prompt, &mut |chunk| {
+                let chunk_str = chunk.clone();  // 给 emit 用
                 buf.push_str(&chunk);
                 char_count += chunk.chars().count();
+                let _ = app_handle.emit(
+                    "research_stream_chunk",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "chunk": chunk_str,
+                    }),
+                );
                 // 每增加 150 字触发一次进度更新，避免事件风暴
                 if char_count.saturating_sub(last_emitted) >= 150 {
                     last_emitted = char_count;
@@ -9604,6 +9649,7 @@ entities:
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(crate::models::SearchConfig::default()),
+            pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
         };
         // 注入已有的 MockQueryProvider
         let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(
