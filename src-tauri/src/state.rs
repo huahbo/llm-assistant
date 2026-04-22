@@ -7080,6 +7080,107 @@ fn validate_search_config(config: &crate::models::SearchConfig) -> Result<(), St
 
 /// 将研究任务标记为失败并向前端发送错误事件。
 /// 提取为具名函数，消除闭包所有权歧义，可在管线任意位置调用。
+/// Phase 4: 将综合报告写入 vault/wiki/research/ 并更新数据库。
+/// 返回保存的文件路径（成功）或 Err(()，失败已由 report_research_failure 处理）。
+async fn save_research_output(
+    db_path: &std::path::Path,
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    task_id: i64,
+    topic: &str,
+    config: &crate::models::SearchConfig,
+    all_results: &[crate::models::WebSearchResult],
+    all_used_queries: &[String],
+    learnings: &[String],
+    synthesized: &str,
+) -> Result<String, ()> {
+    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let references = all_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. [{}]({})", i + 1, r.title, r.url))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let cleaned = strip_think_tags(synthesized);
+    let final_content = format!(
+        "---\ntype: research\ntitle: \"{topic}\"\ncreated: {date}\nupdated: {date}\ndepth: {depth}\nbreadth: {breadth}\nsources: {count}\ntags: [research, deep-research]\n---\n\n{body}\n\n## References\n\n{refs}",
+        topic = topic,
+        date = date_str,
+        depth = config.depth,
+        breadth = config.breadth,
+        count = all_results.len(),
+        body = cleaned,
+        refs = references,
+    );
+
+    let vault_path = {
+        let guard = state.inner.lock().expect("状态锁");
+        guard.vault_path.clone()
+    };
+    let vault_path = match vault_path {
+        Some(p) => p,
+        None => {
+            report_research_failure(db_path, app_handle, task_id, "保存阶段：Vault 路径丢失");
+            return Err(());
+        }
+    };
+
+    let slug = make_research_slug(topic);
+    let filename = format!("research-{}-{}.md", slug, date_str);
+    let save_dir = vault_path.join("wiki").join("research");
+    let _ = fs::create_dir_all(&save_dir);
+    let save_path = save_dir.join(&filename);
+
+    // 防止 topic 含 ../ 等路径越权
+    match save_path.canonicalize().or_else(|_| {
+        save_dir.canonicalize().map(|d| d.join(&filename))
+    }) {
+        Ok(canonical) => {
+            let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
+            if !canonical.starts_with(&canonical_vault) {
+                report_research_failure(db_path, app_handle, task_id, "保存路径越权：topic 包含非法路径字符，已拒绝写入");
+                return Err(());
+            }
+        }
+        Err(e) => {
+            report_research_failure(db_path, app_handle, task_id, &format!("保存路径解析失败: {}", e));
+            return Err(());
+        }
+    }
+
+    if let Err(e) = fs::write(&save_path, &final_content) {
+        report_research_failure(db_path, app_handle, task_id, &format!("写入文件失败: {}", e));
+        return Err(());
+    }
+
+    let saved_path_str = save_path.to_string_lossy().to_string();
+    {
+        let conn = match rusqlite::Connection::open(db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                report_research_failure(db_path, app_handle, task_id, &format!("打开数据库失败: {}", e));
+                return Err(());
+            }
+        };
+        let now = current_timestamp_ms();
+        let queries_json = serde_json::to_string(all_used_queries).unwrap_or_default();
+        let _ = db::db_update_research_task(
+            &conn, task_id, "done", &queries_json,
+            all_results.len() as i32, Some(saved_path_str.as_str()), None, &now,
+        );
+    }
+
+    let _ = state.ingest_markdown(save_path).await;
+    let _ = app_handle.emit("research_done", serde_json::json!({
+        "task_id": task_id,
+        "saved_path": saved_path_str,
+        "sources": all_results.len(),
+        "learnings": learnings.len(),
+    }));
+    Ok(saved_path_str)
+}
+
 fn report_research_failure(
     db_path: &std::path::Path,
     app_handle: &tauri::AppHandle,
@@ -7389,9 +7490,30 @@ async fn start_research_task(
     let mut synthesized = String::new();
     let mut synth_last_err: Option<LlmError> = None;
     for attempt in 1..=2 {
-        match provider.complete(&synth_prompt).await {
-            Ok(text) => {
-                synthesized = text;
+        let mut char_count = 0usize;
+        let mut last_emitted = 0usize;
+        let mut buf = String::new();
+        let stream_result = provider
+            .complete_stream(&synth_prompt, &mut |chunk| {
+                buf.push_str(&chunk);
+                char_count += chunk.chars().count();
+                // 每增加 150 字触发一次进度更新，避免事件风暴
+                if char_count.saturating_sub(last_emitted) >= 150 {
+                    last_emitted = char_count;
+                    let _ = app_handle.emit(
+                        "research_progress",
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "stage": "synthesizing",
+                            "message": format!("正在生成综合报告... 已生成 {} 字", char_count),
+                        }),
+                    );
+                }
+            })
+            .await;
+        match stream_result {
+            Ok(_) => {
+                synthesized = buf;
                 synth_last_err = None;
                 break;
             }
@@ -7402,7 +7524,7 @@ async fn start_research_task(
                         "synthesizing",
                         format!("综合报告生成失败，正在重试一次：{}", compact_llm_error(&err, 120)),
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 }
             }
         }
@@ -7419,92 +7541,10 @@ async fn start_research_task(
 
     // ── Phase 4: 保存 ────────────────────────────────────────────────────────
     emit_progress("saving", "正在保存到知识库...".to_string());
-    let cleaned = strip_think_tags(&synthesized);
-    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-    let references = all_results
-        .iter()
-        .enumerate()
-        .map(|(i, r)| format!("{}. [{}]({})", i + 1, r.title, r.url))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let final_content = format!(
-        "---\ntype: research\ntitle: \"{topic}\"\ncreated: {date}\nupdated: {date}\ndepth: {depth}\nbreadth: {breadth}\nsources: {count}\ntags: [research, deep-research]\n---\n\n{body}\n\n## References\n\n{refs}",
-        topic = topic,
-        date = date_str,
-        depth = config.depth,
-        breadth = config.breadth,
-        count = all_results.len(),
-        body = cleaned,
-        refs = references,
-    );
-
-    let vault_path = {
-        let guard = state.inner.lock().expect("状态锁");
-        guard.vault_path.clone()
-    };
-    let vault_path = match vault_path {
-        Some(p) => p,
-        None => { report_research_failure(&db_path, &app_handle, task_id, "保存阶段：Vault 路径丢失"); return; }
-    };
-
-    let slug = make_research_slug(&topic);
-    let filename = format!("research-{}-{}.md", slug, date_str);
-    let save_dir = vault_path.join("wiki").join("research");
-    let _ = fs::create_dir_all(&save_dir);
-    let save_path = save_dir.join(&filename);
-
-    // 防止 topic 含 ../ 等构造导致路径越权写入 vault 外
-    match save_path.canonicalize().or_else(|_| {
-        // 文件尚不存在时 canonicalize 会失败，改为规范化父目录
-        save_dir.canonicalize().map(|d| d.join(&filename))
-    }) {
-        Ok(canonical) => {
-            let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
-            if !canonical.starts_with(&canonical_vault) {
-                report_research_failure(
-                    &db_path, &app_handle, task_id,
-                    "保存路径越权：topic 包含非法路径字符，已拒绝写入",
-                );
-                return;
-            }
-        }
-        Err(e) => {
-            report_research_failure(
-                &db_path, &app_handle, task_id,
-                &format!("保存路径解析失败: {}", e),
-            );
-            return;
-        }
-    }
-
-    if let Err(e) = fs::write(&save_path, &final_content) {
-        report_research_failure(&db_path, &app_handle, task_id, &format!("写入文件失败: {}", e));
-        return;
-    }
-
-    let saved_path_str = save_path.to_string_lossy().to_string();
-    {
-        let conn = match rusqlite::Connection::open(&db_path) {
-            Ok(c) => c,
-            Err(e) => { report_research_failure(&db_path, &app_handle, task_id, &format!("打开数据库失败: {}", e)); return; }
-        };
-        let now = current_timestamp_ms();
-        let queries_json = serde_json::to_string(&all_used_queries).unwrap_or_default();
-        let _ = db::db_update_research_task(
-            &conn, task_id, "done", &queries_json,
-            all_results.len() as i32, Some(saved_path_str.as_str()), None, &now,
-        );
-    }
-
-    let _ = state.ingest_markdown(save_path).await;
-    let _ = app_handle.emit("research_done", serde_json::json!({
-        "task_id": task_id,
-        "saved_path": saved_path_str,
-        "sources": all_results.len(),
-        "learnings": learnings.len(),
-    }));
+    let _ = save_research_output(
+        &db_path, &app_handle, &state, task_id,
+        &topic, &config, &all_results, &all_used_queries, &learnings, &synthesized,
+    ).await;
 }
 
 #[cfg(test)]

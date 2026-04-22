@@ -247,9 +247,12 @@ impl LlmProvider for OllamaProvider {
             )));
         }
 
-        let generate_response: GenerateResponse = response
-            .json()
+        let body_text = response
+            .text()
             .await
+            .map_err(|e| LlmError::InvalidResponse(format!("读取响应体失败: {}", e)))?;
+
+        let generate_response: GenerateResponse = serde_json::from_str(&body_text)
             .map_err(|e| LlmError::InvalidResponse(format!("解析响应失败: {}", e)))?;
 
         Ok(generate_response.response)
