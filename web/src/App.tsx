@@ -7946,6 +7946,33 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       .catch(() => {});
   };
 
+  const handleRetryTask = async (task: ResearchTaskItem) => {
+    if (!hasSearchProvider) {
+      setTaskActionError("请先在「搜索设置」中配置搜索提供商");
+      return;
+    }
+    setTaskActionError(null);
+    try {
+      const taskId = await startResearch(task.topic, task.depth ?? 1, task.breadth ?? 3);
+      const optimisticTask: ResearchTaskItem = {
+        id: taskId,
+        topic: task.topic,
+        status: "queued",
+        sub_queries: [],
+        web_results_count: 0,
+        depth: task.depth ?? 1,
+        breadth: task.breadth ?? 3,
+        saved_path: null,
+        error: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setResearchTasks((prev) => [optimisticTask, ...prev]);
+    } catch (err) {
+      setTaskActionError(err instanceof Error ? err.message : "重试失败，请稍后再试");
+    }
+  };
+
   const showDeleteModal = (latestTask: ResearchTaskItem, hasSavedWiki: boolean): Promise<DeleteModalOutcome> =>
     new Promise((resolve) => setDeleteModal({ latestTask, hasSavedWiki, resolve }));
 
@@ -8362,6 +8389,16 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                       onClick={() => handleCancel(task.id)}
                     >
                       🛑 取消
+                    </button>
+                  )}
+                  {(task.status === "failed" || task.status === "cancelled") && (
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      style={{ fontSize: "12px" }}
+                      onClick={() => void handleRetryTask(task)}
+                    >
+                      🔄 重试
                     </button>
                   )}
                   {(task.status === "done" || task.status === "failed" || task.status === "cancelled") && (
