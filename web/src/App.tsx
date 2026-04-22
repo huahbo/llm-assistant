@@ -7888,56 +7888,76 @@ function ResearchDialog({
   // 订阅所有研究事件，按 task_id 过滤（历史终态任务不订阅）
   const isTerminal = initialTask && (initialTask.status === "done" || initialTask.status === "failed" || initialTask.status === "cancelled");
   useEffect(() => {
-    if (isTerminal) return; // 历史终态任务：无需事件订阅
+    if (isTerminal) return;
+
+    let cancelled = false;
     const unlisteners: (() => void)[] = [];
 
-    void listenResearchProgress((p) => {
-      if (p.task_id !== taskId) return;
-      if (p.stage === "synthesizing") {
-        setPhase("synthesizing");
-      }
-      setMessages((prev) => {
-        // 合并同 stage 的连续进度消息，避免刷屏
-        const last = prev[prev.length - 1];
-        if (last?.kind === "progress" && last.stage === p.stage) {
-          return [...prev.slice(0, -1), { kind: "progress", stage: p.stage, text: p.message }];
-        }
-        return [...prev, { kind: "progress", stage: p.stage, text: p.message }];
+    const setup = async () => {
+      const u1 = await listenResearchProgress((p) => {
+        if (p.task_id !== taskId) return;
+        if (p.stage === "synthesizing") setPhase("synthesizing");
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.kind === "progress" && last.stage === p.stage) {
+            return [...prev.slice(0, -1), { kind: "progress", stage: p.stage, text: p.message }];
+          }
+          return [...prev, { kind: "progress", stage: p.stage, text: p.message }];
+        });
       });
-    }).then((u) => unlisteners.push(u));
+      if (cancelled) { u1(); return; }
+      unlisteners.push(u1);
 
-    void listenResearchQueriesReady((p) => {
-      if (p.task_id !== taskId) return;
-      setEditableQueries(p.queries);
-      setPhase("awaiting-approval");
-      setMessages((prev) => [
-        ...prev,
-        { kind: "queries", queries: p.queries, taskId: p.task_id },
-      ]);
-    }).then((u) => unlisteners.push(u));
+      const u2 = await listenResearchQueriesReady((p) => {
+        if (p.task_id !== taskId) return;
+        setEditableQueries(p.queries);
+        setPhase("awaiting-approval");
+        setMessages((prev) => {
+          // 去重：同一任务的 queries 消息只插入一次
+          if (prev.some((m) => m.kind === "queries")) return prev;
+          return [...prev, { kind: "queries", queries: p.queries, taskId: p.task_id }];
+        });
+      });
+      if (cancelled) { u2(); return; }
+      unlisteners.push(u2);
 
-    void listenResearchStreamChunk((p) => {
-      if (p.task_id !== taskId) return;
-      setSynthesisContent((prev) => prev + p.chunk);
-    }).then((u) => unlisteners.push(u));
+      const u3 = await listenResearchStreamChunk((p) => {
+        if (p.task_id !== taskId) return;
+        setSynthesisContent((prev) => prev + p.chunk);
+      });
+      if (cancelled) { u3(); return; }
+      unlisteners.push(u3);
 
-    void listenResearchDone((p) => {
-      if (p.task_id !== taskId) return;
-      setPhase("done");
-      setDoneSavedPath(p.saved_path);
-      setMessages((prev) => [
-        ...prev,
-        { kind: "done", savedPath: p.saved_path },
-      ]);
-    }).then((u) => unlisteners.push(u));
+      const u4 = await listenResearchDone((p) => {
+        if (p.task_id !== taskId) return;
+        setPhase("done");
+        setDoneSavedPath(p.saved_path);
+        setMessages((prev) => {
+          if (prev.some((m) => m.kind === "done")) return prev;
+          return [...prev, { kind: "done", savedPath: p.saved_path }];
+        });
+      });
+      if (cancelled) { u4(); return; }
+      unlisteners.push(u4);
 
-    void listenResearchError((p) => {
-      if (p.task_id !== taskId) return;
-      setPhase("failed");
-      setMessages((prev) => [...prev, { kind: "error", text: p.error }]);
-    }).then((u) => unlisteners.push(u));
+      const u5 = await listenResearchError((p) => {
+        if (p.task_id !== taskId) return;
+        setPhase("failed");
+        setMessages((prev) => {
+          if (prev.some((m) => m.kind === "error")) return prev;
+          return [...prev, { kind: "error", text: p.error }];
+        });
+      });
+      if (cancelled) { u5(); return; }
+      unlisteners.push(u5);
+    };
 
-    return () => unlisteners.forEach((u) => u());
+    void setup();
+
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((u) => u());
+    };
   }, [taskId]);
 
   const handleApprove = async () => {
