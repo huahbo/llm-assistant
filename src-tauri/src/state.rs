@@ -6918,15 +6918,113 @@ fn searxng_base_root(base_url: &str) -> String {
         .to_string()
 }
 
-async fn search_searxng_endpoint(
+#[derive(Clone, Copy)]
+struct SearxngSearchParams {
+    language: &'static str,
+    categories: &'static str,
+    safesearch: &'static str,
+}
+
+fn detect_query_pref_language(query: &str) -> &'static str {
+    if query.chars().any(|c| {
+        ('\u{4E00}'..='\u{9FFF}').contains(&c)
+            || ('\u{3400}'..='\u{4DBF}').contains(&c)
+            || ('\u{3040}'..='\u{30FF}').contains(&c)
+            || ('\u{AC00}'..='\u{D7AF}').contains(&c)
+    }) {
+        "zh-CN"
+    } else {
+        "auto"
+    }
+}
+
+fn build_searxng_search_params(query: &str) -> Vec<SearxngSearchParams> {
+    let preferred_lang = detect_query_pref_language(query);
+    let mut params = vec![SearxngSearchParams {
+        language: preferred_lang,
+        categories: "general",
+        safesearch: "0",
+    }];
+    if preferred_lang != "auto" {
+        params.push(SearxngSearchParams {
+            language: "auto",
+            categories: "general",
+            safesearch: "0",
+        });
+    }
+    // 中文/英文主策略都无结果时，放宽语言并扩展新闻源提高召回率。
+    params.push(SearxngSearchParams {
+        language: "all",
+        categories: "general,news",
+        safesearch: "0",
+    });
+    params
+}
+
+fn parse_unresponsive_engines(data: &serde_json::Value) -> Vec<String> {
+    let Some(items) = data["unresponsive_engines"].as_array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        if let Some(text) = item.as_str() {
+            let text = text.trim();
+            if !text.is_empty() {
+                out.push(text.to_string());
+            }
+            continue;
+        }
+
+        if let Some(obj) = item.as_object() {
+            let name = obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("engine").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim();
+            let reason = obj
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if !name.is_empty() && !reason.is_empty() {
+                out.push(format!("{} ({})", name, reason));
+                continue;
+            }
+            if !name.is_empty() {
+                out.push(name.to_string());
+                continue;
+            }
+        }
+
+        let fallback = item.to_string();
+        if !fallback.is_empty() && fallback != "null" {
+            out.push(fallback);
+        }
+    }
+    out
+}
+
+async fn search_searxng_endpoint_with_params(
     client: &reqwest::Client,
     endpoint: &str,
     query: &str,
     max_results: usize,
-) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    params: SearxngSearchParams,
+) -> Result<(Vec<crate::models::WebSearchResult>, Vec<String>), String> {
+    let target_count = max_results.max(1).min(10).to_string();
+    let req_params = vec![
+        ("q", query.to_string()),
+        ("format", "json".to_string()),
+        ("language", params.language.to_string()),
+        ("categories", params.categories.to_string()),
+        ("safesearch", params.safesearch.to_string()),
+        ("pageno", "1".to_string()),
+        ("count", target_count),
+    ];
     let resp = client
         .get(endpoint)
-        .query(&[("q", query), ("format", "json"), ("language", "auto")])
+        .query(&req_params)
         .send()
         .await
         .map_err(|e| format!("SearXNG 请求失败: {}", e))?;
@@ -6941,13 +7039,16 @@ async fn search_searxng_endpoint(
         .json()
         .await
         .map_err(|e| format!("SearXNG 响应解析失败: {}", e))?;
+    let unresponsive_engines = parse_unresponsive_engines(&data);
     let results = data["results"].as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
-    for item in results.iter().take(max_results) {
+    for item in results.iter().take(max_results.max(1)) {
         let title = item["title"].as_str().unwrap_or("").to_string();
         let url_str = item["url"].as_str().unwrap_or("").to_string();
         let snippet = item["content"]
             .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| item["title"].as_str())
             .unwrap_or("")
             .chars()
             .take(300)
@@ -6960,7 +7061,7 @@ async fn search_searxng_endpoint(
             source,
         });
     }
-    Ok(out)
+    Ok((out, unresponsive_engines))
 }
 
 /// SearXNG 搜索。
@@ -6971,20 +7072,82 @@ async fn search_searxng(
     max_results: usize,
 ) -> Result<Vec<crate::models::WebSearchResult>, String> {
     let base_root = searxng_base_root(base_url);
-    let primary_url = format!("{}/search", base_root);
-    match search_searxng_endpoint(client, &primary_url, query, max_results).await {
-        Ok(results) => Ok(results),
-        Err(primary_err) => {
-            // 兼容部分实例把 `/` 作为查询入口。
-            match search_searxng_endpoint(client, &base_root, query, max_results).await {
-                Ok(results) => Ok(results),
-                Err(fallback_err) => Err(format!(
-                    "SearXNG 主端点失败（{}）；回退端点失败（{}）",
-                    primary_err, fallback_err
-                )),
+    let target_count = max_results.max(1);
+    let endpoint_candidates = [format!("{}/search", base_root), base_root];
+    let query_params = build_searxng_search_params(query);
+
+    let mut merged_results: Vec<crate::models::WebSearchResult> = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
+    let mut unresponsive_hints: Vec<String> = Vec::new();
+    let mut seen_hints = std::collections::HashSet::new();
+    let mut errors = Vec::new();
+
+    for endpoint in endpoint_candidates {
+        for params in &query_params {
+            match search_searxng_endpoint_with_params(
+                client,
+                &endpoint,
+                query,
+                target_count,
+                *params,
+            )
+            .await
+            {
+                Ok((results, hints)) => {
+                    for hint in hints {
+                        if seen_hints.insert(hint.clone()) {
+                            unresponsive_hints.push(hint);
+                        }
+                    }
+                    for result in results {
+                        if seen_urls.insert(result.url.clone()) {
+                            merged_results.push(result);
+                        }
+                    }
+                    if merged_results.len() >= target_count {
+                        merged_results.truncate(target_count);
+                        return Ok(merged_results);
+                    }
+                }
+                Err(err) => {
+                    errors.push(format!(
+                        "{} (language={}, categories={}): {}",
+                        endpoint, params.language, params.categories, err
+                    ));
+                }
             }
         }
+
+        if !merged_results.is_empty() {
+            break;
+        }
     }
+
+    if !merged_results.is_empty() {
+        merged_results.truncate(target_count);
+        return Ok(merged_results);
+    }
+
+    if !errors.is_empty() {
+        let summary = summarize_round_errors(&errors, 3);
+        if !unresponsive_hints.is_empty() {
+            return Err(format!(
+                "SearXNG 搜索无结果。错误摘要：{}。不可用引擎：{}",
+                summary,
+                unresponsive_hints.join("; ")
+            ));
+        }
+        return Err(format!("SearXNG 搜索无结果。错误摘要：{}", summary));
+    }
+
+    if !unresponsive_hints.is_empty() {
+        return Err(format!(
+            "SearXNG 返回 0 条结果。不可用引擎：{}",
+            unresponsive_hints.join("; ")
+        ));
+    }
+
+    Err("SearXNG 返回 0 条结果，请检查 engines 配置或网络连通性".to_string())
 }
 
 /// 从 URL 提取 hostname。
@@ -10064,6 +10227,39 @@ entities:
             searxng_base_root("http://127.0.0.1:8080/search/"),
             "http://127.0.0.1:8080"
         );
+    }
+
+    #[test]
+    fn detect_query_pref_language_prefers_zh_for_cjk() {
+        assert_eq!(detect_query_pref_language("大模型 RAG 架构"), "zh-CN");
+    }
+
+    #[test]
+    fn detect_query_pref_language_uses_auto_for_latin() {
+        assert_eq!(detect_query_pref_language("rust async runtime"), "auto");
+    }
+
+    #[test]
+    fn build_searxng_search_params_contains_all_fallback() {
+        let params = build_searxng_search_params("rust ownership model");
+        assert!(params.iter().any(|p| p.language == "all" && p.categories == "general,news"));
+        assert!(params.iter().any(|p| p.safesearch == "0"));
+    }
+
+    #[test]
+    fn parse_unresponsive_engines_supports_string_and_object() {
+        let data = serde_json::json!({
+            "unresponsive_engines": [
+                "google too many requests",
+                {"name": "brave", "reason": "access denied"},
+                {"engine": "duckduckgo"},
+                null
+            ]
+        });
+        let parsed = parse_unresponsive_engines(&data);
+        assert!(parsed.iter().any(|s| s.contains("google")));
+        assert!(parsed.iter().any(|s| s.contains("brave (access denied)")));
+        assert!(parsed.iter().any(|s| s == "duckduckgo"));
     }
 
     #[test]

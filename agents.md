@@ -298,6 +298,8 @@
 | BugFix-Clipper-Status | `get_clip_server_status` 固定返回 running → 改为真实运行态（Atomic 标记） | ✅ `src-tauri/src/clip_server.rs` + `src-tauri/src/commands.rs`（Windows cargo 待复核，2026-04-22，**Codex** 实施） |
 | Opt-SearXNG-E2E-Script | SearXNG Windows 一键自检脚本（禁代理直连 + JSON 诊断输出） | ✅ `scripts/verify_searxng_windows.ps1`（2026-04-22，**Codex** 实施） |
 | Opt-SearXNG-Activation | SearXNG 本地搜索激活增强（URL 规范化、`/search`→`/` 回退、配置前置校验、搜索错误可见化） | ✅ `src-tauri/src/state.rs`（新增 5 条 Rust 单测；待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
+| Opt-SearXNG-Params | SearXNG 检索参数优化（语言优选 + `all/general,news` 回退 + 结果 URL 去重合并 + 不可用引擎提示增强） | ✅ `src-tauri/src/state.rs` + `scripts/verify_searxng_windows.ps1`（WSL 无 cargo/pwsh；待 Windows 复核，2026-04-22，**Codex** 实施） |
+| Docs-README-Services | README 增补模块依赖服务与安装配置速查（含 SearXNG/Clipper Windows 自检命令） | ✅ `README.md` + `docs/实施过程记录.md`（2026-04-22，**Codex** 实施） |
 | BugFix-Research-Logs | Deep Research 失败“无日志可看” + 报告生成瞬时失败易中断 → 报告阶段自动重试一次 + 失败态任务卡展示日志流 | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-WordExport | Deep Research “导出 Word”按钮在 Tauri 下无响应 → 改为保存对话框选路径 + 后端写盘，浏览器模式保留 Blob 回退 | ✅ `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/tauri-client.ts` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-TaskDelete | Deep Research 任务删除能力（终态任务删除 + 可选同步删除关联 Wiki + 运行中任务禁止直删） | ✅ `src-tauri/src/db.rs` + `src-tauri/src/state.rs` + `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/App.tsx` + `web/src/tauri-client.ts`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |

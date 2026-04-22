@@ -1,6 +1,10 @@
 param(
   [string]$BaseUrl = "http://127.0.0.1:8080",
-  [string]$Query = "rust"
+  [string]$Query = "rust",
+  [string]$Language = "auto",
+  [string]$Categories = "general",
+  [int]$SafeSearch = 0,
+  [switch]$DisableFallback
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,50 +80,120 @@ function Format-UnresponsiveEngine {
   return [string]$Item
 }
 
+function Build-SearxngUrl {
+  param(
+    [string]$NormalizedBaseUrl,
+    [string]$QueryText,
+    [string]$LanguageCode,
+    [string]$CategoriesValue,
+    [string]$SafeSearchValue
+  )
+
+  $q = [uri]::EscapeDataString($QueryText)
+  $lang = [uri]::EscapeDataString($LanguageCode)
+  $cats = [uri]::EscapeDataString($CategoriesValue)
+  $safe = [uri]::EscapeDataString($SafeSearchValue)
+  return "$NormalizedBaseUrl/search?q=$q&format=json&language=$lang&categories=$cats&safesearch=$safe&pageno=1&count=10"
+}
+
 try {
   $normalized = $BaseUrl.TrimEnd("/")
-  $url = "$normalized/search?q=$([uri]::EscapeDataString($Query))&format=json&language=auto"
   $client = New-NoProxyHttpClient
 
-  Step "检查 SearXNG 接口"
-  Write-Host "URL: $url"
-  $resp = Invoke-JsonNoProxy -Client $client -Url $url
-
-  if (-not $resp.IsSuccess) {
-    $preview = ($resp.Raw ?? "").ToString()
-    if ($preview.Length -gt 280) { $preview = $preview.Substring(0, 280) + "..." }
-    throw "请求失败: HTTP $($resp.StatusCode); body: $preview"
+  $profiles = @(
+    [PSCustomObject]@{
+      Name       = "primary"
+      Language   = $Language
+      Categories = $Categories
+      SafeSearch = [string]$SafeSearch
+    }
+  )
+  if (-not $DisableFallback) {
+    $profiles += [PSCustomObject]@{
+      Name       = "fallback"
+      Language   = "all"
+      Categories = "general,news"
+      SafeSearch = "0"
+    }
   }
 
-  if ($null -eq $resp.Json) {
-    throw "返回非 JSON: $($resp.Raw)"
-  }
+  $attemptErrors = @()
+  $best = $null
 
-  $resultCount = 0
-  if ($resp.Json.results) {
-    $resultCount = @($resp.Json.results).Count
-  }
+  foreach ($profile in $profiles) {
+    $url = Build-SearxngUrl `
+      -NormalizedBaseUrl $normalized `
+      -QueryText $Query `
+      -LanguageCode $profile.Language `
+      -CategoriesValue $profile.Categories `
+      -SafeSearchValue $profile.SafeSearch
 
-  Write-Host "query: $($resp.Json.query)"
-  Write-Host "number_of_results: $($resp.Json.number_of_results)"
-  Write-Host "results.count: $resultCount"
-  if ($resultCount -eq 0) {
-    Write-Warning "results.count=0：当前可用搜索引擎可能不足或被限流，建议检查 SearXNG engines 配置。"
-  }
-  if ($resp.Json.unresponsive_engines) {
-    $items = @($resp.Json.unresponsive_engines)
+    Step "检查 SearXNG 接口 ($($profile.Name))"
+    Write-Host "URL: $url"
+
+    $resp = Invoke-JsonNoProxy -Client $client -Url $url
+    if (-not $resp.IsSuccess) {
+      $preview = ($resp.Raw ?? "").ToString()
+      if ($preview.Length -gt 280) { $preview = $preview.Substring(0, 280) + "..." }
+      $attemptErrors += "$($profile.Name): HTTP $($resp.StatusCode); body: $preview"
+      continue
+    }
+    if ($null -eq $resp.Json) {
+      $attemptErrors += "$($profile.Name): 返回非 JSON: $($resp.Raw)"
+      continue
+    }
+
+    $resultCount = 0
+    if ($resp.Json.results) {
+      $resultCount = @($resp.Json.results).Count
+    }
+
     $formatted = @()
-    foreach ($item in $items) {
-      $line = Format-UnresponsiveEngine -Item $item
-      if ($line) {
-        $formatted += $line
+    if ($resp.Json.unresponsive_engines) {
+      $items = @($resp.Json.unresponsive_engines)
+      foreach ($item in $items) {
+        $line = Format-UnresponsiveEngine -Item $item
+        if ($line) {
+          $formatted += $line
+        }
       }
     }
+
+    Write-Host "profile: $($profile.Name)"
+    Write-Host "query: $($resp.Json.query)"
+    Write-Host "number_of_results: $($resp.Json.number_of_results)"
+    Write-Host "results.count: $resultCount"
     if ($formatted.Count -gt 0) {
       Write-Host "unresponsive_engines: $($formatted -join '; ')"
-    } else {
-      Write-Host "unresponsive_engines: (present but unparsable)"
     }
+
+    $candidate = [PSCustomObject]@{
+      ProfileName  = $profile.Name
+      Language     = $profile.Language
+      Categories   = $profile.Categories
+      SafeSearch   = $profile.SafeSearch
+      ResultCount  = $resultCount
+      Query        = $resp.Json.query
+      NumberResult = $resp.Json.number_of_results
+      Unresponsive = $formatted
+    }
+    if ($null -eq $best -or $candidate.ResultCount -gt $best.ResultCount) {
+      $best = $candidate
+    }
+  }
+
+  if ($null -eq $best) {
+    throw "全部参数档位请求失败: $($attemptErrors -join ' | ')"
+  }
+
+  Step "SearXNG 最优档位"
+  Write-Host "best.profile: $($best.ProfileName)"
+  Write-Host "best.language: $($best.Language)"
+  Write-Host "best.categories: $($best.Categories)"
+  Write-Host "best.safesearch: $($best.SafeSearch)"
+  Write-Host "best.results.count: $($best.ResultCount)"
+  if ($best.ResultCount -eq 0) {
+    Write-Warning "最优档位仍为 0 结果：当前实例可用引擎质量偏低（常见于引擎被限流/被封禁）。建议调整 SearXNG engines 配置。"
   }
 
   Step "SearXNG 自检通过"

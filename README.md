@@ -19,6 +19,20 @@
 
 ---
 
+## 模块依赖与服务速查
+
+| 模块 | 必需服务 | 可选服务 | 关键配置 |
+|------|----------|----------|----------|
+| **Ingest（文本）** | 无额外服务 | - | 初始化 Vault 后即可使用 |
+| **Ingest（图片/PDF OCR）** | Tesseract（建议含 `eng` + `chi_sim`） | PaddleOCR | `Settings → OCR Provider` 选择 `tesseract` 或 `paddle` |
+| **Query / Ask** | Ollama（或 OpenAI-compatible 云 Provider） | - | 推荐本地：`http://localhost:11434` + 可用模型 |
+| **语义检索 / 图谱异常连接** | Ollama embedding 模型（`nomic-embed-text`） | - | `embed_ollama_model=nomic-embed-text` |
+| **Deep Research** | 搜索 Provider（二选一：Tavily / SearXNG） | - | `Settings → 搜索配置` 填 API Key 或 `http://127.0.0.1:8080` |
+| **Clipper 扩展** | 桌面 App 运行中 + Vault 已打开 | Chrome/Edge 扩展 | 本地服务 `127.0.0.1:19827` 可访问 |
+| **Strict Local Mode** | Ollama（本地） | - | 禁止云 Provider，敏感任务强制本地 |
+
+---
+
 ## 安装
 
 ### 前提软件
@@ -30,12 +44,42 @@
 | **Ollama**（必须，本地 AI） | 本地 LLM 推理服务，提供对话/摘要/embedding | https://ollama.com |
 | Tesseract OCR（可选） | 图片/扫描 PDF 文字识别（含 `chi_sim` 语言包） | https://github.com/UB-Mannheim/tesseract/wiki |
 | Poppler（可选） | PDF → 图片转换（OCR 回退路径所需） | 随 Tesseract Windows 安装包附带，或 https://github.com/oschwartz10612/poppler-windows/releases |
+| Docker Desktop（可选） | 本地运行 SearXNG（Deep Research 搜索） | https://www.docker.com/products/docker-desktop |
+| Chrome / Edge（可选） | 使用浏览器 Clipper 扩展 | 浏览器官方安装页 |
 
 > **Tesseract 语言包说明**  
 > 默认安装包含英文（`eng`），中文需手动下载 `chi_sim.traineddata`：  
 > 1. 前往 https://github.com/tesseract-ocr/tessdata 下载 `chi_sim.traineddata`  
 > 2. 复制到 `%USERPROFILE%\tessdata\`（若该目录不存在则新建）  
 > 3. 在系统环境变量中添加 `TESSDATA_PREFIX` = `%USERPROFILE%\tessdata`（用户变量，无需管理员权限）
+
+### 可选：启动本地 SearXNG（Deep Research）
+
+```powershell
+# 启动容器（首次会自动拉取镜像）
+docker run -d --name searxng `
+  -p 8080:8080 `
+  -e SEARXNG_LIMITER=false `
+  -e SEARXNG_PUBLIC_INSTANCE=false `
+  searxng/searxng
+
+# 自检（仓库内脚本，带无代理直连与最优参数档位探测）
+Set-Location E:\llm-wiki
+.\scripts\verify_searxng_windows.ps1 -Query "rust async runtime"
+```
+
+- 应用中配置：`Settings → 搜索配置 → 搜索提供商 = searxng`，地址填 `http://127.0.0.1:8080`
+- 若脚本显示 `best.results.count = 0`，通常是搜索引擎被限流/不可用，需调整 SearXNG engines 配置。
+
+### 可选：Clipper 扩展（浏览器一键剪藏）
+
+```powershell
+Set-Location E:\llm-wiki
+.\scripts\verify_clipper_windows.ps1
+```
+
+- 先启动桌面 App 并打开 Vault，再在浏览器加载 `extension/` 目录作为本地扩展。
+- 自检通过后，扩展点击 `Clip to Wiki` 会写入 `raw/clips/` 并进入应用摄入链路。
 
 ### 拉取 Ollama 模型
 
