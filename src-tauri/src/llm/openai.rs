@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use super::provider::{LlmError, LlmProvider};
 
-/// 默认请求超时时间（秒）
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// 默认请求超时时间（秒）；综合报告等长文生成需要更多时间
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// 默认模型（兼顾性能与成本）
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
 /// 默认 API 基础地址（可替换为兼容端点）
@@ -238,10 +238,18 @@ impl LlmProvider for OpenAiProvider {
             )));
         }
 
-        let chat_response: ChatResponse = response
-            .json()
+        // 先读 text 再 parse JSON，避免 reqwest body-decode 层面的不透明错误
+        let body_text = response
+            .text()
             .await
-            .map_err(|e| LlmError::InvalidResponse(format!("解析响应失败: {}", e)))?;
+            .map_err(|e| LlmError::InvalidResponse(format!("读取响应体失败: {}", e)))?;
+
+        let chat_response: ChatResponse = serde_json::from_str(&body_text)
+            .map_err(|e| LlmError::InvalidResponse(format!(
+                "解析响应失败: {} (body前200字符: {})",
+                e,
+                body_text.chars().take(200).collect::<String>()
+            )))?;
 
         // 取第一个 choice 的内容
         chat_response
@@ -284,9 +292,12 @@ impl LlmProvider for OpenAiProvider {
             )));
         }
 
-        let embed_response: EmbedResponse = response
-            .json()
+        let body_text = response
+            .text()
             .await
+            .map_err(|e| LlmError::InvalidResponse(format!("读取嵌入响应体失败: {}", e)))?;
+
+        let embed_response: EmbedResponse = serde_json::from_str(&body_text)
             .map_err(|e| LlmError::InvalidResponse(format!("解析嵌入响应失败: {}", e)))?;
 
         embed_response

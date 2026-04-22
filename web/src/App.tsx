@@ -3635,7 +3635,7 @@ export default function App() {
         );
         return;
       }
-      // 仅按当前选中的 provider 判断“命令缺失”，避免被 fallback provider 的缺失误判。
+      // 仅按当前选中的 provider 判断"命令缺失"，避免被 fallback provider 的缺失误判。
       const isPrimaryProviderMissing =
         ingestFileOcrProvider === "paddle"
           ? (
@@ -3778,7 +3778,7 @@ export default function App() {
     ]);
 
     try {
-      // 进度订阅失败不应阻塞查询执行，避免按钮持续处于“执行中”。
+      // 进度订阅失败不应阻塞查询执行，避免按钮持续处于"执行中"。
       try {
         unlisten = await listenProgress("query_progress", (payload) => {
           const update = parseQueryProgressPayload(payload);
@@ -4033,7 +4033,7 @@ export default function App() {
       const result = await searchWikiPages(wikiKeyword.trim());
       setPages(result);
       if (wikiKeyword.trim()) {
-        setStatusMessage(`Wiki 搜索完成：关键词“${wikiKeyword.trim()}”，命中 ${result.length} 页。`);
+        setStatusMessage(`Wiki 搜索完成：关键词"${wikiKeyword.trim()}"，命中 ${result.length} 页。`);
       } else {
         setStatusMessage(`已刷新最近 Wiki 页面：${result.length} 页。`);
       }
@@ -5048,7 +5048,7 @@ export default function App() {
             </div>
           </div>
           {wikiFrontmatterCollapsed ? (
-            <p className="runtime-hint">Frontmatter 已折叠，点击“展开”查看详情。</p>
+            <p className="runtime-hint">Frontmatter 已折叠，点击"展开"查看详情。</p>
           ) : (
             <>
               {wikiFrontmatterRows.length ? (
@@ -7812,6 +7812,13 @@ function QueuePanel({
 
 // ---- Deep Research 面板 ----
 
+type DeleteModalOutcome = "cancel" | "task-only" | "task-and-wiki";
+type DeleteModalState = {
+  latestTask: ResearchTaskItem;
+  hasSavedWiki: boolean;
+  resolve: (outcome: DeleteModalOutcome) => void;
+};
+
 function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => void }) {
   const [topic, setTopic] = useState("");
   const [depth, setDepth] = useState(1);
@@ -7823,6 +7830,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const [startError, setStartError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [taskActionError, setTaskActionError] = useState<string | null>(null);
+  const [deleteModal, setDeleteModal] = useState<DeleteModalState | null>(null);
 
   // 初始化：加载历史任务 + 搜索配置
   const [hasSearchProvider, setHasSearchProvider] = useState(true);
@@ -7938,61 +7946,39 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
       .catch(() => {});
   };
 
+  const showDeleteModal = (latestTask: ResearchTaskItem, hasSavedWiki: boolean): Promise<DeleteModalOutcome> =>
+    new Promise((resolve) => setDeleteModal({ latestTask, hasSavedWiki, resolve }));
+
   const handleDeleteTask = async (task: ResearchTaskItem) => {
     if (!isTauriRuntime()) return;
 
     setTaskActionError(null);
+
+    // Step 1: basic confirmation (native dialog is fine here — X = false = abort)
     const confirmedDeleteTask = await askConfirmDialog(
       `确认删除研究任务「${task.topic}」吗？\n此操作会删除任务记录与该任务日志。`,
-      {
-        title: "删除研究任务",
-        kind: "warning",
-        okLabel: "删除",
-        cancelLabel: "取消",
-      },
+      { title: "删除研究任务", kind: "warning", okLabel: "删除", cancelLabel: "取消" },
     );
-    if (!confirmedDeleteTask) {
-      return;
-    }
+    if (!confirmedDeleteTask) return;
 
-    // 删除前先拉一次最新任务，避免前端旧状态导致遗漏关联 Wiki 二次确认。
+    // Refresh to get the latest saved_path before showing the wiki dialog
     let latestTask = task;
     try {
       const latestTasks = await listResearchTasks();
       const matched = latestTasks.find((item) => item.id === task.id);
-      if (matched) {
-        latestTask = matched;
-      }
+      if (matched) latestTask = matched;
     } catch {
-      // 拉取失败时继续使用当前任务快照，避免阻断删除流程。
+      // fall through with snapshot
     }
 
-    let deleteSavedWiki = false;
     const savedPath = (latestTask.saved_path ?? "").trim();
-    if (savedPath) {
-      deleteSavedWiki = await askConfirmDialog(
-        `该任务已关联 Wiki 页面：\n${savedPath}\n\n是否同时删除该 Wiki 页面？\n选择“取消”将只删除任务记录。`,
-        {
-          title: "同步删除 Wiki",
-          kind: "warning",
-          okLabel: "同时删除 Wiki",
-          cancelLabel: "仅删任务",
-        },
-      );
-    } else if (latestTask.status === "done") {
-      const confirmedContinue = await askConfirmDialog(
-        "该任务为完成态，但未读取到关联 Wiki 路径。\n将只删除任务记录，不删除任何 Wiki 页面。\n\n是否继续？",
-        {
-          title: "删除研究任务",
-          kind: "info",
-          okLabel: "继续删除",
-          cancelLabel: "取消",
-        },
-      );
-      if (!confirmedContinue) {
-        return;
-      }
-    }
+
+    // Step 2: show React modal — X and 取消 both map to "cancel" (abort everything)
+    const outcome = await showDeleteModal(latestTask, !!savedPath);
+    setDeleteModal(null);
+    if (outcome === "cancel") return;
+
+    const deleteSavedWiki = outcome === "task-and-wiki";
 
     try {
       await deleteResearchTask(latestTask.id, deleteSavedWiki);
@@ -8081,6 +8067,86 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
 
   return (
     <>
+      {/* 删除任务确认 Modal（支持三态：取消 / 仅删任务 / 删任务+Wiki） */}
+      {deleteModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed", inset: 0, zIndex: 9999,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          onClick={() => { deleteModal.resolve("cancel"); setDeleteModal(null); }}
+        >
+          <div
+            style={{
+              background: "var(--bg-content, #1e1e2e)",
+              border: "1.5px solid var(--border, #333)",
+              borderRadius: "10px",
+              padding: "24px",
+              minWidth: "340px",
+              maxWidth: "420px",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+              <span style={{ fontWeight: 700, fontSize: "15px" }}>删除研究任务</span>
+              <button
+                type="button"
+                aria-label="取消"
+                onClick={() => { deleteModal.resolve("cancel"); setDeleteModal(null); }}
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: "18px", color: "var(--text-secondary)", lineHeight: 1, padding: "0 2px" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "12px", lineHeight: 1.6 }}>
+              确认删除任务「<strong style={{ color: "var(--text)" }}>{deleteModal.latestTask.topic}</strong>」吗？此操作不可撤销。
+            </p>
+
+            {deleteModal.hasSavedWiki ? (
+              <p style={{ fontSize: "12px", color: "var(--text-secondary)", background: "rgba(255,200,100,0.1)", border: "1px solid rgba(255,200,100,0.3)", borderRadius: "6px", padding: "8px 10px", marginBottom: "20px" }}>
+                ⚠️ 该任务已关联 Wiki 页面：<br />
+                <code style={{ wordBreak: "break-all", fontSize: "11px" }}>{deleteModal.latestTask.saved_path}</code>
+              </p>
+            ) : (
+              <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "20px" }}>
+                仅删除任务记录，不影响任何 Wiki 页面。
+              </p>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="dev-panel__button"
+                onClick={() => { deleteModal.resolve("cancel"); setDeleteModal(null); }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="dev-panel__button"
+                onClick={() => { deleteModal.resolve("task-only"); setDeleteModal(null); }}
+              >
+                仅删任务
+              </button>
+              {deleteModal.hasSavedWiki && (
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--danger"
+                  onClick={() => { deleteModal.resolve("task-and-wiki"); setDeleteModal(null); }}
+                >
+                  删除任务 + Wiki
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="module-header">
         <h1 className="module-header__title">Deep Research</h1>
         <p className="module-header__sub">自动分解主题、搜索互联网并合成 Wiki 页面</p>
