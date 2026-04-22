@@ -7996,8 +7996,13 @@ function ResearchDialog({
   }, [taskId, isTerminal]);
 
   const handleExportMd = async () => {
-    const content = synthesisContent || "";
-    if (!content.trim()) return;
+    // 优先用流式内容；历史任务无流式内容时从 wiki 文件读取
+    let content = synthesisContent.trim();
+    if (!content && doneSavedPath) {
+      const detail = await fetchWikiPageDetail(doneSavedPath);
+      content = detail?.content?.trim() ?? "";
+    }
+    if (!content) return;
     const safeTopic = topic.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
     const savePath = await pickSaveFile({
       defaultPath: `${safeTopic}.md`,
@@ -8336,7 +8341,7 @@ function ResearchDialog({
                 {approving ? "提交中..." : "开始搜索 →"}
               </button>
             )}
-            {phase === "done" && synthesisContent && (
+            {phase === "done" && (synthesisContent || doneSavedPath) && (
               <button
                 type="button"
                 className="dev-panel__button"

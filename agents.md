@@ -299,6 +299,10 @@
 | BugFix-Research-WordExport | Deep Research “导出 Word”按钮在 Tauri 下无响应 → 改为保存对话框选路径 + 后端写盘，浏览器模式保留 Blob 回退 | ✅ `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/tauri-client.ts` + `web/src/App.tsx`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-TaskDelete | Deep Research 任务删除能力（终态任务删除 + 可选同步删除关联 Wiki + 运行中任务禁止直删） | ✅ `src-tauri/src/db.rs` + `src-tauri/src/state.rs` + `src-tauri/src/commands.rs` + `src-tauri/src/main.rs` + `web/src/App.tsx` + `web/src/tauri-client.ts`（WSL `web typecheck` 通过；Rust 待 Windows cargo 复核，2026-04-21，**Codex** 实施） |
 | BugFix-Research-DeleteConfirm | 任务删除确认链路稳定化（删除参数兼容 + 时间显示统一 + Tauri 原生 confirm 二次确认，取消后保留任务） | ✅ `src-tauri/src/commands.rs` + `src-tauri/capabilities/default.json` + `web/src/App.tsx` + `web/src/tauri-client.ts`（用户手测通过，2026-04-21，**Codex** 实施） |
+| P26-ResearchDialog | Deep Research 对话框体验收口（状态同步轮询、事件重复订阅修复、Footer 操作统一、UI 配色修复、历史任务状态与重试） | ✅ `web/src/App.tsx`（2026-04-22，**Claude Code** 实施） |
+| P26-ResearchExportMD | Research 报告导出 `.md`（按钮 + 本地保存）与历史任务兜底（`doneSavedPath` 读取 Wiki 内容） | ✅ `web/src/App.tsx` + `web/src/tauri-client.ts`（WSL `web typecheck` 通过，2026-04-22，**Claude Code/Codex** 接力） |
+| P26-Graph-UX | 图谱双击节点跳转 Wiki（400ms 双击窗口） | ✅ `web/src/App.tsx`（2026-04-22，**Claude Code** 实施） |
+| P26-Embed-HealthHint | Embed 健康检查提示优化（ModelNotFound 指引 `ollama pull nomic-embed-text:latest`） | ✅ `src-tauri/src/state.rs`（2026-04-22，**Claude Code** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -323,12 +327,13 @@
 | ✅ | **Deep Research 失败态体验复核** | 失败任务卡日志展示与“自动重试一次”提示已可见（2026-04-21） |
 | ✅ | **Deep Research 任务删除耦合确认复核** | 已验证删除任务二次确认与“是否同步删除 Wiki”确认链路（2026-04-21） |
 | 2 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
+| 3 | **Research `.md` 导出历史任务回归复核** | 验证无流式内容的历史 done 任务仍可见“导出 .md”并成功导出 |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-20）
+### 18.3 当前代码快照（2026-04-22）
 
 ```
 src-tauri/src/
@@ -344,26 +349,26 @@ src-tauri/src/
   vault.rs          # 文件系统（hash去重, ingest_markdown, append_see_also_link）
 
 web/src/
-  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成）
+  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成，含 ResearchDialog/导出.md/图谱双击跳转）
   tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale）
   types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug）
   app-utils.test.ts # 单元测试（含图谱洞察新增用例，数量待 Windows 复核）
   styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组等）
 ```
 
-### 18.4 验证基线（2026-04-21 最新）
+### 18.4 验证基线（2026-04-22 最新）
 
 - `cargo check` / `cargo test`：**待 Windows 复核**（本轮 Codex 在 WSL：`cargo: command not found`）
 - `node --check extension/popup.js`：**通过**
-- `npm run typecheck`：**通过（0 errors）**（2026-04-20，WSL）
+- `npm run typecheck`：**通过（0 errors）**（2026-04-22，WSL）
 - `npm run test -- --run`：**本轮未执行**（WSL 受 Rollup Linux 可选依赖缺失影响，待 Windows 复核）
 - `npm run build`：**本轮未执行**（按当前轮次指令跳过打包相关验证）
 
 最新提交（main 分支）：
-- `feat: 收口 deep research 任务删除与确认交互` (d7648b0)
-- `fix: 修复 deep research 导出 word 无响应` (4073abe)
-- `fix: 提升 deep research 失败可见性与报告生成韧性` (b0e3606)
-- `feat: 激活并增强 searxng 本地搜索链路` (0f7e5de)
+- `feat: 完成 P1+P2 功能收口` (d1ab47c)
+- `fix: 修复 ResearchDialog 事件重复订阅导致 queries/done 消息重复` (c4205fa)
+- `fix: ResearchDialog 操作按钮收口为底部统一 Footer` (3362e57)
+- `fix: 修复 ResearchDialog UI 配色与交互问题` (47048dd)
 
 ### 18.5 关键架构约束
 
