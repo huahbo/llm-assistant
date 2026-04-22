@@ -7828,22 +7828,50 @@ function ResearchDialog({
   topic,
   depth,
   breadth,
+  initialTask,
   onClose,
+  onRetry,
   onOpenWikiPage,
 }: {
   taskId: number;
   topic: string;
   depth: number;
   breadth: number;
+  initialTask?: ResearchTaskItem;
   onClose: () => void;
+  onRetry?: () => void;
   onOpenWikiPage: (path: string) => void;
 }) {
-  const [messages, setMessages] = useState<DialogMsg[]>([
-    { kind: "user", topic, depth, breadth },
-  ]);
+  // 根据历史任务状态决定初始消息和阶段
+  const initPhase = (): "running" | "awaiting-approval" | "synthesizing" | "done" | "failed" => {
+    if (!initialTask) return "running";
+    if (initialTask.status === "done") return "done";
+    if (initialTask.status === "failed" || initialTask.status === "cancelled") return "failed";
+    return "running";
+  };
+
+  const initMessages = (): DialogMsg[] => {
+    const msgs: DialogMsg[] = [{ kind: "user", topic, depth, breadth }];
+    if (!initialTask) return msgs;
+    if (initialTask.status === "done" && initialTask.saved_path) {
+      if ((initialTask.web_results_count ?? 0) > 0) {
+        msgs.push({ kind: "progress", stage: "searching", text: `已从 ${initialTask.web_results_count} 个来源提取信息` });
+      }
+      msgs.push({ kind: "done", savedPath: initialTask.saved_path });
+    } else if (initialTask.status === "failed" || initialTask.status === "cancelled") {
+      if (initialTask.error) {
+        msgs.push({ kind: "error", text: initialTask.error });
+      } else {
+        msgs.push({ kind: "error", text: initialTask.status === "cancelled" ? "任务已取消" : "任务失败" });
+      }
+    }
+    return msgs;
+  };
+
+  const [messages, setMessages] = useState<DialogMsg[]>(initMessages);
   const [phase, setPhase] = useState<
     "running" | "awaiting-approval" | "synthesizing" | "done" | "failed"
-  >("running");
+  >(initPhase);
   const [editableQueries, setEditableQueries] = useState<string[]>([]);
   const [approving, setApproving] = useState(false);
   const [synthesisContent, setSynthesisContent] = useState("");
@@ -7854,8 +7882,10 @@ function ResearchDialog({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, synthesisContent]);
 
-  // 订阅所有研究事件，按 task_id 过滤
+  // 订阅所有研究事件，按 task_id 过滤（历史终态任务不订阅）
+  const isTerminal = initialTask && (initialTask.status === "done" || initialTask.status === "failed" || initialTask.status === "cancelled");
   useEffect(() => {
+    if (isTerminal) return; // 历史终态任务：无需事件订阅
     const unlisteners: (() => void)[] = [];
 
     void listenResearchProgress((p) => {
@@ -8135,12 +8165,22 @@ function ResearchDialog({
               return (
                 <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
                   <span style={{ fontSize: "16px", flexShrink: 0 }}>❌</span>
-                  <div style={{
-                    background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
-                    borderRadius: "8px", padding: "10px 12px", fontSize: "13px",
-                    color: "var(--error, #f87171)",
-                  }}>
-                    {msg.text}
+                  <div>
+                    <div style={{
+                      background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+                      borderRadius: "8px", padding: "10px 12px", fontSize: "13px",
+                      color: "var(--error, #f87171)", marginBottom: "8px",
+                    }}>
+                      {msg.text}
+                    </div>
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      style={{ fontSize: "12px" }}
+                      onClick={() => onRetry?.()}
+                    >
+                      🔄 用相同参数重试
+                    </button>
                   </div>
                 </div>
               );
@@ -8201,7 +8241,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [taskActionError, setTaskActionError] = useState<string | null>(null);
   const [deleteModal, setDeleteModal] = useState<DeleteModalState | null>(null);
-  const [dialogTask, setDialogTask] = useState<{ taskId: number; topic: string; depth: number; breadth: number } | null>(null);
+  const [dialogTask, setDialogTask] = useState<{ taskId: number; topic: string; depth: number; breadth: number; initialTask?: ResearchTaskItem } | null>(null);
 
   // 初始化：加载历史任务 + 搜索配置
   const [hasSearchProvider, setHasSearchProvider] = useState(true);
@@ -8473,7 +8513,22 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
           topic={dialogTask.topic}
           depth={dialogTask.depth}
           breadth={dialogTask.breadth}
+          initialTask={dialogTask.initialTask}
           onClose={() => { setDialogTask(null); void refreshTasks(); }}
+          onRetry={async () => {
+            const { topic: t, depth: d, breadth: b } = dialogTask;
+            setDialogTask(null);
+            try {
+              const newId = await startResearch(t, d, b);
+              setResearchTasks((prev) => [{
+                id: newId, topic: t, status: "queued", sub_queries: [],
+                web_results_count: 0, depth: d, breadth: b,
+                saved_path: null, error: null,
+                created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+              }, ...prev]);
+              setDialogTask({ taskId: newId, topic: t, depth: d, breadth: b });
+            } catch { /* silent */ }
+          }}
           onOpenWikiPage={onOpenWikiPage}
         />
       )}
@@ -8684,7 +8739,7 @@ function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (path: string) => v
                     <span
                       style={{ fontWeight: 600, fontSize: "14px", cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: "3px" }}
                       title="点击打开研究对话框"
-                      onClick={() => setDialogTask({ taskId: task.id, topic: task.topic, depth: task.depth ?? 1, breadth: task.breadth ?? 3 })}
+                      onClick={() => setDialogTask({ taskId: task.id, topic: task.topic, depth: task.depth ?? 1, breadth: task.breadth ?? 3, initialTask: task })}
                     >{task.topic}</span>
                     <span style={{ fontSize: "10px", color: "var(--text-secondary)" }}>
                       创建：{formatLintCheckedAt(task.created_at)} ·
