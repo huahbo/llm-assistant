@@ -1451,6 +1451,17 @@ export async function listResearchTasks(): Promise<ResearchTaskItem[]> {
   }
 }
 
+/** 获取单条研究任务的最新状态。非 Tauri 环境返回 null。 */
+export async function getResearchTask(id: number): Promise<ResearchTaskItem | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<ResearchTaskItem | null>("get_research_task", { id });
+  } catch {
+    return null;
+  }
+}
+
 /** 取消研究任务（queued 状态）。非 Tauri 环境静默忽略。 */
 export async function cancelResearchTask(id: number): Promise<void> {
   if (!isTauriRuntime()) return;

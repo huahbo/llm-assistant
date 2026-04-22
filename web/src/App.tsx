@@ -58,6 +58,7 @@ import {
   listenProgress,
   startResearch,
   listResearchTasks,
+  getResearchTask,
   cancelResearchTask,
   deleteResearchTask,
   getSearchConfig,
@@ -7189,7 +7190,18 @@ export default function App() {
                               const edge = link as AggregatedEdge;
                               return edge.weight ? Math.min(1 + edge.weight * 0.5, 4) : 1;
                             }}
-                            onNodeClick={(node: object) => {
+                            onNodeClick={(node: object, _event: MouseEvent) => {
+                              const n = node as KnowledgeGraphNode & AggregatedNode;
+                              const now = Date.now();
+                              const last = (graphRef.current as any).__lastNodeClickTime ?? 0;
+                              const lastId = (graphRef.current as any).__lastNodeClickId ?? "";
+                              (graphRef.current as any).__lastNodeClickTime = now;
+                              (graphRef.current as any).__lastNodeClickId = n.id;
+                              if (now - last < 400 && lastId === n.id && !n.isAggregate) {
+                                const pagePath = resolveGraphNodePagePath(n);
+                                if (pagePath) { setActiveModule("wiki"); void handleOpenWikiPage(pagePath); }
+                                return;
+                              }
                               handleGraphNodeClick(node);
                             }}
                             nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
@@ -7960,6 +7972,41 @@ function ResearchDialog({
     };
   }, [taskId]);
 
+  // 对话框打开时 poll 一次最新状态（处理任务在后台已完成但前端状态陈旧的情况）
+  useEffect(() => {
+    if (isTerminal) return;
+    void getResearchTask(taskId).then((task) => {
+      if (!task) return;
+      const s = task.status as string;
+      if (s === "done" && task.saved_path) {
+        setPhase("done");
+        setDoneSavedPath(task.saved_path);
+        setMessages((prev) => {
+          if (prev.some((m) => m.kind === "done")) return prev;
+          return [...prev, { kind: "done", savedPath: task.saved_path! }];
+        });
+      } else if (s === "failed" || s === "cancelled") {
+        setPhase("failed");
+        setMessages((prev) => {
+          if (prev.some((m) => m.kind === "error")) return prev;
+          return [...prev, { kind: "error", text: task.error ?? (s === "cancelled" ? "任务已取消" : "任务失败") }];
+        });
+      }
+    });
+  }, [taskId, isTerminal]);
+
+  const handleExportMd = async () => {
+    const content = synthesisContent || "";
+    if (!content.trim()) return;
+    const safeTopic = topic.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+    const savePath = await pickSaveFile({
+      defaultPath: `${safeTopic}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!savePath) return;
+    await saveResearchDoc(savePath, content);
+  };
+
   const handleApprove = async () => {
     const valid = editableQueries.map((q) => q.trim()).filter(Boolean);
     if (valid.length === 0) return;
@@ -8287,6 +8334,17 @@ function ResearchDialog({
                 onClick={() => void handleApprove()}
               >
                 {approving ? "提交中..." : "开始搜索 →"}
+              </button>
+            )}
+            {phase === "done" && synthesisContent && (
+              <button
+                type="button"
+                className="dev-panel__button"
+                style={{ fontSize: "13px" }}
+                onClick={() => void handleExportMd()}
+                title="导出综合报告为 Markdown 文件"
+              >
+                ⬇ 导出 .md
               </button>
             )}
             {phase === "done" && doneSavedPath && (

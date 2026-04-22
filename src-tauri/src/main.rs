@@ -82,6 +82,7 @@ fn main() {
             commands::get_page_embedding_similarities,
             commands::start_research,
             commands::list_research_tasks,
+            commands::get_research_task,
             commands::cancel_research_task,
             commands::delete_research_task,
             commands::get_search_config,

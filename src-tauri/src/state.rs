@@ -1320,9 +1320,14 @@ impl AppState {
                 }
             }
             Err(e) => {
+                let hint = if matches!(e, LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)) {
+                    "（请确认 Ollama 已启动且已拉取 nomic-embed-text:latest 模型）"
+                } else {
+                    ""
+                };
                 self.push_log(
                     LogLevel::Warn,
-                    format!("向量化失败（跳过，不影响摄入）: {}", e),
+                    format!("向量化失败，跳过语义检索索引{}：{}", hint, e),
                 );
             }
         }
@@ -2801,9 +2806,14 @@ Wiki 页面：\n{}",
                 crate::search::rank_embedding_paths_by_cosine(&query_embedding, &candidates, limit)
             }
             Err(err) => {
+                let hint = if matches!(err, LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)) {
+                    "（Ollama 未启动或缺少 nomic-embed-text:latest）"
+                } else {
+                    ""
+                };
                 self.push_log(
                     LogLevel::Warn,
-                    format!("embedding 召回失败，已跳过该检索路径: {}", err),
+                    format!("embedding 召回失败，已跳过{}：{}", hint, err),
                 );
                 Vec::new()
             }
@@ -4077,6 +4087,14 @@ Wiki 页面：\n{}",
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("打开数据库失败: {}", e))?;
         db::db_list_research_tasks(&conn)
+    }
+
+    pub fn get_research_task(&self, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {
+        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
+        db::ensure_meta_db(&db_path)?;
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        db::db_get_research_task(&conn, id)
     }
 
     /// 取消研究任务（幂等，不重置已有字段）。

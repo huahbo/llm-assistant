@@ -511,6 +511,12 @@ pub fn list_research_tasks(state: State<'_, AppState>) -> Result<Vec<ResearchTas
     state.list_research_tasks()
 }
 
+/// 获取单条研究任务。
+#[tauri::command]
+pub fn get_research_task(id: i64, state: State<'_, AppState>) -> Result<Option<ResearchTaskItem>, String> {
+    state.get_research_task(id)
+}
+
 /// 取消指定研究任务。
 #[tauri::command]
 pub fn cancel_research_task(id: i64, state: State<'_, AppState>) -> Result<(), String> {
