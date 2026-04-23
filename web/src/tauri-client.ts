@@ -3,6 +3,7 @@ import type {
   AskHistoryItem,
   BackendAppMode,
   DefaultPaths,
+  IngestPreview,
   IngestQueueItem,
   IngestResult,
   KnowledgeGraphData,
@@ -373,6 +374,34 @@ export const createIngestFileArgs = (sourcePath: string, ocrProvider?: OcrProvid
 
 /** 构造 ingest_url 命令参数（用于测试） */
 export const createIngestUrlArgs = (url: string) => ({ url });
+
+/** 构造 preview_ingest_file 命令参数（用于测试） */
+export const createPreviewIngestFileArgs = (
+  sourceType: string,
+  sourcePath: string,
+  ocrProvider?: OcrProvider,
+) => {
+  const providerArgs = ocrProvider
+    ? {
+        ocrProvider,
+        ocr_provider: ocrProvider,
+      }
+    : {};
+
+  return {
+    sourceType,
+    source_type: sourceType,
+    sourcePath,
+    source_path: sourcePath,
+    ...providerArgs,
+  };
+};
+
+/** 构造 apply_ingest_preview 命令参数（用于测试） */
+export const createApplyIngestPreviewArgs = (previewId: string) => ({
+  previewId,
+  preview_id: previewId,
+});
 
 export const createQueryAskArgs = (question: string) => ({
   question,
@@ -880,6 +909,38 @@ export async function ingestFile(
   return withTimeout(
     invoke<IngestResult>("ingest_file", {
       ...createIngestFileArgs(sourcePath, ocrProvider),
+    }),
+    INGEST_TIMEOUT_MS,
+  );
+}
+
+export async function previewIngestFile(
+  sourceType: string,
+  sourcePath: string,
+  ocrProvider?: OcrProvider,
+): Promise<IngestPreview | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<IngestPreview>("preview_ingest_file", {
+      ...createPreviewIngestFileArgs(sourceType, sourcePath, ocrProvider),
+    }),
+    INGEST_TIMEOUT_MS,
+  );
+}
+
+export async function applyIngestPreview(previewId: string): Promise<IngestResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<IngestResult>("apply_ingest_preview", {
+      ...createApplyIngestPreviewArgs(previewId),
     }),
     INGEST_TIMEOUT_MS,
   );
@@ -1519,7 +1580,7 @@ export async function setSearchConfig(config: SearchConfig): Promise<void> {
   }
 }
 
-/** 保存 Deep Research 导出的 Word 文档（HTML .doc）到指定路径。 */
+/** 保存 Deep Research 导出文件（.md 或其他格式）到用户指定路径。 */
 export async function saveResearchDoc(path: string, content: string): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");

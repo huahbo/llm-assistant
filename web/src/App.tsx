@@ -18,10 +18,9 @@ import {
   fetchWikiPageCitations,
   getLlmProviderPresets,
   initVault,
-  ingestMarkdown,
   ingestFile,
-  ingestPdf,
-  ingestUrl,
+  previewIngestFile,
+  applyIngestPreview,
   isTauriRuntime,
   pickFiles,
   pickFolder,
@@ -114,6 +113,7 @@ import type {
   ResearchTaskItem,
   ResearchTaskStatus,
   SearchConfig,
+  IngestPreview,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageItem,
@@ -2560,6 +2560,8 @@ export default function App() {
   // 摄入队列面板状态
   const [ingestQueue, setIngestQueue] = useState<IngestQueueItem[]>([]);
   const [queueEnqueueing, setQueueEnqueueing] = useState(false);
+  const [ingestPreviewDialog, setIngestPreviewDialog] = useState<IngestPreview | null>(null);
+  const ingestPreviewResolverRef = useRef<((approved: boolean) => void) | null>(null);
 
   const filteredQueryHistoryItems = useMemo(
     () => filterQueryHistoryItems(queryHistoryItems, askHistoryKeyword),
@@ -3412,7 +3414,19 @@ export default function App() {
         console.warn("订阅 ingest 进度事件失败，继续执行摄入流程。", error);
       }
 
-      const result = await ingestMarkdown(nextSourcePath);
+      setStatusMessage("分析中，等待审核确认...");
+      const preview = await previewIngestFile("markdown", nextSourcePath);
+      if (!preview) {
+        setStatusMessage("当前环境不支持摄入预览。");
+        return;
+      }
+      const approved = await requestIngestPreviewApproval(preview);
+      if (!approved) {
+        setStatusMessage("已取消摄入。");
+        return;
+      }
+      setStatusMessage("写入中...");
+      const result = await applyIngestPreview(preview.preview_id);
       if (!result) {
         setStatusMessage("当前环境不支持示例摄入。");
         return;
@@ -3470,7 +3484,19 @@ export default function App() {
         console.warn("订阅 ingest 进度事件失败，继续执行 URL 摄入流程。", error);
       }
 
-      const result = await ingestUrl(trimmedUrl);
+      setStatusMessage("分析中，等待审核确认...");
+      const preview = await previewIngestFile("url", trimmedUrl);
+      if (!preview) {
+        setStatusMessage("当前环境不支持摄入预览。");
+        return;
+      }
+      const approved = await requestIngestPreviewApproval(preview);
+      if (!approved) {
+        setStatusMessage("已取消摄入。");
+        return;
+      }
+      setStatusMessage("写入中...");
+      const result = await applyIngestPreview(preview.preview_id);
       if (!result) {
         setStatusMessage("当前环境不支持 URL 摄入。");
         return;
@@ -3528,7 +3554,19 @@ export default function App() {
         console.warn("订阅 ingest 进度事件失败，继续执行 PDF 摄入流程。", error);
       }
 
-      const result = await ingestPdf(trimmedPath);
+      setStatusMessage("分析中，等待审核确认...");
+      const preview = await previewIngestFile("pdf", trimmedPath);
+      if (!preview) {
+        setStatusMessage("当前环境不支持摄入预览。");
+        return;
+      }
+      const approved = await requestIngestPreviewApproval(preview);
+      if (!approved) {
+        setStatusMessage("已取消摄入。");
+        return;
+      }
+      setStatusMessage("写入中...");
+      const result = await applyIngestPreview(preview.preview_id);
       if (!result) {
         setStatusMessage("当前环境不支持 PDF 摄入。");
         return;
@@ -3567,7 +3605,27 @@ export default function App() {
     }
   };
 
-  const runIngestFilePaths = async (pathsToIngest: string[], sourceLabel: "manual" | "drag") => {
+  const requestIngestPreviewApproval = useCallback((preview: IngestPreview) => {
+    return new Promise<boolean>((resolve) => {
+      ingestPreviewResolverRef.current = resolve;
+      setIngestPreviewDialog(preview);
+    });
+  }, []);
+
+  const closeIngestPreviewDialog = useCallback((approved: boolean) => {
+    const resolver = ingestPreviewResolverRef.current;
+    ingestPreviewResolverRef.current = null;
+    setIngestPreviewDialog(null);
+    if (resolver) {
+      resolver(approved);
+    }
+  }, []);
+
+  const runIngestFilePaths = async (
+    pathsToIngest: string[],
+    sourceLabel: "manual" | "drag",
+    previewBeforeApply = false,
+  ) => {
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法执行通用文件摄入。");
       return;
@@ -3593,8 +3651,27 @@ export default function App() {
 
       let successCount = 0;
       for (const filePath of pathsToIngest) {
-        setStatusMessage(`摄入中 (${successCount + 1}/${pathsToIngest.length})：${filePath.split(/[/\\]/).pop() ?? filePath}`);
-        const result = await ingestFile(filePath, ingestFileOcrProvider);
+        const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
+        let result: Awaited<ReturnType<typeof ingestFile>>;
+        if (previewBeforeApply) {
+          setStatusMessage(`分析中 (${successCount + 1}/${pathsToIngest.length})：${fileName}`);
+          const preview = await previewIngestFile("file", filePath, ingestFileOcrProvider);
+          if (!preview) {
+            setStatusMessage("当前环境不支持摄入预览。");
+            return;
+          }
+          const approved = await requestIngestPreviewApproval(preview);
+          if (!approved) {
+            setStatusMessage("已取消摄入。");
+            return;
+          }
+          setStatusMessage(`写入中 (${successCount + 1}/${pathsToIngest.length})：${fileName}`);
+          result = await applyIngestPreview(preview.preview_id);
+        } else {
+          setStatusMessage(`摄入中 (${successCount + 1}/${pathsToIngest.length})：${fileName}`);
+          result = await ingestFile(filePath, ingestFileOcrProvider);
+        }
+
         if (!result) {
           setStatusMessage("当前环境不支持通用文件摄入。");
           return;
@@ -3663,6 +3740,11 @@ export default function App() {
       if (unlisten) {
         unlisten();
       }
+      if (ingestPreviewResolverRef.current) {
+        ingestPreviewResolverRef.current(false);
+        ingestPreviewResolverRef.current = null;
+      }
+      setIngestPreviewDialog(null);
       setIngesting(false);
       setDevAction(null);
     }
@@ -3673,7 +3755,7 @@ export default function App() {
     const pathsToIngest = ingestFilePickedPaths.length > 0
       ? ingestFilePickedPaths
       : [ingestFilePath.trim()].filter(Boolean);
-    await runIngestFilePaths(pathsToIngest, "manual");
+    await runIngestFilePaths(pathsToIngest, "manual", true);
   };
 
   const handleRunLint = async (): Promise<boolean> => {
@@ -5469,7 +5551,7 @@ export default function App() {
             setIngestFilePickedPaths(parsed.accepted);
             setIngestFilePath(parsed.accepted[0] ?? "");
             setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，开始摄入...`);
-            void runIngestFilePaths(parsed.accepted, "drag");
+            void runIngestFilePaths(parsed.accepted, "drag", true);
           }
         });
       })
@@ -5484,6 +5566,15 @@ export default function App() {
       }
     };
   }, [devAction, dropMode, ingestFileOcrProvider, ingesting]);
+
+  useEffect(() => {
+    return () => {
+      if (ingestPreviewResolverRef.current) {
+        ingestPreviewResolverRef.current(false);
+        ingestPreviewResolverRef.current = null;
+      }
+    };
+  }, []);
 
   // 侧边栏导航项定义
   const navItems: { id: ModuleId; icon: string; label: string }[] = [
@@ -7722,6 +7813,83 @@ export default function App() {
             />
           )}
         </div>
+        {ingestPreviewDialog ? (
+          <div
+            className="ingest-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="摄入分析卡"
+            onClick={() => closeIngestPreviewDialog(false)}
+          >
+            <div className="ingest-preview-modal__panel" onClick={(event) => event.stopPropagation()}>
+              <div className="ingest-preview-modal__head">
+                <div>
+                  <h3>摄入分析卡</h3>
+                  <p>确认后写入 Wiki 与索引</p>
+                </div>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={() => closeIngestPreviewDialog(false)}
+                >
+                  取消
+                </button>
+              </div>
+              <div className="ingest-preview-modal__source">
+                <span>来源文件</span>
+                <code>{ingestPreviewDialog.source_path}</code>
+              </div>
+              <div className="ingest-preview-modal__section">
+                <h4>摘要</h4>
+                <pre>{ingestPreviewDialog.summary?.trim() || "（未生成摘要）"}</pre>
+              </div>
+              <div className="ingest-preview-modal__columns">
+                <section className="ingest-preview-modal__section">
+                  <h4>提取实体（{ingestPreviewDialog.entities.length}）</h4>
+                  {ingestPreviewDialog.entities.length > 0 ? (
+                    <ul>
+                      {ingestPreviewDialog.entities.map((entity) => (
+                        <li key={entity}>{entity}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="ingest-preview-modal__empty">暂无实体</p>
+                  )}
+                </section>
+                <section className="ingest-preview-modal__section">
+                  <h4>拟更新页面（{ingestPreviewDialog.updated_pages.length}）</h4>
+                  {ingestPreviewDialog.updated_pages.length > 0 ? (
+                    <ul>
+                      {ingestPreviewDialog.updated_pages.map((pagePath) => (
+                        <li key={pagePath}>
+                          <code>{pagePath}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="ingest-preview-modal__empty">无关联页面更新</p>
+                  )}
+                </section>
+              </div>
+              <div className="ingest-preview-modal__actions">
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={() => closeIngestPreviewDialog(false)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--accent"
+                  onClick={() => closeIngestPreviewDialog(true)}
+                >
+                  确认写入
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -93,6 +93,8 @@ import {
   createIngestMarkdownArgs,
   createIngestPdfArgs,
   createIngestUrlArgs,
+  createPreviewIngestFileArgs,
+  createApplyIngestPreviewArgs,
   createQueryAskArgs,
   createQueryAskWithOptionsArgs,
   createPreviewLintPatchesArgs,
@@ -111,6 +113,8 @@ import {
   isTauriRuntime,
   ingestFile,
   ingestPdf,
+  previewIngestFile,
+  applyIngestPreview,
   applyLintPatch,
   applyLintPatchesBatch,
   fetchRecentLintPatchEvents,
@@ -1194,6 +1198,21 @@ describe("Tauri 运行时与参数映射", () => {
     });
   });
 
+  it("createPreviewIngestFileArgs 与 createApplyIngestPreviewArgs 参数映射正确", () => {
+    expect(createPreviewIngestFileArgs("file", "E:\\llm-wiki\\docs\\sample.docx", "tesseract")).toEqual({
+      sourceType: "file",
+      source_type: "file",
+      sourcePath: "E:\\llm-wiki\\docs\\sample.docx",
+      source_path: "E:\\llm-wiki\\docs\\sample.docx",
+      ocrProvider: "tesseract",
+      ocr_provider: "tesseract",
+    });
+    expect(createApplyIngestPreviewArgs("preview-1")).toEqual({
+      previewId: "preview-1",
+      preview_id: "preview-1",
+    });
+  });
+
   it("浏览器预览模式下 ingestPdf 直接回退为 null", async () => {
     Reflect.deleteProperty(globalThis, "window");
 
@@ -1204,6 +1223,15 @@ describe("Tauri 运行时与参数映射", () => {
     Reflect.deleteProperty(globalThis, "window");
 
     await expect(ingestFile("E:\\llm-wiki\\docs\\sample.docx", "tesseract")).resolves.toBeNull();
+  });
+
+  it("浏览器预览模式下 previewIngestFile 与 applyIngestPreview 直接回退为 null", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+
+    await expect(
+      previewIngestFile("file", "E:\\llm-wiki\\docs\\sample.docx", "tesseract"),
+    ).resolves.toBeNull();
+    await expect(applyIngestPreview("preview-1")).resolves.toBeNull();
   });
 
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {

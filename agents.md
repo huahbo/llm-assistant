@@ -310,6 +310,8 @@
 | P26-ResearchExportMD | Research 报告导出 `.md`（按钮 + 本地保存）与历史任务兜底（`doneSavedPath` 读取 Wiki 内容） | ✅ `web/src/App.tsx` + `web/src/tauri-client.ts`（WSL `web typecheck` 通过，2026-04-22，**Claude Code/Codex** 接力） |
 | P26-Graph-UX | 图谱双击节点跳转 Wiki（400ms 双击窗口） | ✅ `web/src/App.tsx`（2026-04-22，**Claude Code** 实施） |
 | P26-Embed-HealthHint | Embed 健康检查提示优化（ModelNotFound 指引 `ollama pull nomic-embed-text:latest`） | ✅ `src-tauri/src/state.rs`（2026-04-22，**Claude Code** 实施） |
+| ResearchExport-Regression | `.md` 历史导出回归复核：代码审查通过 + stale 注释修正（`save_research_doc` 注释从"Word HTML .doc"改为通用写盘描述） | ✅ `src-tauri/src/commands.rs` + `web/src/tauri-client.ts`（2026-04-23，**Claude Code** 实施） |
+| P27-Ingest-HITL | 方向 A 摄入审核：`preview_ingest_file/apply_ingest_preview` + Inbox「摄入分析卡」审批后落盘（直摄入全链路） | ✅ `src-tauri/src/{models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-23，**Codex+子代理** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -334,14 +336,17 @@
 | ✅ | **Deep Research 失败态体验复核** | 失败任务卡日志展示与“自动重试一次”提示已可见（2026-04-21） |
 | ✅ | **Deep Research 任务删除耦合确认复核** | 已验证删除任务二次确认与“是否同步删除 Wiki”确认链路（2026-04-21） |
 | ✅ | **SearXNG Windows 脚本链路复核** | 用户已在 PS7 回传 `run_searxng_windows.ps1` + `verify_searxng_windows.ps1` 自检通过（2026-04-22） |
-| 2 | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | Gemini/Codex 已实现，需用户端到端验证 |
-| 3 | **Research `.md` 导出历史任务回归复核** | 验证无流式内容的历史 done 任务仍可见“导出 .md”并成功导出 |
+| ✅ | **移植包 D：项目模板 / Clipper / SearXNG 端到端验证** | 用户侧基线验证通过（2026-04-23） |
+| ✅ | **Research `.md` 导出历史任务回归复核** | 代码审查通过：`doneSavedPath` 初始化逻辑正确，按钮显示条件满足，`fetchWikiPageDetail` 读取 wiki/research/ 文件路径安全；用户侧待应用内手动确认（2026-04-23） |
+| ✅ | **方向 A：摄入质量审核（两步摄入+HITL）** | 已实现「摄入分析卡」与审批后写入（2026-04-23） |
+| 1 | **方向 B：项目模板/多项目体验** | 模板初始化流程与 purpose/schema/index/log 快速建仓体验收口 |
+| 2 | **方向 C：会话持久化增强** | Ask 会话实体化存储 + 会话管理面板（重命名/删除/导出） |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-22）
+### 18.3 当前代码快照（2026-04-23）
 
 ```
 src-tauri/src/
@@ -350,29 +355,32 @@ src-tauri/src/
     ollama.rs       # OllamaProvider（Ollama /api/generate + /api/embeddings）
     openai.rs       # OpenAiProvider（OpenAI-compatible Chat Completions + embeddings）
   search.rs         # RRF + embedding 余弦排序（`rank_embedding_paths_by_cosine`）
-  commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale, get_knowledge_graph）
+  commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale/get_knowledge_graph/preview_ingest_file/apply_ingest_preview）
   db.rs             # SQLite（含 upsert_embedding/list_embeddings, list_all_wiki_pages, query_citation_popular_paths）
   models.rs         # 全部数据模型（含 stale, KnowledgeGraph*, embed_ollama_model 字段）
-  state.rs          # 核心逻辑（含 get_embed_provider, RRF+embedding 检索融合, search_debug 贡献明细, PDF OCR 自动回退）
+  state.rs          # 核心逻辑（含 get_embed_provider、RRF+embedding 检索融合、PDF OCR 自动回退、ingest preview/apply 审批链路）
   vault.rs          # 文件系统（hash去重, ingest_markdown, append_see_also_link）
 
 web/src/
-  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成，含 ResearchDialog/导出.md/图谱双击跳转）
-  tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale）
+  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成，含摄入分析卡审批弹窗）
+  tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale, preview/apply ingest）
   types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug）
   app-utils.test.ts # 单元测试（含图谱洞察新增用例，数量待 Windows 复核）
   styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组等）
 ```
 
-### 18.4 验证基线（2026-04-22 最新）
+### 18.4 验证基线（2026-04-23 最新）
 
-- `cargo check` / `cargo test`：**待 Windows 复核**（本轮 Codex 在 WSL：`cargo: command not found`）
+- 用户侧历史基线：`cargo test`、`npm run test -- --run`、`npm run typecheck` 已回传通过（2026-04-23）。
+- 本轮 WSL（Codex）：
+  - `cd web && npm run typecheck`：**通过（0 errors）**
+  - `cd web && npm run test -- --run`：**失败**（缺失 `@rollup/rollup-linux-x64-gnu` 可选依赖）
+  - `cd web && npm run build`：**失败**（同上）
+  - `cd src-tauri && cargo check`：**失败**（`cargo: command not found`，当前 WSL 无 Rust 工具链）
 - `node --check extension/popup.js`：**通过**
-- `npm run typecheck`：**通过（0 errors）**（2026-04-22，WSL）
-- `npm run test -- --run`：**本轮未执行**（WSL 受 Rollup Linux 可选依赖缺失影响，待 Windows 复核）
-- `npm run build`：**本轮未执行**（按当前轮次指令跳过打包相关验证）
 - `scripts/verify_clipper_windows.ps1`：**用户回传通过**（2026-04-22，Windows）
 - `scripts/verify_searxng_windows.ps1`：**用户回传通过**（2026-04-22，PS7）
+- Deep Research 端到端实跑：**通过**（城市复杂水网AI仿真，2026-04-23，用户手动验证）
 
 最新提交（main 分支）：
 - `feat: 完成 P1+P2 功能收口` (d1ab47c)

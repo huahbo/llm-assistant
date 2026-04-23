@@ -68,6 +68,14 @@ export interface IngestResult {
   updated_pages?: string[];
 }
 
+export interface IngestPreview {
+  preview_id: string;
+  source_path: string;
+  summary: string;
+  entities: string[];
+  updated_pages: string[];
+}
+
 export interface DefaultPaths {
   vault_path: string;
   ingest_source_path: string;

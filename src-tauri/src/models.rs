@@ -295,6 +295,18 @@ pub struct IngestResult {
     pub updated_pages: Vec<String>,
 }
 
+/// 摄入预览信息（仅分析，不落盘）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestPreview {
+    pub preview_id: String,
+    pub source_path: String,
+    pub summary: String,
+    #[serde(default)]
+    pub entities: Vec<String>,
+    #[serde(default)]
+    pub updated_pages: Vec<String>,
+}
+
 /// 默认路径集合。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultPaths {
@@ -537,7 +549,6 @@ pub struct WikiPageCitationItem {
     pub target_exists: bool,
 }
 
-
 /// 知识图谱节点（对应一个 Wiki 页面）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeGraphNode {
@@ -638,9 +649,9 @@ impl std::str::FromStr for IngestQueueStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestQueueItem {
     pub id: i64,
-    pub source_type: String,  // "file" | "url" | "markdown"
+    pub source_type: String, // "file" | "url" | "markdown"
     pub source_path: String,
-    pub status: String,       // queued/running/done/failed/cancelled
+    pub status: String, // queued/running/done/failed/cancelled
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,

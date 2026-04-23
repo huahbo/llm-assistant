@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clip_server;
 mod commands;
 mod db;
 mod llm;
@@ -7,7 +8,6 @@ mod models;
 mod search;
 mod state;
 mod vault;
-mod clip_server;
 
 use state::AppState;
 use tauri::Manager;
@@ -50,6 +50,8 @@ fn main() {
             commands::init_vault_with_template,
             commands::ingest_markdown,
             commands::ingest_file,
+            commands::preview_ingest_file,
+            commands::apply_ingest_preview,
             commands::ingest_pdf,
             commands::ingest_url,
             commands::query_ask,

@@ -1,13 +1,12 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, DefaultPaths, IngestResult, KnowledgeGraphData,
+    AppMode, AppOverview, DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData,
     KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult,
-    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport,
-    LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult, OutboxEventItem,
-    QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput,
-    SaveQueryAnswerResult, SearchConfig, VaultInitResult, WikiPageCitationItem, WikiPageDetail,
-    WikiPageItem,
+    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
+    LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult, OutboxEventItem, QueryAnswerResult,
+    QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
+    SearchConfig, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -63,10 +62,7 @@ pub fn search_wiki_pages(
 
 /// 按查询词搜索所有 wiki 页面路径并进行模糊匹配（忽略大小写）。
 #[tauri::command]
-pub fn search_wiki_paths(
-    query: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+pub fn search_wiki_paths(query: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
     state.search_wiki_paths(query)
 }
 
@@ -138,9 +134,21 @@ pub async fn get_llm_status(state: State<'_, AppState>) -> Result<LlmStatus, Str
 #[tauri::command]
 pub fn get_llm_provider_presets() -> Vec<(String, String, String)> {
     vec![
-        ("OpenAI".to_string(), "https://api.openai.com/v1".to_string(), "gpt-4o-mini".to_string()),
-        ("DeepSeek".to_string(), "https://api.deepseek.com".to_string(), "deepseek-chat".to_string()),
-        ("Moonshot".to_string(), "https://api.moonshot.cn/v1".to_string(), "moonshot-v1-8k".to_string()),
+        (
+            "OpenAI".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            "gpt-4o-mini".to_string(),
+        ),
+        (
+            "DeepSeek".to_string(),
+            "https://api.deepseek.com".to_string(),
+            "deepseek-chat".to_string(),
+        ),
+        (
+            "Moonshot".to_string(),
+            "https://api.moonshot.cn/v1".to_string(),
+            "moonshot-v1-8k".to_string(),
+        ),
     ]
 }
 
@@ -163,7 +171,10 @@ pub fn init_vault_with_template(
     extra_dirs: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<VaultInitResult, String> {
-    eprintln!("[init_vault_with_template] called with vault_path={}", vault_path);
+    eprintln!(
+        "[init_vault_with_template] called with vault_path={}",
+        vault_path
+    );
     state.init_vault_with_template(
         std::path::PathBuf::from(vault_path),
         template_schema,
@@ -208,6 +219,35 @@ pub async fn ingest_file(
     state
         .ingest_file_impl(&source_path, ocr_provider.as_deref())
         .await
+}
+
+/// 预览摄入分析（不写入 Vault）。
+#[tauri::command]
+pub async fn preview_ingest_file(
+    source_type: String,
+    source_path: String,
+    ocr_provider: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<IngestPreview, String> {
+    eprintln!(
+        "[preview_ingest_file] source_type={}, source_path={}, ocr_provider={}",
+        source_type,
+        source_path,
+        ocr_provider.as_deref().unwrap_or("tesseract")
+    );
+    state
+        .preview_ingest_file(&source_type, &source_path, ocr_provider.as_deref())
+        .await
+}
+
+/// 应用已审批的摄入预览并真正落盘。
+#[tauri::command]
+pub async fn apply_ingest_preview(
+    preview_id: String,
+    state: State<'_, AppState>,
+) -> Result<IngestResult, String> {
+    eprintln!("[apply_ingest_preview] preview_id={}", preview_id);
+    state.apply_ingest_preview(&preview_id).await
 }
 
 /// 导入 PDF（提取文本后复用 Markdown ingest 流程）。
@@ -297,10 +337,7 @@ pub fn get_ocr_config(state: State<'_, AppState>) -> Option<String> {
 
 /// 保存默认 OCR Provider 配置。
 #[tauri::command]
-pub fn set_ocr_config(
-    state: State<'_, AppState>,
-    provider: Option<String>,
-) -> Result<(), String> {
+pub fn set_ocr_config(state: State<'_, AppState>, provider: Option<String>) -> Result<(), String> {
     eprintln!(
         "[set_ocr_config] called with provider={}",
         provider.as_deref().unwrap_or("None")
@@ -342,10 +379,7 @@ pub async fn delete_wiki_page(
 
 /// 保存 Ask 问题到历史（answer 暂不存储）。
 #[tauri::command]
-pub fn save_ask_history(
-    state: tauri::State<'_, AppState>,
-    question: String,
-) -> Result<(), String> {
+pub fn save_ask_history(state: tauri::State<'_, AppState>, question: String) -> Result<(), String> {
     state.save_ask_history_impl(&question)
 }
 
@@ -360,9 +394,7 @@ pub fn get_ask_history(
 
 /// 清空 Ask 历史（返回删除条数）。
 #[tauri::command]
-pub fn clear_ask_history(
-    state: tauri::State<'_, AppState>,
-) -> Result<usize, String> {
+pub fn clear_ask_history(state: tauri::State<'_, AppState>) -> Result<usize, String> {
     state.clear_ask_history_impl()
 }
 
@@ -394,7 +426,10 @@ pub async fn query_ask_session(
     options: Option<QueryAskOptions>,
     state: State<'_, AppState>,
 ) -> Result<QueryAnswerResult, String> {
-    eprintln!("[query_ask_session] session={}, question={}", session_id, question);
+    eprintln!(
+        "[query_ask_session] session={}, question={}",
+        session_id, question
+    );
     state
         .query_ask_session(session_id, question, options.unwrap_or_default())
         .await
@@ -402,19 +437,13 @@ pub async fn query_ask_session(
 
 /// 取消正在进行的会话查询。
 #[tauri::command]
-pub fn cancel_ask_session(
-    session_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn cancel_ask_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.cancel_ask_session(session_id)
 }
 
 /// 清空会话历史（开启新对话）。
 #[tauri::command]
-pub fn clear_ask_session(
-    session_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn clear_ask_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.clear_ask_session(session_id)
 }
 
@@ -430,9 +459,7 @@ pub fn mark_page_stale(
 
 /// 获取知识图谱数据（节点 = wiki 页面，边 = 引用关系）。
 #[tauri::command]
-pub fn get_knowledge_graph(
-    state: State<'_, AppState>,
-) -> Result<KnowledgeGraphData, String> {
+pub fn get_knowledge_graph(state: State<'_, AppState>) -> Result<KnowledgeGraphData, String> {
     state.get_knowledge_graph_impl()
 }
 
@@ -517,7 +544,10 @@ pub fn list_research_tasks(state: State<'_, AppState>) -> Result<Vec<ResearchTas
 
 /// 获取单条研究任务。
 #[tauri::command]
-pub fn get_research_task(id: i64, state: State<'_, AppState>) -> Result<Option<ResearchTaskItem>, String> {
+pub fn get_research_task(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<Option<ResearchTaskItem>, String> {
     state.get_research_task(id)
 }
 
@@ -584,7 +614,8 @@ pub async fn approve_research_queries(
     task_id: i64,
     queries: Vec<String>,
 ) -> Result<(), String> {
-    let queries: Vec<String> = queries.into_iter()
+    let queries: Vec<String> = queries
+        .into_iter()
         .map(|q| q.trim().to_string())
         .filter(|q| !q.is_empty())
         .collect();
@@ -597,7 +628,7 @@ pub async fn approve_research_queries(
     Ok(())
 }
 
-/// 保存 Deep Research 导出的 Word 文档（HTML .doc 格式）到用户指定路径。
+/// 保存 Deep Research 导出文件（.md 或其他格式）到用户指定路径。
 #[tauri::command]
 pub fn save_research_doc(path: String, content: String) -> Result<(), String> {
     let trimmed = path.trim();
@@ -606,10 +637,8 @@ pub fn save_research_doc(path: String, content: String) -> Result<(), String> {
     }
     let target = std::path::PathBuf::from(trimmed);
     if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建目录失败: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
     }
-    std::fs::write(&target, content)
-        .map_err(|e| format!("写入 Word 文件失败: {}", e))?;
+    std::fs::write(&target, content).map_err(|e| format!("写入文件失败: {}", e))?;
     Ok(())
 }

@@ -17,7 +17,7 @@ use crate::{
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AppConfig, AppMode, AppOverview, DefaultPaths, IngestResult, KnowledgeGraphData,
+        AppConfig, AppMode, AppOverview, DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData,
         KnowledgeGraphDirection, KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData,
         KnowledgeSubgraphMeta, LintIssue, LintPatchApplyInput, LintPatchApplyResult,
         LintPatchBatchApplyItemResult, LintPatchBatchApplyResult, LintPatchBatchApplyStatus,
@@ -58,6 +58,8 @@ pub struct AppState {
     search_config: Mutex<crate::models::SearchConfig>,
     /// 等待用户审批子查询的一次性 channel（task_id -> sender）
     pending_query_approvals: Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Vec<String>>>>,
+    /// 摄入预览缓存（preview_id -> 预览上下文）。
+    ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
 }
 
 /// 状态快照。
@@ -89,6 +91,16 @@ struct AppStateData {
     embed_ollama_model: Option<String>,
     /// Embedding 专用 Ollama Base URL
     embed_ollama_base_url: Option<String>,
+}
+
+/// 预览审批到落盘之间的一次性缓存。
+#[derive(Debug, Clone)]
+struct CachedIngestPreview {
+    source_type: String,
+    source_path: String,
+    source_content: String,
+    summary: String,
+    entities: Vec<String>,
 }
 
 impl Default for AppState {
@@ -149,6 +161,7 @@ impl AppState {
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
+            ingest_previews: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -229,6 +242,7 @@ impl AppState {
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
+            ingest_previews: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1263,34 +1277,214 @@ impl AppState {
             "正在提取关键实体（LLM）...",
         );
         let entities = self.extract_entities(&source_content).await;
-
-        // 步骤3：写入 Wiki 页面（含 frontmatter entities）
-        self.emit_progress("ingest_progress", "writing_wiki", "写入 Wiki 页面...");
-        let mut result = match vault::ingest_markdown(
+        self.complete_ingest_with_precomputed_analysis(
             &vault_path,
             &source_path,
-            Some(&llm_summary),
+            &source_path_text,
+            &source_content,
+            &llm_summary,
             &entities,
+        )
+        .await
+    }
+
+    /// 预览摄入分析结果（不写入 Vault，只缓存审批上下文）。
+    pub async fn preview_ingest_file(
+        &self,
+        source_type: &str,
+        source_path: &str,
+        ocr_provider: Option<&str>,
+    ) -> Result<IngestPreview, String> {
+        let normalized_source_type = source_type.trim().to_ascii_lowercase();
+        if normalized_source_type.is_empty() {
+            return Err("source_type 不能为空".to_string());
+        }
+        let normalized_source_path = source_path.trim().to_string();
+        if normalized_source_path.is_empty() {
+            return Err("source_path 不能为空".to_string());
+        }
+
+        let source_content = self
+            .load_preview_source_content(
+                normalized_source_type.as_str(),
+                normalized_source_path.as_str(),
+                ocr_provider,
+            )
+            .await?;
+        if source_content.trim().is_empty() {
+            return Err("预览内容为空，无法生成摄入分析".to_string());
+        }
+
+        self.emit_progress(
+            "ingest_preview_progress",
+            "summarizing",
+            "正在生成摄入预览摘要（LLM）...",
+        );
+        let summary = self.generate_summary(&source_content).await;
+
+        self.emit_progress(
+            "ingest_preview_progress",
+            "extracting_entities",
+            "正在提取摄入预览实体（LLM）...",
+        );
+        let entities = self.extract_entities(&source_content).await;
+
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        let updated_pages = self.estimate_related_pages_for_preview(&db_path, &entities);
+
+        let preview_id = format!("preview_{}_{}", current_timestamp_ms(), uuid_v4_short());
+        let preview = IngestPreview {
+            preview_id: preview_id.clone(),
+            source_path: normalized_source_path.clone(),
+            summary: summary.clone(),
+            entities: entities.clone(),
+            updated_pages,
+        };
+        let cached = CachedIngestPreview {
+            source_type: normalized_source_type,
+            source_path: normalized_source_path,
+            source_content,
+            summary,
+            entities,
+        };
+
+        self.ingest_previews
+            .lock()
+            .expect("状态锁已被污染")
+            .insert(preview_id, cached);
+        Ok(preview)
+    }
+
+    /// 应用摄入预览：消费缓存并执行真实落盘。
+    pub async fn apply_ingest_preview(&self, preview_id: &str) -> Result<IngestResult, String> {
+        let normalized_preview_id = preview_id.trim();
+        if normalized_preview_id.is_empty() {
+            return Err("preview_id 不能为空".to_string());
+        }
+
+        let cached = self
+            .ingest_previews
+            .lock()
+            .expect("状态锁已被污染")
+            .remove(normalized_preview_id)
+            .ok_or_else(|| format!("未找到预览缓存：{}", normalized_preview_id))?;
+
+        self.record_outbox_event(
+            "ingest_started",
+            serde_json::json!({
+                "source_path": cached.source_path.clone(),
+                "task_id": current_timestamp_ms(),
+                "source_type": cached.source_type,
+                "from_preview": true,
+            }),
+        );
+
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())
+        };
+        let vault_path = match vault_path {
+            Ok(path) => path,
+            Err(err) => {
+                self.record_ingest_failed_event(&cached.source_path, &err);
+                return Err(err);
+            }
+        };
+
+        // Markdown 源优先走原文件路径，避免 raw 文件名退化为临时文件名。
+        let original_path = PathBuf::from(&cached.source_path);
+        let use_original_markdown = (cached.source_type == "markdown"
+            || cached.source_type == "md"
+            || (cached.source_type == "file"
+                && matches!(
+                    original_path
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .map(|ext| ext.to_ascii_lowercase())
+                        .as_deref(),
+                    Some("md" | "markdown")
+                )))
+            && original_path.exists();
+
+        if use_original_markdown {
+            return self
+                .complete_ingest_with_precomputed_analysis(
+                    &vault_path,
+                    &original_path,
+                    &cached.source_path,
+                    &cached.source_content,
+                    &cached.summary,
+                    &cached.entities,
+                )
+                .await;
+        }
+
+        let tmp_path = std::env::temp_dir().join(format!(
+            "llm_wiki_preview_apply_{}_{}.md",
+            current_timestamp_ms(),
+            uuid_v4_short()
+        ));
+        if let Err(err) = tokio::fs::write(&tmp_path, &cached.source_content).await {
+            let message = format!("写入预览临时文件失败：{}", err);
+            self.record_ingest_failed_event(&cached.source_path, &message);
+            return Err(message);
+        }
+
+        let result = self
+            .complete_ingest_with_precomputed_analysis(
+                &vault_path,
+                &tmp_path,
+                &cached.source_path,
+                &cached.source_content,
+                &cached.summary,
+                &cached.entities,
+            )
+            .await;
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        result
+    }
+
+    /// 执行摄入落盘（可复用预计算摘要与实体）。
+    async fn complete_ingest_with_precomputed_analysis(
+        &self,
+        vault_path: &Path,
+        ingest_source_path: &Path,
+        display_source_path: &str,
+        source_content: &str,
+        llm_summary: &str,
+        entities: &[String],
+    ) -> Result<IngestResult, String> {
+        self.emit_progress("ingest_progress", "writing_wiki", "写入 Wiki 页面...");
+        let mut result = match vault::ingest_markdown(
+            vault_path,
+            ingest_source_path,
+            Some(llm_summary),
+            entities,
         ) {
             Ok(result) => {
                 self.push_log(
                     LogLevel::Info,
-                    format!(
-                        "Markdown 导入成功: {} -> {}",
-                        source_path.to_string_lossy(),
-                        result.wiki_path
-                    ),
+                    format!("Markdown 导入成功: {} -> {}", display_source_path, result.wiki_path),
                 );
                 result
             }
             Err(err) => {
                 self.push_log(LogLevel::Warn, format!("Markdown 导入失败: {}", err));
-                self.record_ingest_failed_event(&source_path_text, &err);
+                self.record_ingest_failed_event(display_source_path, &err);
                 return Err(err);
             }
         };
 
-        // 步骤4：双向链接注入
         self.emit_progress("ingest_progress", "updating_links", "注入双向链接...");
         let db_path = vault_path.join(".app").join("meta.db");
         let wiki_title = PathBuf::from(&result.wiki_path)
@@ -1301,40 +1495,45 @@ impl AppState {
         let updated_pages = self
             .update_related_pages_with_link(
                 &db_path,
-                &vault_path,
+                vault_path,
                 &result.wiki_path,
                 &wiki_title,
-                &entities,
+                entities,
             )
             .await;
 
-        // 步骤5：嵌入向量化与持久化（始终走本地 Ollama embed 模型，不走云端）
         self.emit_progress("ingest_progress", "embedding", "正在向量化（本地 Ollama）...");
         let embed_provider = self.get_embed_provider();
-        // 截断到 4096 字符以控制 embedding 请求体大小
         let embed_content: String = source_content.chars().take(4096).collect();
         match embed_provider.embed(&embed_content).await {
             Ok(embedding) => {
-                if let Err(e) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
-                    self.push_log(LogLevel::Warn, format!("写入向量数据库失败: {}", e));
+                if let Err(err) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
+                    self.push_log(LogLevel::Warn, format!("写入向量数据库失败: {}", err));
                 }
             }
-            Err(e) => {
-                let hint = if matches!(e, LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)) {
+            Err(err) => {
+                let hint = if matches!(err, LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)) {
                     "（请确认 Ollama 已启动且已拉取 nomic-embed-text:latest 模型）"
                 } else {
                     ""
                 };
                 self.push_log(
                     LogLevel::Warn,
-                    format!("向量化失败，跳过语义检索索引{}：{}", hint, e),
+                    format!("向量化失败，跳过语义检索索引{}：{}", hint, err),
                 );
             }
         }
 
-        result.entities = entities;
-        result.updated_pages = updated_pages;
+        let ingest_source_path_text = ingest_source_path.to_string_lossy().to_string();
+        if ingest_source_path_text != display_source_path {
+            result.source_path = display_source_path.to_string();
+            result.message = result
+                .message
+                .replace(&ingest_source_path_text, display_source_path);
+        }
 
+        result.entities = entities.to_vec();
+        result.updated_pages = updated_pages;
         self.record_outbox_event(
             "ingest_completed",
             serde_json::json!({
@@ -1345,8 +1544,145 @@ impl AppState {
                 "updated_pages": result.updated_pages.clone(),
             }),
         );
-
         Ok(result)
+    }
+
+    /// 预估摄入后可能更新的关联页（只读，不写盘）。
+    fn estimate_related_pages_for_preview(
+        &self,
+        db_path: &Path,
+        entities: &[String],
+    ) -> Vec<String> {
+        if entities.is_empty() || !db_path.exists() {
+            return Vec::new();
+        }
+
+        let mut token_set = std::collections::HashSet::new();
+        for entity in entities {
+            for token in tokenize_query(entity) {
+                token_set.insert(token);
+            }
+        }
+        let tokens: Vec<String> = token_set.into_iter().collect();
+        if tokens.is_empty() {
+            return Vec::new();
+        }
+        match db::search_fts_page_paths(db_path, &tokens, 5) {
+            Ok(paths) => paths,
+            Err(err) => {
+                self.push_log(LogLevel::Warn, format!("预览阶段估算相关页面失败，已忽略：{}", err));
+                Vec::new()
+            }
+        }
+    }
+
+    /// 预览源内容读取（支持文件和 URL）。
+    async fn load_preview_source_content(
+        &self,
+        source_type: &str,
+        source_path: &str,
+        ocr_provider: Option<&str>,
+    ) -> Result<String, String> {
+        match source_type {
+            "url" => self.fetch_preview_url_content(source_path).await,
+            "markdown" | "md" => {
+                let path = PathBuf::from(source_path);
+                validate_ingest_source_path(&path)?;
+                fs::read_to_string(&path).map_err(|err| format!("读取 Markdown 文件失败：{}", err))
+            }
+            "pdf" => {
+                let path = PathBuf::from(source_path);
+                self.extract_preview_pdf_text(&path)
+            }
+            "file" | "txt" | "docx" | "pptx" | "image" | "ocr" => {
+                let path = PathBuf::from(source_path);
+                self.extract_preview_file_content_by_extension(&path, ocr_provider)
+            }
+            _ => Err(format!("不支持的 source_type：{}（支持 file/markdown/pdf/url）", source_type)),
+        }
+    }
+
+    fn extract_preview_file_content_by_extension(
+        &self,
+        source_path: &Path,
+        ocr_provider: Option<&str>,
+    ) -> Result<String, String> {
+        validate_ingest_source_path(source_path)?;
+        let extension = source_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        match extension.as_str() {
+            "md" | "markdown" => {
+                fs::read_to_string(source_path).map_err(|err| format!("读取 Markdown 文件失败：{}", err))
+            }
+            "pdf" => self.extract_preview_pdf_text(source_path),
+            "txt" => {
+                let content_bytes = fs::read(source_path).map_err(|err| format!("读取文本文件失败：{}", err))?;
+                Ok(String::from_utf8_lossy(&content_bytes).to_string())
+            }
+            "docx" => extract_text_from_docx(source_path),
+            "pptx" => extract_text_from_pptx(source_path),
+            ext if is_supported_image_extension(ext) => {
+                let resolved_provider = normalize_ocr_provider(ocr_provider);
+                extract_text_from_image_with_fallback(source_path, resolved_provider)
+            }
+            _ => Err(format!(
+                "不支持的文件扩展名：{}。当前支持 md/markdown/pdf/docx/pptx/txt/png/jpg/jpeg/bmp/webp/tif/tiff/gif",
+                if extension.is_empty() { "(无扩展名)" } else { extension.as_str() }
+            )),
+        }
+    }
+
+    fn extract_preview_pdf_text(&self, source_path: &Path) -> Result<String, String> {
+        validate_pdf_source_path(source_path)?;
+        match extract_text_from_pdf(source_path) {
+            Ok(text) => Ok(text),
+            Err(err) => {
+                if !should_fallback_to_pdf_ocr(&err) {
+                    return Err(err);
+                }
+                let primary_provider = {
+                    let guard = self.inner.lock().expect("状态锁已被污染");
+                    normalize_ocr_provider(guard.default_ocr_provider.as_deref())
+                };
+                match extract_text_from_pdf_via_ocr(source_path, primary_provider) {
+                    Ok(ocr_output) => Ok(ocr_output.text),
+                    Err(ocr_err) => Err(build_pdf_ocr_fallback_failure_message(&err, &ocr_err)),
+                }
+            }
+        }
+    }
+
+    async fn fetch_preview_url_content(&self, source_url: &str) -> Result<String, String> {
+        let trimmed = source_url.trim();
+        if trimmed.is_empty() {
+            return Err("URL 不能为空".to_string());
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|err| format!("构建 HTTP 客户端失败：{}", err))?;
+        let response = client
+            .get(trimmed)
+            .header("User-Agent", "llm-wiki/1.0")
+            .send()
+            .await
+            .map_err(|err| format!("拉取 URL 失败：{}", err))?;
+        if !response.status().is_success() {
+            return Err(format!("URL 请求失败，HTTP {}", response.status()));
+        }
+        let text = response
+            .text()
+            .await
+            .map_err(|err| format!("读取响应内容失败：{}", err))?;
+        if text.trim().is_empty() {
+            return Err("URL 返回内容为空".to_string());
+        }
+        Ok(text)
     }
 
     /// 导入任意支持格式文件（按扩展名自动路由）。
@@ -8079,6 +8415,55 @@ mod tests {
         assert!(err.contains("md/markdown/pdf/docx/pptx/txt"));
     }
 
+    #[tokio::test]
+    async fn apply_ingest_preview_returns_error_when_preview_id_missing() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-preview-missing");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let err = state
+            .apply_ingest_preview("preview-not-exists")
+            .await
+            .expect_err("不存在的 preview_id 应返回错误");
+        assert!(err.contains("未找到预览缓存"));
+    }
+
+    #[tokio::test]
+    async fn preview_ingest_file_then_apply_succeeds_and_consumes_cache() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-preview-apply");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let source_path = vault_dir.join("preview-source.md");
+        fs::write(&source_path, "# Preview Source\n\nRust ingest preview")
+            .expect("写入预览源文件失败");
+
+        let preview = state
+            .preview_ingest_file("file", source_path.to_string_lossy().as_ref(), None)
+            .await
+            .expect("生成 ingest preview 失败");
+        assert!(!preview.preview_id.trim().is_empty());
+
+        let result = state
+            .apply_ingest_preview(&preview.preview_id)
+            .await
+            .expect("应用 ingest preview 失败");
+        assert!(!result.wiki_path.trim().is_empty());
+        assert!(
+            Path::new(&result.wiki_path).exists(),
+            "落盘后 wiki 页面应存在"
+        );
+
+        let err = state
+            .apply_ingest_preview(&preview.preview_id)
+            .await
+            .expect_err("同一个 preview_id 第二次 apply 应失败");
+        assert!(err.contains("未找到预览缓存"));
+    }
+
     #[test]
     fn normalize_ocr_provider_falls_back_to_tesseract_on_invalid_value() {
         assert_eq!(normalize_ocr_provider(None), OcrProvider::Tesseract);
@@ -9837,6 +10222,7 @@ entities:
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(crate::models::SearchConfig::default()),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
+            ingest_previews: Mutex::new(std::collections::HashMap::new()),
         };
         // 注入已有的 MockQueryProvider
         let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(
