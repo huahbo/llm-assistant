@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import appLogo from "./assets/LLM_Wiki.png";
 
 const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import {
@@ -5592,16 +5593,8 @@ export default function App() {
       {/* 侧边栏导航 */}
       <nav className="sidebar">
         <div className="sidebar__brand">
-          {/* LLM Wiki 品牌图标：开卷书 + AI 星芒，纯白填充保证 WebView 渲染 */}
-          <div className="sidebar__brand-logo">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="white" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              {/* 左页 */}
-              <path d="M10 16V5C8.2 4.2 5.5 4.2 3 5V16C5.5 15.2 8.2 15.2 10 16Z" fillOpacity="0.95"/>
-              {/* 右页 */}
-              <path d="M10 16V5C11.8 4.2 14.5 4.2 17 5V16C14.5 15.2 11.8 15.2 10 16Z" fillOpacity="0.55"/>
-              {/* 四角星芒（AI 元素），右页右上角 */}
-              <path d="M14.5 6.5 L15 8 L16.5 8.5 L15 9 L14.5 10.5 L14 9 L12.5 8.5 L14 8 Z" fillOpacity="0.95"/>
-            </svg>
+          <div className="sidebar__brand-logo" aria-hidden="true">
+            <img className="sidebar__brand-logo-image" src={appLogo} alt="" />
           </div>
           <span className="sidebar__brand-name">LLM Wiki</span>
         </div>

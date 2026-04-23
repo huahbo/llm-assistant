@@ -92,15 +92,21 @@ input, select, textarea { font: inherit; }
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
-  background: var(--accent-grad);
-  color: #fff;
-  font-weight: 700;
-  font-size: 16px;
+  background: #fff;
+  border: 1px solid var(--border-light);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.sidebar__brand-logo-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .sidebar__brand-name {
