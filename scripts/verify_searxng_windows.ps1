@@ -166,10 +166,7 @@ try {
 
     $resp = Invoke-JsonNoProxy -Client $client -Url $url -ForwardedIpValue $ForwardedIp
     if (-not $resp.IsSuccess) {
-      $preview = ""
-      if ($null -ne $resp.Raw) {
-        $preview = [string]$resp.Raw
-      }
+      $preview = ($resp.Raw ?? "").ToString()
       if ($preview.Length -gt 280) { $preview = $preview.Substring(0, 280) + "..." }
       $attemptErrors += "$($profile.Name): HTTP $($resp.StatusCode); body: $preview"
       continue
