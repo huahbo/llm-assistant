@@ -96,7 +96,8 @@ fn main() {
             commands::get_search_config,
             commands::set_search_config,
             commands::save_research_doc,
-            commands::approve_research_queries
+            commands::approve_research_queries,
+            commands::quick_lint_page
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

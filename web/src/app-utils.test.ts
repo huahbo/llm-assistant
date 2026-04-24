@@ -134,6 +134,7 @@ import {
   saveLlmConfig,
   saveWikiPage,
   resolveDisplayPath,
+  quickLintPage,
 } from "./tauri-client";
 import {
   filterLintIssuesByCode,
@@ -1364,6 +1365,11 @@ describe("Tauri 运行时与参数映射", () => {
       previewIngestFile("file", "E:\\llm-wiki\\docs\\sample.docx", "tesseract"),
     ).resolves.toBeNull();
     await expect(applyIngestPreview("preview-1")).resolves.toBeNull();
+  });
+
+  it("浏览器预览模式下 quickLintPage 直接回退为 null", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+    await expect(quickLintPage("wiki/test.md")).resolves.toBeNull();
   });
 
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {

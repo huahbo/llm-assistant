@@ -2832,6 +2832,80 @@ Wiki 页面：\n{}",
         }
     }
 
+    /// 对单个 Wiki 页面执行快速结构检查（不依赖 LLM）。
+    /// - 检测 [[wiki-links]] 指向不存在的页面。
+    /// - 检测 frontmatter entities 中没有对应页面的实体。
+    pub fn quick_lint_page_impl(
+        &self,
+        wiki_path: &str,
+    ) -> Result<crate::models::PageQuickLint, String> {
+        // 1. 获取 vault_path
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let vault_path =
+            vault_path.ok_or_else(|| "Vault 尚未初始化".to_string())?;
+
+        // 2. 解析页面实际路径（兼容绝对路径与相对路径）
+        let page_path = {
+            let p = Path::new(wiki_path);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                vault_path.join(wiki_path)
+            }
+        };
+
+        // 3. 读取页面内容；文件不存在时返回空结果而非报错
+        let content = match fs::read_to_string(&page_path) {
+            Ok(c) => c,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Ok(crate::models::PageQuickLint {
+                    wiki_path: wiki_path.to_string(),
+                    broken_links: vec![],
+                    missing_entity_pages: vec![],
+                    issues_count: 0,
+                });
+            }
+            Err(err) => return Err(format!("读取页面失败: {}", err)),
+        };
+
+        // 4. 分离 frontmatter 与正文
+        let (frontmatter, body) = split_frontmatter(&content);
+
+        // 5. 检测失效 [[wiki-links]]
+        let mut broken_links: Vec<String> = Vec::new();
+        let mut seen_links: HashSet<String> = HashSet::new();
+        for target in extract_wiki_link_targets(body) {
+            // 将链接目标规范化为 wiki/ 相对路径后检查文件是否存在
+            let slug = entity_to_slug(&target);
+            let candidate = vault_path.join("wiki").join(format!("{}.md", slug));
+            if !candidate.exists() && seen_links.insert(target.clone()) {
+                broken_links.push(target);
+            }
+        }
+
+        // 6. 检测 frontmatter entities 中缺失对应页面的实体
+        let mut missing_entity_pages: Vec<String> = Vec::new();
+        let mut seen_entities: HashSet<String> = HashSet::new();
+        for entity in parse_frontmatter_entities(frontmatter) {
+            let slug = entity_to_slug(&entity);
+            let candidate = vault_path.join("wiki").join(format!("{}.md", slug));
+            if !candidate.exists() && seen_entities.insert(entity.clone()) {
+                missing_entity_pages.push(entity);
+            }
+        }
+
+        let issues_count = broken_links.len() + missing_entity_pages.len();
+        Ok(crate::models::PageQuickLint {
+            wiki_path: wiki_path.to_string(),
+            broken_links,
+            missing_entity_pages,
+            issues_count,
+        })
+    }
+
     /// 运行完整 Lint 并写入 outbox。
     pub async fn run_lint_with_outbox(&self) -> LintReport {
         let report = self.lint_report_full_future().await;
@@ -5862,6 +5936,97 @@ fn extract_markdown_link_targets(content: &str) -> BTreeSet<String> {
     }
 
     targets
+}
+
+/// 将实体名或链接目标规范化为文件系统 slug（小写，空格替换为横线）。
+fn entity_to_slug(entity: &str) -> String {
+    entity.trim().to_lowercase().replace(' ', "-")
+}
+
+/// 将页面内容分离为 (frontmatter, body)。
+/// frontmatter 为两个 `---` 之间的文本（不含分隔行），body 为之后的全部内容。
+/// 若没有 frontmatter，返回 ("", content)。
+fn split_frontmatter(content: &str) -> (&str, &str) {
+    let bytes = content.as_bytes();
+    // 页面必须以 "---" 开头才视为有 frontmatter
+    if !content.starts_with("---") {
+        return ("", content);
+    }
+    // 找到第一行结束位置（跳过开头 "---\n" 或 "---\r\n"）
+    let after_first = if bytes.get(3) == Some(&b'\r') && bytes.get(4) == Some(&b'\n') {
+        4
+    } else if bytes.get(3) == Some(&b'\n') {
+        3
+    } else {
+        return ("", content);
+    };
+    // 在剩余内容中寻找独立的 "---" 行作为 frontmatter 结束标记
+    let rest = &content[after_first + 1..];
+    // 搜索 "\n---" 或 "^---" 后跟换行/EOF
+    let mut search_start = 0;
+    loop {
+        let Some(pos) = rest[search_start..].find("---") else {
+            break;
+        };
+        let abs_pos = search_start + pos;
+        // 确保 "---" 在行首
+        let at_line_start = abs_pos == 0 || rest.as_bytes().get(abs_pos - 1) == Some(&b'\n');
+        if !at_line_start {
+            search_start = abs_pos + 3;
+            continue;
+        }
+        // 确保 "---" 后是换行或 EOF
+        let end_pos = abs_pos + 3;
+        let followed_by_newline = matches!(
+            rest.as_bytes().get(end_pos),
+            None | Some(b'\n') | Some(b'\r')
+        );
+        if !followed_by_newline {
+            search_start = end_pos;
+            continue;
+        }
+        let fm = &rest[..abs_pos];
+        // body 从结束标记行之后开始
+        let body_start = if rest.as_bytes().get(end_pos) == Some(&b'\r')
+            && rest.as_bytes().get(end_pos + 1) == Some(&b'\n')
+        {
+            end_pos + 2
+        } else if rest.as_bytes().get(end_pos) == Some(&b'\n') {
+            end_pos + 1
+        } else {
+            end_pos
+        };
+        let body = if body_start < rest.len() { &rest[body_start..] } else { "" };
+        return (fm, body);
+    }
+    ("", content)
+}
+
+/// 从 frontmatter 文本中解析 `entities:` 列表（简单行解析，支持 YAML 列表格式）。
+fn parse_frontmatter_entities(frontmatter: &str) -> Vec<String> {
+    let mut entities = Vec::new();
+    let mut in_entities = false;
+
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("entities:") {
+            in_entities = true;
+            // 支持行内列表，如 `entities: [A, B]`（极少用，忽略）
+            continue;
+        }
+        if in_entities {
+            if trimmed.starts_with("- ") {
+                let item = trimmed.trim_start_matches("- ").trim().trim_matches('"').trim_matches('\'');
+                if !item.is_empty() {
+                    entities.push(item.to_string());
+                }
+            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                // 遇到其他键则退出 entities 块
+                in_entities = false;
+            }
+        }
+    }
+    entities
 }
 
 fn resolve_wiki_link_target(vault_path: &Path, raw_target: &str) -> Option<String> {
@@ -11043,5 +11208,102 @@ entities:
         assert_eq!(tasks[0].status, "cancelled");
         // updated_at 应为第一次 cancel 的时间，不被第二次覆盖
         assert_eq!(tasks[0].updated_at, "200");
+    }
+
+    // ── quick_lint_page 测试 ─────────────────────────────────────────────────
+
+    #[cfg(test)]
+    mod quick_lint_tests {
+        use super::*;
+
+        fn make_vault_with_page(content: &str) -> (PathBuf, String) {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "llm-wiki-ql-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            let wiki_dir = dir.join("wiki");
+            fs::create_dir_all(&wiki_dir).unwrap();
+            let page_path = wiki_dir.join("test-page.md");
+            fs::write(&page_path, content).unwrap();
+            let wiki_path = "wiki/test-page.md".to_string();
+            (dir, wiki_path)
+        }
+
+        fn make_state_for_vault(vault_dir: &Path) -> AppState {
+            let config_path = vault_dir.join(".app").join("config.json");
+            let state = AppState::new_with_path(config_path);
+            {
+                let mut inner = state.inner.lock().unwrap();
+                inner.vault_path = Some(vault_dir.to_path_buf());
+            }
+            state
+        }
+
+        #[test]
+        fn quick_lint_page_no_issues_when_links_exist() {
+            let (dir, wiki_path) = make_vault_with_page(
+                "---\ntitle: Test\nentities:\n  - Existing\n---\n\nSee [[Existing]]",
+            );
+            let _guard = TempDirGuard(dir.clone());
+            // 创建链接指向的页面
+            fs::write(dir.join("wiki").join("existing.md"), "").unwrap();
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl(&wiki_path).unwrap();
+            assert_eq!(result.issues_count, 0);
+            assert!(result.broken_links.is_empty());
+            assert!(result.missing_entity_pages.is_empty());
+        }
+
+        #[test]
+        fn quick_lint_page_detects_broken_link() {
+            let (dir, wiki_path) = make_vault_with_page(
+                "---\ntitle: Test\n---\n\nSee [[NonExistentPage]]",
+            );
+            let _guard = TempDirGuard(dir.clone());
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl(&wiki_path).unwrap();
+            assert!(result.issues_count > 0);
+            assert!(!result.broken_links.is_empty());
+        }
+
+        #[test]
+        fn quick_lint_page_detects_missing_entity_page() {
+            let (dir, wiki_path) = make_vault_with_page(
+                "---\ntitle: Test\nentities:\n  - MissingEntity\n---\n\nContent here.",
+            );
+            let _guard = TempDirGuard(dir.clone());
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl(&wiki_path).unwrap();
+            assert!(!result.missing_entity_pages.is_empty());
+        }
+
+        #[test]
+        fn quick_lint_page_returns_empty_when_file_missing() {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "llm-wiki-ql-nofile-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            fs::create_dir_all(dir.join("wiki")).unwrap();
+            let _guard = TempDirGuard(dir.clone());
+
+            let state = make_state_for_vault(&dir);
+            let result = state
+                .quick_lint_page_impl("wiki/does-not-exist.md")
+                .unwrap();
+            assert_eq!(result.issues_count, 0);
+        }
     }
 }

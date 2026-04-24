@@ -295,6 +295,20 @@ pub struct IngestResult {
     pub updated_pages: Vec<String>,
 }
 
+/// 页面快速结构检查结果（无需 LLM，仅文件系统）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageQuickLint {
+    pub wiki_path: String,
+    /// 内容中 [[wiki-links]] 找不到对应页面的链接列表
+    #[serde(default)]
+    pub broken_links: Vec<String>,
+    /// frontmatter entities 中没有对应 wiki 页面的实体名列表
+    #[serde(default)]
+    pub missing_entity_pages: Vec<String>,
+    /// 总问题数 = broken_links.len() + missing_entity_pages.len()
+    pub issues_count: usize,
+}
+
 /// 摄入预览信息（仅分析，不落盘）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestPreview {

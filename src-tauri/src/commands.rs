@@ -5,9 +5,9 @@ use crate::models::{
     DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
     KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyResult,
     LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry,
-    ModeChangeResult, OutboxAckResult, OutboxEventItem, QueryAnswerResult, QueryAskOptions,
-    QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig,
-    VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    ModeChangeResult, OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult,
+    QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
+    SearchConfig, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -685,6 +685,15 @@ pub async fn approve_research_queries(
         return Err("任务不存在或已超时，请重新开始研究".to_string());
     }
     Ok(())
+}
+
+/// 对单个 Wiki 页面执行快速结构检查（仅文件系统，不依赖 LLM）。
+#[tauri::command]
+pub fn quick_lint_page(
+    wiki_path: String,
+    state: State<'_, AppState>,
+) -> Result<PageQuickLint, String> {
+    state.quick_lint_page_impl(&wiki_path)
 }
 
 /// 保存 Deep Research 导出文件（.md 或其他格式）到用户指定路径。

@@ -76,6 +76,15 @@ export interface IngestPreview {
   updated_pages: string[];
 }
 
+export interface PageQuickLint {
+  wiki_path: string;
+  /** [[wiki-links]] 中没有对应页面的断链 */
+  broken_links: string[];
+  /** frontmatter 实体中没有对应 wiki 页面的缺页实体 */
+  missing_entity_pages: string[];
+  issues_count: number;
+}
+
 export interface DefaultPaths {
   vault_path: string;
   ingest_source_path: string;

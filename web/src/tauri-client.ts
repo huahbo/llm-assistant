@@ -9,6 +9,7 @@ import type {
   IngestPreview,
   IngestQueueItem,
   IngestResult,
+  PageQuickLint,
   KnowledgeGraphData,
   KnowledgeSubgraphData,
   KnowledgeSubgraphRequestParams,
@@ -947,6 +948,17 @@ export async function applyIngestPreview(previewId: string): Promise<IngestResul
     }),
     INGEST_TIMEOUT_MS,
   );
+}
+
+/** 对单个 Wiki 页面执行快速结构检查（无 LLM，仅文件系统） */
+export async function quickLintPage(
+  wikiPath: string,
+): Promise<PageQuickLint | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<PageQuickLint>("quick_lint_page", { wikiPath });
 }
 
 /** 通过 URL 摄入网页内容，与 ingestMarkdown 共用返回结构 */
