@@ -202,8 +202,8 @@
 
 ### 18.0 快速恢复步骤
 
-1. `cargo test`（src-tauri/）→ 应 **160 passed**
-2. `npm run test -- --run`（web/）→ 应 **160 passed**
+1. `cargo test`（src-tauri/）→ 应 **164 passed**
+2. `npm run test -- --run`（web/）→ 应 **161 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
 4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
 5. 读 `docs/实施过程记录.md` 最新 3 条了解背景
@@ -313,6 +313,7 @@
 | ResearchExport-Regression | `.md` 历史导出回归复核：代码审查通过 + stale 注释修正（`save_research_doc` 注释从"Word HTML .doc"改为通用写盘描述） | ✅ `src-tauri/src/commands.rs` + `web/src/tauri-client.ts`（2026-04-23，**Claude Code** 实施） |
 | P27-Ingest-HITL | 方向 A 摄入审核：`preview_ingest_file/apply_ingest_preview` + Inbox「摄入分析卡」审批后落盘（直摄入全链路） | ✅ `src-tauri/src/{models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-23，**Codex+子代理** 实施） |
 | P27-Session-C2 | 方向 C 二期：会话轮次 citations/meta 持久化 + 跨会话检索与命中定位（点击结果自动切会话并定位高亮） | ✅ `src-tauri/src/{db,models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-24，**Codex** 实施） |
+| P27-QuickLint-D | 方向 D：摄入后快速结构 Lint（断链+缺失实体页）— 同步无 LLM，fire-and-forget，右下角可关闭通知卡 | ✅ `src-tauri/src/{models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（164 Rust / 161 前端 / typecheck 0 errors，Windows 验证通过，2026-04-24，**Claude Code + 并行子代理** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -342,12 +343,13 @@
 | ✅ | **方向 A：摄入质量审核（两步摄入+HITL）** | 已实现「摄入分析卡」与审批后写入（2026-04-23） |
 | 1 | **方向 B：项目模板/多项目体验** | 进行中：已实现模板初始化预览卡（目录/文件/行数）+ 最近 Vault 快速切换；待 Windows 端到端复核后收口（2026-04-24） |
 | 2 | **方向 C：会话持久化增强** | 进行中：已完成一期（会话实体化存储+管理 UI）与二期（citations/meta 持久化+跨会话检索）；待 Windows 端到端复核后收口（2026-04-24） |
+| ✅ | **方向 D：摄入后快速结构 Lint** | 已完成（fbf09d0，164 Rust / 161 前端，2026-04-24） |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-24，基线 160 Rust / 160 前端）
+### 18.3 当前代码快照（2026-04-24，基线 164 Rust / 161 前端）
 
 ```
 src-tauri/src/
@@ -356,38 +358,33 @@ src-tauri/src/
     ollama.rs       # OllamaProvider（Ollama /api/generate + /api/embeddings）
     openai.rs       # OpenAiProvider（OpenAI-compatible Chat Completions + embeddings）
   search.rs         # RRF + embedding 余弦排序（`rank_embedding_paths_by_cosine`）
-  commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale/get_knowledge_graph/preview_ingest_file/apply_ingest_preview）
+  commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale/get_knowledge_graph/preview_ingest_file/apply_ingest_preview/quick_lint_page）
   db.rs             # SQLite（含 upsert_embedding/list_embeddings, list_all_wiki_pages, query_citation_popular_paths）
-  models.rs         # 全部数据模型（含 stale, KnowledgeGraph*, embed_ollama_model 字段）
-  state.rs          # 核心逻辑（含 get_embed_provider、RRF+embedding 检索融合、PDF OCR 自动回退、ingest preview/apply 审批链路）
+  models.rs         # 全部数据模型（含 stale, KnowledgeGraph*, embed_ollama_model, PageQuickLint 字段）
+  state.rs          # 核心逻辑（含 get_embed_provider、RRF+embedding 检索融合、PDF OCR 自动回退、ingest preview/apply 审批链路、quick_lint_page_impl）
   vault.rs          # 文件系统（hash去重, ingest_markdown, append_see_also_link）
 
 web/src/
-  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成，含摄入分析卡审批弹窗）
-  tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale, preview/apply ingest）
-  types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug）
-  app-utils.test.ts # 单元测试（含图谱洞察新增用例，数量待 Windows 复核）
-  styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组等）
+  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成，含摄入分析卡审批弹窗、quick lint 通知卡）
+  tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale, preview/apply ingest, quickLintPage）
+  types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug, PageQuickLint）
+  app-utils.test.ts # 单元测试（161 通过）
+  styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组, quick-lint-hint 等）
 ```
 
-### 18.4 验证基线（2026-04-23 最新）
+### 18.4 验证基线（2026-04-24 最新）
 
-- 用户侧历史基线：`cargo test`、`npm run test -- --run`、`npm run typecheck` 已回传通过（2026-04-23）。
-- 本轮 WSL（Codex）：
-  - `cd web && npm run typecheck`：**通过（0 errors）**
-  - `cd web && npm run test -- --run`：**失败**（缺失 `@rollup/rollup-linux-x64-gnu` 可选依赖）
-  - `cd web && npm run build`：**失败**（同上）
-  - `cd src-tauri && cargo check`：**失败**（`cargo: command not found`，当前 WSL 无 Rust 工具链）
-- `node --check extension/popup.js`：**通过**
-- `scripts/verify_clipper_windows.ps1`：**用户回传通过**（2026-04-22，Windows）
-- `scripts/verify_searxng_windows.ps1`：**用户回传通过**（2026-04-22，PS7）
+- Windows 本机（Claude Code）：
+  - `cd src-tauri && cargo test`：**164 通过，0 失败** ✅
+  - `cd web && npm run test -- --run`：**161 通过，0 失败** ✅
+  - `cd web && npm run typecheck`：**0 errors** ✅
+- `scripts/verify_clipper_windows.ps1`：**用户回传通过**（2026-04-22）
+- `scripts/verify_searxng_windows.ps1`：**用户回传通过**（2026-04-22）
 - Deep Research 端到端实跑：**通过**（城市复杂水网AI仿真，2026-04-23，用户手动验证）
 
 最新提交（main 分支）：
-- `feat: 完成 P1+P2 功能收口` (d1ab47c)
-- `fix: 修复 ResearchDialog 事件重复订阅导致 queries/done 消息重复` (c4205fa)
-- `fix: ResearchDialog 操作按钮收口为底部统一 Footer` (3362e57)
-- `fix: 修复 ResearchDialog UI 配色与交互问题` (47048dd)
+- `feat(方向D): 摄入后快速结构 Lint（断链 + 缺失实体页检测）` (fbf09d0)
+- 方向 A/B/C：（待 Windows 端到端手动验收）
 
 ### 18.5 关键架构约束
 
