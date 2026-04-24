@@ -91,6 +91,7 @@ import {
   readRecentVaultPathsFromStorage,
   writeRecentVaultPathsToStorage,
   filterAskSessions,
+  formatAskSessionSearchSnippet,
   buildAskSessionExportMarkdown,
   getResearchStatusLabel,
   getResearchStatusColor,
@@ -178,8 +179,31 @@ describe("模板初始化预览", () => {
 });
 
 describe("最近 Vault 路径", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const localStorageMock = {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: localStorageMock,
+    });
+
+    return { store };
+  };
+
   afterEach(() => {
-    localStorage.removeItem(RECENT_VAULT_PATHS_STORAGE_KEY);
+    Reflect.deleteProperty(globalThis, "localStorage");
   });
 
   it("normalizeRecentVaultPaths 会去重并移除空值", () => {
@@ -194,6 +218,7 @@ describe("最近 Vault 路径", () => {
   });
 
   it("merge/read/writeRecentVaultPaths 保持最新优先", () => {
+    installLocalStorageMock();  // 安装 mock 供 write/read 使用
     const merged = mergeRecentVaultPaths("E:\\vault-c", ["E:\\vault-a", "E:\\vault-b"]);
     expect(merged[0]).toBe("E:\\vault-c");
     writeRecentVaultPathsToStorage(merged);
@@ -248,6 +273,13 @@ describe("Ask 会话管理", () => {
     expect(markdown).toContain("### 用户");
     expect(markdown).toContain("### 助手");
     expect(markdown).toContain("你好，我是助手。");
+  });
+
+  it("formatAskSessionSearchSnippet 会压缩空白并截断", () => {
+    expect(formatAskSessionSearchSnippet("  Rust \n\n 所有权   与 借用  ")).toBe(
+      "Rust 所有权 与 借用",
+    );
+    expect(formatAskSessionSearchSnippet("x".repeat(120)).endsWith("…")).toBe(true);
   });
 });
 

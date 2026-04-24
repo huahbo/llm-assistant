@@ -17,16 +17,17 @@ use crate::{
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AppConfig, AppMode, AppOverview, AskSessionItem, AskSessionTurnItem, DefaultPaths,
-        IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
-        KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData, KnowledgeSubgraphMeta,
-        LintIssue, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyItemResult,
-        LintPatchBatchApplyResult, LintPatchBatchApplyStatus, LintPatchEventItem,
-        LintPatchPreview, LintPatchSuggestion, LintReport, LintSeverityStats, LlmProviderConfig,
-        LlmStatus, LogEntry, LogLevel, ModeChangeResult, OutboxAckResult, OutboxEventItem,
-        ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug,
-        QuerySearchRouteDebug, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
-        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
+        AppConfig, AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem,
+        AskSessionTurnItem, AskSessionTurnMeta, DefaultPaths, IngestPreview, IngestResult,
+        KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeGraphLink, KnowledgeGraphNode,
+        KnowledgeSubgraphData, KnowledgeSubgraphMeta, LintIssue, LintPatchApplyInput,
+        LintPatchApplyResult, LintPatchBatchApplyItemResult, LintPatchBatchApplyResult,
+        LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview, LintPatchSuggestion,
+        LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
+        ModeChangeResult, OutboxAckResult, OutboxEventItem, ProgressPayload, QueryAnswerResult,
+        QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug, QuerySettings,
+        SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem,
+        WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
     },
     vault,
 };
@@ -3755,6 +3756,54 @@ Wiki 页面：\n{}",
                 role: item.role,
                 content: item.content,
                 created_at: item.created_at,
+                citations: serde_json::from_str::<Vec<QueryCitation>>(&item.citations_json)
+                    .unwrap_or_default(),
+                meta: item
+                    .meta_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<AskSessionTurnMeta>(raw).ok()),
+            })
+            .collect())
+    }
+
+    /// 跨会话检索 Ask 轮次内容（用于历史定位）。
+    pub fn search_ask_session_turns_impl(
+        &self,
+        keyword: &str,
+        limit: usize,
+    ) -> Result<Vec<AskSessionSearchHitItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(Vec::new());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let safe_limit = limit.min(200);
+        let records = db::search_ask_session_turns(&db_path, keyword, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|item| {
+                let snippet = item
+                    .snippet
+                    .replace('\n', " ")
+                    .replace('\r', " ")
+                    .trim()
+                    .chars()
+                    .take(120)
+                    .collect::<String>();
+                AskSessionSearchHitItem {
+                    session_id: item.session_id,
+                    session_title: item.session_title,
+                    turn_id: item.turn_id,
+                    role: item.role,
+                    snippet,
+                    created_at: item.created_at,
+                }
             })
             .collect())
     }
@@ -3880,6 +3929,8 @@ Wiki 页面：\n{}",
             "user",
             &normalized_question,
             &now,
+            None,
+            None,
         )?;
         {
             let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
@@ -4033,12 +4084,25 @@ Wiki 页面：\n{}",
                 });
             }
         }
+        let assistant_turn_citations_json =
+            serde_json::to_string(&citations).unwrap_or_else(|_| "[]".to_string());
+        let assistant_turn_meta_json = serde_json::to_string(&AskSessionTurnMeta {
+            mode,
+            search_strategy: Some(search_strategy.to_string()),
+            answer_strategy: Some(answer_strategy.clone()),
+            top_k: Some(top_k),
+            matched_pages: Some(matches.len()),
+            search_debug: search_debug.clone(),
+        })
+        .unwrap_or_else(|_| "{}".to_string());
         if let Err(err) = db::append_ask_session_turn(
             &db_path,
             &normalized_session_id,
             "assistant",
             &answer,
             &current_timestamp_ms(),
+            Some(&assistant_turn_citations_json),
+            Some(&assistant_turn_meta_json),
         ) {
             self.push_log(LogLevel::Warn, format!("持久化助手会话轮次失败: {}", err));
         }

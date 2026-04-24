@@ -530,6 +530,37 @@ pub struct AskSessionTurnItem {
     pub role: String,
     pub content: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<QueryCitation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<AskSessionTurnMeta>,
+}
+
+/// Ask 会话助手轮次元信息（用于恢复会话时展示引用与检索策略）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskSessionTurnMeta {
+    pub mode: AppMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_pages: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_debug: Option<QuerySearchDebug>,
+}
+
+/// 跨会话检索命中项（按会话轮次返回）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskSessionSearchHitItem {
+    pub session_id: String,
+    pub session_title: String,
+    pub turn_id: i64,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: String,
 }
 
 /// Wiki 页面详情。

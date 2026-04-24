@@ -1,13 +1,13 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, AskSessionItem, AskSessionTurnItem, DefaultPaths, IngestPreview,
-    IngestResult, KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeSubgraphData,
-    LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem,
-    LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult,
-    OutboxAckResult, OutboxEventItem, QueryAnswerResult, QueryAskOptions, QuerySettings,
-    ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, VaultInitResult,
-    WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem,
+    DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
+    KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyResult,
+    LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry,
+    ModeChangeResult, OutboxAckResult, OutboxEventItem, QueryAnswerResult, QueryAskOptions,
+    QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig,
+    VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -426,6 +426,16 @@ pub fn get_ask_session_turns(
     limit: Option<usize>,
 ) -> Result<Vec<AskSessionTurnItem>, String> {
     state.list_ask_session_turns_impl(&session_id, limit.unwrap_or(400))
+}
+
+/// 跨会话检索 Ask 轮次内容（按时间倒序）。
+#[tauri::command]
+pub fn search_ask_session_turns(
+    state: tauri::State<'_, AppState>,
+    keyword: String,
+    limit: Option<usize>,
+) -> Result<Vec<AskSessionSearchHitItem>, String> {
+    state.search_ask_session_turns_impl(&keyword, limit.unwrap_or(50))
 }
 
 /// 重命名 Ask 会话标题。

@@ -184,6 +184,24 @@ export interface AskSessionTurnItem {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  citations?: QueryCitation[];
+  meta?: {
+    mode: BackendAppMode;
+    search_strategy?: string | null;
+    answer_strategy?: string | null;
+    top_k?: number | null;
+    matched_pages?: number | null;
+    search_debug?: QuerySearchDebug | null;
+  } | null;
+}
+
+export interface AskSessionSearchHitItem {
+  session_id: string;
+  session_title: string;
+  turn_id: number;
+  role: "user" | "assistant" | string;
+  snippet: string;
+  created_at: string;
 }
 
 export interface WikiPageItem {

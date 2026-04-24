@@ -148,6 +148,19 @@ pub struct AskSessionTurnRecord {
     pub role: String,
     pub content: String,
     pub created_at: String,
+    pub citations_json: String,
+    pub meta_json: Option<String>,
+}
+
+/// Ask 跨会话检索命中记录。
+#[derive(Debug, Clone)]
+pub struct AskSessionSearchHitRecord {
+    pub session_id: String,
+    pub session_title: String,
+    pub turn_id: i64,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: String,
 }
 
 /// Outbox 事件记录。
@@ -1204,6 +1217,8 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             session_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+            citations_json TEXT NOT NULL DEFAULT '[]',
+            meta_json TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(session_id) REFERENCES ask_sessions(session_id) ON DELETE CASCADE
         );
@@ -1245,6 +1260,7 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
     );
 
     ensure_ask_history_quality(conn)?;
+    ensure_ask_session_turns_quality(conn)?;
 
     Ok(())
 }
@@ -1340,6 +1356,42 @@ fn ensure_ask_history_quality(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("创建 ask_history 时间索引失败: {}", err))?;
 
+    Ok(())
+}
+
+/// Ask 会话轮次表质量保障：补齐结构化元信息字段。
+fn ensure_ask_session_turns_quality(conn: &Connection) -> Result<(), String> {
+    let mut has_citations_json = false;
+    let mut has_meta_json = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(ask_session_turns)")
+        .map_err(|err| format!("读取 ask_session_turns 表结构失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("读取 ask_session_turns 字段失败: {}", err))?;
+    for row in rows {
+        let name = row.map_err(|err| format!("读取 ask_session_turns 字段失败: {}", err))?;
+        if name == "citations_json" {
+            has_citations_json = true;
+        } else if name == "meta_json" {
+            has_meta_json = true;
+        }
+    }
+
+    if !has_citations_json {
+        conn.execute(
+            "ALTER TABLE ask_session_turns ADD COLUMN citations_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )
+        .map_err(|err| format!("补齐 ask_session_turns.citations_json 失败: {}", err))?;
+    }
+    if !has_meta_json {
+        conn.execute(
+            "ALTER TABLE ask_session_turns ADD COLUMN meta_json TEXT",
+            [],
+        )
+        .map_err(|err| format!("补齐 ask_session_turns.meta_json 失败: {}", err))?;
+    }
     Ok(())
 }
 
@@ -1506,6 +1558,8 @@ pub fn append_ask_session_turn(
     role: &str,
     content: &str,
     created_at: &str,
+    citations_json: Option<&str>,
+    meta_json: Option<&str>,
 ) -> Result<i64, String> {
     let normalized_session_id = session_id.trim();
     if normalized_session_id.is_empty() {
@@ -1519,6 +1573,13 @@ pub fn append_ask_session_turn(
     if normalized_content.is_empty() {
         return Err("content 不能为空".to_string());
     }
+    let normalized_citations_json = citations_json.unwrap_or("[]").trim();
+    let normalized_citations_json = if normalized_citations_json.is_empty() {
+        "[]"
+    } else {
+        normalized_citations_json
+    };
+    let normalized_meta_json = meta_json.map(str::trim).filter(|value| !value.is_empty());
 
     let shared_conn = get_connection(db_path)?;
     let mut conn = shared_conn.lock().unwrap();
@@ -1539,10 +1600,17 @@ pub fn append_ask_session_turn(
 
     tx.execute(
         r#"
-        INSERT INTO ask_session_turns (session_id, role, content, created_at)
-        VALUES (?1, ?2, ?3, ?4)
+        INSERT INTO ask_session_turns (session_id, role, content, citations_json, meta_json, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
-        params![normalized_session_id, normalized_role, normalized_content, created_at],
+        params![
+            normalized_session_id,
+            normalized_role,
+            normalized_content,
+            normalized_citations_json,
+            normalized_meta_json,
+            created_at
+        ],
     )
     .map_err(|err| format!("写入 ask_session_turn 失败: {}", err))?;
     let turn_id = tx.last_insert_rowid();
@@ -1658,7 +1726,7 @@ pub fn list_ask_session_turns(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, session_id, role, content, created_at
+            SELECT id, session_id, role, content, created_at, citations_json, meta_json
             FROM ask_session_turns
             WHERE session_id = ?1
             ORDER BY id ASC
@@ -1674,6 +1742,8 @@ pub fn list_ask_session_turns(
                 role: row.get(2)?,
                 content: row.get(3)?,
                 created_at: row.get(4)?,
+                citations_json: row.get(5)?,
+                meta_json: row.get(6)?,
             })
         })
         .map_err(|err| format!("执行查询 ask_session_turns 失败: {}", err))?;
@@ -1723,6 +1793,58 @@ pub fn list_recent_ask_session_turns(
         .map_err(|err| format!("读取最近 ask_session_turns 失败: {}", err))?;
     turns.reverse();
     Ok(turns)
+}
+
+/// 跨会话检索轮次内容（按时间倒序）。
+pub fn search_ask_session_turns(
+    db_path: &Path,
+    keyword: &str,
+    limit: usize,
+) -> Result<Vec<AskSessionSearchHitRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let normalized_keyword = keyword.trim();
+    if normalized_keyword.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let like_pattern = format!("%{}%", normalized_keyword.to_lowercase());
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT
+                t.session_id,
+                s.title,
+                t.id,
+                t.role,
+                t.content,
+                t.created_at
+            FROM ask_session_turns t
+            INNER JOIN ask_sessions s
+                ON s.session_id = t.session_id
+            WHERE lower(t.content) LIKE ?1
+               OR lower(s.title) LIKE ?1
+            ORDER BY CAST(t.created_at AS INTEGER) DESC, t.id DESC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备检索 ask_session_turns 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![like_pattern, limit as i64], |row| {
+            Ok(AskSessionSearchHitRecord {
+                session_id: row.get(0)?,
+                session_title: row.get(1)?,
+                turn_id: row.get(2)?,
+                role: row.get(3)?,
+                snippet: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|err| format!("执行检索 ask_session_turns 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 ask_session_turns 检索结果失败: {}", err))
 }
 
 /// 重命名会话标题。
@@ -2775,10 +2897,22 @@ mod tests {
         ensure_meta_db(&db_path).expect("初始化数据库失败");
 
         create_ask_session(&db_path, "sess-1", "新对话", "100").expect("创建会话失败");
-        append_ask_session_turn(&db_path, "sess-1", "user", "Rust 是什么？", "101")
+        append_ask_session_turn(&db_path, "sess-1", "user", "Rust 是什么？", "101", None, None)
             .expect("写入用户轮失败");
-        append_ask_session_turn(&db_path, "sess-1", "assistant", "Rust 是系统编程语言。", "102")
-            .expect("写入助手轮失败");
+        append_ask_session_turn(
+            &db_path,
+            "sess-1",
+            "assistant",
+            "Rust 是系统编程语言。",
+            "102",
+            Some(
+                r#"[{"page_path":"wiki/rust.md","score":12,"excerpt":"Rust 简介","display_path":"rust"}]"#,
+            ),
+            Some(
+                r#"{"mode":"Hybrid","search_strategy":"rrf","answer_strategy":"llm","top_k":3,"matched_pages":1}"#,
+            ),
+        )
+        .expect("写入助手轮失败");
 
         let sessions = list_ask_sessions(&db_path, 20).expect("读取会话失败");
         assert_eq!(sessions.len(), 1);
@@ -2790,6 +2924,14 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].role, "user");
         assert_eq!(turns[1].role, "assistant");
+        assert_eq!(turns[0].citations_json, "[]");
+        assert!(turns[0].meta_json.is_none());
+        assert!(turns[1].citations_json.contains("wiki/rust.md"));
+        assert!(turns[1]
+            .meta_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("\"search_strategy\":\"rrf\""));
     }
 
     #[test]
@@ -2800,7 +2942,7 @@ mod tests {
         ensure_meta_db(&db_path).expect("初始化数据库失败");
 
         create_ask_session(&db_path, "sess-2", "新对话", "100").expect("创建会话失败");
-        append_ask_session_turn(&db_path, "sess-2", "user", "第一问", "101")
+        append_ask_session_turn(&db_path, "sess-2", "user", "第一问", "101", None, None)
             .expect("写入用户轮失败");
 
         rename_ask_session(&db_path, "sess-2", "我的会话", "102").expect("重命名失败");
@@ -2814,6 +2956,43 @@ mod tests {
         let turns_after_delete =
             list_ask_session_turns(&db_path, "sess-2", 20).expect("读取会话轮次失败");
         assert!(turns_after_delete.is_empty());
+    }
+
+    #[test]
+    fn search_ask_session_turns_matches_across_sessions() {
+        let dir = make_temp_dir("llm-wiki-db-ask-session-search");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        create_ask_session(&db_path, "sess-a", "Rust 会话", "100").expect("创建会话失败");
+        append_ask_session_turn(
+            &db_path,
+            "sess-a",
+            "assistant",
+            "Rust 的所有权系统可以减少内存错误。",
+            "101",
+            None,
+            None,
+        )
+        .expect("写入会话 A 失败");
+
+        create_ask_session(&db_path, "sess-b", "SQLite 会话", "100").expect("创建会话失败");
+        append_ask_session_turn(
+            &db_path,
+            "sess-b",
+            "assistant",
+            "SQLite FTS5 适合本地检索。",
+            "102",
+            None,
+            None,
+        )
+        .expect("写入会话 B 失败");
+
+        let hits = search_ask_session_turns(&db_path, "rust", 20).expect("检索失败");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "sess-a");
+        assert!(hits[0].snippet.contains("Rust"));
     }
 
     #[test]

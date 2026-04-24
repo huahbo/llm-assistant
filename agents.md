@@ -202,8 +202,8 @@
 
 ### 18.0 快速恢复步骤
 
-1. `cargo test`（src-tauri/）→ 应 **142 passed**
-2. `npm run test -- --run`（web/）→ 应 **151 passed**
+1. `cargo test`（src-tauri/）→ 应 **160 passed**
+2. `npm run test -- --run`（web/）→ 应 **160 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
 4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
 5. 读 `docs/实施过程记录.md` 最新 3 条了解背景
@@ -312,6 +312,7 @@
 | P26-Embed-HealthHint | Embed 健康检查提示优化（ModelNotFound 指引 `ollama pull nomic-embed-text:latest`） | ✅ `src-tauri/src/state.rs`（2026-04-22，**Claude Code** 实施） |
 | ResearchExport-Regression | `.md` 历史导出回归复核：代码审查通过 + stale 注释修正（`save_research_doc` 注释从"Word HTML .doc"改为通用写盘描述） | ✅ `src-tauri/src/commands.rs` + `web/src/tauri-client.ts`（2026-04-23，**Claude Code** 实施） |
 | P27-Ingest-HITL | 方向 A 摄入审核：`preview_ingest_file/apply_ingest_preview` + Inbox「摄入分析卡」审批后落盘（直摄入全链路） | ✅ `src-tauri/src/{models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-23，**Codex+子代理** 实施） |
+| P27-Session-C2 | 方向 C 二期：会话轮次 citations/meta 持久化 + 跨会话检索与命中定位（点击结果自动切会话并定位高亮） | ✅ `src-tauri/src/{db,models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-24，**Codex** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -340,13 +341,13 @@
 | ✅ | **Research `.md` 导出历史任务回归复核** | 代码审查通过：`doneSavedPath` 初始化逻辑正确，按钮显示条件满足，`fetchWikiPageDetail` 读取 wiki/research/ 文件路径安全；用户侧待应用内手动确认（2026-04-23） |
 | ✅ | **方向 A：摄入质量审核（两步摄入+HITL）** | 已实现「摄入分析卡」与审批后写入（2026-04-23） |
 | 1 | **方向 B：项目模板/多项目体验** | 进行中：已实现模板初始化预览卡（目录/文件/行数）+ 最近 Vault 快速切换；待 Windows 端到端复核后收口（2026-04-24） |
-| 2 | **方向 C：会话持久化增强** | 进行中：已实现 Ask 会话实体化存储 + 会话管理 UI（切换/重命名/删除/导出）；待 Windows 端到端复核与 citations 持久化二期（2026-04-24） |
+| 2 | **方向 C：会话持久化增强** | 进行中：已完成一期（会话实体化存储+管理 UI）与二期（citations/meta 持久化+跨会话检索）；待 Windows 端到端复核后收口（2026-04-24） |
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-23）
+### 18.3 当前代码快照（2026-04-24，基线 160 Rust / 160 前端）
 
 ```
 src-tauri/src/

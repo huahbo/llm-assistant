@@ -72,6 +72,7 @@ fn main() {
             commands::create_ask_session,
             commands::list_ask_sessions,
             commands::get_ask_session_turns,
+            commands::search_ask_session_turns,
             commands::rename_ask_session,
             commands::delete_ask_session,
             commands::get_outbox_events,

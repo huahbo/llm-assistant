@@ -18,6 +18,7 @@ import {
   listAskSessions,
   createAskSession,
   fetchAskSessionTurns,
+  searchAskSessionTurns,
   renameAskSession,
   deleteAskSession,
   fetchRecentWikiPages,
@@ -99,6 +100,7 @@ import type {
   AppOverview,
   AskHistoryItem,
   AskSessionItem,
+  AskSessionSearchHitItem,
   AskSessionTurnItem,
   BackendAppMode,
   IngestQueueItem,
@@ -138,6 +140,7 @@ const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
 const RECENT_VAULT_PATHS_MAX = 8;
 const ASK_SESSION_LIST_MAX = 80;
+const ASK_SESSION_SEARCH_LIMIT = 80;
 
 const ingestSupportedFileExtensions = new Set([
   "md",
@@ -234,11 +237,12 @@ export const mergeRecentVaultPaths = (nextPath: string, existing: string[]): str
   normalizeRecentVaultPaths([nextPath, ...existing]).slice(0, RECENT_VAULT_PATHS_MAX);
 
 export const readRecentVaultPathsFromStorage = (): string[] => {
-  if (typeof window === "undefined") {
-    return [];
-  }
   try {
-    const rawValue = window.localStorage.getItem(RECENT_VAULT_PATHS_STORAGE_KEY);
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return [];
+    }
+    const rawValue = storage.getItem(RECENT_VAULT_PATHS_STORAGE_KEY);
     if (!rawValue) {
       return [];
     }
@@ -254,12 +258,13 @@ export const readRecentVaultPathsFromStorage = (): string[] => {
 };
 
 export const writeRecentVaultPathsToStorage = (paths: string[]): void => {
-  if (typeof window === "undefined") {
-    return;
-  }
   try {
+    const storage = globalThis.localStorage;
+    if (!storage) {
+      return;
+    }
     const normalized = normalizeRecentVaultPaths(paths).slice(0, RECENT_VAULT_PATHS_MAX);
-    window.localStorage.setItem(RECENT_VAULT_PATHS_STORAGE_KEY, JSON.stringify(normalized));
+    storage.setItem(RECENT_VAULT_PATHS_STORAGE_KEY, JSON.stringify(normalized));
   } catch {
     // 忽略存储异常，避免阻塞主流程
   }
@@ -2189,6 +2194,14 @@ export const filterAskSessions = (
   });
 };
 
+export const formatAskSessionSearchSnippet = (raw: string): string => {
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > 88 ? `${normalized.slice(0, 88)}…` : normalized;
+};
+
 export const buildAskSessionExportMarkdown = (
   session: Pick<AskSessionItem, "title" | "session_id" | "created_at" | "updated_at">,
   turns: Array<Pick<AskSessionTurnItem, "role" | "content" | "created_at">>,
@@ -2627,13 +2640,18 @@ export default function App() {
   const [askSessions, setAskSessions] = useState<AskSessionItem[]>([]);
   const [askSessionsLoading, setAskSessionsLoading] = useState(false);
   const [askSessionKeyword, setAskSessionKeyword] = useState("");
+  const [askSessionSearchKeyword, setAskSessionSearchKeyword] = useState("");
+  const [askSessionSearchHits, setAskSessionSearchHits] = useState<AskSessionSearchHitItem[]>([]);
+  const [askSessionSearching, setAskSessionSearching] = useState(false);
   const [askSessionManaging, setAskSessionManaging] = useState(false);
+  const [askFocusedMessageId, setAskFocusedMessageId] = useState("");
   const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
   // 当前会话 ID（每次"新对话"重新生成）
   const [askSessionId, setAskSessionId] = useState<string>(() => crypto.randomUUID());
   const [showAskAdvanced, setShowAskAdvanced] = useState(false);
   const [expandedCitationIds, setExpandedCitationIds] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const askFocusTimerRef = useRef<number | null>(null);
   const [wikiKeyword, setWikiKeyword] = useState("");
   // 当前激活的标签集合，支持多选
   const [wikiActiveTags, setWikiActiveTags] = useState<Set<string>>(new Set());
@@ -2738,6 +2756,15 @@ export default function App() {
   const [queueEnqueueing, setQueueEnqueueing] = useState(false);
   const [ingestPreviewDialog, setIngestPreviewDialog] = useState<IngestPreview | null>(null);
   const ingestPreviewResolverRef = useRef<((approved: boolean) => void) | null>(null);
+
+  useEffect(
+    () => () => {
+      if (askFocusTimerRef.current !== null) {
+        globalThis.clearTimeout(askFocusTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const filteredQueryHistoryItems = useMemo(
     () => filterQueryHistoryItems(queryHistoryItems, askHistoryKeyword),
@@ -3528,7 +3555,40 @@ export default function App() {
       role: turn.role === "assistant" ? "assistant" : "user",
       content: turn.content,
       streaming: false,
+      citations: turn.citations ?? [],
+      meta: turn.meta
+        ? {
+            mode: turn.meta.mode,
+            searchStrategy: turn.meta.search_strategy ?? null,
+            answerStrategy: turn.meta.answer_strategy ?? null,
+            topK: turn.meta.top_k ?? 0,
+            matchedPages: turn.meta.matched_pages ?? 0,
+            searchDebug: turn.meta.search_debug ?? null,
+          }
+        : undefined,
     }));
+
+  const focusAskMessageById = (messageId: string) => {
+    if (!messageId) {
+      return;
+    }
+    globalThis.setTimeout(() => {
+      const node = globalThis.document?.querySelector<HTMLElement>(
+        `[data-ask-message-id="${messageId}"]`,
+      );
+      if (!node) {
+        return;
+      }
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      setAskFocusedMessageId(messageId);
+      if (askFocusTimerRef.current !== null) {
+        globalThis.clearTimeout(askFocusTimerRef.current);
+      }
+      askFocusTimerRef.current = globalThis.setTimeout(() => {
+        setAskFocusedMessageId((prev) => (prev === messageId ? "" : prev));
+      }, 2200);
+    }, 40);
+  };
 
   const refreshAskSessionList = async (): Promise<AskSessionItem[]> => {
     if (!isTauriRuntime()) {
@@ -3573,6 +3633,7 @@ export default function App() {
       setAskSessions(nextSessions);
       setAskSessionId(nextSessionId);
       setAskMessages([]);
+      setAskSessionSearchHits([]);
       setQueryResult(null);
       setExpandedCitationIds(new Set());
       setStatusMessage("新会话已创建。");
@@ -3591,7 +3652,52 @@ export default function App() {
       await loadAskSessionMessages(session.session_id);
       setQueryResult(null);
       setExpandedCitationIds(new Set());
+      setAskSessionSearchHits((prev) =>
+        prev.filter((item) => item.session_id === session.session_id),
+      );
+      setAskFocusedMessageId("");
       setStatusMessage(`已切换到会话：${session.title}`);
+    } finally {
+      setAskSessionManaging(false);
+    }
+  };
+
+  const handleSearchAskSessionTurns = async () => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    const keyword = askSessionSearchKeyword.trim();
+    if (!keyword) {
+      setAskSessionSearchHits([]);
+      return;
+    }
+    setAskSessionSearching(true);
+    try {
+      const hits = await searchAskSessionTurns(keyword, ASK_SESSION_SEARCH_LIMIT);
+      const normalized = hits ?? [];
+      setAskSessionSearchHits(normalized);
+      setStatusMessage(
+        normalized.length > 0
+          ? `跨会话检索完成：命中 ${normalized.length} 条记录。`
+          : "跨会话检索完成：未命中。",
+      );
+    } finally {
+      setAskSessionSearching(false);
+    }
+  };
+
+  const handleOpenAskSearchHit = async (hit: AskSessionSearchHitItem) => {
+    if (!isTauriRuntime() || askSessionManaging || queryRunning) {
+      return;
+    }
+    setAskSessionManaging(true);
+    try {
+      setAskSessionId(hit.session_id);
+      await loadAskSessionMessages(hit.session_id);
+      setQueryResult(null);
+      setExpandedCitationIds(new Set());
+      focusAskMessageById(`session-turn-${hit.turn_id}`);
+      setStatusMessage(`已定位到会话「${hit.session_title}」中的匹配消息。`);
     } finally {
       setAskSessionManaging(false);
     }
@@ -6917,6 +7023,51 @@ export default function App() {
                     value={askSessionKeyword}
                     onChange={(event) => setAskSessionKeyword(event.target.value)}
                   />
+                  <div className="ask-sessions__search-row">
+                    <input
+                      className="ask-sessions__search-input"
+                      type="text"
+                      placeholder="跨会话检索内容"
+                      value={askSessionSearchKeyword}
+                      onChange={(event) => setAskSessionSearchKeyword(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void handleSearchAskSessionTurns();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="ask-sessions__search-btn"
+                      disabled={askSessionSearching || askSessionManaging}
+                      onClick={() => void handleSearchAskSessionTurns()}
+                    >
+                      {askSessionSearching ? "检索中..." : "检索"}
+                    </button>
+                  </div>
+                  {askSessionSearchHits.length > 0 && (
+                    <div className="ask-sessions__search-results">
+                      {askSessionSearchHits.map((hit) => (
+                        <button
+                          key={`${hit.session_id}-${hit.turn_id}`}
+                          type="button"
+                          className="ask-sessions__search-hit"
+                          disabled={askSessionManaging || queryRunning}
+                          onClick={() => void handleOpenAskSearchHit(hit)}
+                        >
+                          <span className="ask-sessions__search-hit-title">{hit.session_title}</span>
+                          <span className="ask-sessions__search-hit-snippet">
+                            {formatAskSessionSearchSnippet(hit.snippet)}
+                          </span>
+                          <span className="ask-sessions__search-hit-meta">
+                            {hit.role === "assistant" ? "助手" : "用户"} ·{" "}
+                            {formatAskHistoryCreatedAt(hit.created_at) || "-"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="ask-sessions__list">
                     {askSessionsLoading ? (
                       <p className="ask-sessions__empty">加载中...</p>
@@ -7046,7 +7197,10 @@ export default function App() {
                     return (
                       <article
                         key={message.id}
-                        className={`ask-message ask-message--${message.role}`}
+                        data-ask-message-id={message.id}
+                        className={`ask-message ask-message--${message.role}${
+                          askFocusedMessageId === message.id ? " ask-message--focused" : ""
+                        }`}
                       >
                         <div className="ask-message__avatar">
                           {message.role === "user" ? "你" : "AI"}

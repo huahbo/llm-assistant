@@ -2,6 +2,7 @@ import type {
   AppOverview,
   AskHistoryItem,
   AskSessionItem,
+  AskSessionSearchHitItem,
   AskSessionTurnItem,
   BackendAppMode,
   DefaultPaths,
@@ -1187,6 +1188,25 @@ export async function fetchAskSessionTurns(
   try {
     return await invoke<AskSessionTurnItem[]>("get_ask_session_turns", {
       sessionId,
+      limit,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** 跨会话检索 Ask 轮次 */
+export async function searchAskSessionTurns(
+  keyword: string,
+  limit = 50,
+): Promise<AskSessionSearchHitItem[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<AskSessionSearchHitItem[]>("search_ask_session_turns", {
+      keyword,
       limit,
     });
   } catch {
