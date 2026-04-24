@@ -162,10 +162,28 @@ export interface AskHistoryItem {
   created_at: string;
 }
 
+export interface AskSessionItem {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  turn_count: number;
+  last_turn_role?: string | null;
+  last_turn_content?: string | null;
+}
+
 /** Ask 会话单轮记录 */
 export interface AskTurn {
   role: "user" | "assistant";
   content: string;
+}
+
+export interface AskSessionTurnItem {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
 }
 
 export interface WikiPageItem {

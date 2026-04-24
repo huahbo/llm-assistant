@@ -64,6 +64,7 @@ import {
   groupLintIssuesByPath,
   groupPatchPreviewItemsByPath,
   OCR_PROVIDER_STORAGE_KEY,
+  RECENT_VAULT_PATHS_STORAGE_KEY,
   isOcrProvider,
   readOcrProviderFromStorage,
   writeOcrProviderToStorage,
@@ -79,14 +80,22 @@ import {
   writeQueryHistoryToStorage,
   normalizeQueryHistoryItems,
   parseDroppedIngestPaths,
+  buildTemplateInitPreview,
   mergeQueryHistoryItems,
   filterQueryHistoryItems,
   formatAskHistoryCreatedAt,
   readQueryHistoryItemsFromStorage,
   writeQueryHistoryItemsToStorage,
+  normalizeRecentVaultPaths,
+  mergeRecentVaultPaths,
+  readRecentVaultPathsFromStorage,
+  writeRecentVaultPathsToStorage,
+  filterAskSessions,
+  buildAskSessionExportMarkdown,
   getResearchStatusLabel,
   getResearchStatusColor,
 } from "./App";
+import { getTemplate } from "./templates";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
 import {
   createIngestFileArgs,
@@ -148,6 +157,97 @@ describe("格式化函数", () => {
     expect(formatLogLevel("Info")).toBe("Info");
     expect(formatLogLevel("Warn")).toBe("Warn");
     expect(formatLogLevel("Error")).toBe("Error");
+  });
+});
+
+describe("模板初始化预览", () => {
+  it("通用模板仅包含基础目录与文件", () => {
+    const preview = buildTemplateInitPreview(getTemplate("general"));
+    expect(preview.dirs).toEqual([".app", "raw", "wiki"]);
+    expect(preview.files).toEqual([".app/config.json", ".app/meta.db", "index.md", "log.md"]);
+  });
+
+  it("研究模板包含 schema/purpose 与扩展目录", () => {
+    const preview = buildTemplateInitPreview(getTemplate("research"));
+    expect(preview.files).toContain("wiki/schema.md");
+    expect(preview.files).toContain("wiki/purpose.md");
+    expect(preview.dirs).toContain("wiki/methodology");
+    expect(preview.dirs).toContain("wiki/findings");
+    expect(preview.dirs).toContain("wiki/thesis");
+  });
+});
+
+describe("最近 Vault 路径", () => {
+  afterEach(() => {
+    localStorage.removeItem(RECENT_VAULT_PATHS_STORAGE_KEY);
+  });
+
+  it("normalizeRecentVaultPaths 会去重并移除空值", () => {
+    expect(
+      normalizeRecentVaultPaths([
+        "  E:\\llm-wiki\\vault-a  ",
+        "E:/llm-wiki/vault-a",
+        "",
+        "E:\\llm-wiki\\vault-b",
+      ]),
+    ).toEqual(["E:\\llm-wiki\\vault-a", "E:\\llm-wiki\\vault-b"]);
+  });
+
+  it("merge/read/writeRecentVaultPaths 保持最新优先", () => {
+    const merged = mergeRecentVaultPaths("E:\\vault-c", ["E:\\vault-a", "E:\\vault-b"]);
+    expect(merged[0]).toBe("E:\\vault-c");
+    writeRecentVaultPathsToStorage(merged);
+    expect(readRecentVaultPathsFromStorage()).toEqual(merged);
+  });
+});
+
+describe("Ask 会话管理", () => {
+  it("filterAskSessions 支持标题和预览文本关键词过滤", () => {
+    const source = [
+      {
+        session_id: "s1",
+        title: "Rust 讨论",
+        created_at: "100",
+        updated_at: "200",
+        turn_count: 2,
+        last_turn_role: "assistant",
+        last_turn_content: "解释所有权与借用",
+      },
+      {
+        session_id: "s2",
+        title: "数据库问答",
+        created_at: "300",
+        updated_at: "400",
+        turn_count: 1,
+        last_turn_role: "user",
+        last_turn_content: "SQLite FTS5 索引配置",
+      },
+    ];
+
+    expect(filterAskSessions(source, "rust").map((item) => item.session_id)).toEqual(["s1"]);
+    expect(filterAskSessions(source, "fts5").map((item) => item.session_id)).toEqual(["s2"]);
+    expect(filterAskSessions(source, "").length).toBe(2);
+  });
+
+  it("buildAskSessionExportMarkdown 生成可读导出文本", () => {
+    const markdown = buildAskSessionExportMarkdown(
+      {
+        session_id: "sess-1",
+        title: "测试会话",
+        created_at: "100",
+        updated_at: "200",
+      },
+      [
+        { role: "user", content: "你好", created_at: "101" },
+        { role: "assistant", content: "你好，我是助手。", created_at: "102" },
+      ],
+    );
+
+    expect(markdown).toContain("# 测试会话");
+    expect(markdown).toContain("Session ID");
+    expect(markdown).toContain("### 用户");
+    expect(markdown).toContain("### 助手");
+    expect(markdown).toContain("你好，我是助手。");
   });
 });
 

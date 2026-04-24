@@ -1,7 +1,8 @@
-import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import appLogo from "./assets/LLM_Wiki.png";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import {
@@ -14,6 +15,11 @@ import {
   fetchQuerySettings,
   fetchRecentLogs,
   fetchAskHistory,
+  listAskSessions,
+  createAskSession,
+  fetchAskSessionTurns,
+  renameAskSession,
+  deleteAskSession,
   fetchRecentWikiPages,
   fetchWikiPageDetail,
   fetchWikiPageCitations,
@@ -28,7 +34,6 @@ import {
   queryAskSession,
   cancelAskSession,
   clearAskHistory,
-  clearAskSession,
   runLint,
   applyLintPatch,
   applyLintPatchesBatch,
@@ -93,6 +98,8 @@ import type { LintSeverityFilter } from "./lint-utils";
 import type {
   AppOverview,
   AskHistoryItem,
+  AskSessionItem,
+  AskSessionTurnItem,
   BackendAppMode,
   IngestQueueItem,
   KnowledgeGraphData,
@@ -115,6 +122,7 @@ import type {
   ResearchTaskStatus,
   SearchConfig,
   IngestPreview,
+  WikiTemplate,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageItem,
@@ -128,6 +136,8 @@ const defaultIngestFileOcrProvider: OcrProvider = "tesseract";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
+const RECENT_VAULT_PATHS_MAX = 8;
+const ASK_SESSION_LIST_MAX = 80;
 
 const ingestSupportedFileExtensions = new Set([
   "md",
@@ -150,6 +160,109 @@ export type DroppedIngestPathsResult = {
   accepted: string[];
   rejected: string[];
   duplicateCount: number;
+};
+
+export type TemplateInitPreview = {
+  dirs: string[];
+  files: string[];
+};
+
+export const RECENT_VAULT_PATHS_STORAGE_KEY = "llm_wiki_recent_vault_paths_v1";
+
+const normalizeTemplateDirPath = (dir: string): string => {
+  const normalized = dir.trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "");
+  if (!normalized) {
+    return "";
+  }
+  if (
+    normalized === "wiki"
+    || normalized.startsWith("wiki/")
+    || normalized === "raw"
+    || normalized.startsWith("raw/")
+    || normalized === ".app"
+    || normalized.startsWith(".app/")
+  ) {
+    return normalized;
+  }
+  return `wiki/${normalized}`;
+};
+
+/**
+ * 构建模板初始化预览：展示会创建的核心目录与文件（相对 vault 根路径）。
+ */
+export const buildTemplateInitPreview = (template: WikiTemplate): TemplateInitPreview => {
+  const dirSet = new Set<string>(["raw", "wiki", ".app"]);
+  const fileSet = new Set<string>(["index.md", "log.md", ".app/config.json", ".app/meta.db"]);
+
+  if (template.id !== "general") {
+    fileSet.add("wiki/schema.md");
+    fileSet.add("wiki/purpose.md");
+  }
+
+  for (const dir of template.extraDirs) {
+    const normalized = normalizeTemplateDirPath(dir);
+    if (normalized) {
+      dirSet.add(normalized);
+    }
+  }
+
+  return {
+    dirs: Array.from(dirSet).sort((a, b) => a.localeCompare(b, "zh-CN")),
+    files: Array.from(fileSet).sort((a, b) => a.localeCompare(b, "zh-CN")),
+  };
+};
+
+export const normalizeRecentVaultPaths = (paths: string[]): string[] => {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const rawPath of paths) {
+    const path = rawPath.trim();
+    if (!path) {
+      continue;
+    }
+    const key = path.replace(/\\/g, "/").toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(path);
+  }
+  return normalized;
+};
+
+export const mergeRecentVaultPaths = (nextPath: string, existing: string[]): string[] =>
+  normalizeRecentVaultPaths([nextPath, ...existing]).slice(0, RECENT_VAULT_PATHS_MAX);
+
+export const readRecentVaultPathsFromStorage = (): string[] => {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const rawValue = window.localStorage.getItem(RECENT_VAULT_PATHS_STORAGE_KEY);
+    if (!rawValue) {
+      return [];
+    }
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return normalizeRecentVaultPaths(parsed.filter((item): item is string => typeof item === "string"))
+      .slice(0, RECENT_VAULT_PATHS_MAX);
+  } catch {
+    return [];
+  }
+};
+
+export const writeRecentVaultPathsToStorage = (paths: string[]): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    const normalized = normalizeRecentVaultPaths(paths).slice(0, RECENT_VAULT_PATHS_MAX);
+    window.localStorage.setItem(RECENT_VAULT_PATHS_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // 忽略存储异常，避免阻塞主流程
+  }
 };
 
 /**
@@ -2061,6 +2174,50 @@ export const formatAskHistoryCreatedAt = (createdAt: string): string => {
   return `${month}-${day} ${hours}:${minutes}`;
 };
 
+export const filterAskSessions = (
+  sessions: AskSessionItem[],
+  keyword: string,
+): AskSessionItem[] => {
+  const normalizedKeyword = keyword.trim().toLocaleLowerCase("zh-CN");
+  if (!normalizedKeyword) {
+    return sessions;
+  }
+  return sessions.filter((item) => {
+    const title = item.title?.toLocaleLowerCase("zh-CN") ?? "";
+    const preview = item.last_turn_content?.toLocaleLowerCase("zh-CN") ?? "";
+    return title.includes(normalizedKeyword) || preview.includes(normalizedKeyword);
+  });
+};
+
+export const buildAskSessionExportMarkdown = (
+  session: Pick<AskSessionItem, "title" | "session_id" | "created_at" | "updated_at">,
+  turns: Array<Pick<AskSessionTurnItem, "role" | "content" | "created_at">>,
+): string => {
+  const lines = [
+    `# ${session.title || "未命名会话"}`,
+    "",
+    `- Session ID: \`${session.session_id}\``,
+    `- Created At: ${session.created_at || ""}`,
+    `- Updated At: ${session.updated_at || ""}`,
+    "",
+    "## 对话记录",
+    "",
+  ];
+
+  if (turns.length === 0) {
+    lines.push("_暂无对话内容_");
+    return lines.join("\n");
+  }
+
+  for (const turn of turns) {
+    lines.push(`### ${turn.role === "user" ? "用户" : "助手"} · ${turn.created_at || ""}`);
+    lines.push("");
+    lines.push(turn.content || "");
+    lines.push("");
+  }
+  return lines.join("\n");
+};
+
 export const isOcrProvider = (value: string): value is OcrProvider =>
   value === "tesseract" || value === "paddle";
 
@@ -2426,7 +2583,21 @@ export default function App() {
   const [lintRunning, setLintRunning] = useState(false);
   const [queryRunning, setQueryRunning] = useState(false);
   const [vaultPath, setVaultPath] = useState(defaultVaultPath);
+  const [recentVaultPaths, setRecentVaultPaths] = useState<string[]>(() =>
+    readRecentVaultPathsFromStorage(),
+  );
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("general");
+  const selectedTemplate = useMemo<WikiTemplate>(() => {
+    try {
+      return getTemplate(selectedTemplateId);
+    } catch {
+      return templates[0];
+    }
+  }, [selectedTemplateId]);
+  const templateInitPreview = useMemo(
+    () => buildTemplateInitPreview(selectedTemplate),
+    [selectedTemplate],
+  );
   const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
   const [ingestPdfPath, setIngestPdfPath] = useState(defaultIngestPdfPath);
   const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
@@ -2453,9 +2624,13 @@ export default function App() {
   );
   const [searchDebugCopiedMessageId, setSearchDebugCopiedMessageId] = useState("");
   const [askHistoryKeyword, setAskHistoryKeyword] = useState("");
+  const [askSessions, setAskSessions] = useState<AskSessionItem[]>([]);
+  const [askSessionsLoading, setAskSessionsLoading] = useState(false);
+  const [askSessionKeyword, setAskSessionKeyword] = useState("");
+  const [askSessionManaging, setAskSessionManaging] = useState(false);
   const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
   // 当前会话 ID（每次"新对话"重新生成）
-  const [askSessionId, setAskSessionId] = useState(() => crypto.randomUUID());
+  const [askSessionId, setAskSessionId] = useState<string>(() => crypto.randomUUID());
   const [showAskAdvanced, setShowAskAdvanced] = useState(false);
   const [expandedCitationIds, setExpandedCitationIds] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2567,6 +2742,10 @@ export default function App() {
   const filteredQueryHistoryItems = useMemo(
     () => filterQueryHistoryItems(queryHistoryItems, askHistoryKeyword),
     [queryHistoryItems, askHistoryKeyword],
+  );
+  const filteredAskSessions = useMemo(
+    () => filterAskSessions(askSessions, askSessionKeyword),
+    [askSessions, askSessionKeyword],
   );
 
   const graphNodes = graphData?.nodes ?? [];
@@ -3167,6 +3346,7 @@ export default function App() {
         llmConfigResult,
         backendOcrProvider,
         dbAskHistory,
+        dbAskSessions,
       ] =
         await Promise.all([
           loadAppData(),
@@ -3176,6 +3356,7 @@ export default function App() {
           fetchLlmConfig(),
           fetchOcrConfig(),
           fetchAskHistory(QUERY_HISTORY_MAX),
+          listAskSessions(ASK_SESSION_LIST_MAX),
         ]);
 
       if (!cancelled) {
@@ -3229,6 +3410,30 @@ export default function App() {
           writeQueryHistoryItemsToStorage(normalized, QUERY_HISTORY_MAX);
         } else {
           setQueryHistoryItems(readQueryHistoryItemsFromStorage());
+        }
+
+        // Ask 会话优先读取后端持久化存储；若为空则创建默认会话。
+        const normalizedSessions = dbAskSessions ?? [];
+        if (normalizedSessions.length > 0) {
+          setAskSessions(normalizedSessions);
+          const activeSession =
+            normalizedSessions.find((item) => item.session_id === askSessionId) ?? normalizedSessions[0];
+          setAskSessionId(activeSession.session_id);
+          const turns = await fetchAskSessionTurns(activeSession.session_id, 400);
+          if (!cancelled) {
+            setAskMessages(buildAskMessagesFromSessionTurns(turns ?? []));
+          }
+        } else if (isTauriRuntime()) {
+          const fallbackSessionId = askSessionId || crypto.randomUUID();
+          const created = await createAskSession(fallbackSessionId, "新对话");
+          if (!cancelled && created) {
+            setAskSessions([created]);
+            setAskSessionId(created.session_id);
+            setAskMessages([]);
+          }
+        } else {
+          setAskSessions([]);
+          setAskMessages([]);
         }
       }
     };
@@ -3317,6 +3522,185 @@ export default function App() {
     setRecentLintPatchEvents(events);
   };
 
+  const buildAskMessagesFromSessionTurns = (turns: AskSessionTurnItem[]): AskMessage[] =>
+    turns.map((turn) => ({
+      id: `session-turn-${turn.id}`,
+      role: turn.role === "assistant" ? "assistant" : "user",
+      content: turn.content,
+      streaming: false,
+    }));
+
+  const refreshAskSessionList = async (): Promise<AskSessionItem[]> => {
+    if (!isTauriRuntime()) {
+      setAskSessions([]);
+      return [];
+    }
+    setAskSessionsLoading(true);
+    try {
+      const sessions = await listAskSessions(ASK_SESSION_LIST_MAX);
+      const normalized = sessions ?? [];
+      setAskSessions(normalized);
+      return normalized;
+    } finally {
+      setAskSessionsLoading(false);
+    }
+  };
+
+  const loadAskSessionMessages = async (sessionId: string): Promise<AskSessionTurnItem[]> => {
+    if (!isTauriRuntime()) {
+      setAskMessages([]);
+      return [];
+    }
+    const turns = await fetchAskSessionTurns(sessionId, 400);
+    const normalizedTurns = turns ?? [];
+    setAskMessages(buildAskMessagesFromSessionTurns(normalizedTurns));
+    return normalizedTurns;
+  };
+
+  const handleCreateAskSession = async () => {
+    if (!isTauriRuntime() || askSessionManaging) {
+      return;
+    }
+    setAskSessionManaging(true);
+    try {
+      const nextSessionId = crypto.randomUUID();
+      const created = await createAskSession(nextSessionId, "新对话");
+      if (!created) {
+        setStatusMessage("创建会话失败，请稍后重试。");
+        return;
+      }
+      const nextSessions = [created, ...askSessions].slice(0, ASK_SESSION_LIST_MAX);
+      setAskSessions(nextSessions);
+      setAskSessionId(nextSessionId);
+      setAskMessages([]);
+      setQueryResult(null);
+      setExpandedCitationIds(new Set());
+      setStatusMessage("新会话已创建。");
+    } finally {
+      setAskSessionManaging(false);
+    }
+  };
+
+  const handleSelectAskSession = async (session: AskSessionItem) => {
+    if (!isTauriRuntime() || askSessionManaging) {
+      return;
+    }
+    setAskSessionManaging(true);
+    try {
+      setAskSessionId(session.session_id);
+      await loadAskSessionMessages(session.session_id);
+      setQueryResult(null);
+      setExpandedCitationIds(new Set());
+      setStatusMessage(`已切换到会话：${session.title}`);
+    } finally {
+      setAskSessionManaging(false);
+    }
+  };
+
+  const handleRenameAskSession = async (session: AskSessionItem) => {
+    if (!isTauriRuntime() || askSessionManaging) {
+      return;
+    }
+    const nextTitle = globalThis.prompt("请输入新的会话标题", session.title)?.trim();
+    if (!nextTitle || nextTitle === session.title) {
+      return;
+    }
+    setAskSessionManaging(true);
+    try {
+      const renamed = await renameAskSession(session.session_id, nextTitle);
+      if (!renamed) {
+        setStatusMessage("重命名会话失败。");
+        return;
+      }
+      const latest = await refreshAskSessionList();
+      const renamedSession = latest.find((item) => item.session_id === session.session_id);
+      setStatusMessage(renamedSession ? `会话已重命名为：${renamedSession.title}` : "会话已重命名。");
+    } finally {
+      setAskSessionManaging(false);
+    }
+  };
+
+  const handleDeleteAskSession = async (session: AskSessionItem) => {
+    if (!isTauriRuntime() || askSessionManaging) {
+      return;
+    }
+    const confirmed = await askConfirmDialog(`确认删除会话“${session.title}”？该会话消息将被移除。`, {
+      title: "删除会话",
+      kind: "warning",
+      okLabel: "删除",
+      cancelLabel: "取消",
+    });
+    if (!confirmed) {
+      return;
+    }
+    setAskSessionManaging(true);
+    try {
+      const deleted = await deleteAskSession(session.session_id);
+      if (!deleted) {
+        setStatusMessage("删除会话失败。");
+        return;
+      }
+      let latest = await refreshAskSessionList();
+      if (latest.length === 0) {
+        const nextSessionId = crypto.randomUUID();
+        const created = await createAskSession(nextSessionId, "新对话");
+        if (created) {
+          latest = [created];
+          setAskSessions(latest);
+        }
+      }
+      const fallbackSessionId = latest[0]?.session_id ?? "";
+      if (askSessionId === session.session_id && fallbackSessionId) {
+        setAskSessionId(fallbackSessionId);
+        await loadAskSessionMessages(fallbackSessionId);
+      } else if (askSessionId === session.session_id) {
+        setAskMessages([]);
+      }
+      setQueryResult(null);
+      setExpandedCitationIds(new Set());
+      setStatusMessage("会话已删除。");
+    } finally {
+      setAskSessionManaging(false);
+    }
+  };
+
+  const handleExportAskSession = async (session: AskSessionItem) => {
+    if (askSessionManaging) {
+      return;
+    }
+    setAskSessionManaging(true);
+    try {
+      const turns = await fetchAskSessionTurns(session.session_id, 800);
+      const markdown = buildAskSessionExportMarkdown(session, turns ?? []);
+      const defaultFilename = `${session.title || "ask-session"}-${session.session_id.slice(0, 8)}.md`;
+      if (isTauriRuntime()) {
+        const savePath = await pickSaveFile({
+          defaultPath: defaultFilename,
+          filters: [{ name: "Markdown", extensions: ["md"] }],
+        });
+        if (!savePath) {
+          return;
+        }
+        await saveResearchDoc(savePath, markdown);
+        setStatusMessage(`会话已导出：${savePath}`);
+        return;
+      }
+      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = defaultFilename;
+      link.click();
+      URL.revokeObjectURL(url);
+      setStatusMessage("会话已导出。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`导出会话失败：${message}`);
+    } finally {
+      setAskSessionManaging(false);
+    }
+  };
+
   const handleModeSelect = async (modeId: ModeId) => {
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法切换运行模式。");
@@ -3365,15 +3749,14 @@ export default function App() {
 
     try {
       let result;
-      if (selectedTemplateId === "general") {
+      if (selectedTemplate.id === "general") {
         result = await initVault(nextVaultPath);
       } else {
-        const tpl = getTemplate(selectedTemplateId);
         result = await initVaultWithTemplate(
           nextVaultPath,
-          tpl.schema,
-          tpl.purpose,
-          tpl.extraDirs
+          selectedTemplate.schema,
+          selectedTemplate.purpose,
+          selectedTemplate.extraDirs
         );
       }
 
@@ -3383,7 +3766,27 @@ export default function App() {
       }
 
       await refreshAppData();
-      setStatusMessage(result.message || `Vault 已初始化：${result.vault_path}`);
+      const sessions = await refreshAskSessionList();
+      if (sessions.length === 0 && isTauriRuntime()) {
+        const fallbackSessionId = crypto.randomUUID();
+        const created = await createAskSession(fallbackSessionId, "新对话");
+        if (created) {
+          setAskSessions([created]);
+          setAskSessionId(created.session_id);
+          setAskMessages([]);
+        }
+      } else if (sessions.length > 0) {
+        const activeSession = sessions[0];
+        setAskSessionId(activeSession.session_id);
+        await loadAskSessionMessages(activeSession.session_id);
+      }
+      const mergedRecent = mergeRecentVaultPaths(result.vault_path || nextVaultPath, recentVaultPaths);
+      setRecentVaultPaths(mergedRecent);
+      writeRecentVaultPathsToStorage(mergedRecent);
+      const createdCount = result.created_paths?.length ?? 0;
+      setStatusMessage(
+        `${result.message || `Vault 已初始化：${result.vault_path}`}\n模板：${selectedTemplate.name} · 创建 ${createdCount} 项`,
+      );
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
@@ -3852,6 +4255,18 @@ export default function App() {
     );
     setQueryTopK(nextTopK);
 
+    let activeSessionId = askSessionId.trim();
+    if (!activeSessionId) {
+      activeSessionId = crypto.randomUUID();
+      const created = await createAskSession(activeSessionId, "新对话");
+      if (!created) {
+        setStatusMessage("创建会话失败，请稍后重试。");
+        return;
+      }
+      setAskSessions((prev) => [created, ...prev].slice(0, ASK_SESSION_LIST_MAX));
+      setAskSessionId(activeSessionId);
+    }
+
     setQueryRunning(true);
     setStatusMessage("查询中...");
     setQueryResult(null);
@@ -3890,7 +4305,7 @@ export default function App() {
         console.warn("订阅 query 进度事件失败，继续执行查询流程。", error);
       }
 
-      const result = await queryAskSession(askSessionId, nextQuestion, { top_k: nextTopK });
+      const result = await queryAskSession(activeSessionId, nextQuestion, { top_k: nextTopK });
       if (!result) {
         setStatusMessage("当前环境不支持查询。");
         return;
@@ -3926,6 +4341,7 @@ export default function App() {
       void saveAskHistory(nextQuestion); // 异步保存到 DB，不阻断
       // Query 会在后端写入日志，这里主动刷新一次前端日志面板。
       await refreshAppData();
+      await refreshAskSessionList();
       setStatusMessage(`Query 已完成：TopK=${nextTopK}，命中 ${result.matched_pages.length} 页。`);
     } catch (error) {
       console.error(error);
@@ -5588,8 +6004,111 @@ export default function App() {
     { id: "settings", icon: "⚙", label: "设置" },
   ];
 
+  const handleWindowControl = useCallback(async (action: "minimize" | "toggleMaximize" | "close") => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    try {
+      const currentWindow = getCurrentWindow();
+      if (action === "minimize") {
+        await currentWindow.minimize();
+        return;
+      }
+      if (action === "toggleMaximize") {
+        await currentWindow.toggleMaximize();
+        return;
+      }
+      await currentWindow.close();
+    } catch (error) {
+      console.warn("窗口控制操作失败。", error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`窗口操作失败：${message}`);
+    }
+  }, []);
+
+  const handleTitlebarMouseDown = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    if (event.button !== 0) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".window-titlebar__actions")) {
+      return;
+    }
+    // 在无边框窗口上显式触发拖动，避免仅依赖 data-tauri-drag-region 的兼容差异。
+    void getCurrentWindow().startDragging().catch((error) => {
+      console.warn("窗口拖拽启动失败。", error);
+    });
+  }, []);
+
+  const handleTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".window-titlebar__actions")) {
+      return;
+    }
+    void handleWindowControl("toggleMaximize");
+  }, [handleWindowControl]);
+
+  const tauriRuntime = isTauriRuntime();
+
   return (
-    <div className="app-shell">
+    <div className={`app-root${tauriRuntime ? " app-root--tauri" : ""}`}>
+      {tauriRuntime ? (
+        <header
+          className="window-titlebar"
+          onMouseDown={handleTitlebarMouseDown}
+          onDoubleClick={handleTitlebarDoubleClick}
+        >
+          <div
+            className="window-titlebar__drag-region"
+          >
+            <div className="window-titlebar__brand">
+              <div className="window-titlebar__logo" aria-hidden="true">
+                <img className="window-titlebar__logo-image" src={appLogo} alt="" />
+              </div>
+              <span className="window-titlebar__title">
+                LLM Wiki
+              </span>
+            </div>
+          </div>
+          <div className="window-titlebar__drag-spacer" />
+          <div className="window-titlebar__actions">
+            <button
+              type="button"
+              className="window-titlebar__action-btn"
+              aria-label="最小化窗口"
+              onClick={() => {
+                void handleWindowControl("minimize");
+              }}
+            >
+              <span className="window-titlebar__action-glyph" aria-hidden="true">—</span>
+            </button>
+            <button
+              type="button"
+              className="window-titlebar__action-btn window-titlebar__action-btn--maximize"
+              aria-label="最大化或还原窗口"
+              onClick={() => {
+                void handleWindowControl("toggleMaximize");
+              }}
+            >
+              <span className="window-titlebar__action-glyph window-titlebar__action-glyph--maximize" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="window-titlebar__action-btn window-titlebar__action-btn--close"
+              aria-label="关闭窗口"
+              onClick={() => {
+                void handleWindowControl("close");
+              }}
+            >
+              <span className="window-titlebar__action-glyph" aria-hidden="true">✕</span>
+            </button>
+          </div>
+        </header>
+      ) : null}
+      <div className="app-shell">
       {/* 侧边栏导航 */}
       <nav className="sidebar">
         <div className="sidebar__brand">
@@ -5811,6 +6330,73 @@ export default function App() {
                     >
                       {devAction === "init_vault" ? "初始化中..." : "初始化 Vault"}
                     </button>
+                  </div>
+
+                  {recentVaultPaths.length > 0 ? (
+                    <div className="recent-vaults">
+                      <div className="recent-vaults__head">
+                        <span className="dev-panel__hint">最近项目</span>
+                        <button
+                          type="button"
+                          className="dev-panel__button recent-vaults__clear"
+                          onClick={() => {
+                            setRecentVaultPaths([]);
+                            writeRecentVaultPathsToStorage([]);
+                          }}
+                        >
+                          清空
+                        </button>
+                      </div>
+                      <div className="recent-vaults__list">
+                        {recentVaultPaths.map((path) => (
+                          <button
+                            key={path}
+                            type="button"
+                            className="recent-vaults__item"
+                            title={path}
+                            onClick={() => setVaultPath(path)}
+                          >
+                            {path}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="template-init-preview">
+                    <div className="template-init-preview__head">
+                      <div className="template-init-preview__title">
+                        <span>{selectedTemplate.icon}</span>
+                        <strong>{selectedTemplate.name}</strong>
+                      </div>
+                      <span className="template-init-preview__desc">{selectedTemplate.description}</span>
+                    </div>
+                    <div className="template-init-preview__meta">
+                      <span>schema：{selectedTemplate.schema.split(/\r?\n/).length} 行</span>
+                      <span>purpose：{selectedTemplate.purpose.split(/\r?\n/).length} 行</span>
+                    </div>
+                    <div className="template-init-preview__grid">
+                      <div className="template-init-preview__block">
+                        <h4>将创建目录（{templateInitPreview.dirs.length}）</h4>
+                        <ul>
+                          {templateInitPreview.dirs.map((dirPath) => (
+                            <li key={dirPath}>
+                              <code>{dirPath}</code>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="template-init-preview__block">
+                        <h4>将创建文件（{templateInitPreview.files.length}）</h4>
+                        <ul>
+                          {templateInitPreview.files.map((filePath) => (
+                            <li key={filePath}>
+                              <code>{filePath}</code>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
                   </div>
 
                   {/* 两列主摄入卡片 */}
@@ -6307,27 +6893,95 @@ export default function App() {
                   <span className="ask-topbar__sub">基于 Wiki 索引的多轮问答</span>
                 </div>
                 <div className="ask-topbar__actions">
-                  {askMessages.length > 0 && (
-                    <button
-                      type="button"
-                      className="ask-new-session-btn"
-                      onClick={() => {
-                        void clearAskSession(askSessionId);
-                        setAskSessionId(crypto.randomUUID());
-                        setAskMessages([]);
-                        setQueryResult(null);
-                        setExpandedCitationIds(new Set());
-                        setStatusMessage("新对话已开始。");
-                      }}
-                    >
-                      ↺ 新对话
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="ask-new-session-btn"
+                    disabled={!isTauriRuntime() || askSessionManaging}
+                    onClick={() => void handleCreateAskSession()}
+                  >
+                    ↺ 新会话
+                  </button>
                 </div>
               </div>
 
-              {/* ── 消息区 ── */}
-              <div className="ask-messages">
+              <div className="ask-main">
+                <aside className="ask-sessions">
+                  <div className="ask-sessions__head">
+                    <span className="ask-sessions__title">会话管理</span>
+                    <span className="ask-sessions__count">{askSessions.length}</span>
+                  </div>
+                  <input
+                    className="ask-sessions__filter"
+                    type="text"
+                    placeholder="筛选会话"
+                    value={askSessionKeyword}
+                    onChange={(event) => setAskSessionKeyword(event.target.value)}
+                  />
+                  <div className="ask-sessions__list">
+                    {askSessionsLoading ? (
+                      <p className="ask-sessions__empty">加载中...</p>
+                    ) : filteredAskSessions.length === 0 ? (
+                      <p className="ask-sessions__empty">暂无会话</p>
+                    ) : (
+                      filteredAskSessions.map((session) => {
+                        const isActive = session.session_id === askSessionId;
+                        return (
+                          <article
+                            key={session.session_id}
+                            className={`ask-session-card${isActive ? " ask-session-card--active" : ""}`}
+                          >
+                            <button
+                              type="button"
+                              className="ask-session-card__main"
+                              disabled={askSessionManaging || queryRunning}
+                              onClick={() => void handleSelectAskSession(session)}
+                            >
+                              <span className="ask-session-card__title">{session.title}</span>
+                              <span className="ask-session-card__meta">
+                                {session.turn_count} 轮 · {formatAskHistoryCreatedAt(session.updated_at) || "-"}
+                              </span>
+                              <span className="ask-session-card__preview">
+                                {session.last_turn_content
+                                  ? session.last_turn_content.slice(0, 56)
+                                  : "暂无消息"}
+                              </span>
+                            </button>
+                            <div className="ask-session-card__actions">
+                              <button
+                                type="button"
+                                title="重命名"
+                                disabled={askSessionManaging || queryRunning}
+                                onClick={() => void handleRenameAskSession(session)}
+                              >
+                                重命名
+                              </button>
+                              <button
+                                type="button"
+                                title="导出"
+                                disabled={askSessionManaging || queryRunning}
+                                onClick={() => void handleExportAskSession(session)}
+                              >
+                                导出
+                              </button>
+                              <button
+                                type="button"
+                                title="删除"
+                                className="ask-session-card__danger"
+                                disabled={askSessionManaging || queryRunning}
+                                onClick={() => void handleDeleteAskSession(session)}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })
+                    )}
+                  </div>
+                </aside>
+
+                {/* ── 消息区 ── */}
+                <div className="ask-messages">
                 {askMessages.length === 0 ? (
                   <div className="ask-empty">
                     <div className="ask-empty__icon">💬</div>
@@ -6549,6 +7203,7 @@ export default function App() {
                 )}
                 {/* 自动滚动锚点 */}
                 <div ref={messagesEndRef} />
+              </div>
               </div>
 
               {/* ── 底部输入区 ── */}
@@ -7884,6 +8539,7 @@ export default function App() {
           </div>
         ) : null}
       </div>
+    </div>
     </div>
   );
 }

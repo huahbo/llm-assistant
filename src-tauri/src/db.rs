@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection};
 
-use crate::models::LintPatchEventItem;
+use crate::models::{AskTurn, LintPatchEventItem};
 /// 已执行过初始化（init_schema）的数据库路径缓存。
 static INITIALIZED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
@@ -125,6 +125,28 @@ pub struct WikiPageRecord {
 pub struct AskHistoryRecord {
     pub id: i64,
     pub question: String,
+    pub created_at: String,
+}
+
+/// Ask 会话摘要记录。
+#[derive(Debug, Clone)]
+pub struct AskSessionRecord {
+    pub session_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub turn_count: usize,
+    pub last_turn_role: Option<String>,
+    pub last_turn_content: Option<String>,
+}
+
+/// Ask 会话单轮记录。
+#[derive(Debug, Clone)]
+pub struct AskSessionTurnRecord {
+    pub id: i64,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
     pub created_at: String,
 }
 
@@ -1167,6 +1189,28 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_ask_history_created_at
             ON ask_history(created_at);
 
+        CREATE TABLE IF NOT EXISTS ask_sessions (
+            session_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ask_sessions_updated_at
+            ON ask_sessions(updated_at);
+
+        CREATE TABLE IF NOT EXISTS ask_session_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES ask_sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ask_session_turns_session_id
+            ON ask_session_turns(session_id, id);
+
         CREATE TABLE IF NOT EXISTS ingest_queue_items (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             source_type TEXT NOT NULL,
@@ -1398,6 +1442,361 @@ pub fn clear_ask_history(db_path: &Path) -> Result<usize, String> {
     let affected = conn
         .execute("DELETE FROM ask_history", [])
         .map_err(|err| format!("清空 ask_history 失败: {}", err))?;
+    Ok(affected)
+}
+
+fn normalize_ask_session_title(title: &str) -> String {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        "新对话".to_string()
+    } else {
+        trimmed.chars().take(60).collect()
+    }
+}
+
+fn build_auto_session_title(content: &str) -> Option<String> {
+    let first_line = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut title: String = first_line.chars().take(36).collect();
+    if first_line.chars().count() > 36 {
+        title.push('…');
+    }
+    let normalized = normalize_ask_session_title(&title);
+    if normalized == "新对话" {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+/// 创建会话（若已存在则仅刷新 updated_at）。
+pub fn create_ask_session(
+    db_path: &Path,
+    session_id: &str,
+    title: &str,
+    now: &str,
+) -> Result<(), String> {
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Err("session_id 不能为空".to_string());
+    }
+    let normalized_title = normalize_ask_session_title(title);
+
+    let shared_conn = get_connection(db_path)?;
+    let conn = shared_conn.lock().unwrap();
+    conn.execute(
+        r#"
+        INSERT INTO ask_sessions (session_id, title, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?3)
+        ON CONFLICT(session_id) DO UPDATE SET
+            updated_at = excluded.updated_at
+        "#,
+        params![normalized_session_id, normalized_title, now],
+    )
+    .map_err(|err| format!("创建 ask_session 失败: {}", err))?;
+    Ok(())
+}
+
+/// 追加会话单轮，返回新增 turn id。
+pub fn append_ask_session_turn(
+    db_path: &Path,
+    session_id: &str,
+    role: &str,
+    content: &str,
+    created_at: &str,
+) -> Result<i64, String> {
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Err("session_id 不能为空".to_string());
+    }
+    let normalized_role = role.trim();
+    if normalized_role != "user" && normalized_role != "assistant" {
+        return Err("role 必须是 user 或 assistant".to_string());
+    }
+    let normalized_content = content.trim();
+    if normalized_content.is_empty() {
+        return Err("content 不能为空".to_string());
+    }
+
+    let shared_conn = get_connection(db_path)?;
+    let mut conn = shared_conn.lock().unwrap();
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开启 ask_session_turn 事务失败: {}", err))?;
+
+    tx.execute(
+        r#"
+        INSERT INTO ask_sessions (session_id, title, created_at, updated_at)
+        VALUES (?1, '新对话', ?2, ?2)
+        ON CONFLICT(session_id) DO UPDATE SET
+            updated_at = excluded.updated_at
+        "#,
+        params![normalized_session_id, created_at],
+    )
+    .map_err(|err| format!("确保 ask_session 存在失败: {}", err))?;
+
+    tx.execute(
+        r#"
+        INSERT INTO ask_session_turns (session_id, role, content, created_at)
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+        params![normalized_session_id, normalized_role, normalized_content, created_at],
+    )
+    .map_err(|err| format!("写入 ask_session_turn 失败: {}", err))?;
+    let turn_id = tx.last_insert_rowid();
+
+    if normalized_role == "user" {
+        if let Some(auto_title) = build_auto_session_title(normalized_content) {
+            tx.execute(
+                r#"
+                UPDATE ask_sessions
+                SET title = ?1
+                WHERE session_id = ?2
+                  AND (title = '新对话' OR trim(title) = '')
+                "#,
+                params![auto_title, normalized_session_id],
+            )
+            .map_err(|err| format!("自动更新 ask_session 标题失败: {}", err))?;
+        }
+    }
+
+    tx.execute(
+        "UPDATE ask_sessions SET updated_at = ?1 WHERE session_id = ?2",
+        params![created_at, normalized_session_id],
+    )
+    .map_err(|err| format!("刷新 ask_session 更新时间失败: {}", err))?;
+
+    tx.commit()
+        .map_err(|err| format!("提交 ask_session_turn 事务失败: {}", err))?;
+    Ok(turn_id)
+}
+
+/// 删除一条会话单轮（用于取消时回滚刚追加的 user turn）。
+pub fn delete_ask_session_turn_by_id(db_path: &Path, turn_id: i64) -> Result<(), String> {
+    let shared_conn = get_connection(db_path)?;
+    let conn = shared_conn.lock().unwrap();
+    conn.execute("DELETE FROM ask_session_turns WHERE id = ?1", params![turn_id])
+        .map_err(|err| format!("删除 ask_session_turn 失败: {}", err))?;
+    Ok(())
+}
+
+/// 查询会话列表（按最近更新时间倒序）。
+pub fn list_ask_sessions(db_path: &Path, limit: usize) -> Result<Vec<AskSessionRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT
+                s.session_id,
+                s.title,
+                s.created_at,
+                s.updated_at,
+                COUNT(t.id) AS turn_count,
+                (
+                    SELECT t2.role
+                    FROM ask_session_turns t2
+                    WHERE t2.session_id = s.session_id
+                    ORDER BY t2.id DESC
+                    LIMIT 1
+                ) AS last_turn_role,
+                (
+                    SELECT t3.content
+                    FROM ask_session_turns t3
+                    WHERE t3.session_id = s.session_id
+                    ORDER BY t3.id DESC
+                    LIMIT 1
+                ) AS last_turn_content
+            FROM ask_sessions s
+            LEFT JOIN ask_session_turns t
+                ON t.session_id = s.session_id
+            GROUP BY s.session_id, s.title, s.created_at, s.updated_at
+            ORDER BY CAST(s.updated_at AS INTEGER) DESC, s.session_id DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 ask_sessions 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(AskSessionRecord {
+                session_id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+                turn_count: row.get::<_, i64>(4)? as usize,
+                last_turn_role: row.get(5)?,
+                last_turn_content: row.get(6)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 ask_sessions 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 ask_sessions 失败: {}", err))
+}
+
+/// 查询指定会话全部轮次（按时间正序）。
+pub fn list_ask_session_turns(
+    db_path: &Path,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<AskSessionTurnRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, session_id, role, content, created_at
+            FROM ask_session_turns
+            WHERE session_id = ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备查询 ask_session_turns 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![normalized_session_id, limit as i64], |row| {
+            Ok(AskSessionTurnRecord {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 ask_session_turns 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 ask_session_turns 失败: {}", err))
+}
+
+/// 查询指定会话最近 N 轮（按时间正序）用于构建上下文。
+pub fn list_recent_ask_session_turns(
+    db_path: &Path,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<AskTurn>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT role, content
+            FROM ask_session_turns
+            WHERE session_id = ?1
+            ORDER BY id DESC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备查询最近 ask_session_turns 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![normalized_session_id, limit as i64], |row| {
+            Ok(AskTurn {
+                role: row.get(0)?,
+                content: row.get(1)?,
+            })
+        })
+        .map_err(|err| format!("执行查询最近 ask_session_turns 失败: {}", err))?;
+
+    let mut turns = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取最近 ask_session_turns 失败: {}", err))?;
+    turns.reverse();
+    Ok(turns)
+}
+
+/// 重命名会话标题。
+pub fn rename_ask_session(
+    db_path: &Path,
+    session_id: &str,
+    title: &str,
+    updated_at: &str,
+) -> Result<(), String> {
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Err("session_id 不能为空".to_string());
+    }
+    let normalized_title = normalize_ask_session_title(title);
+
+    let shared_conn = get_connection(db_path)?;
+    let conn = shared_conn.lock().unwrap();
+    let affected = conn
+        .execute(
+            "UPDATE ask_sessions SET title = ?1, updated_at = ?2 WHERE session_id = ?3",
+            params![normalized_title, updated_at, normalized_session_id],
+        )
+        .map_err(|err| format!("重命名 ask_session 失败: {}", err))?;
+    if affected == 0 {
+        return Err("会话不存在".to_string());
+    }
+    Ok(())
+}
+
+/// 清空指定会话全部轮次（会话实体保留）。
+pub fn clear_ask_session_turns(
+    db_path: &Path,
+    session_id: &str,
+    updated_at: &str,
+) -> Result<(), String> {
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Ok(());
+    }
+    let shared_conn = get_connection(db_path)?;
+    let mut conn = shared_conn.lock().unwrap();
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开启 clear_ask_session_turns 事务失败: {}", err))?;
+    tx.execute(
+        "DELETE FROM ask_session_turns WHERE session_id = ?1",
+        params![normalized_session_id],
+    )
+    .map_err(|err| format!("清空 ask_session_turns 失败: {}", err))?;
+    tx.execute(
+        "UPDATE ask_sessions SET updated_at = ?1 WHERE session_id = ?2",
+        params![updated_at, normalized_session_id],
+    )
+    .map_err(|err| format!("更新 ask_session 更新时间失败: {}", err))?;
+    tx.commit()
+        .map_err(|err| format!("提交 clear_ask_session_turns 事务失败: {}", err))?;
+    Ok(())
+}
+
+/// 删除会话（同时删除关联轮次，依赖外键级联）。
+pub fn delete_ask_session(db_path: &Path, session_id: &str) -> Result<usize, String> {
+    let normalized_session_id = session_id.trim();
+    if normalized_session_id.is_empty() {
+        return Ok(0);
+    }
+
+    let shared_conn = get_connection(db_path)?;
+    let conn = shared_conn.lock().unwrap();
+    let affected = conn
+        .execute(
+            "DELETE FROM ask_sessions WHERE session_id = ?1",
+            params![normalized_session_id],
+        )
+        .map_err(|err| format!("删除 ask_session 失败: {}", err))?;
     Ok(affected)
 }
 
@@ -2366,6 +2765,55 @@ mod tests {
 
         let rows = list_ask_history(&db_path, 10).expect("读取 Ask 历史失败");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn ask_sessions_create_append_and_list_turns_work() {
+        let dir = make_temp_dir("llm-wiki-db-ask-session-basic");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        create_ask_session(&db_path, "sess-1", "新对话", "100").expect("创建会话失败");
+        append_ask_session_turn(&db_path, "sess-1", "user", "Rust 是什么？", "101")
+            .expect("写入用户轮失败");
+        append_ask_session_turn(&db_path, "sess-1", "assistant", "Rust 是系统编程语言。", "102")
+            .expect("写入助手轮失败");
+
+        let sessions = list_ask_sessions(&db_path, 20).expect("读取会话失败");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "sess-1");
+        assert_eq!(sessions[0].turn_count, 2);
+        assert_eq!(sessions[0].last_turn_role.as_deref(), Some("assistant"));
+
+        let turns = list_ask_session_turns(&db_path, "sess-1", 20).expect("读取会话轮次失败");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].role, "user");
+        assert_eq!(turns[1].role, "assistant");
+    }
+
+    #[test]
+    fn ask_session_rename_and_delete_work() {
+        let dir = make_temp_dir("llm-wiki-db-ask-session-manage");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        create_ask_session(&db_path, "sess-2", "新对话", "100").expect("创建会话失败");
+        append_ask_session_turn(&db_path, "sess-2", "user", "第一问", "101")
+            .expect("写入用户轮失败");
+
+        rename_ask_session(&db_path, "sess-2", "我的会话", "102").expect("重命名失败");
+        let sessions = list_ask_sessions(&db_path, 20).expect("读取会话失败");
+        assert_eq!(sessions[0].title, "我的会话");
+
+        let affected = delete_ask_session(&db_path, "sess-2").expect("删除会话失败");
+        assert_eq!(affected, 1);
+        let sessions_after_delete = list_ask_sessions(&db_path, 20).expect("读取会话失败");
+        assert!(sessions_after_delete.is_empty());
+        let turns_after_delete =
+            list_ask_session_turns(&db_path, "sess-2", 20).expect("读取会话轮次失败");
+        assert!(turns_after_delete.is_empty());
     }
 
     #[test]

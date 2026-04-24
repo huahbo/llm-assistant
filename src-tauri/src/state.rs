@@ -17,16 +17,16 @@ use crate::{
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AppConfig, AppMode, AppOverview, DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData,
-        KnowledgeGraphDirection, KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData,
-        KnowledgeSubgraphMeta, LintIssue, LintPatchApplyInput, LintPatchApplyResult,
-        LintPatchBatchApplyItemResult, LintPatchBatchApplyResult, LintPatchBatchApplyStatus,
-        LintPatchEventItem, LintPatchPreview, LintPatchSuggestion, LintReport, LintSeverityStats,
-        LlmProviderConfig, LlmStatus, LogEntry, LogLevel, ModeChangeResult, OutboxAckResult,
-        OutboxEventItem, ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation,
-        QuerySearchDebug, QuerySearchRouteDebug, QuerySettings, SaveQueryAnswerInput,
-        SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem, WikiPageDetail,
-        WikiPageFrontmatter, WikiPageItem,
+        AppConfig, AppMode, AppOverview, AskSessionItem, AskSessionTurnItem, DefaultPaths,
+        IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
+        KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData, KnowledgeSubgraphMeta,
+        LintIssue, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyItemResult,
+        LintPatchBatchApplyResult, LintPatchBatchApplyStatus, LintPatchEventItem,
+        LintPatchPreview, LintPatchSuggestion, LintReport, LintSeverityStats, LlmProviderConfig,
+        LlmStatus, LogEntry, LogLevel, ModeChangeResult, OutboxAckResult, OutboxEventItem,
+        ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug,
+        QuerySearchRouteDebug, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
+        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
     },
     vault,
 };
@@ -117,23 +117,6 @@ impl AppState {
         let mode = config.mode;
         let vault_path = config.vault_path.clone().map(PathBuf::from);
         let query_top_k = normalize_top_k(config.query_top_k);
-        let serialized = Self::serialize_config_full(&AppConfig {
-            mode,
-            vault_path: vault_path
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            query_top_k: Some(query_top_k),
-            cloud_api_key: config.cloud_api_key.clone(),
-            cloud_base_url: config.cloud_base_url.clone(),
-            cloud_model: config.cloud_model.clone(),
-            cloud_provider_name: config.cloud_provider_name.clone(),
-            active_provider: config.active_provider.clone(),
-            default_ocr_provider: config.default_ocr_provider.clone(),
-            ollama_model: config.ollama_model.clone(),
-            ollama_base_url: config.ollama_base_url.clone(),
-            embed_ollama_model: config.embed_ollama_model.clone(),
-            embed_ollama_base_url: config.embed_ollama_base_url.clone(),
-        });
         let search_config = Self::load_search_config_from_path(&config_path);
         Self {
             inner: Mutex::new(AppStateData {
@@ -3683,6 +3666,134 @@ Wiki 页面：\n{}",
         db::clear_ask_history(&db_path)
     }
 
+    /// 创建 Ask 会话（若已存在则刷新更新时间）。
+    pub fn create_ask_session_impl(
+        &self,
+        session_id: &str,
+        title: Option<&str>,
+    ) -> Result<AskSessionItem, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Err("请先调用 init_vault 初始化 Vault".to_string());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        let now = current_timestamp_ms();
+        let raw_title = title.unwrap_or("新对话");
+        let normalized_title = if raw_title.trim().is_empty() {
+            "新对话"
+        } else {
+            raw_title.trim()
+        };
+        db::create_ask_session(&db_path, session_id, normalized_title, &now)?;
+        Ok(AskSessionItem {
+            session_id: session_id.trim().to_string(),
+            title: normalized_title.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+            turn_count: 0,
+            last_turn_role: None,
+            last_turn_content: None,
+        })
+    }
+
+    /// 查询会话列表（按最近更新时间倒序）。
+    pub fn list_ask_sessions_impl(&self, limit: usize) -> Result<Vec<AskSessionItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(Vec::new());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let safe_limit = limit.min(200);
+        let records = db::list_ask_sessions(&db_path, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|item| AskSessionItem {
+                session_id: item.session_id,
+                title: item.title,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+                turn_count: item.turn_count,
+                last_turn_role: item.last_turn_role,
+                last_turn_content: item.last_turn_content,
+            })
+            .collect())
+    }
+
+    /// 查询指定会话的轮次列表（正序）。
+    pub fn list_ask_session_turns_impl(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AskSessionTurnItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(Vec::new());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let safe_limit = limit.min(400);
+        let records = db::list_ask_session_turns(&db_path, session_id, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|item| AskSessionTurnItem {
+                id: item.id,
+                session_id: item.session_id,
+                role: item.role,
+                content: item.content,
+                created_at: item.created_at,
+            })
+            .collect())
+    }
+
+    /// 重命名 Ask 会话标题。
+    pub fn rename_ask_session_impl(&self, session_id: &str, title: &str) -> Result<(), String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Err("请先调用 init_vault 初始化 Vault".to_string());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        db::rename_ask_session(&db_path, session_id, title, &current_timestamp_ms())
+    }
+
+    /// 删除 Ask 会话（含全部轮次）。
+    pub fn delete_ask_session_impl(&self, session_id: &str) -> Result<usize, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(0);
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        let affected = db::delete_ask_session(&db_path, session_id)?;
+        {
+            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
+            sessions.remove(session_id);
+        }
+        {
+            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+            flags.remove(session_id);
+        }
+        Ok(affected)
+    }
+
     /// 按 id 增量读取 outbox 事件。
     pub fn get_outbox_events_impl(
         &self,
@@ -3735,6 +3846,11 @@ Wiki 页面：\n{}",
 
         const MAX_HISTORY_TURNS: usize = 6; // 最多保留最近 6 轮
 
+        let normalized_session_id = session_id.trim().to_string();
+        if normalized_session_id.is_empty() {
+            return Err("session_id 不能为空".to_string());
+        }
+
         let normalized_question = question.trim().to_string();
         if normalized_question.is_empty() {
             return Err("问题不能为空".to_string());
@@ -3749,39 +3865,36 @@ Wiki 页面：\n{}",
         let db_path = vault_path.join(".app").join("meta.db");
         let tokens = tokenize_query(&normalized_question);
         let top_k = normalize_top_k(options.top_k.or(Some(default_top_k)));
+        let now = current_timestamp_ms();
+        db::create_ask_session(&db_path, &normalized_session_id, "新对话", &now)?;
+        let history = db::list_recent_ask_session_turns(&db_path, &normalized_session_id, MAX_HISTORY_TURNS)?;
 
-        // 将用户问题加入会话历史
+        // 将用户问题加入会话历史（内存 + 持久化）。
         let user_turn = crate::models::AskTurn {
             role: "user".to_string(),
             content: normalized_question.clone(),
         };
+        let user_turn_db_id = db::append_ask_session_turn(
+            &db_path,
+            &normalized_session_id,
+            "user",
+            &normalized_question,
+            &now,
+        )?;
         {
             let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            sessions
-                .entry(session_id.clone())
-                .or_default()
-                .push(user_turn);
-        }
-
-        // 获取历史上下文（排除刚加入的用户轮）
-        let history: Vec<crate::models::AskTurn> = {
-            let sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            if let Some(turns) = sessions.get(&session_id) {
-                let len = turns.len();
-                // 排除末尾刚加入的用户轮
-                let end = len.saturating_sub(1);
-                let start = end.saturating_sub(MAX_HISTORY_TURNS);
-                turns[start..end].to_vec()
-            } else {
-                vec![]
+            let turns = sessions.entry(normalized_session_id.clone()).or_default();
+            if turns.is_empty() && !history.is_empty() {
+                turns.extend(history.iter().cloned());
             }
-        };
+            turns.push(user_turn);
+        }
 
         // 注册取消标志
         let cancel_flag = Arc::new(AtomicBool::new(false));
         {
             let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
-            flags.insert(session_id.clone(), cancel_flag.clone());
+            flags.insert(normalized_session_id.clone(), cancel_flag.clone());
         }
 
         // 多路 RRF 融合检索
@@ -3797,20 +3910,30 @@ Wiki 页面：\n{}",
         } else {
             vec![("embedding".to_string(), embedding_paths)]
         };
-        let (matches, search_strategy, fts_error, search_debug) = search_wiki_matches_rrf_with_extra_routes(
+        let (matches, search_strategy, fts_error, search_debug) = match search_wiki_matches_rrf_with_extra_routes(
             &db_path,
             &wiki_dir,
             &tokens,
             &normalized_question,
             top_k,
             &extra_routes,
-        )
-        .map_err(|e| {
-            // 清理取消标志
-            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
-            flags.remove(&session_id);
-            e
-        })?;
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                {
+                    let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+                    flags.remove(&normalized_session_id);
+                }
+                {
+                    let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
+                    if let Some(turns) = sessions.get_mut(&normalized_session_id) {
+                        turns.pop();
+                    }
+                }
+                let _ = db::delete_ask_session_turn_by_id(&db_path, user_turn_db_id);
+                return Err(err);
+            }
+        };
 
         if let Some(err) = fts_error {
             self.push_log(
@@ -3887,27 +4010,37 @@ Wiki 页面：\n{}",
         // 清理取消标志
         {
             let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
-            flags.remove(&session_id);
+            flags.remove(&normalized_session_id);
         }
 
         if was_cancelled {
             // 移除刚加入的用户轮，避免历史污染
             let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            if let Some(turns) = sessions.get_mut(&session_id) {
+            if let Some(turns) = sessions.get_mut(&normalized_session_id) {
                 turns.pop();
             }
+            let _ = db::delete_ask_session_turn_by_id(&db_path, user_turn_db_id);
             return Err("查询已取消".to_string());
         }
 
         // 将助手回答加入会话历史
         {
             let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            if let Some(turns) = sessions.get_mut(&session_id) {
+            if let Some(turns) = sessions.get_mut(&normalized_session_id) {
                 turns.push(crate::models::AskTurn {
                     role: "assistant".to_string(),
                     content: answer.clone(),
                 });
             }
+        }
+        if let Err(err) = db::append_ask_session_turn(
+            &db_path,
+            &normalized_session_id,
+            "assistant",
+            &answer,
+            &current_timestamp_ms(),
+        ) {
+            self.push_log(LogLevel::Warn, format!("持久化助手会话轮次失败: {}", err));
         }
 
         let matched_pages = matches
@@ -3919,7 +4052,7 @@ Wiki 页面：\n{}",
             LogLevel::Info,
             format!(
                 "会话 Query 完成: session={}, '{}', 命中 {} 页",
-                &session_id[..session_id.len().min(8)],
+                &normalized_session_id[..normalized_session_id.len().min(8)],
                 normalized_question,
                 matched_pages.len()
             ),
@@ -3928,7 +4061,7 @@ Wiki 页面：\n{}",
         self.record_outbox_event(
             "query_session_answered",
             serde_json::json!({
-                "session_id": session_id.clone(),
+                "session_id": normalized_session_id.clone(),
                 "question": normalized_question.clone(),
                 "matched_pages": matched_pages.clone(),
                 "search_strategy": search_strategy,
@@ -3963,8 +4096,32 @@ Wiki 页面：\n{}",
 
     /// 清空会话历史（开启新对话）
     pub fn clear_ask_session(&self, session_id: String) -> Result<(), String> {
-        let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-        sessions.remove(&session_id);
+        let normalized_session_id = session_id.trim().to_string();
+        if normalized_session_id.is_empty() {
+            return Ok(());
+        }
+
+        {
+            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
+            sessions.remove(&normalized_session_id);
+        }
+        {
+            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+            flags.remove(&normalized_session_id);
+        }
+
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let Some(vault_path) = vault_path else {
+            return Ok(());
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        if !db_path.exists() {
+            return Ok(());
+        }
+        db::clear_ask_session_turns(&db_path, &normalized_session_id, &current_timestamp_ms())?;
         Ok(())
     }
 

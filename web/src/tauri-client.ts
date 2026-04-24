@@ -1,6 +1,8 @@
 import type {
   AppOverview,
   AskHistoryItem,
+  AskSessionItem,
+  AskSessionTurnItem,
   BackendAppMode,
   DefaultPaths,
   IngestPreview,
@@ -1138,6 +1140,85 @@ export async function clearAskSession(sessionId: string): Promise<void> {
     await invoke("clear_ask_session", { sessionId });
   } catch {
     // 忽略错误
+  }
+}
+
+/** 创建 Ask 会话（若已存在则刷新更新时间） */
+export async function createAskSession(
+  sessionId: string,
+  title?: string,
+): Promise<AskSessionItem | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<AskSessionItem>("create_ask_session", {
+      sessionId,
+      title: title ?? null,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** 读取 Ask 会话列表 */
+export async function listAskSessions(limit = 50): Promise<AskSessionItem[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<AskSessionItem[]>("list_ask_sessions", { limit });
+  } catch {
+    return null;
+  }
+}
+
+/** 读取指定 Ask 会话轮次（正序） */
+export async function fetchAskSessionTurns(
+  sessionId: string,
+  limit = 400,
+): Promise<AskSessionTurnItem[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<AskSessionTurnItem[]>("get_ask_session_turns", {
+      sessionId,
+      limit,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** 重命名 Ask 会话 */
+export async function renameAskSession(sessionId: string, title: string): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("rename_ask_session", { sessionId, title });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 删除 Ask 会话 */
+export async function deleteAskSession(sessionId: string): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("delete_ask_session", { sessionId });
+    return true;
+  } catch {
+    return false;
   }
 }
 

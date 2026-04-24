@@ -1,12 +1,13 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData,
-    KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult,
-    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
-    LlmStatus, LogEntry, ModeChangeResult, OutboxAckResult, OutboxEventItem, QueryAnswerResult,
-    QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
-    SearchConfig, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    AppMode, AppOverview, AskSessionItem, AskSessionTurnItem, DefaultPaths, IngestPreview,
+    IngestResult, KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeSubgraphData,
+    LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem,
+    LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult,
+    OutboxAckResult, OutboxEventItem, QueryAnswerResult, QueryAskOptions, QuerySettings,
+    ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, VaultInitResult,
+    WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -396,6 +397,54 @@ pub fn get_ask_history(
 #[tauri::command]
 pub fn clear_ask_history(state: tauri::State<'_, AppState>) -> Result<usize, String> {
     state.clear_ask_history_impl()
+}
+
+/// 创建 Ask 会话（若已存在则刷新更新时间）。
+#[tauri::command]
+pub fn create_ask_session(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    title: Option<String>,
+) -> Result<AskSessionItem, String> {
+    state.create_ask_session_impl(&session_id, title.as_deref())
+}
+
+/// 读取 Ask 会话列表（最近 N 条）。
+#[tauri::command]
+pub fn list_ask_sessions(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<AskSessionItem>, String> {
+    state.list_ask_sessions_impl(limit.unwrap_or(50))
+}
+
+/// 读取指定 Ask 会话轮次（正序）。
+#[tauri::command]
+pub fn get_ask_session_turns(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<AskSessionTurnItem>, String> {
+    state.list_ask_session_turns_impl(&session_id, limit.unwrap_or(400))
+}
+
+/// 重命名 Ask 会话标题。
+#[tauri::command]
+pub fn rename_ask_session(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    title: String,
+) -> Result<(), String> {
+    state.rename_ask_session_impl(&session_id, &title)
+}
+
+/// 删除 Ask 会话（含会话轮次）。
+#[tauri::command]
+pub fn delete_ask_session(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<usize, String> {
+    state.delete_ask_session_impl(&session_id)
 }
 
 /// 按 id 增量读取 outbox 事件。

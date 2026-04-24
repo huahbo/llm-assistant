@@ -479,6 +479,20 @@ pub struct AskHistoryItem {
     pub created_at: String,
 }
 
+/// Ask 会话摘要（会话管理列表用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskSessionItem {
+    pub session_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub turn_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_turn_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_turn_content: Option<String>,
+}
+
 /// Outbox 事件项（增量导出与消费确认用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxEventItem {
@@ -506,6 +520,16 @@ pub struct AskTurn {
     /// "user" 或 "assistant"
     pub role: String,
     pub content: String,
+}
+
+/// Ask 会话单轮（附带时间，供前端会话管理展示）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskSessionTurnItem {
+    pub id: i64,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
 }
 
 /// Wiki 页面详情。
