@@ -61,3 +61,11 @@
 - [[wiki/ingest-1776851640290648900.md|ingest-1776851640290648900]]
   - Source file: `clipper-self-test-2026-04-22-17-53-58-20260422-a44ae6ba.md`
   - Summary: A clipper self-test entry generated on 2026-04-22 at 17:53:58, sourced from exam
+
+- [[wiki/ingest-1776933299515851000.md|ingest-1776933299515851000]]
+  - Source file: `research-城市复杂水网ai仿真研究的最新进展-2026-04-23-846112e7.md`
+  - Summary: AI仿真技术（GNN、强化学习、数字孪生）正推动城市水网实现范式突破，实现高精度实时控制（纳什效率0.969，决策0.19秒）并削减18.1%溢流量。当前已形成
+
+- [[wiki/ingest-1776943651193664800.md|ingest-1776943651193664800]]
+  - Source file: `llm_wiki_preview_apply_1776943651132_1776943651132024-6193b8b8.md`
+  - Summary: The content appears to be the HTML source code of a GitHub page, containing mult

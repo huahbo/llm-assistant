@@ -106,3 +106,17 @@
 - Raw: `E:\llm-wiki\test-vault-template\raw\clipper-self-test-2026-04-22-17-53-58-20260422-a44ae6ba.md`
 - Wiki: `E:\llm-wiki\test-vault-template\wiki\ingest-1776851640290648900.md`
 - Status: Success
+
+## 1776933299515
+- Event: Markdown ingest
+- Source: `E:\llm-wiki\test-vault-template\wiki\research\research-城市复杂水网ai仿真研究的最新进展-2026-04-23.md`
+- Raw: `E:\llm-wiki\test-vault-template\raw\research-城市复杂水网ai仿真研究的最新进展-2026-04-23-846112e7.md`
+- Wiki: `E:\llm-wiki\test-vault-template\wiki\ingest-1776933299515851000.md`
+- Status: Success
+
+## 1776943651193
+- Event: Markdown ingest
+- Source: `C:\Users\ADMINI~1\AppData\Local\Temp\llm_wiki_preview_apply_1776943651132_1776943651132024.md`
+- Raw: `E:\llm-wiki\test-vault-template\raw\llm_wiki_preview_apply_1776943651132_1776943651132024-6193b8b8.md`
+- Wiki: `E:\llm-wiki\test-vault-template\wiki\ingest-1776943651193664800.md`
+- Status: Success
