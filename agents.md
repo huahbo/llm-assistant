@@ -202,7 +202,7 @@
 
 ### 18.0 快速恢复步骤
 
-1. `cargo test`（src-tauri/）→ 应 **173 passed**
+1. `cargo test`（src-tauri/）→ 应 **183 passed**
 2. `npm run test -- --run`（web/）→ 应 **174 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
 4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
@@ -319,6 +319,7 @@
 | Direction-F-AINewPage | Wiki 主动新建（AI 辅助生成结构化初稿并写入 `vault/wiki/`） | ✅ `src-tauri/src/state.rs` + `web/src/App.tsx` + `web/src/tauri-client.ts`（提交 `f3e559f`，2026-04-25） |
 | Direction-G-PageHistory | 页面变更历史（保存前快照 + 历史列表 + 当前/历史行级 diff） | ✅ `src-tauri/src/{db,models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（170 Rust / 169 前端 / build 通过，2026-04-25，**Codex + 子代理尝试后主控串行收口**） |
 | RiskFix-G-Restore | 历史版本「一键恢复到此版本」+ 保存接口 checksum 编辑基线 | ✅ `src-tauri/src/{state,commands,main}.rs` + `web/src/{App,tauri-client,styles,app-utils.test}.ts(x)`（173 Rust / 174 前端，2026-04-25，**Claude Code 并行子代理** 收口） |
+| Fix-GraphNodeLabel | 图谱节点命名修复：ingest-{timestamp} → 语义标题（entities[0] / source stem）；摄入时 wiki_title 也改用语义名称；清理 extract_wiki_display_name 冗余分支 | ✅ `src-tauri/src/{vault,state}.rs`（183 Rust / 174 前端，2026-04-25，**Claude Code** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -354,7 +355,7 @@
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-25，基线 173 Rust / 174 前端）
+### 18.3 当前代码快照（2026-04-25，基线 183 Rust / 174 前端）
 
 ```
 src-tauri/src/
@@ -363,24 +364,24 @@ src-tauri/src/
     ollama.rs       # OllamaProvider（Ollama /api/generate + /api/embeddings）
     openai.rs       # OpenAiProvider（OpenAI-compatible Chat Completions + embeddings）
   search.rs         # RRF + embedding 余弦排序（`rank_embedding_paths_by_cosine`）
-  commands.rs       # 全部 Tauri 命令注册（含 mark_page_stale/get_knowledge_graph/preview_ingest_file/apply_ingest_preview/quick_lint_page）
-  db.rs             # SQLite（含 upsert_embedding/list_embeddings, list_all_wiki_pages, query_citation_popular_paths）
-  models.rs         # 全部数据模型（含 stale, KnowledgeGraph*, embed_ollama_model, PageQuickLint 字段）
-  state.rs          # 核心逻辑（含 get_embed_provider、RRF+embedding 检索融合、PDF OCR 自动回退、ingest preview/apply 审批链路、quick_lint_page_impl）
-  vault.rs          # 文件系统（hash去重, ingest_markdown, append_see_also_link）
+  commands.rs       # 全部 Tauri 命令注册（含 get_vault_stats/create_wiki_page_with_ai/list_wiki_page_history/restore_wiki_page_from_history/quick_lint_page）
+  db.rs             # SQLite（含 FTS5 ask_turns 触发器、wiki_page_history 快照表、get_vault_stats_from_db）
+  models.rs         # 全部数据模型（含 VaultStats/NewPageResult/WikiPageHistoryItem/WikiPageHistoryDetail/PageQuickLint）
+  state.rs          # 核心逻辑（含 resolve_graph_node_label/resolve_wiki_semantic_title、checksum 防并发、get_vault_stats_impl、create_wiki_page_with_ai_impl）
+  vault.rs          # 文件系统（hash去重, ingest_markdown + resolve_wiki_semantic_title, append_see_also_link）
 
 web/src/
-  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/Settings 模块全集成，含摄入分析卡审批弹窗、quick lint 通知卡）
-  tauri-client.ts   # invoke 封装（INGEST_TIMEOUT_MS=300s, getKnowledgeGraph, markPageStale, preview/apply ingest, quickLintPage）
-  types.ts          # TS 类型（含 LlmProviderConfig.embed_ollama_model/base_url, QuerySearchDebug, PageQuickLint）
+  App.tsx           # 主界面（Inbox/Wiki/Ask/Lint/图谱/统计/Settings 全集成，含历史 diff/恢复、AI 新建弹窗、统计仪表盘）
+  tauri-client.ts   # invoke 封装（含 getVaultStats/createWikiPageWithAi/listWikiPageHistory/getWikiPageHistoryEntry/restoreWikiPageFromHistory）
+  types.ts          # TS 类型（含 VaultStats/NewPageResult/WikiPageHistorySummary/WikiPageHistoryEntry）
   app-utils.test.ts # 单元测试（174 通过）
-  styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组, quick-lint-hint, wiki-history-diff 等）
+  styles.css        # 样式（含 stats-module, new-page-modal, history-modal, wiki-history-diff, graph-insights 等）
 ```
 
 ### 18.4 验证基线（2026-04-25 最新）
 
 - Windows 本机（Claude Code）：
-  - `cd src-tauri && cargo test`：**173 通过，0 失败** ✅
+  - `cd src-tauri && cargo test`：**183 通过，0 失败** ✅
   - `cd web && npm run test -- --run`：**174 通过，0 失败** ✅
   - `cd web && npm run typecheck`：**0 errors** ✅
   - `cd web && npm run build`：通过 ✅
@@ -389,11 +390,11 @@ web/src/
 - Deep Research 端到端实跑：**通过**（城市复杂水网AI仿真，2026-04-23，用户手动验证）
 
 最新提交（main 分支）：
-- `feat(方向G): 页面变更历史`
-- `feat(方向F): AI 辅助新建 Wiki 页面`
-- `feat(方向E): Vault 统计仪表盘`
-- E/F 已落地复核，方向 A/B/C 待用户手动验收
-- 本轮风险收口：新增恢复到此版本 + 编辑基线 checksum + .gitignore 清理待提交
+- `327b09d` fix: 图谱节点命名（ingest-时间戳 → 语义标题）
+- `826f9e2` feat(方向G): 页面变更历史 + 风险收口（恢复版本/checksum）
+- `f3e559f` feat(F): AI 辅助新建 Wiki 页面
+- `7da98b8` feat(方向E): Vault 统计仪表盘
+- 方向 B/C 待用户 Windows 端到端手动验收
 
 ### 18.5 关键架构约束
 
