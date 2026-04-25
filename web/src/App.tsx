@@ -80,7 +80,6 @@ import {
   listenResearchStreamChunk,
   approveResearchQueries,
   getClipServerStatus,
-  quickLintPage,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -125,7 +124,6 @@ import type {
   ResearchTaskStatus,
   SearchConfig,
   IngestPreview,
-  PageQuickLint,
   WikiTemplate,
   WikiPageDetail,
   WikiPageCitation,
@@ -267,8 +265,8 @@ export const writeRecentVaultPathsToStorage = (paths: string[]): void => {
     }
     const normalized = normalizeRecentVaultPaths(paths).slice(0, RECENT_VAULT_PATHS_MAX);
     storage.setItem(RECENT_VAULT_PATHS_STORAGE_KEY, JSON.stringify(normalized));
-  } catch {
-    // 忽略存储异常，避免阻塞主流程
+  } catch (err) {
+    console.warn("[llm-wiki] recentVaultPaths 持久化失败:", err);
   }
 };
 
@@ -2601,6 +2599,9 @@ export default function App() {
   const [recentVaultPaths, setRecentVaultPaths] = useState<string[]>(() =>
     readRecentVaultPathsFromStorage(),
   );
+  useEffect(() => {
+    writeRecentVaultPathsToStorage(recentVaultPaths);
+  }, [recentVaultPaths]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("general");
   const selectedTemplate = useMemo<WikiTemplate>(() => {
     try {
@@ -2758,8 +2759,6 @@ export default function App() {
   const [queueEnqueueing, setQueueEnqueueing] = useState(false);
   const [ingestPreviewDialog, setIngestPreviewDialog] = useState<IngestPreview | null>(null);
   const ingestPreviewResolverRef = useRef<((approved: boolean) => void) | null>(null);
-  // 摄入成功后的快速 lint 结果（Direction D）
-  const [ingestQuickLint, setIngestQuickLint] = useState<PageQuickLint | null>(null);
 
   useEffect(
     () => () => {
@@ -3615,10 +3614,16 @@ export default function App() {
       setAskMessages([]);
       return [];
     }
-    const turns = await fetchAskSessionTurns(sessionId, 400);
-    const normalizedTurns = turns ?? [];
-    setAskMessages(buildAskMessagesFromSessionTurns(normalizedTurns));
-    return normalizedTurns;
+    setAskMessages([]); // 先清空，避免切换会话时短暂显示旧消息
+    try {
+      const turns = await fetchAskSessionTurns(sessionId, 400);
+      const normalizedTurns = turns ?? [];
+      setAskMessages(buildAskMessagesFromSessionTurns(normalizedTurns));
+      return normalizedTurns;
+    } catch {
+      setAskMessages([]);
+      return [];
+    }
   };
 
   const handleCreateAskSession = async () => {
@@ -3697,9 +3702,13 @@ export default function App() {
     setAskSessionManaging(true);
     try {
       setAskSessionId(hit.session_id);
-      await loadAskSessionMessages(hit.session_id);
+      const turns = await loadAskSessionMessages(hit.session_id);
       setQueryResult(null);
       setExpandedCitationIds(new Set());
+      if (turns.length === 0) {
+        setStatusMessage(`未找到会话「${hit.session_title}」的消息，该会话可能已被删除。`);
+        return;
+      }
       focusAskMessageById(`session-turn-${hit.turn_id}`);
       setStatusMessage(`已定位到会话「${hit.session_title}」中的匹配消息。`);
     } finally {
@@ -3892,7 +3901,6 @@ export default function App() {
       }
       const mergedRecent = mergeRecentVaultPaths(result.vault_path || nextVaultPath, recentVaultPaths);
       setRecentVaultPaths(mergedRecent);
-      writeRecentVaultPathsToStorage(mergedRecent);
       const createdCount = result.created_paths?.length ?? 0;
       setStatusMessage(
         `${result.message || `Vault 已初始化：${result.vault_path}`}\n模板：${selectedTemplate.name} · 创建 ${createdCount} 项`,
@@ -3907,8 +3915,6 @@ export default function App() {
   };
 
   const handleDemoIngest = async () => {
-    // 每次发起摄入前清空上次的 lint 结果
-    setIngestQuickLint(null);
     setStatusMessage("收到摄入请求，正在调用后端...");
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法执行示例摄入。");
@@ -3948,18 +3954,6 @@ export default function App() {
         return;
       }
 
-      // Apply 成功后异步执行快速 lint（不阻塞摄入完成提示）
-      if (result.wiki_path) {
-        quickLintPage(result.wiki_path)
-          .then((lintResult) => {
-            if (lintResult && lintResult.issues_count > 0) {
-              setIngestQuickLint(lintResult);
-            }
-          })
-          .catch(() => {
-            // lint 失败不影响摄入成功状态
-          });
-      }
       await refreshAppData();
       const entitiesMsg =
         result.entities && result.entities.length > 0
@@ -3986,8 +3980,6 @@ export default function App() {
   };
 
   const handleUrlIngest = async () => {
-    // 每次发起摄入前清空上次的 lint 结果
-    setIngestQuickLint(null);
     setStatusMessage("收到 URL 摄入请求，正在调用后端...");
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法执行 URL 摄入。");
@@ -4032,18 +4024,6 @@ export default function App() {
         return;
       }
 
-      // Apply 成功后异步执行快速 lint（不阻塞摄入完成提示）
-      if (result.wiki_path) {
-        quickLintPage(result.wiki_path)
-          .then((lintResult) => {
-            if (lintResult && lintResult.issues_count > 0) {
-              setIngestQuickLint(lintResult);
-            }
-          })
-          .catch(() => {
-            // lint 失败不影响摄入成功状态
-          });
-      }
       await refreshAppData();
       const entitiesMsg =
         result.entities && result.entities.length > 0
@@ -4070,8 +4050,6 @@ export default function App() {
   };
 
   const handlePdfIngest = async () => {
-    // 每次发起摄入前清空上次的 lint 结果
-    setIngestQuickLint(null);
     setStatusMessage("收到 PDF 摄入请求，正在调用后端...");
     if (!isTauriRuntime()) {
       setStatusMessage("浏览器预览模式下无法执行 PDF 摄入。");
@@ -4116,18 +4094,6 @@ export default function App() {
         return;
       }
 
-      // Apply 成功后异步执行快速 lint（不阻塞摄入完成提示）
-      if (result.wiki_path) {
-        quickLintPage(result.wiki_path)
-          .then((lintResult) => {
-            if (lintResult && lintResult.issues_count > 0) {
-              setIngestQuickLint(lintResult);
-            }
-          })
-          .catch(() => {
-            // lint 失败不影响摄入成功状态
-          });
-      }
       await refreshAppData();
       const entitiesMsg =
         result.entities && result.entities.length > 0
@@ -4233,18 +4199,6 @@ export default function App() {
           return;
         }
 
-        // Apply 成功后异步执行快速 lint（不阻塞摄入完成提示）
-        if (result.wiki_path) {
-          quickLintPage(result.wiki_path)
-            .then((lintResult) => {
-              if (lintResult && lintResult.issues_count > 0) {
-                setIngestQuickLint(lintResult);
-              }
-            })
-            .catch(() => {
-              // lint 失败不影响摄入成功状态
-            });
-        }
         await refreshAppData();
         const entitiesMsg =
           result.entities && result.entities.length > 0
@@ -4319,8 +4273,6 @@ export default function App() {
   };
 
   const handleFileIngest = async () => {
-    // 每次发起摄入前清空上次的 lint 结果
-    setIngestQuickLint(null);
     setStatusMessage("收到通用文件摄入请求，正在调用后端...");
     const pathsToIngest = ingestFilePickedPaths.length > 0
       ? ingestFilePickedPaths
@@ -6507,7 +6459,6 @@ export default function App() {
                           className="dev-panel__button recent-vaults__clear"
                           onClick={() => {
                             setRecentVaultPaths([]);
-                            writeRecentVaultPathsToStorage([]);
                           }}
                         >
                           清空
@@ -8752,52 +8703,6 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        {ingestQuickLint !== null && ingestQuickLint.issues_count > 0 && (
-          <div className="quick-lint-hint" role="alert">
-            <div className="quick-lint-hint__header">
-              <span className="quick-lint-hint__icon">⚠</span>
-              <span className="quick-lint-hint__title">知识质量提示</span>
-              <button
-                type="button"
-                className="quick-lint-hint__close"
-                onClick={() => setIngestQuickLint(null)}
-                aria-label="关闭"
-              >
-                ×
-              </button>
-            </div>
-            {ingestQuickLint.broken_links.length > 0 && (
-              <div className="quick-lint-hint__section">
-                <span className="quick-lint-hint__label">断链（{ingestQuickLint.broken_links.length}）</span>
-                <ul className="quick-lint-hint__list">
-                  {ingestQuickLint.broken_links.slice(0, 5).map((link) => (
-                    <li key={link} className="quick-lint-hint__item quick-lint-hint__item--warn">
-                      [[{link}]]
-                    </li>
-                  ))}
-                  {ingestQuickLint.broken_links.length > 5 && (
-                    <li className="quick-lint-hint__item">…共 {ingestQuickLint.broken_links.length} 条</li>
-                  )}
-                </ul>
-              </div>
-            )}
-            {ingestQuickLint.missing_entity_pages.length > 0 && (
-              <div className="quick-lint-hint__section">
-                <span className="quick-lint-hint__label">实体缺页（{ingestQuickLint.missing_entity_pages.length}）</span>
-                <ul className="quick-lint-hint__list">
-                  {ingestQuickLint.missing_entity_pages.slice(0, 5).map((entity) => (
-                    <li key={entity} className="quick-lint-hint__item quick-lint-hint__item--info">
-                      {entity}
-                    </li>
-                  ))}
-                  {ingestQuickLint.missing_entity_pages.length > 5 && (
-                    <li className="quick-lint-hint__item">…共 {ingestQuickLint.missing_entity_pages.length} 条</li>
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
     </div>

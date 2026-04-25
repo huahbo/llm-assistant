@@ -134,7 +134,6 @@ import {
   saveLlmConfig,
   saveWikiPage,
   resolveDisplayPath,
-  quickLintPage,
 } from "./tauri-client";
 import {
   filterLintIssuesByCode,
@@ -1367,11 +1366,6 @@ describe("Tauri 运行时与参数映射", () => {
     await expect(applyIngestPreview("preview-1")).resolves.toBeNull();
   });
 
-  it("浏览器预览模式下 quickLintPage 直接回退为 null", async () => {
-    Reflect.deleteProperty(globalThis, "window");
-    await expect(quickLintPage("wiki/test.md")).resolves.toBeNull();
-  });
-
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {
     Reflect.deleteProperty(globalThis, "window");
 
@@ -2450,5 +2444,73 @@ describe("Deep Research 纯函数", () => {
     expect(getResearchStatusColor("searching")).toBe("research-badge--running");
     expect(getResearchStatusColor("synthesizing")).toBe("research-badge--running");
     expect(getResearchStatusColor("saving")).toBe("research-badge--running");
+  });
+});
+
+describe("最近 Vault 路径 - 边界条件", () => {
+  const installLocalStorageMock = (initial: Record<string, string> = {}) => {
+    const store = new Map(Object.entries(initial));
+    const mock = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+      removeItem: (key: string) => { store.delete(key); },
+      clear: () => { store.clear(); },
+      get length() { return store.size; },
+      key: (i: number) => [...store.keys()][i] ?? null,
+    };
+    Object.defineProperty(globalThis, "localStorage", { value: mock, configurable: true, writable: true });
+    return { store };
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  });
+
+  it("writeRecentVaultPathsToStorage 在 storage 抛出时不崩溃", () => {
+    const mockStorage = {
+      getItem: () => null,
+      setItem: () => { throw new Error("QuotaExceededError"); },
+      removeItem: () => {},
+      clear: () => {},
+      length: 0,
+      key: () => null,
+    };
+    Object.defineProperty(globalThis, "localStorage", { value: mockStorage, configurable: true, writable: true });
+    // 不应抛出异常
+    expect(() => writeRecentVaultPathsToStorage(["E:\\vault"])).not.toThrow();
+  });
+
+  it("normalizeRecentVaultPaths 对空字符串和重复路径正确去重", () => {
+    const result = normalizeRecentVaultPaths([
+      "E:\\Vault",
+      "E:\\vault",   // 大小写不同应视为同一路径
+      "",            // 空字符串应被过滤
+      "  ",          // 纯空白应被过滤
+      "E:\\Vault",   // 精确重复
+    ]);
+    // 大小写不同路径保留第一次出现（去重基于 toLowerCase）
+    expect(result.length).toBe(1);
+    expect(result[0]).toBeTruthy();
+  });
+});
+
+describe("Ask 会话管理 - 边界条件", () => {
+  it("filterAskSessions 关键词含特殊字符时安全返回", () => {
+    const sessions = [
+      { session_id: "s1", title: "测试会话", created_at: "1", updated_at: "2", turn_count: 1, last_turn_role: "user", last_turn_content: "内容" },
+    ];
+    // filterAskSessions 内部使用 .includes() 而非 RegExp，包含特殊字符不应抛出
+    expect(() => filterAskSessions(sessions, "[.*+?^${}()|\\]\\[")).not.toThrow();
+  });
+
+  it("formatAskSessionSearchSnippet 对空字符串返回空串", () => {
+    expect(formatAskSessionSearchSnippet("")).toBe("");
+    expect(formatAskSessionSearchSnippet("   \n\n  ")).toBe("");
+  });
+
+  it("formatAskSessionSearchSnippet 对刚好 88 字符的文本不加省略号", () => {
+    const text = "x".repeat(88);
+    expect(formatAskSessionSearchSnippet(text)).toBe(text);
+    expect(formatAskSessionSearchSnippet(text).endsWith("…")).toBe(false);
   });
 });

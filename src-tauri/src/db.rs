@@ -1259,6 +1259,27 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         [],
     );
 
+    // FTS for ask session turns（触发器自动维护）
+    let _ = conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS fts_ask_turns USING fts5(session_id UNINDEXED, content, tokenize=\"unicode61\")",
+        [],
+    );
+    let _ = conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS trg_ask_turns_fts_insert
+    AFTER INSERT ON ask_session_turns BEGIN
+        INSERT INTO fts_ask_turns(rowid, session_id, content)
+        VALUES (NEW.id, NEW.session_id, NEW.content);
+    END"#,
+        [],
+    );
+    let _ = conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS trg_ask_turns_fts_delete
+    AFTER DELETE ON ask_session_turns BEGIN
+        DELETE FROM fts_ask_turns WHERE rowid = OLD.id;
+    END"#,
+        [],
+    );
+
     ensure_ask_history_quality(conn)?;
     ensure_ask_session_turns_quality(conn)?;
 
@@ -1392,6 +1413,23 @@ fn ensure_ask_session_turns_quality(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|err| format!("补齐 ask_session_turns.meta_json 失败: {}", err))?;
     }
+
+    // 回填历史数据到 FTS（升级迁移：fts 为空但 turns 有数据时）
+    let fts_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM fts_ask_turns", [], |row| row.get(0))
+        .unwrap_or(0);
+    if fts_count == 0 {
+        let turns_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ask_session_turns", [], |row| row.get(0))
+            .unwrap_or(0);
+        if turns_count > 0 {
+            let _ = conn.execute(
+                "INSERT INTO fts_ask_turns(rowid, session_id, content) SELECT id, session_id, content FROM ask_session_turns",
+                [],
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1660,29 +1698,23 @@ pub fn list_ask_sessions(db_path: &Path, limit: usize) -> Result<Vec<AskSessionR
     let mut stmt = conn
         .prepare(
             r#"
+            WITH latest_turn_ids AS (
+                SELECT session_id, MAX(id) AS max_id
+                FROM ask_session_turns
+                GROUP BY session_id
+            )
             SELECT
                 s.session_id,
                 s.title,
                 s.created_at,
                 s.updated_at,
                 COUNT(t.id) AS turn_count,
-                (
-                    SELECT t2.role
-                    FROM ask_session_turns t2
-                    WHERE t2.session_id = s.session_id
-                    ORDER BY t2.id DESC
-                    LIMIT 1
-                ) AS last_turn_role,
-                (
-                    SELECT t3.content
-                    FROM ask_session_turns t3
-                    WHERE t3.session_id = s.session_id
-                    ORDER BY t3.id DESC
-                    LIMIT 1
-                ) AS last_turn_content
+                lt.role       AS last_turn_role,
+                lt.content    AS last_turn_content
             FROM ask_sessions s
-            LEFT JOIN ask_session_turns t
-                ON t.session_id = s.session_id
+            LEFT JOIN ask_session_turns t   ON t.session_id = s.session_id
+            LEFT JOIN latest_turn_ids lti   ON lti.session_id = s.session_id
+            LEFT JOIN ask_session_turns lt  ON lt.id = lti.max_id
             GROUP BY s.session_id, s.title, s.created_at, s.updated_at
             ORDER BY CAST(s.updated_at AS INTEGER) DESC, s.session_id DESC
             LIMIT ?1
@@ -1810,7 +1842,11 @@ pub fn search_ask_session_turns(
     }
     let conn = open_connection(db_path)?;
     init_schema(&conn)?;
+
+    // FTS5 需要转义特殊字符；用双引号包裹以做精确短语搜索
+    let fts_term = format!("\"{}\"", normalized_keyword.replace('"', "\"\""));
     let like_pattern = format!("%{}%", normalized_keyword.to_lowercase());
+
     let mut stmt = conn
         .prepare(
             r#"
@@ -1824,15 +1860,17 @@ pub fn search_ask_session_turns(
             FROM ask_session_turns t
             INNER JOIN ask_sessions s
                 ON s.session_id = t.session_id
-            WHERE lower(t.content) LIKE ?1
-               OR lower(s.title) LIKE ?1
+            WHERE t.id IN (
+                SELECT rowid FROM fts_ask_turns WHERE fts_ask_turns MATCH ?1
+            )
+               OR lower(s.title) LIKE ?2
             ORDER BY CAST(t.created_at AS INTEGER) DESC, t.id DESC
-            LIMIT ?2
+            LIMIT ?3
             "#,
         )
         .map_err(|err| format!("准备检索 ask_session_turns 失败: {}", err))?;
     let rows = stmt
-        .query_map(params![like_pattern, limit as i64], |row| {
+        .query_map(params![fts_term, like_pattern, limit as i64], |row| {
             Ok(AskSessionSearchHitRecord {
                 session_id: row.get(0)?,
                 session_title: row.get(1)?,
@@ -2993,6 +3031,25 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "sess-a");
         assert!(hits[0].snippet.contains("Rust"));
+    }
+
+    #[test]
+    fn search_ask_session_turns_fts_cleaned_on_delete() {
+        let dir = make_temp_dir("llm-wiki-db-fts-cleanup");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        create_ask_session(&db_path, "sess-del", "待删会话", "100").expect("创建会话失败");
+        append_ask_session_turn(&db_path, "sess-del", "user", "这条内容应被清理", "101", None, None)
+            .expect("写入轮次失败");
+
+        // 删除会话，FK CASCADE + 触发器应清理 FTS
+        delete_ask_session(&db_path, "sess-del").expect("删除会话失败");
+
+        let hits = search_ask_session_turns(&db_path, "这条内容应被清理", 20)
+            .expect("检索失败");
+        assert!(hits.is_empty(), "删除会话后 FTS 索引应已清理，不应搜到结果");
     }
 
     #[test]

@@ -1167,6 +1167,22 @@ impl AppState {
         template_purpose: String,
         extra_dirs: Vec<String>,
     ) -> Result<VaultInitResult, String> {
+        // 防止路径遍历攻击
+        for dir in &extra_dirs {
+            let clean = dir.trim().replace('\\', "/");
+            if clean.contains("..") || clean.starts_with('/') {
+                return Err(format!("非法目录路径（不允许路径遍历或绝对路径）: {}", dir));
+            }
+        }
+        // 模板内容大小限制（防止写入超大文件）
+        const MAX_TEMPLATE_BYTES: usize = 512 * 1024;
+        if template_schema.len() > MAX_TEMPLATE_BYTES {
+            return Err("模板 schema 内容超过 512 KB 限制".to_string());
+        }
+        if template_purpose.len() > MAX_TEMPLATE_BYTES {
+            return Err("模板 purpose 内容超过 512 KB 限制".to_string());
+        }
+
         let mut result = self.init_vault(vault_path.clone())?;
 
         // 写入模板文件（通常放在 wiki 目录下）
@@ -11208,6 +11224,43 @@ entities:
         assert_eq!(tasks[0].status, "cancelled");
         // updated_at 应为第一次 cancel 的时间，不被第二次覆盖
         assert_eq!(tasks[0].updated_at, "200");
+    }
+
+    // ── init_vault_with_template 安全测试 ────────────────────────────────────
+
+    #[test]
+    fn init_vault_with_template_rejects_path_traversal() {
+        let dir = make_temp_dir("llm-wiki-state-template-traversal");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        let vault_dir = dir.join("vault");
+        fs::create_dir_all(&vault_dir).unwrap();
+        let result = state.init_vault_with_template(
+            vault_dir,
+            "schema content".to_string(),
+            "purpose content".to_string(),
+            vec!["../../../etc".to_string()],
+        );
+        assert!(result.is_err(), "路径遍历应被拒绝");
+        assert!(result.unwrap_err().contains("非法目录路径"));
+    }
+
+    #[test]
+    fn init_vault_with_template_rejects_oversized_content() {
+        let dir = make_temp_dir("llm-wiki-state-template-size");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        let vault_dir = dir.join("vault");
+        fs::create_dir_all(&vault_dir).unwrap();
+        let big = "x".repeat(513 * 1024);
+        let result = state.init_vault_with_template(
+            vault_dir,
+            big,
+            "ok".to_string(),
+            vec![],
+        );
+        assert!(result.is_err(), "超大 schema 内容应被拒绝");
+        assert!(result.unwrap_err().contains("512 KB"));
     }
 
     // ── quick_lint_page 测试 ─────────────────────────────────────────────────
