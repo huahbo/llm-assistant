@@ -202,8 +202,8 @@
 
 ### 18.0 快速恢复步骤
 
-1. `cargo test`（src-tauri/）→ 应 **164 passed**
-2. `npm run test -- --run`（web/）→ 应 **161 passed**
+1. `cargo test`（src-tauri/）→ 应 **167 passed**
+2. `npm run test -- --run`（web/）→ 应 **165 passed**
 3. `npm run typecheck`（web/）→ 应 **0 errors**
 4. 读 `docs/交接状态卡.md` 与 `docs/多Agent通信与交接协议.md`，确认当前接力状态与交接格式
 5. 读 `docs/实施过程记录.md` 最新 3 条了解背景
@@ -314,6 +314,7 @@
 | P27-Ingest-HITL | 方向 A 摄入审核：`preview_ingest_file/apply_ingest_preview` + Inbox「摄入分析卡」审批后落盘（直摄入全链路） | ✅ `src-tauri/src/{models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-23，**Codex+子代理** 实施） |
 | P27-Session-C2 | 方向 C 二期：会话轮次 citations/meta 持久化 + 跨会话检索与命中定位（点击结果自动切会话并定位高亮） | ✅ `src-tauri/src/{db,models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（WSL `typecheck` 通过；Rust 与前端全测待 Windows 复核，2026-04-24，**Codex** 实施） |
 | P27-QuickLint-D | 方向 D：摄入后快速结构 Lint（断链+缺失实体页）— 同步无 LLM，fire-and-forget，右下角可关闭通知卡 | ✅ `src-tauri/src/{models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（164 Rust / 161 前端 / typecheck 0 errors，Windows 验证通过，2026-04-24，**Claude Code + 并行子代理** 实施） |
+| Refactor-BC-Quality | 方向 B/C A 级质量收口：FTS5 替换 LIKE 全表扫描 + N+1 CTE 修复 + 路径遍历防御 + 512KB 大小限制 + useEffect 自动持久化 + 过期会话防御 + 5 条边界测试 | ✅ `src-tauri/src/{db,state}.rs` + `web/src/{App,app-utils.test}.ts`（167 Rust / 165 前端，2026-04-25，**Claude Code + 并行子代理** 实施） |
 
 ### 18.2 下一轮 TODO（按优先级）
 
@@ -349,7 +350,7 @@
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
 - 每轮结束更新本节 + `docs/实施过程记录.md`，验证基线全绿后 git commit
 
-### 18.3 当前代码快照（2026-04-24，基线 164 Rust / 161 前端）
+### 18.3 当前代码快照（2026-04-25，基线 167 Rust / 165 前端）
 
 ```
 src-tauri/src/
@@ -372,11 +373,11 @@ web/src/
   styles.css        # 样式（含 graph-module, graph-insights, wiki-stale-banner, lint 分组, quick-lint-hint 等）
 ```
 
-### 18.4 验证基线（2026-04-24 最新）
+### 18.4 验证基线（2026-04-25 最新）
 
 - Windows 本机（Claude Code）：
-  - `cd src-tauri && cargo test`：**164 通过，0 失败** ✅
-  - `cd web && npm run test -- --run`：**161 通过，0 失败** ✅
+  - `cd src-tauri && cargo test`：**167 通过，0 失败** ✅
+  - `cd web && npm run test -- --run`：**165 通过，0 失败** ✅
   - `cd web && npm run typecheck`：**0 errors** ✅
 - `scripts/verify_clipper_windows.ps1`：**用户回传通过**（2026-04-22）
 - `scripts/verify_searxng_windows.ps1`：**用户回传通过**（2026-04-22）
