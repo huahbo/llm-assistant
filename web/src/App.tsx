@@ -2732,7 +2732,7 @@ export default function App() {
   const [ingestUrlInput, setIngestUrlInput] = useState("");
   const CLIP_SERVER_PORT = 19827;
   const [clipServerOnline, setClipServerOnline] = useState<boolean | null>(null);
-  const [queryQuestion, setQueryQuestion] = useState("这个项目的核心目标是什么？");
+  const [queryQuestion, setQueryQuestion] = useState("");
   const [queryTopK, setQueryTopK] = useState(defaultQueryTopK);
   const [queryTopKMin, setQueryTopKMin] = useState(defaultQueryTopKMin);
   const [queryTopKMax, setQueryTopKMax] = useState(defaultQueryTopKMax);
@@ -4581,6 +4581,7 @@ export default function App() {
       // Query 会在后端写入日志，这里主动刷新一次前端日志面板。
       await refreshAppData();
       await refreshAskSessionList();
+      setQueryQuestion("");
       setStatusMessage(`Query 已完成：TopK=${nextTopK}，命中 ${result.matched_pages.length} 页。`);
     } catch (error) {
       console.error(error);
