@@ -648,16 +648,19 @@ impl AppState {
         let nodes: Vec<KnowledgeGraphNode> = page_records
             .iter()
             .map(|record| {
-                // 尝试从文件读取第一个 entity 作为分组标签
-                let group = std::fs::read_to_string(&record.path)
+                let (group, label) = std::fs::read_to_string(&record.path)
                     .ok()
                     .and_then(|content| parse_wiki_frontmatter(&content))
-                    .and_then(|fm| fm.entities.into_iter().next())
-                    .unwrap_or_default();
+                    .map(|fm| {
+                        let label = resolve_graph_node_label(&record.title, &fm);
+                        let group = fm.entities.into_iter().next().unwrap_or_default();
+                        (group, label)
+                    })
+                    .unwrap_or_else(|| (String::new(), record.title.clone()));
 
                 KnowledgeGraphNode {
                     id: record.path.clone(),
-                    label: record.title.clone(),
+                    label,
                     group,
                 }
             })
@@ -703,16 +706,20 @@ impl AppState {
         let page_records = db::list_all_wiki_pages(&db_path)?;
         let mut node_map = HashMap::<String, KnowledgeGraphNode>::new();
         for record in page_records {
-            let group = std::fs::read_to_string(&record.path)
+            let (group, label) = std::fs::read_to_string(&record.path)
                 .ok()
                 .and_then(|content| parse_wiki_frontmatter(&content))
-                .and_then(|fm| fm.entities.into_iter().next())
-                .unwrap_or_default();
+                .map(|fm| {
+                    let label = resolve_graph_node_label(&record.title, &fm);
+                    let group = fm.entities.into_iter().next().unwrap_or_default();
+                    (group, label)
+                })
+                .unwrap_or_else(|| (String::new(), record.title.clone()));
             node_map.insert(
                 record.path.clone(),
                 KnowledgeGraphNode {
                     id: record.path,
-                    label: record.title,
+                    label,
                     group,
                 },
             );
@@ -1230,8 +1237,14 @@ impl AppState {
         Ok(result)
     }
 
-    pub async fn ingest_markdown(&self, source_path: PathBuf) -> Result<IngestResult, String> {
+    pub async fn ingest_markdown(
+        &self,
+        source_path: PathBuf,
+        display_name: Option<String>,
+    ) -> Result<IngestResult, String> {
         let source_path_text = source_path.to_string_lossy().to_string();
+        // 对于非 md 文件（PDF/TXT 等），调用方可传入原始文件名以生成有意义的 wiki 页面名称
+        let display_path = display_name.unwrap_or_else(|| source_path_text.clone());
 
         // 记录开始导入事件
         self.record_outbox_event(
@@ -1281,7 +1294,7 @@ impl AppState {
         self.complete_ingest_with_precomputed_analysis(
             &vault_path,
             &source_path,
-            &source_path_text,
+            &display_path,
             &source_content,
             &llm_summary,
             &entities,
@@ -1466,11 +1479,14 @@ impl AppState {
         entities: &[String],
     ) -> Result<IngestResult, String> {
         self.emit_progress("ingest_progress", "writing_wiki", "写入 Wiki 页面...");
+        // 从显示路径提取有意义的显示名称，用于 wiki 文件名（而非 ingext-时间戳）
+        let display_name = extract_wiki_display_name(display_source_path);
         let mut result = match vault::ingest_markdown(
             vault_path,
             ingest_source_path,
             Some(llm_summary),
             entities,
+            display_name.as_deref(),
         ) {
             Ok(result) => {
                 self.push_log(
@@ -1702,7 +1718,7 @@ impl AppState {
             .to_ascii_lowercase();
 
         match extension.as_str() {
-            "md" | "markdown" => self.ingest_markdown(source_path_buf).await,
+            "md" | "markdown" => self.ingest_markdown(source_path_buf, None).await,
             "pdf" => self.ingest_pdf_impl(source_path).await,
             "txt" => {
                 let content_bytes = fs::read(&source_path_buf)
@@ -1844,7 +1860,13 @@ impl AppState {
             .await
             .map_err(|e| format!("写入临时 Markdown 失败：{e}"))?;
 
-        let mut result = self.ingest_markdown(tmp_path.clone()).await;
+        // 传入原始源文件名作为 display_name，使 wiki 页面名称有可读性
+        let source_stem = source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(route_tag)
+            .to_string();
+        let mut result = self.ingest_markdown(tmp_path.clone(), Some(source_stem)).await;
 
         // 无论 ingest 成功或失败都尝试清理临时文件。
         let _ = tokio::fs::remove_file(&tmp_path).await;
@@ -1925,7 +1947,20 @@ impl AppState {
                 message
             })?;
 
-        let result = self.ingest_markdown(tmp_path.clone()).await;
+        // 从 URL 提取有意义的显示名称（优先路径最后一段，否则用域名）
+        let url_display = reqwest::Url::parse(&source_url).ok().and_then(|parsed| {
+            let path_seg = parsed
+                .path_segments()
+                .and_then(|segments| segments.last())
+                .filter(|s| !s.is_empty() && s.len() < 50);
+            if let Some(seg) = path_seg {
+                return Some(seg.to_string());
+            }
+            parsed
+                .host_str()
+                .map(|h| h.trim_start_matches("www.").to_string())
+        });
+        let result = self.ingest_markdown(tmp_path.clone(), url_display).await;
 
         // 3. 清理临时文件（忽略错误）
         let _ = tokio::fs::remove_file(&tmp_path).await;
@@ -3520,7 +3555,7 @@ Wiki 页面：\n{}",
             });
         }
 
-        // 2. 更新 SQLite FTS 索引（复用已有逻辑）
+        // 2. 更新 SQLite FTS 索引 + wiki_pages.title（复用已有逻辑）
         if let Some(db_path) = db_path {
             if db_path.exists() {
                 let title = wiki_title_from_content(content, path);
@@ -3530,6 +3565,12 @@ Wiki 页面：\n{}",
                     db::upsert_fts_page(&db_path, path_buf, &title, &body)
                 {
                     self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）：{err}"));
+                }
+                // 同步 wiki_pages.title 到 DB，确保图谱/检索显示正确标题
+                if let Err(err) =
+                    db::update_wiki_page_title(&db_path, path_buf, &title)
+                {
+                    self.push_log(LogLevel::Warn, format!("更新 wiki_pages.title 失败：{err}"));
                 }
             }
         }
@@ -4963,7 +5004,7 @@ Wiki 页面：\n{}",
                 let exec_result: Result<crate::models::IngestResult, String> = match source_type.as_str() {
                     "file" => state.ingest_file_impl(&source_path, None).await,
                     "url" => state.ingest_url_impl(&source_path).await,
-                    "markdown" => state.ingest_markdown(std::path::PathBuf::from(&source_path)).await,
+                    "markdown" => state.ingest_markdown(std::path::PathBuf::from(&source_path), None).await,
                     other => Err(format!("未知 source_type: {}", other)),
                 };
 
@@ -8427,7 +8468,7 @@ async fn save_research_output(
         );
     }
 
-    let _ = state.ingest_markdown(save_path).await;
+    let _ = state.ingest_markdown(save_path, None).await;
     let _ = app_handle.emit("research_done", serde_json::json!({
         "task_id": task_id,
         "saved_path": saved_path_str,
@@ -8869,6 +8910,53 @@ fn wiki_title_from_content(content: &str, fallback_path: &str) -> String {
         })
 }
 
+/// 从显示路径提取有意义的 wiki 页面名称（供 ingest 命名使用）。
+/// 取文件 stem，排除内部临时文件（`llm_wiki_` 前缀）。
+fn extract_wiki_display_name(display_source_path: &str) -> Option<String> {
+    std::path::Path::new(display_source_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with("llm_wiki_"))
+        .map(str::to_string)
+}
+
+/// 判断标题是否为原始摄入 ID（格式：`ingest-{纯十进制数字}`）。
+fn is_raw_ingest_id(title: &str) -> bool {
+    match title.strip_prefix("ingest-") {
+        Some(rest) => !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// 解析图谱节点的显示标签。
+///
+/// 当 DB 标题是原始摄入 ID 时（`ingest-{timestamp}`），从 frontmatter 提取更有意义的名称：
+/// entities[0]（≥2 字符）> source 文件名 stem（非内部路径）> DB 标题原值。
+fn resolve_graph_node_label(
+    db_title: &str,
+    fm: &crate::models::WikiPageFrontmatter,
+) -> String {
+    if !is_raw_ingest_id(db_title) {
+        return db_title.to_string();
+    }
+    if let Some(entity) = fm.entities.first() {
+        let e = entity.trim();
+        if e.len() >= 2 {
+            return e.to_string();
+        }
+    }
+    if let Some(src) = fm.source.as_deref() {
+        if let Some(stem) = std::path::Path::new(src).file_stem().and_then(|s| s.to_str()) {
+            let stem = stem.trim();
+            if !stem.is_empty() && !stem.starts_with("llm_wiki_") && stem.len() >= 2 {
+                return stem.to_string();
+            }
+        }
+    }
+    db_title.to_string()
+}
+
 /// 计算字符串的简单 MD5 十六进制摘要（用于生成 content_hash）。
 fn md5_simple(input: &str) -> u64 {
     // 使用 FNV-1a 64-bit 哈希作为轻量内容指纹（无需引入 md5 crate）
@@ -8907,6 +8995,80 @@ mod tests {
         assert_eq!(topic_to_slug("rust-lang"), "rust-lang");
         // 全空白
         assert_eq!(topic_to_slug("   "), "");
+    }
+
+    #[test]
+    fn is_raw_ingest_id_detects_timestamp_pattern() {
+        assert!(is_raw_ingest_id("ingest-1777101379565550500"));
+        assert!(is_raw_ingest_id("ingest-0"));
+        assert!(!is_raw_ingest_id("rust生命周期"));
+        assert!(!is_raw_ingest_id("ingest-abc123"));
+        assert!(!is_raw_ingest_id("ingest-123abc"));
+        assert!(!is_raw_ingest_id("ingest-"));
+        assert!(!is_raw_ingest_id(""));
+    }
+
+    #[test]
+    fn resolve_graph_node_label_preserves_meaningful_title() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: Some("rust生命周期".to_string()),
+            source: None,
+            raw: None,
+            imported_at: None,
+            entities: vec!["Rust".to_string()],
+            stale: None,
+        };
+        // 有意义的标题不应被替换，即便有 entities
+        assert_eq!(resolve_graph_node_label("rust生命周期", &fm), "rust生命周期");
+    }
+
+    #[test]
+    fn resolve_graph_node_label_uses_first_entity_for_raw_id() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: Some("ingest-1777101379565550500".to_string()),
+            source: None,
+            raw: None,
+            imported_at: None,
+            entities: vec!["PINNs".to_string(), "Transformer".to_string()],
+            stale: None,
+        };
+        assert_eq!(
+            resolve_graph_node_label("ingest-1777101379565550500", &fm),
+            "PINNs"
+        );
+    }
+
+    #[test]
+    fn resolve_graph_node_label_falls_back_to_source_stem() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: None,
+            source: Some(r"E:\vault\research\大模型rag框架进展.md".to_string()),
+            raw: None,
+            imported_at: None,
+            entities: vec![],
+            stale: None,
+        };
+        assert_eq!(
+            resolve_graph_node_label("ingest-1776768806095623000", &fm),
+            "大模型rag框架进展"
+        );
+    }
+
+    #[test]
+    fn resolve_graph_node_label_skips_internal_source_path() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: None,
+            source: Some(r"C:\Temp\llm_wiki_preview_apply_123.md".to_string()),
+            raw: None,
+            imported_at: None,
+            entities: vec![],
+            stale: None,
+        };
+        // internal temp path → fall back to db_title
+        assert_eq!(
+            resolve_graph_node_label("ingest-1776000000000000000", &fm),
+            "ingest-1776000000000000000"
+        );
     }
 
     #[test]

@@ -80,6 +80,7 @@ pub fn ingest_markdown(
     source_path: &Path,
     llm_summary: Option<&str>,
     entities: &[String],
+    display_name: Option<&str>,
 ) -> Result<IngestResult, String> {
     if !vault_path.exists() {
         return Err("Vault 不存在，请先执行 init_vault".to_string());
@@ -97,9 +98,11 @@ pub fn ingest_markdown(
         .unwrap_or("source");
     let raw_file_name = normalize_raw_filename(source_stem, &content_hash);
     let raw_path = vault_path.join("raw").join(&raw_file_name);
-    let wiki_file_name = format!("ingest-{}.md", timestamp_ns);
+
+    let wiki_file_name = resolve_wiki_filename(vault_path, display_name, &timestamp_ns);
     let wiki_path = vault_path.join("wiki").join(&wiki_file_name);
-    let wiki_title = wiki_file_name.trim_end_matches(".md").to_string();
+    // 语义标题：entities[0] > display_name > filename stem（三级回退，确保用户可读）
+    let wiki_title = resolve_wiki_semantic_title(entities, display_name, &wiki_file_name);
     // 优先使用 LLM 摘要，否则回退到截断摘要
     let summary = llm_summary
         .map(|s| s.to_string())
@@ -523,6 +526,83 @@ fn normalize_raw_filename(source_stem: &str, content_hash: &str) -> String {
     format!("{}-{}.md", cleaned, hash_prefix)
 }
 
+/// 从有意义的显示名称生成 wiki 文件名，冲突时追加 -1/-2 后缀。
+/// 解析摄入页面的语义标题（面向用户的显示名称）。
+///
+/// 优先级：entities[0]（LLM 提取，语义最准）> display_name（源文件名）> wiki_file_name stem。
+/// 跳过长度 < 2 的实体和内部临时路径名（`llm_wiki_` / `ingest-` 前缀）。
+fn resolve_wiki_semantic_title(
+    entities: &[String],
+    display_name: Option<&str>,
+    wiki_file_name: &str,
+) -> String {
+    if let Some(entity) = entities.first() {
+        let e = entity.trim();
+        if e.len() >= 2 {
+            return e.to_string();
+        }
+    }
+    if let Some(name) = display_name {
+        let n = name.trim();
+        if !n.is_empty() && !n.starts_with("llm_wiki_") && !n.starts_with("ingest-") {
+            return n.to_string();
+        }
+    }
+    wiki_file_name.trim_end_matches(".md").to_string()
+}
+
+/// 若无 display_name，回退到 ingest-{timestamp_ns}。
+fn resolve_wiki_filename(vault_path: &Path, display_name: Option<&str>, timestamp_ns: &str) -> String {
+    let base = match display_name {
+        Some(name) if !name.trim().is_empty() => sanitize_filename_stem(name.trim()),
+        _ => return format!("ingest-{}.md", timestamp_ns),
+    };
+    if base.is_empty() {
+        return format!("ingest-{}.md", timestamp_ns);
+    }
+    let wiki_dir = vault_path.join("wiki");
+    // 检查冲突，若文件已存在则追加计数器
+    let mut candidate = format!("{}.md", base);
+    if !wiki_dir.join(&candidate).exists() {
+        return candidate;
+    }
+    for i in 1..100 {
+        candidate = format!("{}-{}.md", base, i);
+        if !wiki_dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // 极端情况：100个同名文件，最后用时间戳保底
+    format!("ingest-{}.md", timestamp_ns)
+}
+
+/// 将任意字符串清洗为安全的文件名字段（仅保留字母/数字/中划线/下划线/中文）。
+fn sanitize_filename_stem(raw: &str) -> String {
+    const MAX_STEM_LEN: usize = 60;
+    let mut cleaned = String::new();
+    let mut prev_is_sep = false;
+    for ch in raw.chars() {
+        if cleaned.len() >= MAX_STEM_LEN {
+            break;
+        }
+        let allowed = match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'
+            | '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}' => true,
+            _ => false,
+        };
+        if allowed {
+            cleaned.push(ch);
+            prev_is_sep = false;
+        } else if !prev_is_sep {
+            // 分隔符（空格/点/斜杠等）统一压缩为单个中划线
+            cleaned.push('-');
+            prev_is_sep = true;
+        }
+    }
+    let cleaned = cleaned.trim_matches('-').to_string();
+    if cleaned.is_empty() { "untitled".to_string() } else { cleaned }
+}
+
 /// 截断文本生成摘要（回退方案）
 ///
 /// 当 LLM 不可用时，简单截断原始文本作为摘要。
@@ -772,7 +852,7 @@ mod tests {
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
         let result =
-            ingest_markdown(&vault_dir, &source_path, None, &[]).expect("导入 Markdown 失败");
+            ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("导入 Markdown 失败");
 
         assert!(Path::new(&result.raw_path).is_file());
         assert!(Path::new(&result.wiki_path).is_file());
@@ -825,8 +905,8 @@ mod tests {
         let source_content = "# Source Title\n\nDuplicate note content.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let first = ingest_markdown(&vault_dir, &source_path, None, &[]).expect("第一次导入失败");
-        let second = ingest_markdown(&vault_dir, &source_path, None, &[]).expect("第二次导入失败");
+        let first = ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第一次导入失败");
+        let second = ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第二次导入失败");
 
         assert_eq!(first.wiki_path, second.wiki_path);
         assert_eq!(first.raw_path, second.raw_path);
@@ -867,7 +947,7 @@ mod tests {
         fs::write(&source_path, "# Note\n\nFrontmatter regression test.").expect("写入源文件失败");
 
         let entities = vec!["Rust".to_string(), "SQLite".to_string()];
-        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &entities)
+        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &entities, None)
             .expect("导入 Markdown 失败");
         let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
         let frontmatter = extract_frontmatter(&wiki_content).expect("缺少 YAML frontmatter");
@@ -889,7 +969,7 @@ mod tests {
         fs::write(&source_path, "# Note\n\nEmpty entities regression test.")
             .expect("写入源文件失败");
 
-        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &[])
+        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &[], None)
             .expect("导入 Markdown 失败");
         let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
         let frontmatter = extract_frontmatter(&wiki_content).expect("缺少 YAML frontmatter");
@@ -949,6 +1029,40 @@ mod tests {
         let result = write_wiki_page("/tmp/test.txt", "content");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains(".md"));
+    }
+
+    #[test]
+    fn semantic_title_uses_first_entity() {
+        let t = resolve_wiki_semantic_title(
+            &["PINNs".to_string(), "Transformer".to_string()],
+            None,
+            "ingest-12345.md",
+        );
+        assert_eq!(t, "PINNs");
+    }
+
+    #[test]
+    fn semantic_title_skips_single_char_entity_uses_display_name() {
+        let t = resolve_wiki_semantic_title(&["A".to_string()], Some("rust-lifecycle"), "ingest-12345.md");
+        assert_eq!(t, "rust-lifecycle");
+    }
+
+    #[test]
+    fn semantic_title_skips_internal_display_name_uses_filename() {
+        let t = resolve_wiki_semantic_title(&[], Some("llm_wiki_preview_apply_123"), "ingest-12345.md");
+        assert_eq!(t, "ingest-12345");
+    }
+
+    #[test]
+    fn semantic_title_falls_back_to_display_name_when_entities_empty() {
+        let t = resolve_wiki_semantic_title(&[], Some("city-water-network-ai"), "ingest-12345.md");
+        assert_eq!(t, "city-water-network-ai");
+    }
+
+    #[test]
+    fn semantic_title_falls_back_to_filename_stem_when_nothing_else() {
+        let t = resolve_wiki_semantic_title(&[], None, "my-page.md");
+        assert_eq!(t, "my-page");
     }
 
     #[test]
