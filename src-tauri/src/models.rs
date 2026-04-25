@@ -844,3 +844,11 @@ pub struct VaultStats {
     pub top_cited_pages: Vec<CitedPageStat>,
     pub ingest_source_counts: Vec<IngestSourceCount>,
 }
+
+/// AI 辅助新建 Wiki 页面的返回结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPageResult {
+    pub wiki_path: String,
+    pub title: String,
+    pub content_preview: String, // 前 300 字符
+}

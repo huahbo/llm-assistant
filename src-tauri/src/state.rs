@@ -3503,6 +3503,183 @@ Wiki 页面：\n{}",
         })
     }
 
+    pub async fn create_wiki_page_with_ai_impl(
+        &self,
+        topic: String,
+    ) -> Result<crate::models::NewPageResult, String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // a. 检查 Vault 是否已初始化
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let vault_path = vault_path.ok_or_else(|| "请先初始化 Vault".to_string())?;
+
+        // b. 清理主题字符串
+        let topic = topic.trim().to_string();
+        if topic.is_empty() {
+            return Err("主题名称不能为空".to_string());
+        }
+        let topic: String = topic.chars().take(200).collect();
+
+        // c. 查找相关现有页面（FTS，最多 5 条）
+        let db_path = vault_path.join(".app").join("meta.db");
+        let related_pages = if db_path.exists() {
+            db::search_wiki_pages(&db_path, &topic, 5)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // d. 生成 slug
+        let base_slug = topic_to_slug(&topic);
+        if base_slug.is_empty() {
+            return Err("无法从主题生成有效文件名，请使用英文或数字".to_string());
+        }
+
+        // e. 找到不冲突的文件路径
+        let wiki_dir = vault_path.join("wiki");
+        std::fs::create_dir_all(&wiki_dir)
+            .map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
+
+        let final_slug = {
+            let candidate = wiki_dir.join(format!("{}.md", base_slug));
+            if !candidate.exists() {
+                base_slug.clone()
+            } else {
+                let mut found = None;
+                for n in 2..=99 {
+                    let c = wiki_dir.join(format!("{}-{}.md", base_slug, n));
+                    if !c.exists() {
+                        found = Some(format!("{}-{}", base_slug, n));
+                        break;
+                    }
+                }
+                found.ok_or_else(|| format!("无法为主题 '{}' 找到空闲文件名", topic))?
+            }
+        };
+        let wiki_file_path = wiki_dir.join(format!("{}.md", final_slug));
+        let wiki_path_str = wiki_file_path.to_string_lossy().to_string();
+
+        // f. 构建 LLM prompt
+        let related_context = if related_pages.is_empty() {
+            "（暂无相关页面）".to_string()
+        } else {
+            related_pages
+                .iter()
+                .map(|p| {
+                    let summary = if p.summary.is_empty() {
+                        "（无摘要）".to_string()
+                    } else {
+                        p.summary.chars().take(120).collect()
+                    };
+                    format!("- {}: {}", p.title, summary)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let prompt = format!(
+            "你是一个专业的知识管理助手，负责为个人 Wiki 创建结构化页面。\n\
+            \n\
+            请为以下主题创建一个结构化的 Wiki 页面初稿。\n\
+            \n\
+            要创建的主题：{topic}\n\
+            \n\
+            知识库中已有的相关页面：\n\
+            {related_context}\n\
+            \n\
+            输出要求（不要有任何前缀，只输出 Markdown 内容）：\n\
+            \n\
+            # {{页面标题}}\n\
+            \n\
+            {{2-4 段正文，每段 3-5 句，与相关页面形成知识链接，使用 [[相关页面]] 格式引用}}\n\
+            \n\
+            ## 参考\n\
+            {{如有相关已有页面，用 [[页面标题]] 格式列出}}",
+            topic = topic,
+            related_context = related_context,
+        );
+
+        // g. 调用 LLM
+        let provider = self.get_llm_provider();
+        let llm_content = if let Some(p) = provider {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                p.complete(&prompt),
+            )
+            .await
+            .map_err(|_| "LLM 调用超时（60s）".to_string())?
+            .map_err(|e| format!("LLM 调用失败: {}", e))?;
+            result.trim().to_string()
+        } else {
+            return Err("LLM 未配置，无法生成页面内容".to_string());
+        };
+
+        if llm_content.is_empty() {
+            return Err("LLM 返回了空内容，请检查模型配置".to_string());
+        }
+
+        // h. 提取页面标题（第一行 # 标题）
+        let page_title = llm_content
+            .lines()
+            .find(|l| l.starts_with("# "))
+            .map(|l| l.trim_start_matches("# ").trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| topic.clone());
+
+        // i. 构建 frontmatter（手工拼装）
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string();
+
+        let frontmatter = format!(
+            "---\ntitle: '{}'\nsource: 'ai_generated'\ncreated_at: '{}'\nentities: []\n---\n",
+            page_title.replace('\'', "''"),
+            now_ms,
+        );
+
+        // j. 组合完整 Markdown
+        let full_content = format!("{}{}", frontmatter, llm_content);
+
+        // k. 写入文件
+        std::fs::write(&wiki_file_path, &full_content)
+            .map_err(|e| format!("写入 wiki 文件失败: {}", e))?;
+
+        // l. 更新 DB
+        if db_path.exists() || true {
+            let content_hash = format!("{:x}", md5_simple(&full_content));
+            if let Err(e) = db::upsert_generated_wiki_page(
+                &db_path,
+                &page_title,
+                &wiki_file_path,
+                &llm_content.chars().take(300).collect::<String>(),
+                &content_hash,
+                &now_ms,
+            ) {
+                self.push_log(LogLevel::Warn, format!("DB 更新失败（降级）: {}", e));
+            }
+        }
+
+        // m. 更新 FTS
+        if let Err(e) =
+            db::upsert_fts_page(&db_path, &wiki_file_path, &page_title, &full_content)
+        {
+            self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）: {}", e));
+        }
+
+        // o. 返回结果
+        let content_preview: String = llm_content.chars().take(300).collect();
+        Ok(crate::models::NewPageResult {
+            wiki_path: wiki_path_str,
+            title: page_title,
+            content_preview,
+        })
+    }
+
     pub async fn rename_wiki_page_impl(
         &self,
         old_path: &str,
@@ -8529,6 +8706,43 @@ async fn start_research_task(
     ).await;
 }
 
+/// 将主题字符串转换为有效的 wiki 文件 slug（小写、非 ASCII 字母数字转连字符、去重、最长 60 字符）。
+pub(crate) fn topic_to_slug(topic: &str) -> String {
+    let raw: String = topic
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    // 去重连续横线
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for c in raw.chars() {
+        if c == '-' {
+            if !prev_dash {
+                slug.push(c);
+            }
+            prev_dash = true;
+        } else {
+            slug.push(c);
+            prev_dash = false;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    slug.chars().take(60).collect()
+}
+
+/// 计算字符串的简单 MD5 十六进制摘要（用于生成 content_hash）。
+fn md5_simple(input: &str) -> u64 {
+    // 使用 FNV-1a 64-bit 哈希作为轻量内容指纹（无需引入 md5 crate）
+    let mut hash: u64 = 14695981039346656037u64;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(1099511628211u64);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8541,6 +8755,22 @@ mod tests {
         sync::{Arc, Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn create_wiki_page_slug_generation_works() {
+        // 中文部分被转为连字符，最终 trim_matches('-') 去掉尾部连字符
+        assert_eq!(topic_to_slug("Rust 语言"), "rust");
+        assert_eq!(topic_to_slug("  Hello World  "), "hello-world");
+        // "C++" 中 '+' 转为 '-', "编程" 转为 '-', trim 后尾部连字符被去掉
+        assert_eq!(topic_to_slug("C++ 编程"), "c");
+        // slug 超长截断（>60字符）
+        let long = "a".repeat(100);
+        assert!(topic_to_slug(&long).len() <= 60);
+        // 纯 ASCII 字母数字加连字符
+        assert_eq!(topic_to_slug("rust-lang"), "rust-lang");
+        // 全空白
+        assert_eq!(topic_to_slug("   "), "");
+    }
 
     #[test]
     fn get_knowledge_graph_returns_err_when_no_vault() {

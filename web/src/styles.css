@@ -4038,3 +4038,126 @@ code {
   width: 2.5rem;
   text-align: right;
 }
+
+/* ── AI 新建 Wiki 页面 ──────────────────────────────── */
+.wiki-new-btn {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent, #6366f1);
+  background: transparent;
+  color: var(--accent, #6366f1);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.wiki-new-btn:hover {
+  background: color-mix(in srgb, var(--accent, #6366f1) 10%, transparent);
+}
+
+.new-page-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+}
+
+.new-page-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: min(480px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.new-page-modal__title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.new-page-modal__hint {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.new-page-modal__input {
+  width: 100%;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.new-page-modal__input:focus {
+  outline: none;
+  border-color: var(--accent, #6366f1);
+}
+
+.new-page-modal__result {
+  background: color-mix(in srgb, var(--accent, #6366f1) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #6366f1) 30%, transparent);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.new-page-modal__result-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 0.4rem;
+}
+
+.new-page-modal__preview {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.new-page-modal__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.new-page-modal__btn {
+  padding: 0.4rem 0.9rem;
+  border-radius: 7px;
+  border: 1px solid var(--border, #e0e0e0);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.new-page-modal__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.new-page-modal__btn--primary {
+  background: var(--accent, #6366f1);
+  color: #fff;
+  border-color: var(--accent, #6366f1);
+}
+
+.new-page-modal__btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}

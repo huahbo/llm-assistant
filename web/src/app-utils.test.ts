@@ -135,6 +135,7 @@ import {
   saveLlmConfig,
   saveWikiPage,
   resolveDisplayPath,
+  createWikiPageWithAi,
 } from "./tauri-client";
 import {
   filterLintIssuesByCode,
@@ -2527,5 +2528,12 @@ describe("formatSourceType", () => {
   it("未知类型原样返回", () => {
     expect(formatSourceType("unknown_type")).toBe("unknown_type");
     expect(formatSourceType("")).toBe("");
+  });
+});
+
+describe("AI 新建页面", () => {
+  it("createWikiPageWithAi 在非 Tauri 环境中抛出错误", async () => {
+    // 确保非 Tauri 环境下返回错误
+    await expect(createWikiPageWithAi("测试主题")).rejects.toThrow();
   });
 });

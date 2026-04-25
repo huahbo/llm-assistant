@@ -7,7 +7,8 @@ use crate::models::{
     LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry,
     ModeChangeResult, OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult,
     QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
-    SearchConfig, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    NewPageResult, SearchConfig, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail,
+    WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -717,4 +718,13 @@ pub fn get_vault_stats(
     state: State<'_, AppState>,
 ) -> Result<VaultStats, String> {
     state.get_vault_stats_impl()
+}
+
+/// AI 辅助新建 Wiki 页面（根据主题查找相关页面、调用 LLM 生成初稿并写入 vault）。
+#[tauri::command]
+pub async fn create_wiki_page_with_ai(
+    topic: String,
+    state: State<'_, AppState>,
+) -> Result<NewPageResult, String> {
+    state.create_wiki_page_with_ai_impl(topic).await
 }

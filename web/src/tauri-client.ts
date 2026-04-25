@@ -38,6 +38,7 @@ import type {
   SaveWikiPageResult,
   VaultInitResult,
   VaultStats,
+  NewPageResult,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageItem,
@@ -1713,4 +1714,16 @@ export async function getVaultStats(): Promise<VaultStats | null> {
   if (!isTauriRuntime()) { return null; }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<VaultStats>("get_vault_stats");
+}
+
+/** AI 辅助新建 Wiki 页面。非 Tauri 环境抛出错误。超时 90 秒。 */
+export async function createWikiPageWithAi(topic: string): Promise<NewPageResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("仅在 Tauri 环境下可用");
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<NewPageResult>("create_wiki_page_with_ai", { topic }),
+    90_000,
+  );
 }

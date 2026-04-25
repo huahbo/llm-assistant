@@ -81,6 +81,7 @@ import {
   approveResearchQueries,
   getClipServerStatus,
   getVaultStats,
+  createWikiPageWithAi,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -126,6 +127,7 @@ import type {
   SearchConfig,
   IngestPreview,
   VaultStats,
+  NewPageResult,
   WikiTemplate,
   WikiPageDetail,
   WikiPageCitation,
@@ -2668,6 +2670,10 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const askFocusTimerRef = useRef<number | null>(null);
   const [wikiKeyword, setWikiKeyword] = useState("");
+  const [newPageTopic, setNewPageTopic] = useState("");
+  const [newPageCreating, setNewPageCreating] = useState(false);
+  const [newPageResult, setNewPageResult] = useState<NewPageResult | null>(null);
+  const [showNewPageModal, setShowNewPageModal] = useState(false);
   // 当前激活的标签集合，支持多选
   const [wikiActiveTags, setWikiActiveTags] = useState<Set<string>>(new Set());
   const [wikiTreeCollapsedFolders, setWikiTreeCollapsedFolders] = useState<Set<string>>(
@@ -4694,6 +4700,25 @@ export default function App() {
       return;
     }
     void handleSearchWikiPages();
+  };
+
+  const handleCreatePageWithAi = async () => {
+    const topic = newPageTopic.trim();
+    if (!topic || newPageCreating) return;
+    setNewPageCreating(true);
+    setNewPageResult(null);
+    try {
+      const result = await createWikiPageWithAi(topic);
+      setNewPageResult(result);
+      setStatusMessage(`已创建页面「${result.title}」`);
+      // 刷新 Wiki 列表：清空关键词并重新加载
+      setWikiKeyword(result.title);
+      void handleSearchWikiPages();
+    } catch (err) {
+      setStatusMessage(`创建失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setNewPageCreating(false);
+    }
   };
 
   const handleResetWikiPages = async () => {
@@ -6852,8 +6877,67 @@ export default function App() {
                     >
                       恢复最近
                     </button>
+                    <button
+                      type="button"
+                      className="wiki-new-btn"
+                      onClick={() => { setShowNewPageModal(true); setNewPageResult(null); setNewPageTopic(""); }}
+                      title="AI 辅助新建 Wiki 页面"
+                    >
+                      + AI 新建
+                    </button>
                   </div>
                 </div>
+                {/* AI 新建页面弹窗 */}
+                {showNewPageModal && (
+                  <div className="new-page-modal-backdrop" onClick={() => setShowNewPageModal(false)}>
+                    <div className="new-page-modal" onClick={(e) => e.stopPropagation()}>
+                      <h3 className="new-page-modal__title">AI 辅助新建 Wiki 页面</h3>
+                      <p className="new-page-modal__hint">
+                        输入主题，AI 将参考现有知识库生成结构化初稿。
+                      </p>
+                      <input
+                        className="new-page-modal__input"
+                        type="text"
+                        placeholder="例如：量子纠缠、黑洞蒸发、Rust 生命周期…"
+                        value={newPageTopic}
+                        onChange={(e) => setNewPageTopic(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") void handleCreatePageWithAi(); }}
+                        disabled={newPageCreating}
+                        autoFocus
+                      />
+                      {newPageResult && (
+                        <div className="new-page-modal__result">
+                          <p className="new-page-modal__result-title">✅ 已创建：{newPageResult.title}</p>
+                          <pre className="new-page-modal__preview">{newPageResult.content_preview}</pre>
+                        </div>
+                      )}
+                      <div className="new-page-modal__actions">
+                        <button
+                          className="new-page-modal__btn new-page-modal__btn--primary"
+                          onClick={() => void handleCreatePageWithAi()}
+                          disabled={newPageCreating || !newPageTopic.trim()}
+                        >
+                          {newPageCreating ? "AI 生成中…" : "生成页面"}
+                        </button>
+                        {newPageResult && (
+                          <button
+                            className="new-page-modal__btn"
+                            onClick={() => {
+                              setShowNewPageModal(false);
+                              setActiveModule("wiki");
+                              setWikiKeyword(newPageResult.title);
+                            }}
+                          >
+                            查看页面
+                          </button>
+                        )}
+                        <button className="new-page-modal__btn" onClick={() => setShowNewPageModal(false)}>
+                          关闭
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {allWikiTags.length > 0 ? (
                   <div className="wiki-tag-bar">
                     <button

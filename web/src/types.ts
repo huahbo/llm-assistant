@@ -482,3 +482,9 @@ export interface VaultStats {
   top_cited_pages: CitedPageStat[];
   ingest_source_counts: IngestSourceCount[];
 }
+
+export interface NewPageResult {
+  wiki_path: string;
+  title: string;
+  content_preview: string;
+}

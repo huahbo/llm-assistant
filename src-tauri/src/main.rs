@@ -98,7 +98,8 @@ fn main() {
             commands::save_research_doc,
             commands::approve_research_queries,
             commands::quick_lint_page,
-            commands::get_vault_stats
+            commands::get_vault_stats,
+            commands::create_wiki_page_with_ai
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");
