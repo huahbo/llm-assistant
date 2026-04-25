@@ -1,3 +1,4 @@
+use flate2::read::ZlibDecoder;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     fs,
@@ -5,31 +6,30 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
-use flate2::read::ZlibDecoder;
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     db,
-    search::reciprocal_rank_fusion,
     llm::{
         LlmError, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider,
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AppConfig, AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem,
-        AskSessionTurnItem, AskSessionTurnMeta, DefaultPaths, IngestPreview, IngestResult,
-        KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeGraphLink, KnowledgeGraphNode,
-        KnowledgeSubgraphData, KnowledgeSubgraphMeta, LintIssue, LintPatchApplyInput,
-        LintPatchApplyResult, LintPatchBatchApplyItemResult, LintPatchBatchApplyResult,
-        LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview, LintPatchSuggestion,
-        LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
-        ModeChangeResult, OutboxAckResult, OutboxEventItem, ProgressPayload, QueryAnswerResult,
-        QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug, QuerySettings,
-        SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem,
-        WikiPageDetail, WikiPageFrontmatter, WikiPageHistoryDetail, WikiPageHistoryItem,
-        WikiPageItem,
+        AgentDraftItem, AgentRunEventItem, AgentRunItem, AppConfig, AppMode, AppOverview,
+        AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem, AskSessionTurnMeta,
+        DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
+        KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData, KnowledgeSubgraphMeta,
+        LintIssue, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyItemResult,
+        LintPatchBatchApplyResult, LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview,
+        LintPatchSuggestion, LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry,
+        LogLevel, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
+        ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug,
+        QuerySearchRouteDebug, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
+        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter,
+        WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
     },
+    search::reciprocal_rank_fusion,
     vault,
 };
 
@@ -55,11 +55,13 @@ pub struct AppState {
     /// 会话历史（in-memory，session_id -> 轮次列表）
     ask_sessions: Mutex<std::collections::HashMap<String, Vec<crate::models::AskTurn>>>,
     /// 会话取消标志（session_id -> AtomicBool）
-    ask_cancel_flags: Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    ask_cancel_flags:
+        Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// 搜索配置（Deep Research 用）
     search_config: Mutex<crate::models::SearchConfig>,
     /// 等待用户审批子查询的一次性 channel（task_id -> sender）
-    pending_query_approvals: Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Vec<String>>>>,
+    pending_query_approvals:
+        Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Vec<String>>>>,
     /// 摄入预览缓存（preview_id -> 预览上下文）。
     ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
 }
@@ -251,7 +253,10 @@ impl AppState {
 
     /// 获取当前搜索配置。
     pub fn get_search_config(&self) -> crate::models::SearchConfig {
-        self.search_config.lock().expect("搜索配置锁已被污染").clone()
+        self.search_config
+            .lock()
+            .expect("搜索配置锁已被污染")
+            .clone()
     }
 
     /// 更新搜索配置并持久化到 search-config.json。
@@ -261,24 +266,34 @@ impl AppState {
             .parent()
             .map(|p| p.join("search-config.json"))
             .unwrap_or_else(|| PathBuf::from("search-config.json"));
-        let json = serde_json::to_string_pretty(&cfg)
-            .map_err(|e| format!("序列化搜索配置失败: {}", e))?;
-        fs::write(&search_config_path, json)
-            .map_err(|e| format!("写入搜索配置文件失败: {}", e))?;
+        let json =
+            serde_json::to_string_pretty(&cfg).map_err(|e| format!("序列化搜索配置失败: {}", e))?;
+        fs::write(&search_config_path, json).map_err(|e| format!("写入搜索配置文件失败: {}", e))?;
         *self.search_config.lock().expect("搜索配置锁已被污染") = cfg;
         Ok(())
     }
 
     /// 注册等待用户审批的子查询 channel，返回 receiver
-    pub fn register_query_approval(&self, task_id: i64) -> tokio::sync::oneshot::Receiver<Vec<String>> {
+    pub fn register_query_approval(
+        &self,
+        task_id: i64,
+    ) -> tokio::sync::oneshot::Receiver<Vec<String>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending_query_approvals.lock().expect("pending_query_approvals lock").insert(task_id, tx);
+        self.pending_query_approvals
+            .lock()
+            .expect("pending_query_approvals lock")
+            .insert(task_id, tx);
         rx
     }
 
     /// 用户审批子查询（发送审批后的 queries 给 pipeline）
     pub fn approve_research_queries(&self, task_id: i64, queries: Vec<String>) -> bool {
-        if let Some(tx) = self.pending_query_approvals.lock().expect("pending_query_approvals lock").remove(&task_id) {
+        if let Some(tx) = self
+            .pending_query_approvals
+            .lock()
+            .expect("pending_query_approvals lock")
+            .remove(&task_id)
+        {
             tx.send(queries).is_ok()
         } else {
             false
@@ -348,7 +363,11 @@ impl AppState {
         let base_url = embed_base_url
             .as_deref()
             .filter(|u| !u.trim().is_empty())
-            .or_else(|| fallback_base_url.as_deref().filter(|u| !u.trim().is_empty()))
+            .or_else(|| {
+                fallback_base_url
+                    .as_deref()
+                    .filter(|u| !u.trim().is_empty())
+            })
             .unwrap_or(&config.base_url);
         config.base_url = base_url.to_string();
         Arc::new(OllamaProvider::new(config))
@@ -743,14 +762,12 @@ impl AppState {
         let mut seen_links = HashSet::new();
         let mut all_links = Vec::<KnowledgeGraphLink>::new();
         for citation in db::list_citations(&db_path)? {
-            if !node_map.contains_key(&citation.page_path) || !node_map.contains_key(&citation.cited_page_path)
+            if !node_map.contains_key(&citation.page_path)
+                || !node_map.contains_key(&citation.cited_page_path)
             {
                 continue;
             }
-            let key = (
-                citation.page_path.clone(),
-                citation.cited_page_path.clone(),
-            );
+            let key = (citation.page_path.clone(), citation.cited_page_path.clone());
             if !seen_links.insert(key) {
                 continue;
             }
@@ -1203,14 +1220,18 @@ impl AppState {
         if !schema_path.exists() {
             fs::write(&schema_path, template_schema)
                 .map_err(|e| format!("创建 schema.md 失败: {}", e))?;
-            result.created_paths.push(schema_path.to_string_lossy().to_string());
+            result
+                .created_paths
+                .push(schema_path.to_string_lossy().to_string());
         }
 
         let purpose_path = wiki_dir.join("purpose.md");
         if !purpose_path.exists() {
             fs::write(&purpose_path, template_purpose)
                 .map_err(|e| format!("创建 purpose.md 失败: {}", e))?;
-            result.created_paths.push(purpose_path.to_string_lossy().to_string());
+            result
+                .created_paths
+                .push(purpose_path.to_string_lossy().to_string());
         }
 
         // 创建额外目录
@@ -1224,7 +1245,9 @@ impl AppState {
             if !target_dir.exists() {
                 fs::create_dir_all(&target_dir)
                     .map_err(|e| format!("创建额外目录 {:?} 失败: {}", target_dir, e))?;
-                result.created_paths.push(target_dir.to_string_lossy().to_string());
+                result
+                    .created_paths
+                    .push(target_dir.to_string_lossy().to_string());
             }
         }
 
@@ -1491,7 +1514,10 @@ impl AppState {
             Ok(result) => {
                 self.push_log(
                     LogLevel::Info,
-                    format!("Markdown 导入成功: {} -> {}", display_source_path, result.wiki_path),
+                    format!(
+                        "Markdown 导入成功: {} -> {}",
+                        display_source_path, result.wiki_path
+                    ),
                 );
                 result
             }
@@ -1519,7 +1545,11 @@ impl AppState {
             )
             .await;
 
-        self.emit_progress("ingest_progress", "embedding", "正在向量化（本地 Ollama）...");
+        self.emit_progress(
+            "ingest_progress",
+            "embedding",
+            "正在向量化（本地 Ollama）...",
+        );
         let embed_provider = self.get_embed_provider();
         let embed_content: String = source_content.chars().take(4096).collect();
         match embed_provider.embed(&embed_content).await {
@@ -1529,7 +1559,10 @@ impl AppState {
                 }
             }
             Err(err) => {
-                let hint = if matches!(err, LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)) {
+                let hint = if matches!(
+                    err,
+                    LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)
+                ) {
                     "（请确认 Ollama 已启动且已拉取 nomic-embed-text:latest 模型）"
                 } else {
                     ""
@@ -1587,7 +1620,10 @@ impl AppState {
         match db::search_fts_page_paths(db_path, &tokens, 5) {
             Ok(paths) => paths,
             Err(err) => {
-                self.push_log(LogLevel::Warn, format!("预览阶段估算相关页面失败，已忽略：{}", err));
+                self.push_log(
+                    LogLevel::Warn,
+                    format!("预览阶段估算相关页面失败，已忽略：{}", err),
+                );
                 Vec::new()
             }
         }
@@ -1615,7 +1651,10 @@ impl AppState {
                 let path = PathBuf::from(source_path);
                 self.extract_preview_file_content_by_extension(&path, ocr_provider)
             }
-            _ => Err(format!("不支持的 source_type：{}（支持 file/markdown/pdf/url）", source_type)),
+            _ => Err(format!(
+                "不支持的 source_type：{}（支持 file/markdown/pdf/url）",
+                source_type
+            )),
         }
     }
 
@@ -1866,7 +1905,9 @@ impl AppState {
             .and_then(|s| s.to_str())
             .unwrap_or(route_tag)
             .to_string();
-        let mut result = self.ingest_markdown(tmp_path.clone(), Some(source_stem)).await;
+        let mut result = self
+            .ingest_markdown(tmp_path.clone(), Some(source_stem))
+            .await;
 
         // 无论 ingest 成功或失败都尝试清理临时文件。
         let _ = tokio::fs::remove_file(&tmp_path).await;
@@ -1922,14 +1963,11 @@ impl AppState {
             return Err(message);
         }
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| {
-                let message = format!("读取响应内容失败：{e}");
-                self.record_ingest_failed_event(&source_url, &message);
-                message
-            })?;
+        let text = response.text().await.map_err(|e| {
+            let message = format!("读取响应内容失败：{e}");
+            self.record_ingest_failed_event(&source_url, &message);
+            message
+        })?;
 
         if text.trim().is_empty() {
             let message = "URL 返回内容为空".to_string();
@@ -1939,13 +1977,11 @@ impl AppState {
 
         // 2. 将文本写入临时 Markdown 文件，复用 ingest_markdown
         let tmp_path = std::env::temp_dir().join(format!("llm_wiki_url_{}.md", uuid_v4_short()));
-        tokio::fs::write(&tmp_path, &text)
-            .await
-            .map_err(|e| {
-                let message = format!("写入临时文件失败：{e}");
-                self.record_ingest_failed_event(&source_url, &message);
-                message
-            })?;
+        tokio::fs::write(&tmp_path, &text).await.map_err(|e| {
+            let message = format!("写入临时文件失败：{e}");
+            self.record_ingest_failed_event(&source_url, &message);
+            message
+        })?;
 
         // 从 URL 提取有意义的显示名称（优先路径最后一段，否则用域名）
         let url_display = reqwest::Url::parse(&source_url).ok().and_then(|parsed| {
@@ -2176,7 +2212,9 @@ impl AppState {
                     handler(chunk);
                 }
             };
-            provider.complete_stream(&prompt, &mut chunk_forwarder).await
+            provider
+                .complete_stream(&prompt, &mut chunk_forwarder)
+                .await
         };
 
         match streamed {
@@ -2361,10 +2399,7 @@ impl AppState {
     }
 
     /// 获取所有 wiki 页面路径并根据查询进行模糊匹配（忽略大小写）。
-    pub fn search_wiki_paths(
-        &self,
-        query: String,
-    ) -> Result<Vec<String>, String> {
+    pub fn search_wiki_paths(&self, query: String) -> Result<Vec<String>, String> {
         let vault_path = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             guard
@@ -2430,20 +2465,19 @@ impl AppState {
         let abs_path = abs_path
             .canonicalize()
             .map_err(|e| format!("页面路径无效: {}", e))?;
-        let wiki_root = vault_path.join("wiki")
+        let wiki_root = vault_path
+            .join("wiki")
             .canonicalize()
             .map_err(|e| format!("wiki 目录无效: {}", e))?;
         if !abs_path.starts_with(&wiki_root) {
             return Err("禁止操作 wiki 目录之外的文件".to_string());
         }
 
-        let content = fs::read_to_string(&abs_path)
-            .map_err(|e| format!("读取页面失败: {}", e))?;
+        let content = fs::read_to_string(&abs_path).map_err(|e| format!("读取页面失败: {}", e))?;
 
         let updated = set_frontmatter_stale_field(&content, stale);
 
-        fs::write(&abs_path, &updated)
-            .map_err(|e| format!("写入页面失败: {}", e))?;
+        fs::write(&abs_path, &updated).map_err(|e| format!("写入页面失败: {}", e))?;
 
         self.push_log(
             LogLevel::Info,
@@ -2636,13 +2670,18 @@ impl AppState {
             if let Ok(content) = fs::read_to_string(page_path) {
                 for caps in link_regex.captures_iter(&content) {
                     let target_name = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-                    if target_name.is_empty() { continue; }
+                    if target_name.is_empty() {
+                        continue;
+                    }
 
                     if resolve_existing_wiki_page_path(vault_path, target_name).is_err() {
                         issues.push(LintIssue {
                             code: "broken_wikilink".to_string(),
                             severity: "warning".to_string(),
-                            message: format!("页面存在失效的 wiki-link：指向不存在的目标 {}", target_name),
+                            message: format!(
+                                "页面存在失效的 wiki-link：指向不存在的目标 {}",
+                                target_name
+                            ),
                             path: Some(page_path.clone()),
                             suggestion: "请修复链接名称，或确认该页面已创建。".to_string(),
                         });
@@ -2691,7 +2730,8 @@ impl AppState {
                         severity: "warning".to_string(),
                         message: format!("页面未被 index.md 或其他页面引用: {}", path),
                         path: Some(path.clone()),
-                        suggestion: "把页面加入 index.md，或在相关页面补齐 wiki-link 引用".to_string(),
+                        suggestion: "把页面加入 index.md，或在相关页面补齐 wiki-link 引用"
+                            .to_string(),
                     });
                 }
             }
@@ -2772,7 +2812,8 @@ impl AppState {
                                             .unwrap_or("unknown")
                                     ),
                                     path: Some(path.to_string_lossy().to_string()),
-                                    suggestion: "更新页面内容后取消 stale 标记，或删除该页面".to_string(),
+                                    suggestion: "更新页面内容后取消 stale 标记，或删除该页面"
+                                        .to_string(),
                                 });
                             }
                         }
@@ -2896,8 +2937,7 @@ Wiki 页面：\n{}",
             let guard = self.inner.lock().expect("状态锁已被污染");
             guard.vault_path.clone()
         };
-        let vault_path =
-            vault_path.ok_or_else(|| "Vault 尚未初始化".to_string())?;
+        let vault_path = vault_path.ok_or_else(|| "Vault 尚未初始化".to_string())?;
 
         // 2. 解析页面实际路径（兼容绝对路径与相对路径）
         let page_path = {
@@ -3264,7 +3304,10 @@ Wiki 页面：\n{}",
                 crate::search::rank_embedding_paths_by_cosine(&query_embedding, &candidates, limit)
             }
             Err(err) => {
-                let hint = if matches!(err, LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)) {
+                let hint = if matches!(
+                    err,
+                    LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)
+                ) {
                     "（Ollama 未启动或缺少 nomic-embed-text:latest）"
                 } else {
                     ""
@@ -3313,14 +3356,15 @@ Wiki 页面：\n{}",
         } else {
             vec![("embedding".to_string(), embedding_paths)]
         };
-        let (matches, search_strategy, fts_error, search_debug) = search_wiki_matches_rrf_with_extra_routes(
-            &db_path,
-            &wiki_dir,
-            &tokens,
-            &normalized_question,
-            top_k,
-            &extra_routes,
-        )?;
+        let (matches, search_strategy, fts_error, search_debug) =
+            search_wiki_matches_rrf_with_extra_routes(
+                &db_path,
+                &wiki_dir,
+                &tokens,
+                &normalized_question,
+                top_k,
+                &extra_routes,
+            )?;
 
         if let Some(err) = fts_error {
             self.push_log(
@@ -3345,7 +3389,11 @@ Wiki 页面：\n{}",
         // 步骤2：LLM 合成回答
         self.emit_progress("query_progress", "generating", "正在合成回答（LLM）...");
         let provider = self.get_llm_provider();
-        self.emit_progress("query_progress", "answer_stream_start", "开始流式输出回答...");
+        self.emit_progress(
+            "query_progress",
+            "answer_stream_start",
+            "开始流式输出回答...",
+        );
         let mut emit_chunk = |chunk: String| {
             if !chunk.is_empty() {
                 self.emit_progress("query_progress", "answer_chunk", &chunk);
@@ -3530,7 +3578,8 @@ Wiki 页面：\n{}",
             .as_ref()
             .map(|vault_path| vault_path.join(".app").join("meta.db"));
 
-        if let (Some(prev_content), Some(db_path)) = (previous_content.as_deref(), db_path.as_ref()) {
+        if let (Some(prev_content), Some(db_path)) = (previous_content.as_deref(), db_path.as_ref())
+        {
             if prev_content != content && db_path.exists() {
                 let previous_hash = format!("{:x}", md5_simple(prev_content));
                 let previous_title = wiki_title_from_content(prev_content, path);
@@ -3561,15 +3610,11 @@ Wiki 页面：\n{}",
                 let title = wiki_title_from_content(content, path);
                 let body = content.to_string();
                 // 更新 FTS 索引（失败时仅记录警告，不阻断主流程）
-                if let Err(err) =
-                    db::upsert_fts_page(&db_path, path_buf, &title, &body)
-                {
+                if let Err(err) = db::upsert_fts_page(&db_path, path_buf, &title, &body) {
                     self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）：{err}"));
                 }
                 // 同步 wiki_pages.title 到 DB，确保图谱/检索显示正确标题
-                if let Err(err) =
-                    db::update_wiki_page_title(&db_path, path_buf, &title)
-                {
+                if let Err(err) = db::update_wiki_page_title(&db_path, path_buf, &title) {
                     self.push_log(LogLevel::Warn, format!("更新 wiki_pages.title 失败：{err}"));
                 }
             }
@@ -3603,8 +3648,8 @@ Wiki 页面：\n{}",
         };
         let db_path = vault_path.join(".app").join("meta.db");
         let normalized_limit = limit.unwrap_or(20).clamp(1, 100);
-        db::list_wiki_page_history(&db_path, std::path::Path::new(path), normalized_limit)
-            .map(|records| {
+        db::list_wiki_page_history(&db_path, std::path::Path::new(path), normalized_limit).map(
+            |records| {
                 records
                     .into_iter()
                     .map(|record| WikiPageHistoryItem {
@@ -3616,7 +3661,8 @@ Wiki 页面：\n{}",
                         created_at: record.created_at,
                     })
                     .collect()
-            })
+            },
+        )
     }
 
     pub fn get_wiki_page_history_entry_impl(
@@ -3666,66 +3712,20 @@ Wiki 页面：\n{}",
         self.save_wiki_page_impl(&path, &content, None).await
     }
 
-    pub async fn create_wiki_page_with_ai_impl(
+    /// 复用主动新建页面的 prompt 逻辑，生成带 frontmatter 的 Markdown 草稿。
+    async fn generate_ai_wiki_markdown_draft_impl(
         &self,
-        topic: String,
-    ) -> Result<crate::models::NewPageResult, String> {
+        db_path: &Path,
+        topic: &str,
+    ) -> Result<(String, String, String), String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        // a. 检查 Vault 是否已初始化
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let vault_path = vault_path.ok_or_else(|| "请先初始化 Vault".to_string())?;
-
-        // b. 清理主题字符串
-        let topic = topic.trim().to_string();
-        if topic.is_empty() {
-            return Err("主题名称不能为空".to_string());
-        }
-        let topic: String = topic.chars().take(200).collect();
-
-        // c. 查找相关现有页面（FTS，最多 5 条）
-        let db_path = vault_path.join(".app").join("meta.db");
         let related_pages = if db_path.exists() {
-            db::search_wiki_pages(&db_path, &topic, 5)
-                .unwrap_or_default()
+            db::search_wiki_pages(db_path, topic, 5).unwrap_or_default()
         } else {
             Vec::new()
         };
 
-        // d. 生成 slug
-        let base_slug = topic_to_slug(&topic);
-        if base_slug.is_empty() {
-            return Err("无法从主题生成有效文件名，请使用英文或数字".to_string());
-        }
-
-        // e. 找到不冲突的文件路径
-        let wiki_dir = vault_path.join("wiki");
-        std::fs::create_dir_all(&wiki_dir)
-            .map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
-
-        let final_slug = {
-            let candidate = wiki_dir.join(format!("{}.md", base_slug));
-            if !candidate.exists() {
-                base_slug.clone()
-            } else {
-                let mut found = None;
-                for n in 2..=99 {
-                    let c = wiki_dir.join(format!("{}-{}.md", base_slug, n));
-                    if !c.exists() {
-                        found = Some(format!("{}-{}", base_slug, n));
-                        break;
-                    }
-                }
-                found.ok_or_else(|| format!("无法为主题 '{}' 找到空闲文件名", topic))?
-            }
-        };
-        let wiki_file_path = wiki_dir.join(format!("{}.md", final_slug));
-        let wiki_path_str = wiki_file_path.to_string_lossy().to_string();
-
-        // f. 构建 LLM prompt
         let related_context = if related_pages.is_empty() {
             "（暂无相关页面）".to_string()
         } else {
@@ -3765,16 +3765,13 @@ Wiki 页面：\n{}",
             related_context = related_context,
         );
 
-        // g. 调用 LLM
         let provider = self.get_llm_provider();
         let llm_content = if let Some(p) = provider {
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                p.complete(&prompt),
-            )
-            .await
-            .map_err(|_| "LLM 调用超时（60s）".to_string())?
-            .map_err(|e| format!("LLM 调用失败: {}", e))?;
+            let result =
+                tokio::time::timeout(std::time::Duration::from_secs(60), p.complete(&prompt))
+                    .await
+                    .map_err(|_| "LLM 调用超时（60s）".to_string())?
+                    .map_err(|e| format!("LLM 调用失败: {}", e))?;
             result.trim().to_string()
         } else {
             return Err("LLM 未配置，无法生成页面内容".to_string());
@@ -3784,35 +3781,69 @@ Wiki 页面：\n{}",
             return Err("LLM 返回了空内容，请检查模型配置".to_string());
         }
 
-        // h. 提取页面标题（第一行 # 标题）
-        let page_title = llm_content
-            .lines()
-            .find(|l| l.starts_with("# "))
-            .map(|l| l.trim_start_matches("# ").trim().to_string())
+        let page_title = extract_markdown_h1_title(&llm_content)
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| topic.clone());
+            .unwrap_or_else(|| topic.to_string());
 
-        // i. 构建 frontmatter（手工拼装）
+        // frontmatter 与已有 create_wiki_page_with_ai 保持一致，便于后续审批直写。
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis()
             .to_string();
-
         let frontmatter = format!(
             "---\ntitle: '{}'\nsource: 'ai_generated'\ncreated_at: '{}'\nentities: []\n---\n",
             page_title.replace('\'', "''"),
             now_ms,
         );
-
-        // j. 组合完整 Markdown
         let full_content = format!("{}{}", frontmatter, llm_content);
+        Ok((page_title, llm_content, full_content))
+    }
 
-        // k. 写入文件
+    pub async fn create_wiki_page_with_ai_impl(
+        &self,
+        topic: String,
+    ) -> Result<NewPageResult, String> {
+        // a. 检查 Vault 是否已初始化
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let vault_path = vault_path.ok_or_else(|| "请先初始化 Vault".to_string())?;
+
+        // b. 清理主题字符串
+        let topic = topic.trim().to_string();
+        if topic.is_empty() {
+            return Err("主题名称不能为空".to_string());
+        }
+        let topic: String = topic.chars().take(200).collect();
+
+        let db_path = vault_path.join(".app").join("meta.db");
+
+        // c. 生成 slug
+        let base_slug = topic_to_slug(&topic);
+        if base_slug.is_empty() {
+            return Err("无法从主题生成有效文件名，请使用英文或数字".to_string());
+        }
+
+        // d. 找到不冲突的文件路径
+        let wiki_dir = vault_path.join("wiki");
+        std::fs::create_dir_all(&wiki_dir).map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
+        let final_slug = resolve_unique_wiki_slug(&wiki_dir, &base_slug)?;
+        let wiki_file_path = wiki_dir.join(format!("{}.md", final_slug));
+        let wiki_path_str = wiki_file_path.to_string_lossy().to_string();
+
+        // e. 生成草稿内容（与 Agent Draft 逻辑共用）。
+        let (page_title, llm_content, full_content) = self
+            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic)
+            .await?;
+        let now_ms = current_timestamp_ms();
+
+        // f. 写入文件
         std::fs::write(&wiki_file_path, &full_content)
             .map_err(|e| format!("写入 wiki 文件失败: {}", e))?;
 
-        // l. 更新 DB
+        // g. 更新 DB
         if db_path.exists() || true {
             let content_hash = format!("{:x}", md5_simple(&full_content));
             if let Err(e) = db::upsert_generated_wiki_page(
@@ -3827,16 +3858,14 @@ Wiki 页面：\n{}",
             }
         }
 
-        // m. 更新 FTS
-        if let Err(e) =
-            db::upsert_fts_page(&db_path, &wiki_file_path, &page_title, &full_content)
-        {
+        // h. 更新 FTS
+        if let Err(e) = db::upsert_fts_page(&db_path, &wiki_file_path, &page_title, &full_content) {
             self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）: {}", e));
         }
 
-        // o. 返回结果
+        // i. 返回结果
         let content_preview: String = llm_content.chars().take(300).collect();
-        Ok(crate::models::NewPageResult {
+        Ok(NewPageResult {
             wiki_path: wiki_path_str,
             title: page_title,
             content_preview,
@@ -3883,8 +3912,7 @@ Wiki 页面：\n{}",
         }
 
         // 3. 重命名文件
-        std::fs::rename(old_file, &new_file)
-            .map_err(|err| format!("文件重命名失败：{}", err))?;
+        std::fs::rename(old_file, &new_file).map_err(|err| format!("文件重命名失败：{}", err))?;
 
         // 4. 读取新文件内容以更新 FTS
         let content = std::fs::read_to_string(&new_file).unwrap_or_default();
@@ -3903,17 +3931,10 @@ Wiki 页面：\n{}",
         if let Some(vault_path) = vault_path {
             let db_path = vault_path.join(".app").join("meta.db");
             if db_path.exists() {
-                if let Err(err) = db::rename_wiki_page_in_db(
-                    &db_path,
-                    old_file,
-                    &new_file,
-                    &title,
-                    &content,
-                ) {
-                    self.push_log(
-                        LogLevel::Warn,
-                        format!("数据库重命名失败（降级）：{err}"),
-                    );
+                if let Err(err) =
+                    db::rename_wiki_page_in_db(&db_path, old_file, &new_file, &title, &content)
+                {
+                    self.push_log(LogLevel::Warn, format!("数据库重命名失败（降级）：{err}"));
                 }
             }
         }
@@ -3940,8 +3961,7 @@ Wiki 页面：\n{}",
         // 1. 删除 .md 文件
         let file_path = std::path::Path::new(path);
         if file_path.exists() {
-            std::fs::remove_file(file_path)
-                .map_err(|err| format!("删除文件失败：{}", err))?;
+            std::fs::remove_file(file_path).map_err(|err| format!("删除文件失败：{}", err))?;
         }
 
         // 2. 清理数据库记录
@@ -4040,7 +4060,9 @@ Wiki 页面：\n{}",
             eprintln!("[purge_orphaned] 启动清理完成，共删除 {purged} 条孤立 wiki 页面记录");
         }
         if pruned_index_links > 0 {
-            eprintln!("[purge_orphaned] 启动清理完成，index.md 共移除 {pruned_index_links} 条失效链接");
+            eprintln!(
+                "[purge_orphaned] 启动清理完成，index.md 共移除 {pruned_index_links} 条失效链接"
+            );
         }
     }
 
@@ -4279,7 +4301,10 @@ Wiki 页面：\n{}",
             sessions.remove(session_id);
         }
         {
-            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+            let mut flags = self
+                .ask_cancel_flags
+                .lock()
+                .expect("cancel_flags 锁已被污染");
             flags.remove(session_id);
         }
         Ok(affected)
@@ -4317,11 +4342,229 @@ Wiki 页面：\n{}",
         let db_path = self
             .outbox_db_path()
             .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
-        let acked = db::ack_outbox_events(&db_path, up_to_id, consumer_tag, &current_timestamp_ms())?;
+        let acked =
+            db::ack_outbox_events(&db_path, up_to_id, consumer_tag, &current_timestamp_ms())?;
         Ok(OutboxAckResult {
             acked,
             up_to_id,
             consumer_tag: consumer_tag.trim().to_string(),
+        })
+    }
+
+    /// 创建 Agent Run（H0：最小闭环入口）。
+    pub fn start_agent_run_impl(&self, topic: &str) -> Result<i64, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let run_id = db::start_agent_run(&db_path, topic, &current_timestamp_ms())?;
+        Ok(run_id)
+    }
+
+    /// 追加 Agent Run 事件。
+    pub fn append_agent_run_event_impl(
+        &self,
+        run_id: i64,
+        level: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        db::append_agent_run_event(&db_path, run_id, level, message, &current_timestamp_ms())
+    }
+
+    /// 列出最近 Agent Runs。
+    pub fn list_agent_runs_impl(&self, limit: Option<i64>) -> Result<Vec<AgentRunItem>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
+        let records = db::list_agent_runs(&db_path, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|item| AgentRunItem {
+                id: item.id,
+                topic: item.topic,
+                status: item.status,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+                completed_at: item.completed_at,
+            })
+            .collect())
+    }
+
+    /// 列出指定 Agent Run 的事件。
+    pub fn list_agent_run_events_impl(
+        &self,
+        run_id: i64,
+        limit: Option<i64>,
+    ) -> Result<Vec<AgentRunEventItem>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let safe_limit = limit.unwrap_or(200).clamp(1, 1000) as usize;
+        let records = db::list_agent_run_events(&db_path, run_id, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|item| AgentRunEventItem {
+                id: item.id,
+                run_id: item.run_id,
+                level: item.level,
+                message: item.message,
+                created_at: item.created_at,
+            })
+            .collect())
+    }
+
+    /// 将 Agent Run 置为终态。
+    pub fn complete_agent_run_impl(&self, run_id: i64, status: &str) -> Result<(), String> {
+        let normalized_status = status.trim();
+        if normalized_status != "running"
+            && normalized_status != "applied"
+            && normalized_status != "failed"
+        {
+            return Err("status 仅支持 running/applied/failed".to_string());
+        }
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        db::complete_agent_run(&db_path, run_id, normalized_status, &current_timestamp_ms())
+    }
+
+    /// 生成 Agent 草稿（只落库，不直接写入 Wiki 文件）。
+    pub async fn generate_agent_draft_impl(
+        &self,
+        run_id: i64,
+        topic: String,
+    ) -> Result<AgentDraftItem, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let normalized_topic = topic.trim();
+        if normalized_topic.is_empty() {
+            return Err("topic 不能为空".to_string());
+        }
+        let normalized_topic: String = normalized_topic.chars().take(200).collect();
+
+        let (title, _llm_content, markdown_content) = self
+            .generate_ai_wiki_markdown_draft_impl(&db_path, &normalized_topic)
+            .await?;
+        let now = current_timestamp_ms();
+        let record =
+            db::create_agent_draft(&db_path, run_id, &title, &markdown_content, "draft", &now)?;
+
+        let event_msg = format!("已生成草稿 #{}（topic: {}）", record.id, normalized_topic);
+        if let Err(err) = db::append_agent_run_event(&db_path, run_id, "info", &event_msg, &now) {
+            self.push_log(
+                LogLevel::Warn,
+                format!("写入 Agent 草稿事件失败（降级）: {}", err),
+            );
+        }
+
+        Ok(AgentDraftItem {
+            id: record.id,
+            run_id: record.run_id,
+            title: record.title,
+            content: record.content,
+            status: record.status,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        })
+    }
+
+    /// 列出指定 Run 的 Agent 草稿。
+    pub fn list_agent_drafts_impl(
+        &self,
+        run_id: i64,
+        limit: Option<i64>,
+    ) -> Result<Vec<AgentDraftItem>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let safe_limit = limit.unwrap_or(20).clamp(1, 200) as usize;
+        let records = db::list_agent_drafts(&db_path, run_id, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|record| AgentDraftItem {
+                id: record.id,
+                run_id: record.run_id,
+                title: record.title,
+                content: record.content,
+                status: record.status,
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            })
+            .collect())
+    }
+
+    /// 审批 Agent 草稿并写入 vault/wiki，同时更新 DB 与 FTS。
+    pub async fn approve_agent_draft_impl(&self, draft_id: i64) -> Result<NewPageResult, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        }
+        .ok_or_else(|| "请先初始化 Vault".to_string())?;
+        let db_path = vault_path.join(".app").join("meta.db");
+
+        let draft = db::get_agent_draft(&db_path, draft_id)?
+            .ok_or_else(|| format!("未找到 Agent Draft: {}", draft_id))?;
+        if draft.status != "draft" {
+            return Err(format!("草稿状态不是 draft，当前为: {}", draft.status));
+        }
+        if draft.content.trim().is_empty() {
+            return Err("草稿内容为空，无法审批".to_string());
+        }
+
+        let wiki_dir = vault_path.join("wiki");
+        std::fs::create_dir_all(&wiki_dir).map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
+
+        let preferred_title = if draft.title.trim().is_empty() {
+            extract_markdown_h1_title(&draft.content)
+                .unwrap_or_else(|| format!("agent-draft-{}", draft.id))
+        } else {
+            draft.title.trim().to_string()
+        };
+        let mut base_slug = topic_to_slug(&preferred_title);
+        if base_slug.is_empty() {
+            base_slug = format!("agent-draft-{}", draft.id);
+        }
+        let final_slug = resolve_unique_wiki_slug(&wiki_dir, &base_slug)?;
+        let wiki_file_path = wiki_dir.join(format!("{}.md", final_slug));
+        std::fs::write(&wiki_file_path, &draft.content)
+            .map_err(|e| format!("写入草稿到 wiki 失败: {}", e))?;
+
+        let now = current_timestamp_ms();
+        let content_hash = format!("{:x}", md5_simple(&draft.content));
+        let content_preview: String = draft.content.chars().take(300).collect();
+        db::upsert_generated_wiki_page(
+            &db_path,
+            &preferred_title,
+            &wiki_file_path,
+            &content_preview,
+            &content_hash,
+            &now,
+        )?;
+        db::upsert_fts_page(&db_path, &wiki_file_path, &preferred_title, &draft.content)?;
+        db::update_agent_draft_status(&db_path, draft_id, "applied", &now)?;
+
+        let event_msg = format!(
+            "草稿 #{} 已审批写盘：{}",
+            draft_id,
+            wiki_file_path.to_string_lossy()
+        );
+        if let Err(err) =
+            db::append_agent_run_event(&db_path, draft.run_id, "info", &event_msg, &now)
+        {
+            self.push_log(
+                LogLevel::Warn,
+                format!("写入 Agent 审批事件失败（降级）: {}", err),
+            );
+        }
+
+        Ok(NewPageResult {
+            wiki_path: wiki_file_path.to_string_lossy().to_string(),
+            title: preferred_title,
+            content_preview,
         })
     }
 
@@ -4351,14 +4594,16 @@ Wiki 页面：\n{}",
             let guard = self.inner.lock().expect("状态锁已被污染");
             (guard.mode, guard.vault_path.clone(), guard.query_top_k)
         };
-        let vault_path = vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let vault_path =
+            vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
         let wiki_dir = vault_path.join("wiki");
         let db_path = vault_path.join(".app").join("meta.db");
         let tokens = tokenize_query(&normalized_question);
         let top_k = normalize_top_k(options.top_k.or(Some(default_top_k)));
         let now = current_timestamp_ms();
         db::create_ask_session(&db_path, &normalized_session_id, "新对话", &now)?;
-        let history = db::list_recent_ask_session_turns(&db_path, &normalized_session_id, MAX_HISTORY_TURNS)?;
+        let history =
+            db::list_recent_ask_session_turns(&db_path, &normalized_session_id, MAX_HISTORY_TURNS)?;
 
         // 将用户问题加入会话历史（内存 + 持久化）。
         let user_turn = crate::models::AskTurn {
@@ -4386,7 +4631,10 @@ Wiki 页面：\n{}",
         // 注册取消标志
         let cancel_flag = Arc::new(AtomicBool::new(false));
         {
-            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+            let mut flags = self
+                .ask_cancel_flags
+                .lock()
+                .expect("cancel_flags 锁已被污染");
             flags.insert(normalized_session_id.clone(), cancel_flag.clone());
         }
 
@@ -4403,30 +4651,34 @@ Wiki 页面：\n{}",
         } else {
             vec![("embedding".to_string(), embedding_paths)]
         };
-        let (matches, search_strategy, fts_error, search_debug) = match search_wiki_matches_rrf_with_extra_routes(
-            &db_path,
-            &wiki_dir,
-            &tokens,
-            &normalized_question,
-            top_k,
-            &extra_routes,
-        ) {
-            Ok(result) => result,
-            Err(err) => {
-                {
-                    let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
-                    flags.remove(&normalized_session_id);
-                }
-                {
-                    let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-                    if let Some(turns) = sessions.get_mut(&normalized_session_id) {
-                        turns.pop();
+        let (matches, search_strategy, fts_error, search_debug) =
+            match search_wiki_matches_rrf_with_extra_routes(
+                &db_path,
+                &wiki_dir,
+                &tokens,
+                &normalized_question,
+                top_k,
+                &extra_routes,
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    {
+                        let mut flags = self
+                            .ask_cancel_flags
+                            .lock()
+                            .expect("cancel_flags 锁已被污染");
+                        flags.remove(&normalized_session_id);
                     }
+                    {
+                        let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
+                        if let Some(turns) = sessions.get_mut(&normalized_session_id) {
+                            turns.pop();
+                        }
+                    }
+                    let _ = db::delete_ask_session_turn_by_id(&db_path, user_turn_db_id);
+                    return Err(err);
                 }
-                let _ = db::delete_ask_session_turn_by_id(&db_path, user_turn_db_id);
-                return Err(err);
-            }
-        };
+            };
 
         if let Some(err) = fts_error {
             self.push_log(
@@ -4451,7 +4703,11 @@ Wiki 页面：\n{}",
         // LLM 合成（含历史 context）
         self.emit_progress("query_progress", "generating", "正在合成回答（LLM）...");
         let provider = self.get_llm_provider();
-        self.emit_progress("query_progress", "answer_stream_start", "开始流式输出回答...");
+        self.emit_progress(
+            "query_progress",
+            "answer_stream_start",
+            "开始流式输出回答...",
+        );
 
         let cancel_for_closure = cancel_flag.clone();
         let mut emit_chunk = |chunk: String| {
@@ -4502,7 +4758,10 @@ Wiki 页面：\n{}",
 
         // 清理取消标志
         {
-            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+            let mut flags = self
+                .ask_cancel_flags
+                .lock()
+                .expect("cancel_flags 锁已被污染");
             flags.remove(&normalized_session_id);
         }
 
@@ -4593,7 +4852,10 @@ Wiki 页面：\n{}",
     /// 取消正在进行的会话查询（软取消：停止 emit chunk）
     pub fn cancel_ask_session(&self, session_id: String) -> Result<(), String> {
         use std::sync::atomic::Ordering;
-        let flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+        let flags = self
+            .ask_cancel_flags
+            .lock()
+            .expect("cancel_flags 锁已被污染");
         if let Some(flag) = flags.get(&session_id) {
             flag.store(true, Ordering::Relaxed);
         }
@@ -4612,7 +4874,10 @@ Wiki 页面：\n{}",
             sessions.remove(&normalized_session_id);
         }
         {
-            let mut flags = self.ask_cancel_flags.lock().expect("cancel_flags 锁已被污染");
+            let mut flags = self
+                .ask_cancel_flags
+                .lock()
+                .expect("cancel_flags 锁已被污染");
             flags.remove(&normalized_session_id);
         }
 
@@ -4808,23 +5073,14 @@ Wiki 页面：\n{}",
         let payload_json = match serde_json::to_string(&payload) {
             Ok(value) => value,
             Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("序列化 outbox 事件失败: {}", err),
-                );
+                self.push_log(LogLevel::Warn, format!("序列化 outbox 事件失败: {}", err));
                 return;
             }
         };
-        if let Err(err) = db::append_outbox_event(
-            &db_path,
-            event_type,
-            &payload_json,
-            &current_timestamp_ms(),
-        ) {
-            self.push_log(
-                LogLevel::Warn,
-                format!("写入 outbox 事件失败: {}", err),
-            );
+        if let Err(err) =
+            db::append_outbox_event(&db_path, event_type, &payload_json, &current_timestamp_ms())
+        {
+            self.push_log(LogLevel::Warn, format!("写入 outbox 事件失败: {}", err));
         }
     }
 
@@ -4851,10 +5107,11 @@ Wiki 页面：\n{}",
 
     /// 同步入队一条 ingest 任务，返回新 id。
     pub fn enqueue_ingest(&self, source_type: String, source_path: String) -> Result<i64, String> {
-        let db_path = self.outbox_db_path()
+        let db_path = self
+            .outbox_db_path()
             .ok_or_else(|| "Vault 未初始化，无法入队".to_string())?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         let now = current_timestamp_ms();
         let id = db::db_enqueue_ingest(&conn, &source_type, &source_path, &now)?;
         self.record_outbox_event(
@@ -4866,29 +5123,32 @@ Wiki 页面：\n{}",
 
     /// 列出所有 ingest 队列记录。
     pub fn list_ingest_queue(&self) -> Result<Vec<crate::models::IngestQueueItem>, String> {
-        let db_path = self.outbox_db_path()
+        let db_path = self
+            .outbox_db_path()
             .ok_or_else(|| "Vault 未初始化".to_string())?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         db::db_list_ingest_queue(&conn)
     }
 
     /// 取消一条 ingest 队列记录（queued → cancelled）。
     pub fn cancel_ingest_item(&self, id: i64) -> Result<(), String> {
-        let db_path = self.outbox_db_path()
+        let db_path = self
+            .outbox_db_path()
             .ok_or_else(|| "Vault 未初始化".to_string())?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         let now = current_timestamp_ms();
         db::db_update_ingest_queue_status(&conn, id, "cancelled", None, &now)
     }
 
     /// 重试一条失败/取消的 ingest 队列记录（failed/cancelled → queued）。
     pub fn retry_ingest_item(&self, id: i64) -> Result<(), String> {
-        let db_path = self.outbox_db_path()
+        let db_path = self
+            .outbox_db_path()
             .ok_or_else(|| "Vault 未初始化".to_string())?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         let now = current_timestamp_ms();
         db::db_update_ingest_queue_status(&conn, id, "queued", None, &now)
     }
@@ -4905,8 +5165,7 @@ Wiki 页面：\n{}",
             .ok_or_else(|| "Vault 未初始化".to_string())?;
 
         let all_records = db::list_embeddings(&db_path, 2000)?;
-        let path_set: std::collections::HashSet<&str> =
-            paths.iter().map(|s| s.as_str()).collect();
+        let path_set: std::collections::HashSet<&str> = paths.iter().map(|s| s.as_str()).collect();
 
         let records: Vec<_> = all_records
             .iter()
@@ -4989,10 +5248,14 @@ Wiki 页面：\n{}",
 
                 // 更新 status -> running
                 {
-                    let Some(db_path) = state.outbox_db_path() else { continue; };
+                    let Some(db_path) = state.outbox_db_path() else {
+                        continue;
+                    };
                     if let Ok(conn) = rusqlite::Connection::open(&db_path) {
                         let now = current_timestamp_ms();
-                        let _ = db::db_update_ingest_queue_status(&conn, item_id, "running", None, &now);
+                        let _ = db::db_update_ingest_queue_status(
+                            &conn, item_id, "running", None, &now,
+                        );
                     }
                 }
                 state.record_outbox_event(
@@ -5001,19 +5264,26 @@ Wiki 页面：\n{}",
                 );
 
                 // 根据 source_type 调用对应 impl
-                let exec_result: Result<crate::models::IngestResult, String> = match source_type.as_str() {
-                    "file" => state.ingest_file_impl(&source_path, None).await,
-                    "url" => state.ingest_url_impl(&source_path).await,
-                    "markdown" => state.ingest_markdown(std::path::PathBuf::from(&source_path), None).await,
-                    other => Err(format!("未知 source_type: {}", other)),
-                };
+                let exec_result: Result<crate::models::IngestResult, String> =
+                    match source_type.as_str() {
+                        "file" => state.ingest_file_impl(&source_path, None).await,
+                        "url" => state.ingest_url_impl(&source_path).await,
+                        "markdown" => {
+                            state
+                                .ingest_markdown(std::path::PathBuf::from(&source_path), None)
+                                .await
+                        }
+                        other => Err(format!("未知 source_type: {}", other)),
+                    };
 
                 let now = current_timestamp_ms();
                 match exec_result {
                     Ok(_) => {
                         if let Some(db_path) = state.outbox_db_path() {
                             if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                                let _ = db::db_update_ingest_queue_status(&conn, item_id, "done", None, &now);
+                                let _ = db::db_update_ingest_queue_status(
+                                    &conn, item_id, "done", None, &now,
+                                );
                             }
                         }
                         state.record_outbox_event(
@@ -5024,7 +5294,13 @@ Wiki 页面：\n{}",
                     Err(err) => {
                         if let Some(db_path) = state.outbox_db_path() {
                             if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                                let _ = db::db_update_ingest_queue_status(&conn, item_id, "failed", Some(err.as_str()), &now);
+                                let _ = db::db_update_ingest_queue_status(
+                                    &conn,
+                                    item_id,
+                                    "failed",
+                                    Some(err.as_str()),
+                                    &now,
+                                );
                             }
                         }
                         state.record_outbox_event(
@@ -5068,8 +5344,8 @@ Wiki 页面：\n{}",
         validate_search_config(&cfg)?;
 
         let now = current_timestamp_ms();
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         let task_id = db::db_create_research_task(&conn, &topic, depth, breadth, &now)?;
 
         tauri::async_runtime::spawn(async move {
@@ -5081,40 +5357,54 @@ Wiki 页面：\n{}",
 
     /// 列出最近研究任务。
     pub fn list_research_tasks(&self) -> Result<Vec<crate::models::ResearchTaskItem>, String> {
-        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先初始化 Vault".to_string())?;
         db::ensure_meta_db(&db_path)?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         db::db_list_research_tasks(&conn)
     }
 
-    pub fn get_research_task(&self, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {
-        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
+    pub fn get_research_task(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::models::ResearchTaskItem>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先初始化 Vault".to_string())?;
         db::ensure_meta_db(&db_path)?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         db::db_get_research_task(&conn, id)
     }
 
     /// 取消研究任务（幂等，不重置已有字段）。
     pub fn cancel_research_task(&self, id: i64) -> Result<(), String> {
-        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先初始化 Vault".to_string())?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         let now = current_timestamp_ms();
         db::db_cancel_research_task(&conn, id, &now)
     }
 
     /// 删除研究任务；可选同时删除该任务关联的 Wiki 页面。
-    pub async fn delete_research_task(&self, id: i64, delete_saved_wiki: bool) -> Result<(), String> {
-        let db_path = self.outbox_db_path().ok_or_else(|| "请先初始化 Vault".to_string())?;
+    pub async fn delete_research_task(
+        &self,
+        id: i64,
+        delete_saved_wiki: bool,
+    ) -> Result<(), String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先初始化 Vault".to_string())?;
         db::ensure_meta_db(&db_path)?;
 
         let task = {
             let conn = rusqlite::Connection::open(&db_path)
                 .map_err(|e| format!("打开数据库失败: {}", e))?;
-            db::db_get_research_task(&conn, id)?
-                .ok_or_else(|| format!("研究任务不存在: {}", id))?
+            db::db_get_research_task(&conn, id)?.ok_or_else(|| format!("研究任务不存在: {}", id))?
         };
 
         if !matches!(task.status.as_str(), "done" | "failed" | "cancelled") {
@@ -5127,8 +5417,8 @@ Wiki 页面：\n{}",
             }
         }
 
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| format!("打开数据库失败: {}", e))?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         db::db_delete_research_task(&conn, id)?;
 
         self.record_outbox_event(
@@ -5414,7 +5704,10 @@ fn build_tesseract_command_candidates() -> Vec<String> {
             push_candidate(format!(r"{}\Tesseract-OCR\tesseract.exe", program_files));
         }
         if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
-            push_candidate(format!(r"{}\Tesseract-OCR\tesseract.exe", program_files_x86));
+            push_candidate(format!(
+                r"{}\Tesseract-OCR\tesseract.exe",
+                program_files_x86
+            ));
         }
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
             push_candidate(format!(
@@ -5856,7 +6149,8 @@ fn collect_pdftoppm_generated_pngs(
     output_prefix: &str,
 ) -> Result<Vec<(usize, PathBuf)>, String> {
     let mut pages = Vec::new();
-    let entries = fs::read_dir(temp_dir).map_err(|err| format!("读取 PDF 页图目录失败：{}", err))?;
+    let entries =
+        fs::read_dir(temp_dir).map_err(|err| format!("读取 PDF 页图目录失败：{}", err))?;
     let expected_prefix = format!("{}-", output_prefix);
 
     for entry in entries {
@@ -5940,14 +6234,18 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(haystack.len());
     }
-    haystack.windows(needle.len()).rposition(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
 }
 
 /// 无法建模 PDF 结构时，直接从原始 stream 中提取可解码文本。
@@ -6364,7 +6662,11 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
         } else {
             end_pos
         };
-        let body = if body_start < rest.len() { &rest[body_start..] } else { "" };
+        let body = if body_start < rest.len() {
+            &rest[body_start..]
+        } else {
+            ""
+        };
         return (fm, body);
     }
     ("", content)
@@ -6384,7 +6686,11 @@ fn parse_frontmatter_entities(frontmatter: &str) -> Vec<String> {
         }
         if in_entities {
             if trimmed.starts_with("- ") {
-                let item = trimmed.trim_start_matches("- ").trim().trim_matches('"').trim_matches('\'');
+                let item = trimmed
+                    .trim_start_matches("- ")
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'');
                 if !item.is_empty() {
                     entities.push(item.to_string());
                 }
@@ -6852,8 +7158,8 @@ fn prune_missing_index_links(vault_path: &Path) -> Result<usize, String> {
 }
 
 fn prune_missing_index_links_from_content(vault_path: &Path, content: &str) -> (String, usize) {
-    let wiki_link_re = regex::Regex::new(r"\[\[([^|\]]+)(?:\|[^\]]+)?\]\]")
-        .expect("wiki link regex 应可编译");
+    let wiki_link_re =
+        regex::Regex::new(r"\[\[([^|\]]+)(?:\|[^\]]+)?\]\]").expect("wiki link regex 应可编译");
     let markdown_link_re =
         regex::Regex::new(r"\[[^\]]+\]\(([^)]+)\)").expect("markdown link regex 应可编译");
     let mut kept_lines = Vec::new();
@@ -6905,8 +7211,7 @@ fn prune_missing_index_links_from_content(vault_path: &Path, content: &str) -> (
 }
 
 fn rewrite_broken_wiki_links_in_page(vault_path: &Path, page_path: &Path) -> Result<usize, String> {
-    let content =
-        fs::read_to_string(page_path).map_err(|err| format!("读取页面失败: {}", err))?;
+    let content = fs::read_to_string(page_path).map_err(|err| format!("读取页面失败: {}", err))?;
     let (updated, replaced) = rewrite_broken_wiki_links(&content, vault_path);
     if replaced > 0 {
         fs::write(page_path, updated).map_err(|err| format!("写入页面失败: {}", err))?;
@@ -6935,7 +7240,10 @@ fn rewrite_broken_wiki_links(content: &str, vault_path: &Path) -> (String, usize
 
         let mut segments = inner.splitn(2, '|');
         let raw_target = segments.next().unwrap_or("").trim();
-        let raw_label = segments.next().map(str::trim).filter(|value| !value.is_empty());
+        let raw_label = segments
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let replacement = raw_label
             .map(|value| value.to_string())
             .unwrap_or_else(|| fallback_wiki_link_label(raw_target));
@@ -7020,14 +7328,16 @@ fn apply_missing_xref_backlinks(
             continue;
         }
 
-        let target_content =
-            fs::read_to_string(&target_canonical).map_err(|err| format!("读取页面失败: {}", err))?;
-        let has_reverse = extract_wiki_link_targets(&target_content).iter().any(|raw| {
-            resolve_wiki_link_target(vault_path, raw)
-                .and_then(|path| fs::canonicalize(path).ok())
-                .map(|path| path.to_string_lossy().to_string() == source_canonical_str)
-                .unwrap_or(false)
-        });
+        let target_content = fs::read_to_string(&target_canonical)
+            .map_err(|err| format!("读取页面失败: {}", err))?;
+        let has_reverse = extract_wiki_link_targets(&target_content)
+            .iter()
+            .any(|raw| {
+                resolve_wiki_link_target(vault_path, raw)
+                    .and_then(|path| fs::canonicalize(path).ok())
+                    .map(|path| path.to_string_lossy().to_string() == source_canonical_str)
+                    .unwrap_or(false)
+            });
         if has_reverse {
             continue;
         }
@@ -7164,7 +7474,15 @@ fn search_wiki_matches_with_fts(
     tokens: &[String],
     question: &str,
     limit: usize,
-) -> Result<(Vec<WikiMatch>, &'static str, Option<String>, Option<QuerySearchDebug>), String> {
+) -> Result<
+    (
+        Vec<WikiMatch>,
+        &'static str,
+        Option<String>,
+        Option<QuerySearchDebug>,
+    ),
+    String,
+> {
     if tokens.is_empty() {
         return Ok((Vec::new(), "empty", None, None));
     }
@@ -7275,7 +7593,15 @@ fn search_wiki_matches_rrf_with_extra_routes(
     question: &str,
     limit: usize,
     extra_routes: &[(String, Vec<String>)],
-) -> Result<(Vec<WikiMatch>, &'static str, Option<String>, Option<QuerySearchDebug>), String> {
+) -> Result<
+    (
+        Vec<WikiMatch>,
+        &'static str,
+        Option<String>,
+        Option<QuerySearchDebug>,
+    ),
+    String,
+> {
     if tokens.is_empty() {
         return Ok((Vec::new(), "empty", None, None));
     }
@@ -7387,7 +7713,15 @@ fn search_wiki_matches_rrf(
     tokens: &[String],
     question: &str,
     limit: usize,
-) -> Result<(Vec<WikiMatch>, &'static str, Option<String>, Option<QuerySearchDebug>), String> {
+) -> Result<
+    (
+        Vec<WikiMatch>,
+        &'static str,
+        Option<String>,
+        Option<QuerySearchDebug>,
+    ),
+    String,
+> {
     search_wiki_matches_rrf_with_extra_routes(db_path, wiki_dir, tokens, question, limit, &[])
 }
 
@@ -7478,7 +7812,8 @@ fn set_frontmatter_stale_field(content: &str, stale: bool) -> String {
     };
 
     // 找到 frontmatter 结束 "---"
-    let end_pos = after_first.find("\n---")
+    let end_pos = after_first
+        .find("\n---")
         .or_else(|| after_first.find("\r\n---"));
 
     let Some(rel_end) = end_pos else {
@@ -7593,7 +7928,7 @@ fn parse_wiki_frontmatter(content: &str) -> Option<WikiPageFrontmatter> {
         || frontmatter.source.is_some()
         || frontmatter.raw.is_some()
         || frontmatter.imported_at.is_some()
-        || frontmatter.stale.is_some();  // 新增
+        || frontmatter.stale.is_some(); // 新增
     if has_scalar_fields || !frontmatter.entities.is_empty() {
         Some(frontmatter)
     } else {
@@ -7772,7 +8107,11 @@ fn build_query_prompt_with_history(
     if !history.is_empty() {
         lines.push("对话历史（供上下文参考）：".to_string());
         for turn in history {
-            let prefix = if turn.role == "user" { "用户" } else { "助手" };
+            let prefix = if turn.role == "user" {
+                "用户"
+            } else {
+                "助手"
+            };
             lines.push(format!("{}: {}", prefix, turn.content));
         }
     }
@@ -7984,7 +8323,12 @@ async fn search_tavily(
             .take(300)
             .collect();
         let source = url_hostname(&url);
-        out.push(crate::models::WebSearchResult { title, url, snippet, source });
+        out.push(crate::models::WebSearchResult {
+            title,
+            url,
+            snippet,
+            source,
+        });
     }
     Ok(out)
 }
@@ -8262,7 +8606,13 @@ fn make_research_slug(topic: &str) -> String {
     let raw: String = topic
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // 去重连续横线
     let mut slug = String::new();
@@ -8310,13 +8660,11 @@ async fn do_search(
 ) -> Result<Vec<crate::models::WebSearchResult>, String> {
     match normalize_search_provider(&config.search_provider) {
         "tavily" if !config.tavily_api_key.is_empty() => {
-            search_tavily(client, query, &config.tavily_api_key, max_results)
-                .await
+            search_tavily(client, query, &config.tavily_api_key, max_results).await
         }
         "tavily" => Err("搜索配置错误：已选择 Tavily，但未填写 API Key".to_string()),
         "searxng" if !config.searxng_url.trim().is_empty() => {
-            search_searxng(client, query, &config.searxng_url, max_results)
-                .await
+            search_searxng(client, query, &config.searxng_url, max_results).await
         }
         "searxng" => Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string()),
         "none" => Err("搜索配置错误：未启用搜索 Provider".to_string()),
@@ -8430,24 +8778,40 @@ async fn save_research_output(
     let save_path = save_dir.join(&filename);
 
     // 防止 topic 含 ../ 等路径越权
-    match save_path.canonicalize().or_else(|_| {
-        save_dir.canonicalize().map(|d| d.join(&filename))
-    }) {
+    match save_path
+        .canonicalize()
+        .or_else(|_| save_dir.canonicalize().map(|d| d.join(&filename)))
+    {
         Ok(canonical) => {
             let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
             if !canonical.starts_with(&canonical_vault) {
-                report_research_failure(db_path, app_handle, task_id, "保存路径越权：topic 包含非法路径字符，已拒绝写入");
+                report_research_failure(
+                    db_path,
+                    app_handle,
+                    task_id,
+                    "保存路径越权：topic 包含非法路径字符，已拒绝写入",
+                );
                 return Err(());
             }
         }
         Err(e) => {
-            report_research_failure(db_path, app_handle, task_id, &format!("保存路径解析失败: {}", e));
+            report_research_failure(
+                db_path,
+                app_handle,
+                task_id,
+                &format!("保存路径解析失败: {}", e),
+            );
             return Err(());
         }
     }
 
     if let Err(e) = fs::write(&save_path, &final_content) {
-        report_research_failure(db_path, app_handle, task_id, &format!("写入文件失败: {}", e));
+        report_research_failure(
+            db_path,
+            app_handle,
+            task_id,
+            &format!("写入文件失败: {}", e),
+        );
         return Err(());
     }
 
@@ -8456,25 +8820,39 @@ async fn save_research_output(
         let conn = match rusqlite::Connection::open(db_path) {
             Ok(c) => c,
             Err(e) => {
-                report_research_failure(db_path, app_handle, task_id, &format!("打开数据库失败: {}", e));
+                report_research_failure(
+                    db_path,
+                    app_handle,
+                    task_id,
+                    &format!("打开数据库失败: {}", e),
+                );
                 return Err(());
             }
         };
         let now = current_timestamp_ms();
         let queries_json = serde_json::to_string(all_used_queries).unwrap_or_default();
         let _ = db::db_update_research_task(
-            &conn, task_id, "done", &queries_json,
-            all_results.len() as i32, Some(saved_path_str.as_str()), None, &now,
+            &conn,
+            task_id,
+            "done",
+            &queries_json,
+            all_results.len() as i32,
+            Some(saved_path_str.as_str()),
+            None,
+            &now,
         );
     }
 
     let _ = state.ingest_markdown(save_path, None).await;
-    let _ = app_handle.emit("research_done", serde_json::json!({
-        "task_id": task_id,
-        "saved_path": saved_path_str,
-        "sources": all_results.len(),
-        "learnings": learnings.len(),
-    }));
+    let _ = app_handle.emit(
+        "research_done",
+        serde_json::json!({
+            "task_id": task_id,
+            "saved_path": saved_path_str,
+            "sources": all_results.len(),
+            "learnings": learnings.len(),
+        }),
+    );
     Ok(saved_path_str)
 }
 
@@ -8486,9 +8864,13 @@ fn report_research_failure(
 ) {
     if let Ok(conn) = rusqlite::Connection::open(db_path) {
         let now = current_timestamp_ms();
-        let _ = db::db_update_research_task(&conn, task_id, "failed", "[]", 0, None, Some(msg), &now);
+        let _ =
+            db::db_update_research_task(&conn, task_id, "failed", "[]", 0, None, Some(msg), &now);
     }
-    let _ = app_handle.emit("research_error", serde_json::json!({ "task_id": task_id, "error": msg }));
+    let _ = app_handle.emit(
+        "research_error",
+        serde_json::json!({ "task_id": task_id, "error": msg }),
+    );
 }
 
 /// 从 LLM 输出行中提取 "TAG: content" 结构，容忍 markdown 装饰与大小写变体。
@@ -8514,7 +8896,10 @@ fn extract_tagged_content(line: &str, tag: &str) -> Option<String> {
 
     let tag_upper = tag.to_ascii_uppercase();
     if s.len() >= tag.len() && s[..tag.len()].to_ascii_uppercase() == tag_upper {
-        let after = s[tag.len()..].trim_start_matches(':').trim_start_matches("**").trim();
+        let after = s[tag.len()..]
+            .trim_start_matches(':')
+            .trim_start_matches("**")
+            .trim();
         Some(after.to_string())
     } else {
         None
@@ -8531,9 +8916,13 @@ pub(crate) fn parse_learnings_and_followups(text: &str) -> (Vec<String>, Vec<Str
 
     for line in text.lines() {
         if let Some(content) = extract_tagged_content(line, "LEARNING") {
-            if !content.is_empty() { learnings.push(content); }
+            if !content.is_empty() {
+                learnings.push(content);
+            }
         } else if let Some(content) = extract_tagged_content(line, "FOLLOWUP") {
-            if !content.is_empty() { followups.push(content); }
+            if !content.is_empty() {
+                followups.push(content);
+            }
         }
     }
 
@@ -8541,8 +8930,14 @@ pub(crate) fn parse_learnings_and_followups(text: &str) -> (Vec<String>, Vec<Str
     if learnings.is_empty() && followups.is_empty() {
         learnings = text
             .lines()
-            .map(|l| l.trim().trim_start_matches("**").trim_end_matches("**")
-                       .trim_start_matches('-').trim_start_matches('*').trim())
+            .map(|l| {
+                l.trim()
+                    .trim_start_matches("**")
+                    .trim_end_matches("**")
+                    .trim_start_matches('-')
+                    .trim_start_matches('*')
+                    .trim()
+            })
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(|l| l.to_string())
             .collect();
@@ -8563,15 +8958,21 @@ async fn start_research_task(
     let db_path = match state.outbox_db_path() {
         Some(p) => p,
         None => {
-            let _ = app_handle.emit("research_error", serde_json::json!({ "task_id": task_id, "error": "Vault 未初始化" }));
+            let _ = app_handle.emit(
+                "research_error",
+                serde_json::json!({ "task_id": task_id, "error": "Vault 未初始化" }),
+            );
             return;
         }
     };
 
     let emit_progress = |stage: &str, msg: String| {
-        let _ = app_handle.emit("research_progress", serde_json::json!({
-            "task_id": task_id, "stage": stage, "message": msg
-        }));
+        let _ = app_handle.emit(
+            "research_progress",
+            serde_json::json!({
+                "task_id": task_id, "stage": stage, "message": msg
+            }),
+        );
     };
 
     if let Err(err) = validate_search_config(&config) {
@@ -8581,7 +8982,10 @@ async fn start_research_task(
 
     let provider = match state.get_llm_provider() {
         Some(p) => p,
-        None => { report_research_failure(&db_path, &app_handle, task_id, "LLM Provider 不可用"); return; }
+        None => {
+            report_research_failure(&db_path, &app_handle, task_id, "LLM Provider 不可用");
+            return;
+        }
     };
 
     // 共享 HTTP 客户端，统一设置 30s 超时
@@ -8590,7 +8994,15 @@ async fn start_research_task(
         .build()
     {
         Ok(c) => Arc::new(c),
-        Err(e) => { report_research_failure(&db_path, &app_handle, task_id, &format!("HTTP 客户端初始化失败: {}", e)); return; }
+        Err(e) => {
+            report_research_failure(
+                &db_path,
+                &app_handle,
+                task_id,
+                &format!("HTTP 客户端初始化失败: {}", e),
+            );
+            return;
+        }
     };
 
     let mut all_results: Vec<crate::models::WebSearchResult> = Vec::new();
@@ -8615,7 +9027,10 @@ async fn start_research_task(
                 .take(config.breadth as usize)
                 .collect();
             if qs.is_empty() {
-                emit_progress("decomposing", "LLM 未生成子查询，使用原始主题搜索".to_string());
+                emit_progress(
+                    "decomposing",
+                    "LLM 未生成子查询，使用原始主题搜索".to_string(),
+                );
                 vec![topic.clone()]
             } else {
                 emit_progress("decomposing", format!("生成了 {} 个研究子查询", qs.len()));
@@ -8630,27 +9045,36 @@ async fn start_research_task(
 
     // 暂停：通知前端子查询已就绪，等待用户审批（最多 5 分钟）
     let rx = state.register_query_approval(task_id);
-    let _ = app_handle.emit("research_queries_ready", serde_json::json!({
-        "task_id": task_id,
-        "queries": current_queries,
-    }));
-    emit_progress("awaiting_approval", format!("已分解为 {} 个研究方向，等待确认...", current_queries.len()));
+    let _ = app_handle.emit(
+        "research_queries_ready",
+        serde_json::json!({
+            "task_id": task_id,
+            "queries": current_queries,
+        }),
+    );
+    emit_progress(
+        "awaiting_approval",
+        format!("已分解为 {} 个研究方向，等待确认...", current_queries.len()),
+    );
 
-    current_queries = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
-        rx,
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .unwrap_or_else(|| current_queries.clone());
+    current_queries = tokio::time::timeout(std::time::Duration::from_secs(300), rx)
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_else(|| current_queries.clone());
 
     // ── Phase 2: 迭代式并发搜索 + 学习提取 ──────────────────────────────────
     let max_depth = config.depth.clamp(1, 5);
     for depth in 1..=max_depth {
-        emit_progress("searching", format!(
-            "第 {}/{} 轮：{} 个查询并发搜索中...", depth, max_depth, current_queries.len()
-        ));
+        emit_progress(
+            "searching",
+            format!(
+                "第 {}/{} 轮：{} 个查询并发搜索中...",
+                depth,
+                max_depth,
+                current_queries.len()
+            ),
+        );
 
         // 并发执行本轮所有查询
         let breadth_limit = config.breadth as usize;
@@ -8686,7 +9110,10 @@ async fn start_research_task(
                 }
                 Err(join_err) => {
                     let err = format!("查询任务并发执行失败: {}", join_err);
-                    emit_progress("searching", format!("✗ {}", compact_error_message(&err, 90)));
+                    emit_progress(
+                        "searching",
+                        format!("✗ {}", compact_error_message(&err, 90)),
+                    );
                     round_errors.push(err);
                 }
             }
@@ -8735,7 +9162,10 @@ async fn start_research_task(
 
         if depth < max_depth {
             // 提取结构化学习 + 生成知识缺口查询（参考 dzhng/deep-research processSerpResult）
-            emit_progress("synthesizing", format!("第 {} 轮：提取关键发现并识别知识缺口...", depth));
+            emit_progress(
+                "synthesizing",
+                format!("第 {} 轮：提取关键发现并识别知识缺口...", depth),
+            );
             let extract_prompt = format!(
                 "Research topic: {topic}\n\nSearch results (round {depth}):\n{snippets}\n\nExisting learnings:\n{existing}\n\nTask:\n1. Extract 3-5 NEW key learnings not already in existing learnings (format: LEARNING: <insight>)\n2. Generate {next_breadth} follow-up search queries to fill knowledge gaps (format: FOLLOWUP: <query>)\n\nOutput only LEARNING: and FOLLOWUP: lines, nothing else.",
                 topic = topic,
@@ -8766,19 +9196,23 @@ async fn start_research_task(
                 snippets = round_snippets,
             );
             if let Ok(text) = provider.complete(&final_extract_prompt).await {
-                let (new_learnings, _) =
-                    parse_learnings_and_followups(&strip_think_tags(&text));
+                let (new_learnings, _) = parse_learnings_and_followups(&strip_think_tags(&text));
                 learnings.extend(new_learnings);
             }
         }
     }
 
     // ── Phase 3: 最终综合报告 ────────────────────────────────────────────────
-    emit_progress("synthesizing", format!("综合 {} 条关键发现，撰写研究报告...", learnings.len()));
+    emit_progress(
+        "synthesizing",
+        format!("综合 {} 条关键发现，撰写研究报告...", learnings.len()),
+    );
 
     let wiki_index = {
         let guard = state.inner.lock().expect("状态锁");
-        guard.vault_path.as_ref()
+        guard
+            .vault_path
+            .as_ref()
             .and_then(|vp| fs::read_to_string(vp.join("wiki").join("index.md")).ok())
             .unwrap_or_default()
     };
@@ -8809,7 +9243,7 @@ async fn start_research_task(
         let mut buf = String::new();
         let stream_result = provider
             .complete_stream(&synth_prompt, &mut |chunk| {
-                let chunk_str = chunk.clone();  // 给 emit 用
+                let chunk_str = chunk.clone(); // 给 emit 用
                 buf.push_str(&chunk);
                 char_count += chunk.chars().count();
                 let _ = app_handle.emit(
@@ -8844,7 +9278,10 @@ async fn start_research_task(
                 if attempt == 1 {
                     emit_progress(
                         "synthesizing",
-                        format!("综合报告生成失败，正在重试一次：{}", compact_llm_error(&err, 120)),
+                        format!(
+                            "综合报告生成失败，正在重试一次：{}",
+                            compact_llm_error(&err, 120)
+                        ),
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 }
@@ -8864,9 +9301,43 @@ async fn start_research_task(
     // ── Phase 4: 保存 ────────────────────────────────────────────────────────
     emit_progress("saving", "正在保存到知识库...".to_string());
     let _ = save_research_output(
-        &db_path, &app_handle, &state, task_id,
-        &topic, &config, &all_results, &all_used_queries, &learnings, &synthesized,
-    ).await;
+        &db_path,
+        &app_handle,
+        &state,
+        task_id,
+        &topic,
+        &config,
+        &all_results,
+        &all_used_queries,
+        &learnings,
+        &synthesized,
+    )
+    .await;
+}
+
+/// 提取 Markdown 首个 H1 标题（`# `）。
+fn extract_markdown_h1_title(content: &str) -> Option<String> {
+    content
+        .lines()
+        .find(|line| line.starts_with("# "))
+        .map(|line| line.trim_start_matches("# ").trim().to_string())
+        .filter(|title| !title.is_empty())
+}
+
+/// 在 `wiki/` 目录中寻找可用 slug，必要时自动追加序号（`-2` 到 `-99`）。
+fn resolve_unique_wiki_slug(wiki_dir: &Path, base_slug: &str) -> Result<String, String> {
+    let candidate = wiki_dir.join(format!("{}.md", base_slug));
+    if !candidate.exists() {
+        return Ok(base_slug.to_string());
+    }
+    for n in 2..=99 {
+        let slug = format!("{}-{}", base_slug, n);
+        let path = wiki_dir.join(format!("{}.md", slug));
+        if !path.exists() {
+            return Ok(slug);
+        }
+    }
+    Err(format!("无法为 slug '{}' 找到空闲文件名", base_slug))
 }
 
 /// 将主题字符串转换为有效的 wiki 文件 slug（小写、非 ASCII 字母数字转连字符、去重、最长 60 字符）。
@@ -8875,7 +9346,13 @@ pub(crate) fn topic_to_slug(topic: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // 去重连续横线
     let mut slug = String::new();
@@ -8933,10 +9410,7 @@ fn is_raw_ingest_id(title: &str) -> bool {
 ///
 /// 当 DB 标题是原始摄入 ID 时（`ingest-{timestamp}`），从 frontmatter 提取更有意义的名称：
 /// entities[0]（≥2 字符）> source 文件名 stem（非内部路径）> DB 标题原值。
-fn resolve_graph_node_label(
-    db_title: &str,
-    fm: &crate::models::WikiPageFrontmatter,
-) -> String {
+fn resolve_graph_node_label(db_title: &str, fm: &crate::models::WikiPageFrontmatter) -> String {
     if !is_raw_ingest_id(db_title) {
         return db_title.to_string();
     }
@@ -8947,7 +9421,10 @@ fn resolve_graph_node_label(
         }
     }
     if let Some(src) = fm.source.as_deref() {
-        if let Some(stem) = std::path::Path::new(src).file_stem().and_then(|s| s.to_str()) {
+        if let Some(stem) = std::path::Path::new(src)
+            .file_stem()
+            .and_then(|s| s.to_str())
+        {
             let stem = stem.trim();
             if !stem.is_empty() && !stem.starts_with("llm_wiki_") && stem.len() >= 2 {
                 return stem.to_string();
@@ -9019,7 +9496,10 @@ mod tests {
             stale: None,
         };
         // 有意义的标题不应被替换，即便有 entities
-        assert_eq!(resolve_graph_node_label("rust生命周期", &fm), "rust生命周期");
+        assert_eq!(
+            resolve_graph_node_label("rust生命周期", &fm),
+            "rust生命周期"
+        );
     }
 
     #[test]
@@ -9525,9 +10005,7 @@ mod tests {
         };
         let encoded = content.encode().expect("编码内容流失败");
         let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
-        compressor
-            .write_all(&encoded)
-            .expect("压缩内容流失败");
+        compressor.write_all(&encoded).expect("压缩内容流失败");
         let compressed = compressor.finish().expect("完成压缩失败");
 
         let mut pseudo_pdf = Vec::new();
@@ -9537,8 +10015,8 @@ mod tests {
         pseudo_pdf.extend_from_slice(&compressed);
         pseudo_pdf.extend_from_slice(b"\nendstream\n%%EOF");
 
-        let extracted = extract_text_from_pdf_raw_streams(&pseudo_pdf)
-            .expect("应能从 Flate stream 提取文本");
+        let extracted =
+            extract_text_from_pdf_raw_streams(&pseudo_pdf).expect("应能从 Flate stream 提取文本");
         assert!(extracted.contains("Gradient Tensor"));
     }
 
@@ -9568,7 +10046,9 @@ mod tests {
         assert!(should_fallback_to_pdf_ocr(
             "读取 PDF 失败：当前解析器暂不兼容该文件结构"
         ));
-        assert!(!should_fallback_to_pdf_ocr("读取 PDF 原始字节失败：permission denied"));
+        assert!(!should_fallback_to_pdf_ocr(
+            "读取 PDF 原始字节失败：permission denied"
+        ));
     }
 
     #[test]
@@ -10419,12 +10899,7 @@ entities:
         let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
         let (answer, strategy) = runtime.block_on(async {
             state
-                .generate_query_answer_with_provider(
-                    "需要回退吗",
-                    &matches,
-                    Some(provider),
-                    None,
-                )
+                .generate_query_answer_with_provider("需要回退吗", &matches, Some(provider), None)
                 .await
         });
 
@@ -10949,7 +11424,11 @@ entities:
         .expect("写入 index.md 失败");
 
         let report = state.lint_report();
-        let codes: BTreeSet<_> = report.issues.iter().map(|issue| issue.code.as_str()).collect();
+        let codes: BTreeSet<_> = report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect();
 
         assert!(codes.contains("broken_wikilink"));
         assert!(codes.contains("xref_missing"));
@@ -11138,8 +11617,8 @@ entities:
         dir
     }
 
-    fn make_test_state(vault_dir: &Path) -> AppState {
-        let state = AppState {
+    fn make_test_state_bare(vault_dir: &Path) -> AppState {
+        AppState {
             inner: Mutex::new(AppStateData {
                 mode: AppMode::Hybrid,
                 vault_path: None,
@@ -11166,8 +11645,12 @@ entities:
             search_config: Mutex::new(crate::models::SearchConfig::default()),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
-        };
-        // 注入已有的 MockQueryProvider
+        }
+    }
+
+    fn make_test_state(vault_dir: &Path) -> AppState {
+        let state = make_test_state_bare(vault_dir);
+        // 注入默认 MockQueryProvider，使依赖 LLM 的测试开箱即用
         let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(
             "Mock Answer",
             Arc::new(Mutex::new(Vec::new())),
@@ -11357,9 +11840,13 @@ entities:
         let state = AppState::new();
         {
             let mut sessions = state.ask_sessions.lock().unwrap();
-            sessions.insert("sess1".to_string(), vec![
-                crate::models::AskTurn { role: "user".to_string(), content: "hi".to_string() }
-            ]);
+            sessions.insert(
+                "sess1".to_string(),
+                vec![crate::models::AskTurn {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+            );
         }
         state.clear_ask_session("sess1".to_string()).unwrap();
         let sessions = state.ask_sessions.lock().unwrap();
@@ -11450,14 +11937,28 @@ entities:
         db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0, 0.0]).unwrap();
         db::upsert_embedding(&db_path, "wiki/c.md", &[0.0_f32, 1.0, 0.0]).unwrap();
 
-        let paths = vec!["wiki/a.md".to_string(), "wiki/b.md".to_string(), "wiki/c.md".to_string()];
+        let paths = vec![
+            "wiki/a.md".to_string(),
+            "wiki/b.md".to_string(),
+            "wiki/c.md".to_string(),
+        ];
         let result = state.get_page_embedding_similarities(paths).unwrap();
 
         assert!(result.contains_key("wiki/a.md||wiki/b.md"), "a-b 对应包含");
         let sim = result["wiki/a.md||wiki/b.md"];
-        assert!((sim - 1.0).abs() < 1e-6, "a-b 相似度应为 1.0，实际: {}", sim);
-        assert!(!result.contains_key("wiki/a.md||wiki/c.md"), "a-c 直交不应包含");
-        assert!(!result.contains_key("wiki/b.md||wiki/c.md"), "b-c 直交不应包含");
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "a-b 相似度应为 1.0，实际: {}",
+            sim
+        );
+        assert!(
+            !result.contains_key("wiki/a.md||wiki/c.md"),
+            "a-c 直交不应包含"
+        );
+        assert!(
+            !result.contains_key("wiki/b.md||wiki/c.md"),
+            "b-c 直交不应包含"
+        );
     }
 
     #[test]
@@ -11483,7 +11984,8 @@ entities:
 
     #[test]
     fn parse_learnings_standard_format() {
-        let text = "LEARNING: LLMs use attention mechanisms\nFOLLOWUP: how does multi-head attention work";
+        let text =
+            "LEARNING: LLMs use attention mechanisms\nFOLLOWUP: how does multi-head attention work";
         let (learnings, followups) = parse_learnings_and_followups(text);
         assert_eq!(learnings, vec!["LLMs use attention mechanisms"]);
         assert_eq!(followups, vec!["how does multi-head attention work"]);
@@ -11515,7 +12017,8 @@ entities:
 
     #[test]
     fn parse_learnings_lowercase_tag() {
-        let text = "learning: BERT is bidirectional\nfollowup: how does masked language modeling work";
+        let text =
+            "learning: BERT is bidirectional\nfollowup: how does masked language modeling work";
         let (learnings, followups) = parse_learnings_and_followups(text);
         assert_eq!(learnings, vec!["BERT is bidirectional"]);
         assert_eq!(followups, vec!["how does masked language modeling work"]);
@@ -11626,7 +12129,9 @@ entities:
     #[test]
     fn build_searxng_search_params_contains_all_fallback() {
         let params = build_searxng_search_params("rust ownership model");
-        assert!(params.iter().any(|p| p.language == "all" && p.categories == "general,news"));
+        assert!(params
+            .iter()
+            .any(|p| p.language == "all" && p.categories == "general,news"));
         assert!(params.iter().any(|p| p.safesearch == "0"));
     }
 
@@ -11701,7 +12206,8 @@ entities:
     #[test]
     fn research_task_create_and_list() {
         let (_path, conn, _guard) = make_research_db();
-        let id = db::db_create_research_task(&conn, "test topic", 2, 3, "100").expect("create 失败");
+        let id =
+            db::db_create_research_task(&conn, "test topic", 2, 3, "100").expect("create 失败");
         assert!(id > 0);
 
         let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
@@ -11718,11 +12224,21 @@ entities:
     #[test]
     fn research_task_update_to_done() {
         let (_path, conn, _guard) = make_research_db();
-        let id = db::db_create_research_task(&conn, "update test", 1, 2, "100").expect("create 失败");
+        let id =
+            db::db_create_research_task(&conn, "update test", 1, 2, "100").expect("create 失败");
 
         let queries = serde_json::to_string(&vec!["q1", "q2"]).unwrap();
-        db::db_update_research_task(&conn, id, "done", &queries, 5, Some("/path/to/file.md"), None, "200")
-            .expect("update 失败");
+        db::db_update_research_task(
+            &conn,
+            id,
+            "done",
+            &queries,
+            5,
+            Some("/path/to/file.md"),
+            None,
+            "200",
+        )
+        .expect("update 失败");
 
         let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
         let t = &tasks[0];
@@ -11735,7 +12251,8 @@ entities:
     #[test]
     fn research_task_cancel_changes_queued_to_cancelled() {
         let (_path, conn, _guard) = make_research_db();
-        let id = db::db_create_research_task(&conn, "cancel test", 1, 1, "100").expect("create 失败");
+        let id =
+            db::db_create_research_task(&conn, "cancel test", 1, 1, "100").expect("create 失败");
 
         db::db_cancel_research_task(&conn, id, "200").expect("cancel 失败");
 
@@ -11746,24 +12263,34 @@ entities:
     #[test]
     fn research_task_cancel_is_idempotent_on_done() {
         let (_path, conn, _guard) = make_research_db();
-        let id = db::db_create_research_task(&conn, "idempotent test", 1, 1, "100").expect("create 失败");
+        let id = db::db_create_research_task(&conn, "idempotent test", 1, 1, "100")
+            .expect("create 失败");
 
         // 先将任务标记为 done
-        db::db_update_research_task(&conn, id, "done", "[]", 3, Some("/p.md"), None, "150").expect("update 失败");
+        db::db_update_research_task(&conn, id, "done", "[]", 3, Some("/p.md"), None, "150")
+            .expect("update 失败");
 
         // cancel 不应影响 done 任务
         db::db_cancel_research_task(&conn, id, "200").expect("cancel 失败");
 
         let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
         assert_eq!(tasks[0].status, "done", "done 任务不应被 cancel 覆盖");
-        assert_eq!(tasks[0].web_results_count, 3, "web_results_count 不应被重置");
-        assert_eq!(tasks[0].saved_path.as_deref(), Some("/p.md"), "saved_path 不应被清空");
+        assert_eq!(
+            tasks[0].web_results_count, 3,
+            "web_results_count 不应被重置"
+        );
+        assert_eq!(
+            tasks[0].saved_path.as_deref(),
+            Some("/p.md"),
+            "saved_path 不应被清空"
+        );
     }
 
     #[test]
     fn research_task_delete_removes_row() {
         let (_path, conn, _guard) = make_research_db();
-        let id = db::db_create_research_task(&conn, "delete test", 1, 1, "100").expect("create 失败");
+        let id =
+            db::db_create_research_task(&conn, "delete test", 1, 1, "100").expect("create 失败");
 
         db::db_delete_research_task(&conn, id).expect("delete 失败");
 
@@ -11783,7 +12310,9 @@ entities:
         let vault_dir = make_temp_dir("llm-wiki-restart-recovery");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("init_vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("init_vault 失败");
 
         let db_path = vault_dir.join(".app").join("meta.db");
         let conn = rusqlite::Connection::open(&db_path).expect("打开数据库失败");
@@ -11793,19 +12322,26 @@ entities:
         let items = db::db_list_ingest_queue(&conn).expect("list 失败");
         let id = items[0].id;
         let now = current_timestamp_ms();
-        db::db_update_ingest_queue_status(&conn, id, "running", None, &now).expect("set running 失败");
+        db::db_update_ingest_queue_status(&conn, id, "running", None, &now)
+            .expect("set running 失败");
 
         // 重新 init_vault 模拟重启
-        state.init_vault(vault_dir.clone()).expect("第二次 init_vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("第二次 init_vault 失败");
 
         let items = db::db_list_ingest_queue(&conn).expect("list after restart 失败");
-        assert_eq!(items[0].status, "queued", "重启后 running 任务应被重置为 queued");
+        assert_eq!(
+            items[0].status, "queued",
+            "重启后 running 任务应被重置为 queued"
+        );
     }
 
     #[test]
     fn research_task_cancel_is_idempotent_on_already_cancelled() {
         let (_path, conn, _guard) = make_research_db();
-        let id = db::db_create_research_task(&conn, "double cancel", 1, 1, "100").expect("create 失败");
+        let id =
+            db::db_create_research_task(&conn, "double cancel", 1, 1, "100").expect("create 失败");
 
         db::db_cancel_research_task(&conn, id, "200").expect("第一次 cancel 失败");
         db::db_cancel_research_task(&conn, id, "300").expect("第二次 cancel 失败");
@@ -11843,12 +12379,7 @@ entities:
         let vault_dir = dir.join("vault");
         fs::create_dir_all(&vault_dir).unwrap();
         let big = "x".repeat(513 * 1024);
-        let result = state.init_vault_with_template(
-            vault_dir,
-            big,
-            "ok".to_string(),
-            vec![],
-        );
+        let result = state.init_vault_with_template(vault_dir, big, "ok".to_string(), vec![]);
         assert!(result.is_err(), "超大 schema 内容应被拒绝");
         assert!(result.unwrap_err().contains("512 KB"));
     }
@@ -11864,11 +12395,8 @@ entities:
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let dir = std::env::temp_dir().join(format!(
-                "llm-wiki-ql-{}-{}",
-                std::process::id(),
-                unique
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("llm-wiki-ql-{}-{}", std::process::id(), unique));
             let wiki_dir = dir.join("wiki");
             fs::create_dir_all(&wiki_dir).unwrap();
             let page_path = wiki_dir.join("test-page.md");
@@ -11905,9 +12433,8 @@ entities:
 
         #[test]
         fn quick_lint_page_detects_broken_link() {
-            let (dir, wiki_path) = make_vault_with_page(
-                "---\ntitle: Test\n---\n\nSee [[NonExistentPage]]",
-            );
+            let (dir, wiki_path) =
+                make_vault_with_page("---\ntitle: Test\n---\n\nSee [[NonExistentPage]]");
             let _guard = TempDirGuard(dir.clone());
 
             let state = make_state_for_vault(&dir);
@@ -12075,5 +12602,84 @@ entities:
         // 验证新内容已写入
         let current = fs::read_to_string(&page_path).expect("读取页面失败");
         assert_eq!(current, "# Checksum Test\n新内容\n");
+    }
+
+    #[test]
+    fn agent_run_h0_impl_lifecycle_works() {
+        let vault_dir = make_temp_dir("llm-wiki-agent-h0-state");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let run_id = state
+            .start_agent_run_impl("Agent Studio H0")
+            .expect("创建 run 失败");
+        state
+            .append_agent_run_event_impl(run_id, "info", "created")
+            .expect("写入事件失败");
+        state
+            .complete_agent_run_impl(run_id, "applied")
+            .expect("结束 run 失败");
+
+        let runs = state
+            .list_agent_runs_impl(Some(10))
+            .expect("读取 runs 失败");
+        assert!(!runs.is_empty());
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].status, "applied");
+
+        let events = state
+            .list_agent_run_events_impl(run_id, Some(10))
+            .expect("读取 events 失败");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].message, "created");
+        assert!(
+            events[1].message.contains("系统状态变更"),
+            "complete_agent_run 后应自动写系统事件"
+        );
+    }
+
+    #[test]
+    fn agent_draft_generate_and_approve_impl_works() {
+        let vault_dir = make_temp_dir("llm-wiki-agent-h1-state");
+        let _guard = TempDirGuard(vault_dir.clone());
+        // 使用 bare state，避免 OnceLock 被 make_test_state 的默认 mock 抢先占用
+        let state = make_test_state_bare(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let prompt_log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(
+            "# Rust Actor 模块设计\n\n这里是草稿正文。\n",
+            prompt_log,
+        )));
+
+        let run_id = state
+            .start_agent_run_impl("Agent H1")
+            .expect("创建 run 失败");
+        let runtime = tokio::runtime::Runtime::new().expect("创建 runtime 失败");
+        let draft = runtime
+            .block_on(state.generate_agent_draft_impl(run_id, "Rust Actor 模块设计".to_string()))
+            .expect("生成草稿失败");
+        assert_eq!(draft.run_id, run_id);
+        assert_eq!(draft.status, "draft");
+        assert!(draft.content.contains("Rust Actor 模块设计"));
+
+        let drafts = state
+            .list_agent_drafts_impl(run_id, Some(10))
+            .expect("列出草稿失败");
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].id, draft.id);
+
+        let applied = runtime
+            .block_on(state.approve_agent_draft_impl(draft.id))
+            .expect("审批草稿失败");
+        assert!(applied.wiki_path.ends_with(".md"));
+        assert_eq!(applied.title, "Rust Actor 模块设计");
+        let file_content = fs::read_to_string(&applied.wiki_path).expect("读取写盘文件失败");
+        assert!(file_content.contains("这里是草稿正文"));
     }
 }
