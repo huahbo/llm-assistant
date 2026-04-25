@@ -37,6 +37,7 @@ import type {
   RenameWikiPageResult,
   SaveWikiPageResult,
   VaultInitResult,
+  VaultStats,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageItem,
@@ -1705,4 +1706,11 @@ export async function getClipServerStatus(): Promise<string> {
   if (!isTauriRuntime()) return "";
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("get_clip_server_status");
+}
+
+/** 获取 Vault 统计数据（页面数、引用数、摄入来源分布等）。非 Tauri 环境返回 null。 */
+export async function getVaultStats(): Promise<VaultStats | null> {
+  if (!isTauriRuntime()) { return null; }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<VaultStats>("get_vault_stats");
 }

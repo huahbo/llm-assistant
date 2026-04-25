@@ -817,3 +817,30 @@ pub struct WebSearchResult {
     pub snippet: String,
     pub source: String,
 }
+
+/// 被引用次数统计（单条记录）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CitedPageStat {
+    pub path: String,
+    pub title: String,
+    pub citation_count: usize,
+}
+
+/// 摄入来源分布（单条记录）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestSourceCount {
+    pub source_type: String,
+    pub count: usize,
+}
+
+/// Vault 知识库统计数据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultStats {
+    pub total_pages: usize,
+    pub pages_last_7_days: usize,
+    pub pages_last_30_days: usize,
+    pub orphan_pages: usize,
+    pub total_citations: usize,
+    pub top_cited_pages: Vec<CitedPageStat>,
+    pub ingest_source_counts: Vec<IngestSourceCount>,
+}

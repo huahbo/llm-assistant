@@ -7,7 +7,7 @@ export interface ModeOption {
   badge: string;
 }
 
-export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings" | "queue" | "research";
+export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings" | "queue" | "research" | "stats";
 
 export interface ModuleItem {
   id: ModuleId;
@@ -460,4 +460,25 @@ export interface IngestQueueItem {
   error?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface CitedPageStat {
+  path: string;
+  title: string;
+  citation_count: number;
+}
+
+export interface IngestSourceCount {
+  source_type: string;
+  count: number;
+}
+
+export interface VaultStats {
+  total_pages: number;
+  pages_last_7_days: number;
+  pages_last_30_days: number;
+  orphan_pages: number;
+  total_citations: number;
+  top_cited_pages: CitedPageStat[];
+  ingest_source_counts: IngestSourceCount[];
 }

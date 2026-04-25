@@ -3852,3 +3852,189 @@ code {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
+
+/* ── 统计仪表盘 ─────────────────────────────────────── */
+.stats-module {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.25rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.stats-module__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stats-module__title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.stats-module__refresh {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e0e0e0);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.stats-module__refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.stats-module__empty {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.stats-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.stats-card {
+  flex: 1 1 130px;
+  background: var(--bg-card);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 10px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.stats-card--warn {
+  border-color: var(--warning, #f59e0b);
+}
+
+.stats-card__value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+
+.stats-card--warn .stats-card__value {
+  color: var(--warning, #f59e0b);
+}
+
+.stats-card__label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.stats-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.stats-section__title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stats-top-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.stats-top-list__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-card);
+  border-radius: 6px;
+  border: 1px solid var(--border, #e0e0e0);
+}
+
+.stats-top-list__rank-badge {
+  min-width: 2rem;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent, #6366f1);
+  background: color-mix(in srgb, var(--accent, #6366f1) 12%, transparent);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}
+
+.stats-top-list__title {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 0.88rem;
+  cursor: pointer;
+  text-align: left;
+  flex: 1;
+}
+
+.stats-top-list__title:hover {
+  color: var(--accent, #6366f1);
+}
+
+.stats-source-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.stats-source-list__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.stats-source-list__label {
+  width: 6rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.stats-source-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border, #e0e0e0);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.stats-source-bar__fill {
+  height: 100%;
+  background: var(--accent, #6366f1);
+  border-radius: 3px;
+  min-width: 4px;
+  transition: width 0.3s ease;
+}
+
+.stats-source-list__count {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  width: 2.5rem;
+  text-align: right;
+}

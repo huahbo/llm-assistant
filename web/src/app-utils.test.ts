@@ -95,6 +95,7 @@ import {
   buildAskSessionExportMarkdown,
   getResearchStatusLabel,
   getResearchStatusColor,
+  formatSourceType,
 } from "./App";
 import { getTemplate } from "./templates";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -2512,5 +2513,19 @@ describe("Ask 会话管理 - 边界条件", () => {
     const text = "x".repeat(88);
     expect(formatAskSessionSearchSnippet(text)).toBe(text);
     expect(formatAskSessionSearchSnippet(text).endsWith("…")).toBe(false);
+  });
+});
+
+describe("formatSourceType", () => {
+  it("将已知 source_type 映射为中文", () => {
+    expect(formatSourceType("file")).toBe("本地文件");
+    expect(formatSourceType("url")).toBe("网页链接");
+    expect(formatSourceType("pdf")).toBe("PDF 文档");
+    expect(formatSourceType("clipboard")).toBe("剪贴板");
+  });
+
+  it("未知类型原样返回", () => {
+    expect(formatSourceType("unknown_type")).toBe("unknown_type");
+    expect(formatSourceType("")).toBe("");
   });
 });

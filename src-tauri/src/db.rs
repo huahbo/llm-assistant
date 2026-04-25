@@ -2383,6 +2383,109 @@ pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::
     }
 }
 
+/// 一次性获取 Vault 知识库统计数据。
+pub fn get_vault_stats_from_db(
+    db_path: &Path,
+    now_ms: i64,
+) -> Result<crate::models::VaultStats, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+
+    let ms_7d = now_ms - 7 * 24 * 3600 * 1000_i64;
+    let ms_30d = now_ms - 30 * 24 * 3600 * 1000_i64;
+
+    let total_pages: usize = conn
+        .query_row("SELECT COUNT(*) FROM wiki_pages", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0) as usize;
+
+    let pages_last_7_days: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wiki_pages WHERE CAST(updated_at AS INTEGER) > ?1",
+            params![ms_7d],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
+
+    let pages_last_30_days: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wiki_pages WHERE CAST(updated_at AS INTEGER) > ?1",
+            params![ms_30d],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
+
+    let orphan_pages: usize = conn
+        .query_row(
+            r#"SELECT COUNT(*) FROM wiki_pages
+               WHERE path NOT IN (
+                   SELECT DISTINCT cited_page_path FROM citations
+                   WHERE cited_page_path IS NOT NULL AND cited_page_path != ''
+               )"#,
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize;
+
+    let total_citations: usize = conn
+        .query_row("SELECT COUNT(*) FROM citations", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0) as usize;
+
+    // 被引用最多的页面（TOP 10）
+    let mut top_stmt = conn
+        .prepare(
+            r#"SELECT c.cited_page_path,
+                      COALESCE(w.title, c.cited_page_path) AS title,
+                      COUNT(*) AS cnt
+               FROM citations c
+               LEFT JOIN wiki_pages w ON w.path = c.cited_page_path
+               WHERE c.cited_page_path IS NOT NULL AND c.cited_page_path != ''
+               GROUP BY c.cited_page_path
+               ORDER BY cnt DESC
+               LIMIT 10"#,
+        )
+        .map_err(|e| format!("准备 top_cited 查询失败: {}", e))?;
+    let top_cited_pages = top_stmt
+        .query_map([], |row| {
+            Ok(crate::models::CitedPageStat {
+                path: row.get(0)?,
+                title: row.get(1)?,
+                citation_count: row.get::<_, i64>(2)? as usize,
+            })
+        })
+        .map_err(|e| format!("执行 top_cited 查询失败: {}", e))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+
+    // 摄入来源分布（来自 ingest_queue_items）
+    let mut src_stmt = conn
+        .prepare(
+            r#"SELECT source_type, COUNT(*) AS cnt
+               FROM ingest_queue_items
+               GROUP BY source_type
+               ORDER BY cnt DESC"#,
+        )
+        .map_err(|e| format!("准备 source_counts 查询失败: {}", e))?;
+    let ingest_source_counts = src_stmt
+        .query_map([], |row| {
+            Ok(crate::models::IngestSourceCount {
+                source_type: row.get(0)?,
+                count: row.get::<_, i64>(1)? as usize,
+            })
+        })
+        .map_err(|e| format!("执行 source_counts 查询失败: {}", e))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+
+    Ok(crate::models::VaultStats {
+        total_pages,
+        pages_last_7_days,
+        pages_last_30_days,
+        orphan_pages,
+        total_citations,
+        top_cited_pages,
+        ingest_source_counts,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -3118,5 +3221,59 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].status, "cancelled");
         assert!(items[0].error.is_none());
+    }
+
+    #[test]
+    fn get_vault_stats_returns_correct_counts() {
+        let dir = make_temp_dir("llm-wiki-db-vault-stats");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        // 写入 2 个 wiki 页面
+        upsert_generated_wiki_page(
+            &db_path,
+            "页面 A",
+            &dir.join("wiki/a.md"),
+            "摘要 A",
+            "hash-a",
+            "100",
+        )
+        .expect("写入 wiki/a.md 失败");
+        upsert_generated_wiki_page(
+            &db_path,
+            "页面 B",
+            &dir.join("wiki/b.md"),
+            "摘要 B",
+            "hash-b",
+            "200",
+        )
+        .expect("写入 wiki/b.md 失败");
+
+        // a → b 引用：使用 wiki/b.md 的规范路径（与 wiki_pages.path 匹配）
+        let b_path_str = dir.join("wiki/b.md").to_string_lossy().to_string();
+        replace_citations_for_page(
+            &db_path,
+            &dir.join("wiki/a.md"),
+            &[CitationInput {
+                cited_page_path: &b_path_str,
+                score: 1,
+                excerpt: "excerpt",
+            }],
+            "300",
+        )
+        .expect("写入 citations 失败");
+
+        let now_ms = 400_i64;
+        let stats = get_vault_stats_from_db(&db_path, now_ms)
+            .expect("获取统计数据失败");
+
+        assert_eq!(stats.total_pages, 2);
+        assert_eq!(stats.total_citations, 1);
+        // wiki/a.md 没有被引用 → orphan；wiki/b.md 被引用 → 非 orphan
+        assert_eq!(stats.orphan_pages, 1);
+        assert_eq!(stats.top_cited_pages.len(), 1);
+        assert_eq!(stats.top_cited_pages[0].path, b_path_str);
+        assert_eq!(stats.top_cited_pages[0].citation_count, 1);
     }
 }

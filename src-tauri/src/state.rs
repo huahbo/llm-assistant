@@ -2922,6 +2922,18 @@ Wiki 页面：\n{}",
         })
     }
 
+    /// 获取 Vault 统计数据。
+    pub fn get_vault_stats_impl(&self) -> Result<crate::models::VaultStats, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化".to_string())?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        crate::db::get_vault_stats_from_db(&db_path, now_ms)
+    }
+
     /// 运行完整 Lint 并写入 outbox。
     pub async fn run_lint_with_outbox(&self) -> LintReport {
         let report = self.lint_report_full_future().await;

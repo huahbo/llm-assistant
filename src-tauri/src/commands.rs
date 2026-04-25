@@ -7,7 +7,7 @@ use crate::models::{
     LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry,
     ModeChangeResult, OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult,
     QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
-    SearchConfig, VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
+    SearchConfig, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -709,4 +709,12 @@ pub fn save_research_doc(path: String, content: String) -> Result<(), String> {
     }
     std::fs::write(&target, content).map_err(|e| format!("写入文件失败: {}", e))?;
     Ok(())
+}
+
+/// 获取 Vault 知识库统计数据（供仪表盘展示）。
+#[tauri::command]
+pub fn get_vault_stats(
+    state: State<'_, AppState>,
+) -> Result<VaultStats, String> {
+    state.get_vault_stats_impl()
 }
