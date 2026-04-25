@@ -244,12 +244,13 @@ impl LlmProvider for OpenAiProvider {
             .await
             .map_err(|e| LlmError::InvalidResponse(format!("读取响应体失败: {}", e)))?;
 
-        let chat_response: ChatResponse = serde_json::from_str(&body_text)
-            .map_err(|e| LlmError::InvalidResponse(format!(
+        let chat_response: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
+            LlmError::InvalidResponse(format!(
                 "解析响应失败: {} (body前200字符: {})",
                 e,
                 body_text.chars().take(200).collect::<String>()
-            )))?;
+            ))
+        })?;
 
         // 取第一个 choice 的内容
         chat_response
@@ -364,9 +365,10 @@ impl LlmProvider for OpenAiProvider {
                     if payload == "[DONE]" {
                         return Ok(full_text);
                     }
-                    let parsed: ChatStreamResponse = serde_json::from_str(payload).map_err(|e| {
-                        LlmError::InvalidResponse(format!("解析流式响应失败: {}", e))
-                    })?;
+                    let parsed: ChatStreamResponse =
+                        serde_json::from_str(payload).map_err(|e| {
+                            LlmError::InvalidResponse(format!("解析流式响应失败: {}", e))
+                        })?;
                     if let Some(content) = parsed
                         .choices
                         .into_iter()

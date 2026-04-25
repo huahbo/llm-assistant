@@ -1,14 +1,15 @@
 use tauri::State;
 
 use crate::models::{
-    AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem,
-    DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
-    KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyResult,
-    LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig, LlmStatus, LogEntry,
-    ModeChangeResult, OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult,
-    QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
-    NewPageResult, SearchConfig, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail,
-    WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
+    AgentDraftItem, AgentRunEventItem, AgentRunItem, AppMode, AppOverview, AskSessionItem,
+    AskSessionSearchHitItem, AskSessionTurnItem, DefaultPaths, IngestPreview, IngestResult,
+    KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput,
+    LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview,
+    LintReport, LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, NewPageResult,
+    OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult, QueryAskOptions,
+    QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig,
+    VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail, WikiPageHistoryDetail,
+    WikiPageHistoryItem, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -230,7 +231,7 @@ pub async fn ingest_markdown(
 ) -> Result<IngestResult, String> {
     eprintln!("[ingest_markdown] called with source_path={}", source_path);
     state
-        .ingest_markdown(std::path::PathBuf::from(source_path))
+        .ingest_markdown(std::path::PathBuf::from(source_path), None)
         .await
 }
 
@@ -385,7 +386,9 @@ pub async fn save_wiki_page(
     expected_checksum: Option<String>,
 ) -> Result<crate::models::SaveWikiPageResult, String> {
     eprintln!("[save_wiki_page] called with path={}", path);
-    state.save_wiki_page_impl(&path, &content, expected_checksum.as_deref()).await
+    state
+        .save_wiki_page_impl(&path, &content, expected_checksum.as_deref())
+        .await
 }
 
 /// 重命名 Wiki 页面（文件系统 + DB path 同步）。
@@ -506,6 +509,81 @@ pub fn ack_outbox_events(
     consumer_tag: String,
 ) -> Result<OutboxAckResult, String> {
     state.ack_outbox_events_impl(up_to_id, &consumer_tag)
+}
+
+/// 创建 Agent Run（H0）。
+#[tauri::command]
+pub fn start_agent_run(topic: String, state: State<'_, AppState>) -> Result<i64, String> {
+    state.start_agent_run_impl(&topic)
+}
+
+/// 追加 Agent Run 事件（H0）。
+#[tauri::command]
+pub fn append_agent_run_event(
+    run_id: i64,
+    level: String,
+    message: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.append_agent_run_event_impl(run_id, &level, &message)
+}
+
+/// 列出 Agent Runs（H0）。
+#[tauri::command]
+pub fn list_agent_runs(
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentRunItem>, String> {
+    state.list_agent_runs_impl(limit)
+}
+
+/// 列出指定 Agent Run 的事件（H0）。
+#[tauri::command]
+pub fn list_agent_run_events(
+    run_id: i64,
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentRunEventItem>, String> {
+    state.list_agent_run_events_impl(run_id, limit)
+}
+
+/// 结束 Agent Run（H0）。
+#[tauri::command]
+pub fn complete_agent_run(
+    run_id: i64,
+    status: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.complete_agent_run_impl(run_id, &status)
+}
+
+/// 生成 Agent Draft（H1）。
+#[tauri::command]
+pub async fn generate_agent_draft(
+    run_id: i64,
+    topic: String,
+    state: State<'_, AppState>,
+) -> Result<AgentDraftItem, String> {
+    state.generate_agent_draft_impl(run_id, topic).await
+}
+
+/// 列出指定 Run 的草稿（H1）。
+#[tauri::command]
+pub fn list_agent_drafts(
+    run_id: i64,
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentDraftItem>, String> {
+    state.list_agent_drafts_impl(run_id, limit)
+}
+
+/// 审批并写盘草稿（H1）。
+#[tauri::command]
+pub async fn approve_agent_draft(
+    draft_id: i64,
+    state: State<'_, AppState>,
+) -> Result<NewPageResult, String> {
+    state.approve_agent_draft_impl(draft_id).await
 }
 
 /// 多轮会话问答（携带 session_id 和历史上下文）。
@@ -744,9 +822,7 @@ pub fn save_research_doc(path: String, content: String) -> Result<(), String> {
 
 /// 获取 Vault 知识库统计数据（供仪表盘展示）。
 #[tauri::command]
-pub fn get_vault_stats(
-    state: State<'_, AppState>,
-) -> Result<VaultStats, String> {
+pub fn get_vault_stats(state: State<'_, AppState>) -> Result<VaultStats, String> {
     state.get_vault_stats_impl()
 }
 

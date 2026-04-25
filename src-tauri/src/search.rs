@@ -21,10 +21,7 @@ pub struct PageScore {
 ///
 /// # 返回
 /// 融合后的页面评分列表，按分数降序排列
-pub fn reciprocal_rank_fusion(
-    results_list: &[Vec<String>],
-    k: f64,
-) -> Vec<(String, f64)> {
+pub fn reciprocal_rank_fusion(results_list: &[Vec<String>], k: f64) -> Vec<(String, f64)> {
     let mut acc: HashMap<String, f64> = HashMap::new();
 
     for list in results_list {
@@ -37,10 +34,7 @@ pub fn reciprocal_rank_fusion(
     let mut result: Vec<(String, f64)> = acc.into_iter().collect();
 
     // 按分数降序排列
-    result.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     result
 }

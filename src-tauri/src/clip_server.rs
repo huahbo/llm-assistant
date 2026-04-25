@@ -1,11 +1,11 @@
-use tauri::{AppHandle, Manager};
 use crate::state::AppState;
-use tiny_http::{Server, Response, Header, Method};
-use std::thread;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use chrono;
 use serde_json;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use tauri::{AppHandle, Manager};
+use tiny_http::{Header, Method, Response, Server};
 
 const PORT: u16 = 19827;
 static CLIP_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -56,7 +56,8 @@ pub fn start_clip_server(app_handle: AppHandle) {
                         "version": "0.1.0",
                         "vault_open": !path.is_empty(),
                         "vault_path": path
-                    }).to_string();
+                    })
+                    .to_string();
                     let mut response = Response::from_string(body);
                     for h in &cors_headers {
                         response.add_header(h.clone());
@@ -69,20 +70,29 @@ pub fn start_clip_server(app_handle: AppHandle) {
                     let path = normalize_display_path(&overview.vault_path);
                     let body = serde_json::json!({"ok": true, "path": path}).to_string();
                     let mut response = Response::from_string(body);
-                    for h in &cors_headers { response.add_header(h.clone()); }
+                    for h in &cors_headers {
+                        response.add_header(h.clone());
+                    }
                     let _ = request.respond(response);
                 }
                 (&Method::Get, "/projects") => {
                     let state = app_handle.state::<AppState>();
                     let overview = state.overview();
                     let path = normalize_display_path(&overview.vault_path);
-                    let name = path.split('/').last().unwrap_or("Current Project").to_string();
+                    let name = path
+                        .split('/')
+                        .last()
+                        .unwrap_or("Current Project")
+                        .to_string();
                     let body = serde_json::json!({
                         "ok": true,
                         "projects": [{"name": name, "path": path, "current": true}]
-                    }).to_string();
+                    })
+                    .to_string();
                     let mut response = Response::from_string(body);
-                    for h in &cors_headers { response.add_header(h.clone()); }
+                    for h in &cors_headers {
+                        response.add_header(h.clone());
+                    }
                     let _ = request.respond(response);
                 }
                 (&Method::Post, "/clip") => {
@@ -90,7 +100,9 @@ pub fn start_clip_server(app_handle: AppHandle) {
                     if let Err(e) = request.as_reader().read_to_string(&mut body) {
                         let err = serde_json::json!({"ok": false, "error": format!("Read failed: {}", e)}).to_string();
                         let mut response = Response::from_string(err).with_status_code(400);
-                        for h in &cors_headers { response.add_header(h.clone()); }
+                        for h in &cors_headers {
+                            response.add_header(h.clone());
+                        }
                         let _ = request.respond(response);
                         continue;
                     }
@@ -98,22 +110,33 @@ pub fn start_clip_server(app_handle: AppHandle) {
                     match handle_clip(&body, &app_handle) {
                         Ok(path) => {
                             let display_path = normalize_display_path(&path);
-                            let resp_body = serde_json::json!({"ok": true, "path": display_path}).to_string();
-                            let mut response = Response::from_string(resp_body).with_status_code(200);
-                            for h in &cors_headers { response.add_header(h.clone()); }
+                            let resp_body =
+                                serde_json::json!({"ok": true, "path": display_path}).to_string();
+                            let mut response =
+                                Response::from_string(resp_body).with_status_code(200);
+                            for h in &cors_headers {
+                                response.add_header(h.clone());
+                            }
                             let _ = request.respond(response);
                         }
                         Err(err) => {
-                            let resp_body = serde_json::json!({"ok": false, "error": err}).to_string();
-                            let mut response = Response::from_string(resp_body).with_status_code(500);
-                            for h in &cors_headers { response.add_header(h.clone()); }
+                            let resp_body =
+                                serde_json::json!({"ok": false, "error": err}).to_string();
+                            let mut response =
+                                Response::from_string(resp_body).with_status_code(500);
+                            for h in &cors_headers {
+                                response.add_header(h.clone());
+                            }
                             let _ = request.respond(response);
                         }
                     }
                 }
                 _ => {
-                    let mut response = Response::from_string(r#"{"ok":false,"error":"Not found"}"#).with_status_code(404);
-                    for h in &cors_headers { response.add_header(h.clone()); }
+                    let mut response = Response::from_string(r#"{"ok":false,"error":"Not found"}"#)
+                        .with_status_code(404);
+                    for h in &cors_headers {
+                        response.add_header(h.clone());
+                    }
                     let _ = request.respond(response);
                 }
             }
@@ -148,8 +171,14 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
     // 如果 extension 指定了 projectPath，校验它与当前 vault 匹配
     if let Some(requested_path) = parsed["projectPath"].as_str() {
         if !requested_path.is_empty() {
-            let norm_requested = requested_path.replace('\\', "/").trim_end_matches('/').to_string();
-            let norm_vault = vault_path_str.replace('\\', "/").trim_end_matches('/').to_string();
+            let norm_requested = requested_path
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_string();
+            let norm_vault = vault_path_str
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_string();
             if norm_requested != norm_vault {
                 return Err(format!(
                     "Requested project '{}' does not match active vault '{}'",
@@ -177,7 +206,7 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
         }
     }
     let slug = slug.trim_matches('-').chars().take(50).collect::<String>();
-    
+
     let base_name = if slug.is_empty() {
         format!("clip-{}", date_compact)
     } else {
@@ -186,7 +215,8 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
 
     let clips_dir = vault_path.join("raw").join("clips");
     if !clips_dir.exists() {
-        std::fs::create_dir_all(&clips_dir).map_err(|e| format!("Failed to create clips dir: {}", e))?;
+        std::fs::create_dir_all(&clips_dir)
+            .map_err(|e| format!("Failed to create clips dir: {}", e))?;
     }
 
     let mut file_path = clips_dir.join(format!("{}.md", base_name));
@@ -207,26 +237,29 @@ fn handle_clip(body: &str, app_handle: &AppHandle) -> Result<String, String> {
     );
 
     // 防止 slug 构造导致路径越权
-    let canonical_clips = clips_dir.canonicalize()
+    let canonical_clips = clips_dir
+        .canonicalize()
         .unwrap_or_else(|_| clips_dir.clone());
-    let canonical_file = file_path.canonicalize()
-        .unwrap_or_else(|_| {
-            // 文件尚未创建时，规范化父目录后拼接文件名
-            canonical_clips.join(format!("{}.md", base_name))
-        });
+    let canonical_file = file_path.canonicalize().unwrap_or_else(|_| {
+        // 文件尚未创建时，规范化父目录后拼接文件名
+        canonical_clips.join(format!("{}.md", base_name))
+    });
     if !canonical_file.starts_with(&canonical_clips) {
-        return Err("Clip path traversal detected: title contains illegal path characters".to_string());
+        return Err(
+            "Clip path traversal detected: title contains illegal path characters".to_string(),
+        );
     }
 
-    std::fs::write(&file_path, &markdown).map_err(|e| format!("Failed to write clip file: {}", e))?;
+    std::fs::write(&file_path, &markdown)
+        .map_err(|e| format!("Failed to write clip file: {}", e))?;
 
     // Asynchronously ingest
     let app_handle_clone = app_handle.clone();
     let file_path_clone = file_path.clone();
-    
+
     tauri::async_runtime::spawn(async move {
         let state = app_handle_clone.state::<AppState>();
-        if let Err(e) = state.ingest_markdown(file_path_clone).await {
+        if let Err(e) = state.ingest_markdown(file_path_clone, None).await {
             eprintln!("[Clip Server] Ingest failed: {}", e);
         }
     });
@@ -258,7 +291,8 @@ mod tests {
         })
         .to_string();
 
-        let parsed: serde_json::Value = serde_json::from_str(&body).expect("response must be valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("response must be valid json");
         assert_eq!(
             parsed.get("path").and_then(|v| v.as_str()),
             Some("E:/llm-wiki/vault/raw/clips/demo.md")

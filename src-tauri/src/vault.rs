@@ -552,7 +552,11 @@ fn resolve_wiki_semantic_title(
 }
 
 /// 若无 display_name，回退到 ingest-{timestamp_ns}。
-fn resolve_wiki_filename(vault_path: &Path, display_name: Option<&str>, timestamp_ns: &str) -> String {
+fn resolve_wiki_filename(
+    vault_path: &Path,
+    display_name: Option<&str>,
+    timestamp_ns: &str,
+) -> String {
     let base = match display_name {
         Some(name) if !name.trim().is_empty() => sanitize_filename_stem(name.trim()),
         _ => return format!("ingest-{}.md", timestamp_ns),
@@ -586,8 +590,13 @@ fn sanitize_filename_stem(raw: &str) -> String {
             break;
         }
         let allowed = match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_'
-            | '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}' => true,
+            'a'..='z'
+            | 'A'..='Z'
+            | '0'..='9'
+            | '-'
+            | '_'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{3400}'..='\u{4dbf}' => true,
             _ => false,
         };
         if allowed {
@@ -600,7 +609,11 @@ fn sanitize_filename_stem(raw: &str) -> String {
         }
     }
     let cleaned = cleaned.trim_matches('-').to_string();
-    if cleaned.is_empty() { "untitled".to_string() } else { cleaned }
+    if cleaned.is_empty() {
+        "untitled".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// 截断文本生成摘要（回退方案）
@@ -905,8 +918,10 @@ mod tests {
         let source_content = "# Source Title\n\nDuplicate note content.";
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
-        let first = ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第一次导入失败");
-        let second = ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第二次导入失败");
+        let first =
+            ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第一次导入失败");
+        let second =
+            ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第二次导入失败");
 
         assert_eq!(first.wiki_path, second.wiki_path);
         assert_eq!(first.raw_path, second.raw_path);
@@ -1043,13 +1058,18 @@ mod tests {
 
     #[test]
     fn semantic_title_skips_single_char_entity_uses_display_name() {
-        let t = resolve_wiki_semantic_title(&["A".to_string()], Some("rust-lifecycle"), "ingest-12345.md");
+        let t = resolve_wiki_semantic_title(
+            &["A".to_string()],
+            Some("rust-lifecycle"),
+            "ingest-12345.md",
+        );
         assert_eq!(t, "rust-lifecycle");
     }
 
     #[test]
     fn semantic_title_skips_internal_display_name_uses_filename() {
-        let t = resolve_wiki_semantic_title(&[], Some("llm_wiki_preview_apply_123"), "ingest-12345.md");
+        let t =
+            resolve_wiki_semantic_title(&[], Some("llm_wiki_preview_apply_123"), "ingest-12345.md");
         assert_eq!(t, "ingest-12345");
     }
 

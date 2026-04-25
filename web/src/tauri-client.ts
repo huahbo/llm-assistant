@@ -1,4 +1,9 @@
 import type {
+  AgentDraftItem,
+  AgentRunEventItem,
+  AgentRunEventLevel,
+  AgentRunItem,
+  AgentRunStatus,
   AppOverview,
   AskHistoryItem,
   AskSessionItem,
@@ -1497,6 +1502,58 @@ export const saveOcrConfig = async (provider: string | null): Promise<void> => {
 /** 构造 set_ocr_config 参数（用于测试） */
 export const createSetOcrConfigArgs = (provider: string | null) => ({ provider });
 
+/** 构造 start_agent_run 命令参数（用于测试） */
+export const createStartAgentRunArgs = (topic: string) => ({ topic });
+
+/** 构造 append_agent_run_event 命令参数（用于测试） */
+export const createAppendAgentRunEventArgs = (
+  runId: number,
+  level: AgentRunEventLevel,
+  message: string,
+) => ({
+  runId,
+  run_id: runId,
+  level,
+  message,
+});
+
+/** 构造 list_agent_runs 命令参数（用于测试） */
+export const createListAgentRunsArgs = (limit?: number) => ({ limit });
+
+/** 构造 list_agent_run_events 命令参数（用于测试） */
+export const createListAgentRunEventsArgs = (runId: number, limit?: number) => ({
+  runId,
+  run_id: runId,
+  limit,
+});
+
+/** 构造 complete_agent_run 命令参数（用于测试） */
+export const createCompleteAgentRunArgs = (runId: number, status: AgentRunStatus | string) => ({
+  runId,
+  run_id: runId,
+  status,
+});
+
+/** 构造 generate_agent_draft 命令参数（用于测试） */
+export const createGenerateAgentDraftArgs = (runId: number, topic: string) => ({
+  runId,
+  run_id: runId,
+  topic,
+});
+
+/** 构造 list_agent_drafts 命令参数（用于测试） */
+export const createListAgentDraftsArgs = (runId: number, limit?: number) => ({
+  runId,
+  run_id: runId,
+  limit,
+});
+
+/** 构造 approve_agent_draft 命令参数（用于测试） */
+export const createApproveAgentDraftArgs = (draftId: number) => ({
+  draftId,
+  draft_id: draftId,
+});
+
 /** 设置或取消 Wiki 页面的 stale 标记 */
 export async function markPageStale(
   pagePath: string,
@@ -1581,6 +1638,137 @@ export async function cancelIngestItem(id: number): Promise<void> {
 export async function retryIngestItem(id: number): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<void>("retry_ingest_item", { id });
+}
+
+/** 启动 Agent Run（H0 脚手架）。后端返回 run_id。 */
+export async function startAgentRun(topic: string): Promise<number | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<number>("start_agent_run", {
+        ...createStartAgentRunArgs(topic),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** 追加 Agent Run 事件。后端成功即视为 true。 */
+export async function appendAgentRunEvent(
+  runId: number,
+  level: AgentRunEventLevel,
+  message: string,
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(
+      invoke<void>("append_agent_run_event", {
+        ...createAppendAgentRunEventArgs(runId, level, message),
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 列出 Agent Runs。非 Tauri 环境返回空数组。 */
+export async function listAgentRuns(limit = 50): Promise<AgentRunItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentRunItem[]>("list_agent_runs", {
+        ...createListAgentRunsArgs(limit),
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 列出指定 Agent Run 的事件。非 Tauri 环境返回空数组。 */
+export async function listAgentRunEvents(runId: number, limit = 200): Promise<AgentRunEventItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentRunEventItem[]>("list_agent_run_events", {
+        ...createListAgentRunEventsArgs(runId, limit),
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 完成 Agent Run（写入终态）。后端成功即视为 true。 */
+export async function completeAgentRun(
+  runId: number,
+  status: AgentRunStatus | string,
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(
+      invoke<void>("complete_agent_run", {
+        ...createCompleteAgentRunArgs(runId, status),
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 为指定 run 生成 Draft。后端成功即视为 true。 */
+export async function generateAgentDraft(runId: number, topic: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(
+      invoke<void>("generate_agent_draft", {
+        ...createGenerateAgentDraftArgs(runId, topic),
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 列出指定 run 的 Draft。非 Tauri 环境返回空数组。 */
+export async function listAgentDrafts(runId: number, limit = 100): Promise<AgentDraftItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentDraftItem[]>("list_agent_drafts", {
+        ...createListAgentDraftsArgs(runId, limit),
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 审批 Draft 并写盘。后端成功即视为 true。 */
+export async function approveAgentDraft(draftId: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(
+      invoke<void>("approve_agent_draft", {
+        ...createApproveAgentDraftArgs(draftId),
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---- Deep Research API ----

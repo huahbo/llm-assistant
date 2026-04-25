@@ -1,8 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::collections::{HashMap, HashSet};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{AskTurn, LintPatchEventItem};
 /// 已执行过初始化（init_schema）的数据库路径缓存。
@@ -186,6 +186,39 @@ pub struct OutboxEventRecord {
     pub consumer_tag: Option<String>,
 }
 
+/// Agent Run 记录（用于列表展示）。
+#[derive(Debug, Clone)]
+pub struct AgentRunRecord {
+    pub id: i64,
+    pub topic: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+/// Agent Run 事件记录（用于时间线展示）。
+#[derive(Debug, Clone)]
+pub struct AgentRunEventRecord {
+    pub id: i64,
+    pub run_id: i64,
+    pub level: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+/// Agent Draft 记录（用于草稿列表与审批）。
+#[derive(Debug, Clone)]
+pub struct AgentDraftRecord {
+    pub id: i64,
+    pub run_id: i64,
+    pub title: String,
+    pub content: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 页面 Embedding 记录。
 #[derive(Debug, Clone)]
 pub struct PageEmbeddingRecord {
@@ -194,11 +227,7 @@ pub struct PageEmbeddingRecord {
 }
 
 /// 将页面路径及其向量（二进制 BLOB 格式）插入或更新到 `page_embeddings` 表中。
-pub fn upsert_embedding(
-    db_path: &Path,
-    page_path: &str,
-    embedding: &[f32],
-) -> Result<(), String> {
+pub fn upsert_embedding(db_path: &Path, page_path: &str, embedding: &[f32]) -> Result<(), String> {
     let conn = open_connection(db_path)?;
     init_schema(&conn)?;
 
@@ -251,9 +280,13 @@ pub fn list_embeddings(db_path: &Path, limit: usize) -> Result<Vec<PageEmbedding
 
     let mut result = Vec::new();
     for item in rows {
-        let (page_path, blob) = item.map_err(|err| format!("读取 page_embeddings 结果失败: {}", err))?;
+        let (page_path, blob) =
+            item.map_err(|err| format!("读取 page_embeddings 结果失败: {}", err))?;
         let embedding = decode_embedding_blob(&blob)?;
-        result.push(PageEmbeddingRecord { page_path, embedding });
+        result.push(PageEmbeddingRecord {
+            page_path,
+            embedding,
+        });
     }
     Ok(result)
 }
@@ -571,7 +604,10 @@ pub fn search_wiki_pages(
     }
     let conn = open_connection(db_path)?;
     // Try FTS5 first
-    let tokens: Vec<String> = normalized.split_whitespace().map(|s| s.to_string()).collect();
+    let tokens: Vec<String> = normalized
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
     if let Some(fts_query) = build_fts_match_query(&tokens) {
         match try_fts_search_wiki_pages(&conn, &fts_query, limit) {
             Ok(rows) if !rows.is_empty() => return Ok(rows),
@@ -778,6 +814,21 @@ pub fn record_wiki_page(
         ],
     )
     .map_err(|err| format!("写入 wiki_pages 失败: {}", err))?;
+    Ok(())
+}
+
+/// 更新 wiki_pages 表中指定页面的标题（不涉及文件重命名）。
+pub fn update_wiki_page_title(
+    db_path: &Path,
+    page_path: &Path,
+    new_title: &str,
+) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    conn.execute(
+        "UPDATE wiki_pages SET title = ?1 WHERE path = ?2",
+        params![new_title, page_path.to_string_lossy()],
+    )
+    .map_err(|err| format!("更新 wiki_pages.title 失败: {}", err))?;
     Ok(())
 }
 
@@ -1038,11 +1089,8 @@ pub fn delete_wiki_page_from_db(db_path: &Path, page_path: &Path) -> Result<(), 
     let path_str = page_path.to_string_lossy();
 
     // 删除 FTS 索引
-    conn.execute(
-        "DELETE FROM fts_pages WHERE path = ?1",
-        params![path_str],
-    )
-    .map_err(|err| format!("删除 fts_pages 记录失败: {}", err))?;
+    conn.execute("DELETE FROM fts_pages WHERE path = ?1", params![path_str])
+        .map_err(|err| format!("删除 fts_pages 记录失败: {}", err))?;
 
     // 删除引用（作为引用方或被引用方均清理）
     conn.execute(
@@ -1059,11 +1107,8 @@ pub fn delete_wiki_page_from_db(db_path: &Path, page_path: &Path) -> Result<(), 
     .map_err(|err| format!("删除 wiki_page_history 记录失败: {}", err))?;
 
     // 删除主记录
-    conn.execute(
-        "DELETE FROM wiki_pages WHERE path = ?1",
-        params![path_str],
-    )
-    .map_err(|err| format!("删除 wiki_pages 记录失败: {}", err))?;
+    conn.execute("DELETE FROM wiki_pages WHERE path = ?1", params![path_str])
+        .map_err(|err| format!("删除 wiki_pages 记录失败: {}", err))?;
 
     Ok(())
 }
@@ -1110,11 +1155,8 @@ pub fn rename_wiki_page_in_db(
     .map_err(|err| format!("更新 wiki_page_history.path 失败: {}", err))?;
 
     // fts_pages：删旧插新
-    conn.execute(
-        "DELETE FROM fts_pages WHERE path = ?1",
-        params![old_str],
-    )
-    .map_err(|err| format!("删除旧 fts_pages 记录失败: {}", err))?;
+    conn.execute("DELETE FROM fts_pages WHERE path = ?1", params![old_str])
+        .map_err(|err| format!("删除旧 fts_pages 记录失败: {}", err))?;
 
     conn.execute(
         "INSERT INTO fts_pages(path, title, body) VALUES (?1, ?2, ?3)",
@@ -1174,27 +1216,36 @@ pub fn query_linked_page_paths(
 
     for path in from_paths {
         // 正向：此页面引用的页面
-        let mut stmt = conn.prepare(
-            "SELECT cited_page_path FROM citations WHERE page_path = ?1 LIMIT ?2"
-        ).map_err(|e| format!("准备正向链接查询失败: {}", e))?;
-        let rows = stmt.query_map(params![path, limit as i64], |row| row.get::<_, String>(0))
+        let mut stmt = conn
+            .prepare("SELECT cited_page_path FROM citations WHERE page_path = ?1 LIMIT ?2")
+            .map_err(|e| format!("准备正向链接查询失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![path, limit as i64], |row| row.get::<_, String>(0))
             .map_err(|e| format!("执行正向链接查询失败: {}", e))?;
-        for r in rows.flatten() { result.insert(r); }
+        for r in rows.flatten() {
+            result.insert(r);
+        }
 
         // 反向：引用此页面的页面
-        let mut stmt = conn.prepare(
-            "SELECT page_path FROM citations WHERE cited_page_path = ?1 LIMIT ?2"
-        ).map_err(|e| format!("准备反向链接查询失败: {}", e))?;
-        let rows = stmt.query_map(params![path, limit as i64], |row| row.get::<_, String>(0))
+        let mut stmt = conn
+            .prepare("SELECT page_path FROM citations WHERE cited_page_path = ?1 LIMIT ?2")
+            .map_err(|e| format!("准备反向链接查询失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![path, limit as i64], |row| row.get::<_, String>(0))
             .map_err(|e| format!("执行反向链接查询失败: {}", e))?;
-        for r in rows.flatten() { result.insert(r); }
+        for r in rows.flatten() {
+            result.insert(r);
+        }
 
-        if result.len() >= limit { break; }
+        if result.len() >= limit {
+            break;
+        }
     }
 
     // 去掉 from_paths 本身（避免循环引用降低 RRF 效果）
     let from_set: std::collections::HashSet<&String> = from_paths.iter().collect();
-    Ok(result.into_iter()
+    Ok(result
+        .into_iter()
         .filter(|p| !from_set.contains(p))
         .take(limit)
         .collect())
@@ -1202,10 +1253,7 @@ pub fn query_linked_page_paths(
 
 /// 查找被引用次数最多的页面路径（Citation 热度排序）。
 /// 用于 RRF 热度路径。
-pub fn query_citation_popular_paths(
-    db_path: &Path,
-    limit: usize,
-) -> Result<Vec<String>, String> {
+pub fn query_citation_popular_paths(db_path: &Path, limit: usize) -> Result<Vec<String>, String> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -1400,6 +1448,54 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             created_at        TEXT NOT NULL,
             updated_at        TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic        TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'running',
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_run_events (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      INTEGER NOT NULL,
+            level       TEXT NOT NULL,
+            message     TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_drafts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id       INTEGER NOT NULL,
+            title        TEXT NOT NULL DEFAULT '',
+            content      TEXT NOT NULL DEFAULT '',
+            status       TEXT NOT NULL DEFAULT 'draft',
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_memories (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id       INTEGER,
+            memory_key   TEXT NOT NULL,
+            memory_value TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_updated_at
+            ON agent_runs(updated_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_id_id
+            ON agent_run_events(run_id, id);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_drafts_run_id_updated_at
+            ON agent_drafts(run_id, updated_at, id);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -1483,11 +1579,14 @@ fn ensure_ask_history_quality(conn: &Connection) -> Result<(), String> {
             .prepare("SELECT id, question FROM ask_history")
             .map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
         let rows = select_stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
 
         for row in rows {
-            let (id, question) = row.map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
+            let (id, question) =
+                row.map_err(|err| format!("读取 ask_history 历史数据失败: {}", err))?;
             let norm = normalize_ask_question(question.trim());
             conn.execute(
                 "UPDATE ask_history SET question_norm = ?1 WHERE id = ?2",
@@ -1571,7 +1670,9 @@ fn ensure_ask_session_turns_quality(conn: &Connection) -> Result<(), String> {
         .unwrap_or(0);
     if fts_count == 0 {
         let turns_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM ask_session_turns", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM ask_session_turns", [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0);
         if turns_count > 0 {
             let _ = conn.execute(
@@ -1834,8 +1935,11 @@ pub fn append_ask_session_turn(
 pub fn delete_ask_session_turn_by_id(db_path: &Path, turn_id: i64) -> Result<(), String> {
     let shared_conn = get_connection(db_path)?;
     let conn = shared_conn.lock().unwrap();
-    conn.execute("DELETE FROM ask_session_turns WHERE id = ?1", params![turn_id])
-        .map_err(|err| format!("删除 ask_session_turn 失败: {}", err))?;
+    conn.execute(
+        "DELETE FROM ask_session_turns WHERE id = ?1",
+        params![turn_id],
+    )
+    .map_err(|err| format!("删除 ask_session_turn 失败: {}", err))?;
     Ok(())
 }
 
@@ -2207,8 +2311,354 @@ pub fn ack_outbox_events(
     Ok(affected)
 }
 
+/// 创建一条 Agent Run，默认 status=running。
+pub fn start_agent_run(db_path: &Path, topic: &str, now: &str) -> Result<i64, String> {
+    let normalized_topic = topic.trim();
+    if normalized_topic.is_empty() {
+        return Err("topic 不能为空".to_string());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.execute(
+        r#"
+        INSERT INTO agent_runs (topic, status, created_at, updated_at)
+        VALUES (?1, 'running', ?2, ?2)
+        "#,
+        params![normalized_topic, now],
+    )
+    .map_err(|err| format!("写入 agent_runs 失败: {}", err))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 追加一条 Agent Run 事件。
+pub fn append_agent_run_event(
+    db_path: &Path,
+    run_id: i64,
+    level: &str,
+    message: &str,
+    now: &str,
+) -> Result<(), String> {
+    let normalized_level = level.trim();
+    let normalized_message = message.trim();
+    if normalized_level.is_empty() {
+        return Err("level 不能为空".to_string());
+    }
+    if normalized_message.is_empty() {
+        return Err("message 不能为空".to_string());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.execute(
+        r#"
+        INSERT INTO agent_run_events (run_id, level, message, created_at)
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+        params![run_id, normalized_level, normalized_message, now],
+    )
+    .map_err(|err| format!("写入 agent_run_events 失败: {}", err))?;
+    conn.execute(
+        "UPDATE agent_runs SET updated_at = ?1 WHERE id = ?2",
+        params![now, run_id],
+    )
+    .map_err(|err| format!("更新 agent_runs 时间失败: {}", err))?;
+    Ok(())
+}
+
+/// 按更新时间倒序列出 Agent Runs。
+pub fn list_agent_runs(db_path: &Path, limit: usize) -> Result<Vec<AgentRunRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, topic, status, created_at, updated_at, completed_at
+            FROM agent_runs
+            ORDER BY CAST(updated_at AS INTEGER) DESC, id DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 agent_runs 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(AgentRunRecord {
+                id: row.get(0)?,
+                topic: row.get(1)?,
+                status: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                completed_at: row.get(5)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 agent_runs 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 agent_runs 失败: {}", err))
+}
+
+/// 按 id 正序列出指定 Agent Run 的事件。
+pub fn list_agent_run_events(
+    db_path: &Path,
+    run_id: i64,
+    limit: usize,
+) -> Result<Vec<AgentRunEventRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, run_id, level, message, created_at
+            FROM agent_run_events
+            WHERE run_id = ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备查询 agent_run_events 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![run_id, limit as i64], |row| {
+            Ok(AgentRunEventRecord {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                level: row.get(2)?,
+                message: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 agent_run_events 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 agent_run_events 失败: {}", err))
+}
+
+/// 将 Agent Run 置为终态（applied/failed），并写入完成时间。
+pub fn complete_agent_run(
+    db_path: &Path,
+    run_id: i64,
+    status: &str,
+    now: &str,
+) -> Result<(), String> {
+    let normalized_status = status.trim();
+    if normalized_status.is_empty() {
+        return Err("status 不能为空".to_string());
+    }
+    let mut conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开启结束 run 事务失败: {}", err))?;
+    let completed_at = if normalized_status == "running" {
+        None
+    } else {
+        Some(now)
+    };
+    let affected = tx
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET status = ?1, updated_at = ?2, completed_at = ?3
+            WHERE id = ?4
+            "#,
+            params![normalized_status, now, completed_at, run_id],
+        )
+        .map_err(|err| format!("更新 agent_runs 状态失败: {}", err))?;
+    if affected == 0 {
+        return Err(format!("Agent Run 不存在: {}", run_id));
+    }
+    // 结束 run 时自动补一条系统事件，避免事件面板空白。
+    let system_message = format!("系统状态变更：{} -> {}", run_id, normalized_status);
+    tx.execute(
+        r#"
+        INSERT INTO agent_run_events (run_id, level, message, created_at)
+        VALUES (?1, 'info', ?2, ?3)
+        "#,
+        params![run_id, system_message, now],
+    )
+    .map_err(|err| format!("写入 run 系统事件失败: {}", err))?;
+
+    tx.commit()
+        .map_err(|err| format!("提交结束 run 事务失败: {}", err))?;
+    Ok(())
+}
+
+/// 写入一条 Agent Draft 草稿记录。
+pub fn create_agent_draft(
+    db_path: &Path,
+    run_id: i64,
+    title: &str,
+    content: &str,
+    status: &str,
+    now: &str,
+) -> Result<AgentDraftRecord, String> {
+    let normalized_title = title.trim();
+    let normalized_content = content.trim();
+    let normalized_status = status.trim();
+    if normalized_content.is_empty() {
+        return Err("draft content 不能为空".to_string());
+    }
+    if normalized_status.is_empty() {
+        return Err("draft status 不能为空".to_string());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+
+    let run_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("查询 agent_runs 失败: {}", err))?;
+    if run_exists == 0 {
+        return Err(format!("Agent Run 不存在: {}", run_id));
+    }
+
+    conn.execute(
+        r#"
+        INSERT INTO agent_drafts (run_id, title, content, status, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+        "#,
+        params![
+            run_id,
+            normalized_title,
+            normalized_content,
+            normalized_status,
+            now
+        ],
+    )
+    .map_err(|err| format!("写入 agent_drafts 失败: {}", err))?;
+    let draft_id = conn.last_insert_rowid();
+
+    let draft = conn
+        .query_row(
+            r#"
+            SELECT id, run_id, title, content, status, created_at, updated_at
+            FROM agent_drafts
+            WHERE id = ?1
+            "#,
+            params![draft_id],
+            |row| {
+                Ok(AgentDraftRecord {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    title: row.get(2)?,
+                    content: row.get(3)?,
+                    status: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .map_err(|err| format!("读取新建 agent_draft 失败: {}", err))?;
+    Ok(draft)
+}
+
+/// 列出指定 Run 的草稿（按更新时间倒序）。
+pub fn list_agent_drafts(
+    db_path: &Path,
+    run_id: i64,
+    limit: usize,
+) -> Result<Vec<AgentDraftRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, run_id, title, content, status, created_at, updated_at
+            FROM agent_drafts
+            WHERE run_id = ?1
+            ORDER BY CAST(updated_at AS INTEGER) DESC, id DESC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备查询 agent_drafts 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![run_id, limit as i64], |row| {
+            Ok(AgentDraftRecord {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                status: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 agent_drafts 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 agent_drafts 失败: {}", err))
+}
+
+/// 读取指定草稿。
+pub fn get_agent_draft(db_path: &Path, draft_id: i64) -> Result<Option<AgentDraftRecord>, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.query_row(
+        r#"
+        SELECT id, run_id, title, content, status, created_at, updated_at
+        FROM agent_drafts
+        WHERE id = ?1
+        "#,
+        params![draft_id],
+        |row| {
+            Ok(AgentDraftRecord {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                status: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|err| format!("读取 agent_draft 失败: {}", err))
+}
+
+/// 更新草稿状态（例如 draft -> applied）。
+pub fn update_agent_draft_status(
+    db_path: &Path,
+    draft_id: i64,
+    status: &str,
+    now: &str,
+) -> Result<(), String> {
+    let normalized_status = status.trim();
+    if normalized_status.is_empty() {
+        return Err("draft status 不能为空".to_string());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let affected = conn
+        .execute(
+            r#"
+            UPDATE agent_drafts
+            SET status = ?1, updated_at = ?2
+            WHERE id = ?3
+            "#,
+            params![normalized_status, now, draft_id],
+        )
+        .map_err(|err| format!("更新 agent_draft 状态失败: {}", err))?;
+    if affected == 0 {
+        return Err(format!("Agent Draft 不存在: {}", draft_id));
+    }
+    Ok(())
+}
+
 /// 插入一条 queued 记录，返回新 id。
-pub fn db_enqueue_ingest(conn: &Connection, source_type: &str, source_path: &str, now: &str) -> Result<i64, String> {
+pub fn db_enqueue_ingest(
+    conn: &Connection,
+    source_type: &str,
+    source_path: &str,
+    now: &str,
+) -> Result<i64, String> {
     conn.execute(
         r#"
         INSERT INTO ingest_queue_items (source_type, source_path, status, created_at, updated_at)
@@ -2221,7 +2671,9 @@ pub fn db_enqueue_ingest(conn: &Connection, source_type: &str, source_path: &str
 }
 
 /// 查询全部 ingest_queue_items，按 created_at DESC。
-pub fn db_list_ingest_queue(conn: &Connection) -> Result<Vec<crate::models::IngestQueueItem>, String> {
+pub fn db_list_ingest_queue(
+    conn: &Connection,
+) -> Result<Vec<crate::models::IngestQueueItem>, String> {
     let mut stmt = conn
         .prepare(
             r#"
@@ -2249,7 +2701,9 @@ pub fn db_list_ingest_queue(conn: &Connection) -> Result<Vec<crate::models::Inge
 }
 
 /// 取最旧一条 queued 记录。
-pub fn db_get_next_queued_item(conn: &Connection) -> Result<Option<crate::models::IngestQueueItem>, String> {
+pub fn db_get_next_queued_item(
+    conn: &Connection,
+) -> Result<Option<crate::models::IngestQueueItem>, String> {
     let mut stmt = conn
         .prepare(
             r#"
@@ -2279,7 +2733,13 @@ pub fn db_get_next_queued_item(conn: &Connection) -> Result<Option<crate::models
 }
 
 /// 更新 ingest_queue_items 的 status + error + updated_at。
-pub fn db_update_ingest_queue_status(conn: &Connection, id: i64, status: &str, error: Option<&str>, now: &str) -> Result<(), String> {
+pub fn db_update_ingest_queue_status(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    error: Option<&str>,
+    now: &str,
+) -> Result<(), String> {
     conn.execute(
         r#"
         UPDATE ingest_queue_items
@@ -2384,7 +2844,9 @@ pub fn db_create_research_task(
 }
 
 /// 查询最近 100 条 research_tasks，按 created_at DESC。
-pub fn db_list_research_tasks(conn: &Connection) -> Result<Vec<crate::models::ResearchTaskItem>, String> {
+pub fn db_list_research_tasks(
+    conn: &Connection,
+) -> Result<Vec<crate::models::ResearchTaskItem>, String> {
     let mut stmt = conn
         .prepare(
             r#"
@@ -2416,10 +2878,20 @@ pub fn db_list_research_tasks(conn: &Connection) -> Result<Vec<crate::models::Re
 
     let mut result = Vec::new();
     for row in rows {
-        let (id, topic, status, sub_queries_json, web_results_count, depth, breadth, saved_path, error, created_at, updated_at) =
-            row.map_err(|err| format!("读取 research_tasks 失败: {}", err))?;
-        let sub_queries: Vec<String> =
-            serde_json::from_str(&sub_queries_json).unwrap_or_default();
+        let (
+            id,
+            topic,
+            status,
+            sub_queries_json,
+            web_results_count,
+            depth,
+            breadth,
+            saved_path,
+            error,
+            created_at,
+            updated_at,
+        ) = row.map_err(|err| format!("读取 research_tasks 失败: {}", err))?;
+        let sub_queries: Vec<String> = serde_json::from_str(&sub_queries_json).unwrap_or_default();
         result.push(crate::models::ResearchTaskItem {
             id,
             topic,
@@ -2486,7 +2958,10 @@ pub fn db_delete_research_task(conn: &Connection, id: i64) -> Result<(), String>
 
 /// 按 id 查询单条 research_tasks 记录（供未来命令扩展使用）。
 #[allow(dead_code)]
-pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::models::ResearchTaskItem>, String> {
+pub fn db_get_research_task(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<crate::models::ResearchTaskItem>, String> {
     let mut stmt = conn
         .prepare(
             r#"
@@ -2512,7 +2987,19 @@ pub fn db_get_research_task(conn: &Connection, id: i64) -> Result<Option<crate::
             row.get::<_, String>(10)?,
         ))
     }) {
-        Ok((id, topic, status, sub_queries_json, web_results_count, depth, breadth, saved_path, error, created_at, updated_at)) => {
+        Ok((
+            id,
+            topic,
+            status,
+            sub_queries_json,
+            web_results_count,
+            depth,
+            breadth,
+            saved_path,
+            error,
+            created_at,
+            updated_at,
+        )) => {
             let sub_queries: Vec<String> =
                 serde_json::from_str(&sub_queries_json).unwrap_or_default();
             Ok(Some(crate::models::ResearchTaskItem {
@@ -2546,7 +3033,9 @@ pub fn get_vault_stats_from_db(
     let ms_30d = now_ms - 30 * 24 * 3600 * 1000_i64;
 
     let total_pages: usize = conn
-        .query_row("SELECT COUNT(*) FROM wiki_pages", [], |r| r.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM wiki_pages", [], |r| {
+            r.get::<_, i64>(0)
+        })
         .unwrap_or(0) as usize;
 
     let pages_last_7_days: usize = conn
@@ -2905,13 +3394,9 @@ mod tests {
             "100",
         )
         .expect("写入第一条 outbox 失败");
-        let second_id = append_outbox_event(
-            &db_path,
-            "query_answered",
-            r#"{"question":"rust"}"#,
-            "200",
-        )
-        .expect("写入第二条 outbox 失败");
+        let second_id =
+            append_outbox_event(&db_path, "query_answered", r#"{"question":"rust"}"#, "200")
+                .expect("写入第二条 outbox 失败");
         assert!(second_id > first_id);
 
         let all = list_outbox_events_from_id(&db_path, 0, 20).expect("读取 outbox 全量失败");
@@ -2988,10 +3473,20 @@ mod tests {
         .expect("写入 citations 失败");
 
         // 插入 fts_pages 记录
-        upsert_fts_page(&db_path, std::path::Path::new("wiki/target.md"), "目标页面", "内容")
-            .expect("写入 fts_pages 失败");
-        upsert_fts_page(&db_path, std::path::Path::new("wiki/other.md"), "其他页面", "内容2")
-            .expect("写入 fts_pages 失败");
+        upsert_fts_page(
+            &db_path,
+            std::path::Path::new("wiki/target.md"),
+            "目标页面",
+            "内容",
+        )
+        .expect("写入 fts_pages 失败");
+        upsert_fts_page(
+            &db_path,
+            std::path::Path::new("wiki/other.md"),
+            "其他页面",
+            "内容2",
+        )
+        .expect("写入 fts_pages 失败");
         insert_wiki_page_history(
             &db_path,
             std::path::Path::new("wiki/target.md"),
@@ -3023,11 +3518,11 @@ mod tests {
         assert_eq!(citation_count, 0);
 
         // 验证 fts_pages：target 已删，other 保留
-        let fts_paths = search_fts_page_paths(&db_path, &["其他".to_string()], 10)
-            .expect("FTS 查询失败");
+        let fts_paths =
+            search_fts_page_paths(&db_path, &["其他".to_string()], 10).expect("FTS 查询失败");
         assert!(!fts_paths.is_empty());
-        let fts_target = search_fts_page_paths(&db_path, &["目标".to_string()], 10)
-            .expect("FTS 查询失败");
+        let fts_target =
+            search_fts_page_paths(&db_path, &["目标".to_string()], 10).expect("FTS 查询失败");
         assert!(fts_target.is_empty());
 
         let history_count: i64 = conn
@@ -3083,8 +3578,13 @@ mod tests {
         .expect("写入 citations 失败");
 
         // 插入 fts_pages
-        upsert_fts_page(&db_path, std::path::Path::new("wiki/old.md"), "旧标题", "旧内容")
-            .expect("写入 fts_pages 失败");
+        upsert_fts_page(
+            &db_path,
+            std::path::Path::new("wiki/old.md"),
+            "旧标题",
+            "旧内容",
+        )
+        .expect("写入 fts_pages 失败");
         insert_wiki_page_history(
             &db_path,
             std::path::Path::new("wiki/old.md"),
@@ -3143,11 +3643,11 @@ mod tests {
         assert_eq!(c2_cited, "wiki/new.md");
 
         // 验证 fts_pages：新路径可搜到，旧路径搜不到
-        let found_new = search_fts_page_paths(&db_path, &["新内容".to_string()], 10)
-            .expect("FTS 查询失败");
+        let found_new =
+            search_fts_page_paths(&db_path, &["新内容".to_string()], 10).expect("FTS 查询失败");
         assert!(!found_new.is_empty());
-        let found_old = search_fts_page_paths(&db_path, &["旧内容".to_string()], 10)
-            .expect("FTS 查询失败");
+        let found_old =
+            search_fts_page_paths(&db_path, &["旧内容".to_string()], 10).expect("FTS 查询失败");
         assert!(found_old.is_empty());
 
         let history_path: String = conn
@@ -3189,7 +3689,10 @@ mod tests {
         let rows = list_ask_history(&db_path, total).expect("读取 Ask 历史失败");
         assert_eq!(rows.len(), ASK_HISTORY_MAX_ENTRIES);
         assert_eq!(rows[0].question, format!("question-{}", total - 1));
-        assert_eq!(rows.last().map(|r| r.question.as_str()), Some("question-15"));
+        assert_eq!(
+            rows.last().map(|r| r.question.as_str()),
+            Some("question-15")
+        );
     }
 
     #[test]
@@ -3217,8 +3720,16 @@ mod tests {
         ensure_meta_db(&db_path).expect("初始化数据库失败");
 
         create_ask_session(&db_path, "sess-1", "新对话", "100").expect("创建会话失败");
-        append_ask_session_turn(&db_path, "sess-1", "user", "Rust 是什么？", "101", None, None)
-            .expect("写入用户轮失败");
+        append_ask_session_turn(
+            &db_path,
+            "sess-1",
+            "user",
+            "Rust 是什么？",
+            "101",
+            None,
+            None,
+        )
+        .expect("写入用户轮失败");
         append_ask_session_turn(
             &db_path,
             "sess-1",
@@ -3323,14 +3834,21 @@ mod tests {
         ensure_meta_db(&db_path).expect("初始化数据库失败");
 
         create_ask_session(&db_path, "sess-del", "待删会话", "100").expect("创建会话失败");
-        append_ask_session_turn(&db_path, "sess-del", "user", "这条内容应被清理", "101", None, None)
-            .expect("写入轮次失败");
+        append_ask_session_turn(
+            &db_path,
+            "sess-del",
+            "user",
+            "这条内容应被清理",
+            "101",
+            None,
+            None,
+        )
+        .expect("写入轮次失败");
 
         // 删除会话，FK CASCADE + 触发器应清理 FTS
         delete_ask_session(&db_path, "sess-del").expect("删除会话失败");
 
-        let hits = search_ask_session_turns(&db_path, "这条内容应被清理", 20)
-            .expect("检索失败");
+        let hits = search_ask_session_turns(&db_path, "这条内容应被清理", 20).expect("检索失败");
         assert!(hits.is_empty(), "删除会话后 FTS 索引应已清理，不应搜到结果");
     }
 
@@ -3372,8 +3890,8 @@ mod tests {
         .expect("手动更新为 running 失败");
 
         // 重置 stale running → queued
-        let count = db_reset_stale_running(&conn, "2026-01-01T00:01:00Z")
-            .expect("重置 stale running 失败");
+        let count =
+            db_reset_stale_running(&conn, "2026-01-01T00:01:00Z").expect("重置 stale running 失败");
         assert_eq!(count, 1, "应重置 1 条记录");
 
         // 再次 list，验证 status 已恢复 queued
@@ -3400,6 +3918,117 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].status, "cancelled");
         assert!(items[0].error.is_none());
+    }
+
+    #[test]
+    fn agent_run_lifecycle_and_event_listing_work() {
+        let dir = make_temp_dir("llm-wiki-db-agent-run");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        let run_id = start_agent_run(&db_path, "Rust Agent H0", "100").expect("创建 run 失败");
+        append_agent_run_event(&db_path, run_id, "info", "start", "110").expect("写入事件失败");
+        append_agent_run_event(&db_path, run_id, "info", "phase-1", "120").expect("写入事件失败");
+        complete_agent_run(&db_path, run_id, "applied", "130").expect("结束 run 失败");
+
+        let runs = list_agent_runs(&db_path, 10).expect("查询 runs 失败");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].topic, "Rust Agent H0");
+        assert_eq!(runs[0].status, "applied");
+        assert_eq!(runs[0].completed_at.as_deref(), Some("130"));
+
+        let events = list_agent_run_events(&db_path, run_id, 10).expect("查询事件失败");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].message, "start");
+        assert_eq!(events[1].message, "phase-1");
+        assert!(
+            events[2].message.contains("系统状态变更"),
+            "应自动写入系统状态事件"
+        );
+    }
+
+    #[test]
+    fn agent_auxiliary_tables_exist_after_init() {
+        let dir = make_temp_dir("llm-wiki-db-agent-tables");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+
+        let names = [
+            "agent_runs",
+            "agent_run_events",
+            "agent_drafts",
+            "agent_memories",
+        ];
+        for name in names {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .expect("查询 sqlite_master 失败");
+            assert_eq!(count, 1, "表应存在: {}", name);
+        }
+    }
+
+    #[test]
+    fn agent_run_running_status_keeps_completed_at_empty() {
+        let dir = make_temp_dir("llm-wiki-db-agent-running");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        let run_id = start_agent_run(&db_path, "H0 running", "10").expect("创建 run 失败");
+        complete_agent_run(&db_path, run_id, "running", "20").expect("更新 run 失败");
+        let runs = list_agent_runs(&db_path, 5).expect("查询 runs 失败");
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].status, "running");
+        assert!(runs[0].completed_at.is_none());
+    }
+
+    #[test]
+    fn agent_draft_create_list_and_apply_work() {
+        let dir = make_temp_dir("llm-wiki-db-agent-draft");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        let run_id = start_agent_run(&db_path, "H1 Draft", "100").expect("创建 run 失败");
+        let draft_1 = create_agent_draft(
+            &db_path,
+            run_id,
+            "Draft A",
+            "# Draft A\n\ncontent A",
+            "draft",
+            "110",
+        )
+        .expect("创建草稿 1 失败");
+        let draft_2 = create_agent_draft(
+            &db_path,
+            run_id,
+            "Draft B",
+            "# Draft B\n\ncontent B",
+            "draft",
+            "120",
+        )
+        .expect("创建草稿 2 失败");
+
+        let drafts = list_agent_drafts(&db_path, run_id, 10).expect("查询草稿失败");
+        assert_eq!(drafts.len(), 2);
+        assert_eq!(drafts[0].id, draft_2.id, "应按更新时间倒序");
+        assert_eq!(drafts[1].id, draft_1.id);
+
+        update_agent_draft_status(&db_path, draft_1.id, "applied", "130")
+            .expect("更新草稿状态失败");
+        let applied = get_agent_draft(&db_path, draft_1.id)
+            .expect("读取草稿失败")
+            .expect("草稿应存在");
+        assert_eq!(applied.status, "applied");
+        assert_eq!(applied.updated_at, "130");
     }
 
     #[test]
@@ -3444,8 +4073,7 @@ mod tests {
         .expect("写入 citations 失败");
 
         let now_ms = 400_i64;
-        let stats = get_vault_stats_from_db(&db_path, now_ms)
-            .expect("获取统计数据失败");
+        let stats = get_vault_stats_from_db(&db_path, now_ms).expect("获取统计数据失败");
 
         assert_eq!(stats.total_pages, 2);
         assert_eq!(stats.total_citations, 1);

@@ -551,6 +551,40 @@ pub struct OutboxAckResult {
     pub consumer_tag: String,
 }
 
+/// Agent Run 摘要项（H0 后端脚手架）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunItem {
+    pub id: i64,
+    pub topic: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
+/// Agent Run 事件项（H0 后端脚手架）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunEventItem {
+    pub id: i64,
+    pub run_id: i64,
+    pub level: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+/// Agent Draft 草稿项（H1：草稿生成与审批）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDraftItem {
+    pub id: i64,
+    pub run_id: i64,
+    pub title: String,
+    pub content: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Ask 会话单轮记录（多轮对话用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AskTurn {

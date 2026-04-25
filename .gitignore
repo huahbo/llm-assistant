@@ -45,3 +45,5 @@ Thumbs.db
 # Logs
 # ------------------------------
 *.log
+refer-rust-code/
+refer-rust-daerwen-agent/

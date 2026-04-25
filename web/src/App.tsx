@@ -85,6 +85,14 @@ import {
   getClipServerStatus,
   getVaultStats,
   createWikiPageWithAi,
+  startAgentRun,
+  appendAgentRunEvent,
+  listAgentRuns,
+  listAgentRunEvents,
+  completeAgentRun,
+  generateAgentDraft,
+  listAgentDrafts,
+  approveAgentDraft,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -102,6 +110,11 @@ import {
 } from "./lint-utils";
 import type { LintSeverityFilter } from "./lint-utils";
 import type {
+  AgentDraftItem,
+  AgentRunEventItem,
+  AgentRunEventLevel,
+  AgentRunItem,
+  AgentRunStatus,
   AppOverview,
   AskHistoryItem,
   AskSessionItem,
@@ -150,6 +163,11 @@ const defaultQueryTopK = 3;
 const RECENT_VAULT_PATHS_MAX = 8;
 const ASK_SESSION_LIST_MAX = 80;
 const ASK_SESSION_SEARCH_LIMIT = 80;
+const AGENT_RUN_LIST_LIMIT = 50;
+const AGENT_RUN_EVENT_LIST_LIMIT = 200;
+const AGENT_DRAFT_LIST_LIMIT = 50;
+const agentEventLevelOptions: AgentRunEventLevel[] = ["info", "warn", "error"];
+const agentCompleteStatusOptions: AgentRunStatus[] = ["applied", "failed"];
 
 const ingestSupportedFileExtensions = new Set([
   "md",
@@ -2627,6 +2645,7 @@ const modules: ModuleItem[] = [
   { id: "graph", name: "图谱", description: "Wiki 页面知识图谱可视化。" },
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
   { id: "queue", name: "队列", description: "摄入任务队列。" },
+  { id: "agent", name: "Agent Studio", description: "Agent run 的最小工作台。" },
 ];
 
 type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";
@@ -2880,6 +2899,21 @@ export default function App() {
   // 统计仪表盘状态
   const [vaultStats, setVaultStats] = useState<VaultStats | null>(null);
   const [vaultStatsLoading, setVaultStatsLoading] = useState(false);
+  // Agent Studio（H0）状态
+  const [agentRuns, setAgentRuns] = useState<AgentRunItem[]>([]);
+  const [agentRunsLoading, setAgentRunsLoading] = useState(false);
+  const [agentEvents, setAgentEvents] = useState<AgentRunEventItem[]>([]);
+  const [agentEventsLoading, setAgentEventsLoading] = useState(false);
+  const [agentDrafts, setAgentDrafts] = useState<AgentDraftItem[]>([]);
+  const [agentDraftsLoading, setAgentDraftsLoading] = useState(false);
+  const [agentSelectedRunId, setAgentSelectedRunId] = useState<number | null>(null);
+  const [agentSelectedDraftId, setAgentSelectedDraftId] = useState<number | null>(null);
+  const [agentTopicInput, setAgentTopicInput] = useState("");
+  const [agentEventLevel, setAgentEventLevel] = useState<AgentRunEventLevel>("info");
+  const [agentEventMessage, setAgentEventMessage] = useState("");
+  const [agentCompleteStatus, setAgentCompleteStatus] = useState<AgentRunStatus>("applied");
+  const [agentActionRunning, setAgentActionRunning] = useState(false);
+  const [agentStatusMessage, setAgentStatusMessage] = useState("");
 
   useEffect(
     () => () => {
@@ -2897,6 +2931,14 @@ export default function App() {
   const filteredAskSessions = useMemo(
     () => filterAskSessions(askSessions, askSessionKeyword),
     [askSessions, askSessionKeyword],
+  );
+  const selectedAgentRun = useMemo(
+    () => agentRuns.find((run) => run.id === agentSelectedRunId) ?? null,
+    [agentRuns, agentSelectedRunId],
+  );
+  const selectedAgentDraft = useMemo(
+    () => agentDrafts.find((draft) => draft.id === agentSelectedDraftId) ?? null,
+    [agentDrafts, agentSelectedDraftId],
   );
 
   const graphNodes = graphData?.nodes ?? [];
@@ -6382,12 +6424,12 @@ export default function App() {
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void import("@tauri-apps/api/window")
-      .then(async ({ getCurrentWindow }) => {
+    void import("@tauri-apps/api/webview")
+      .then(async ({ getCurrentWebview }) => {
         if (disposed) {
           return;
         }
-        unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
           if (event.payload.type === "enter" || event.payload.type === "over") {
             setIngestDragActive(true);
             return;
@@ -6466,16 +6508,251 @@ export default function App() {
     }
   };
 
-  // 侧边栏导航项定义
-  const navItems: { id: ModuleId; icon: string; label: string }[] = [
-    { id: "inbox",    icon: "⊞", label: "概览" },
-    { id: "wiki",     icon: "📄", label: "Wiki" },
-    { id: "ask",      icon: "💬", label: "Ask" },
-    { id: "lint",     icon: "🔍", label: "Lint" },
-    { id: "graph",    icon: "🕸", label: "图谱" },
-    { id: "research", icon: "🔬", label: "研究" },
-    { id: "stats",    icon: "📊", label: "统计" },
-    { id: "settings", icon: "⚙", label: "设置" },
+  const loadAgentRunsData = async (preferredRunId?: number | null) => {
+    if (!isTauriRuntime()) return;
+    setAgentRunsLoading(true);
+    try {
+      const runs = await listAgentRuns(AGENT_RUN_LIST_LIMIT);
+      setAgentRuns(runs);
+      if (runs.length === 0) {
+        setAgentSelectedRunId(null);
+        setAgentEvents([]);
+        setAgentDrafts([]);
+        setAgentSelectedDraftId(null);
+        return;
+      }
+      const pinnedRunId = preferredRunId ?? agentSelectedRunId;
+      const nextRunId =
+        pinnedRunId != null && runs.some((run) => run.id === pinnedRunId)
+          ? pinnedRunId
+          : runs[0].id;
+      setAgentSelectedRunId(nextRunId);
+    } finally {
+      setAgentRunsLoading(false);
+    }
+  };
+
+  const loadAgentRunEventsData = async (runId: number) => {
+    if (!isTauriRuntime()) return;
+    setAgentEventsLoading(true);
+    try {
+      const events = await listAgentRunEvents(runId, AGENT_RUN_EVENT_LIST_LIMIT);
+      setAgentEvents(events);
+    } finally {
+      setAgentEventsLoading(false);
+    }
+  };
+
+  const loadAgentDraftsData = async (runId: number, preferredDraftId?: number | null) => {
+    if (!isTauriRuntime()) return;
+    setAgentDraftsLoading(true);
+    try {
+      const drafts = await listAgentDrafts(runId, AGENT_DRAFT_LIST_LIMIT);
+      setAgentDrafts(drafts);
+      if (drafts.length === 0) {
+        setAgentSelectedDraftId(null);
+        return;
+      }
+      const pinnedDraftId = preferredDraftId ?? agentSelectedDraftId;
+      const nextDraftId =
+        pinnedDraftId != null && drafts.some((draft) => draft.id === pinnedDraftId)
+          ? pinnedDraftId
+          : drafts[0].id;
+      setAgentSelectedDraftId(nextDraftId);
+    } finally {
+      setAgentDraftsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeModule !== "agent") {
+      return;
+    }
+    void loadAgentRunsData();
+    // H0 阶段仅在切到 Agent Studio 时刷新，不做后台轮询。
+  }, [activeModule]);
+
+  useEffect(() => {
+    if (activeModule !== "agent") {
+      return;
+    }
+    if (agentSelectedRunId == null) {
+      setAgentEvents([]);
+      setAgentDrafts([]);
+      setAgentSelectedDraftId(null);
+      return;
+    }
+    void loadAgentRunEventsData(agentSelectedRunId);
+    void loadAgentDraftsData(agentSelectedRunId);
+    // H0 阶段仅依赖当前 run，避免与其他模块状态耦合。
+  }, [activeModule, agentSelectedRunId]);
+
+  const handleCreateAgentRun = async () => {
+    const topic = agentTopicInput.trim();
+    if (!topic) {
+      setAgentStatusMessage("请先输入主题。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const runId = await startAgentRun(topic);
+      if (!runId) {
+        setAgentStatusMessage("创建 run 失败，请检查后端命令是否可用。");
+        return;
+      }
+      setAgentTopicInput("");
+      setAgentStatusMessage(`已创建 run #${runId}`);
+      await loadAgentRunsData(runId);
+      await loadAgentRunEventsData(runId);
+      await loadAgentDraftsData(runId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleAppendAgentEvent = async () => {
+    if (agentSelectedRunId == null) {
+      setAgentStatusMessage("请先选择一个 run。");
+      return;
+    }
+    const message = agentEventMessage.trim();
+    if (!message) {
+      setAgentStatusMessage("请输入事件内容。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const ok = await appendAgentRunEvent(agentSelectedRunId, agentEventLevel, message);
+      if (!ok) {
+        setAgentStatusMessage("追加事件失败，请检查后端命令是否可用。");
+        return;
+      }
+      setAgentEventMessage("");
+      setAgentStatusMessage(`已追加事件到 run #${agentSelectedRunId}`);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentRunsData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleCompleteAgentRun = async () => {
+    if (agentSelectedRunId == null) {
+      setAgentStatusMessage("请先选择一个 run。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const ok = await completeAgentRun(agentSelectedRunId, agentCompleteStatus);
+      if (!ok) {
+        setAgentStatusMessage("结束 run 失败，请检查后端命令是否可用。");
+        return;
+      }
+      setAgentStatusMessage(`run #${agentSelectedRunId} 已更新为 ${agentCompleteStatus}`);
+      await loadAgentRunsData(agentSelectedRunId);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentDraftsData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleGenerateAgentDraft = async () => {
+    if (agentSelectedRunId == null) {
+      setAgentStatusMessage("请先选择一个 run。");
+      return;
+    }
+    const topic = agentTopicInput.trim() || selectedAgentRun?.topic?.trim() || "";
+    if (!topic) {
+      setAgentStatusMessage("请先输入主题，或先创建带主题的 run。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const ok = await generateAgentDraft(agentSelectedRunId, topic);
+      if (!ok) {
+        setAgentStatusMessage("生成 draft 失败，请检查后端命令是否可用。");
+        return;
+      }
+      setAgentStatusMessage(`已触发 run #${agentSelectedRunId} 的 draft 生成`);
+      await loadAgentDraftsData(agentSelectedRunId);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentRunsData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleApproveAgentDraft = async () => {
+    if (agentSelectedRunId == null) {
+      setAgentStatusMessage("请先选择一个 run。");
+      return;
+    }
+    if (agentSelectedDraftId == null) {
+      setAgentStatusMessage("请先选择一个 draft。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const ok = await approveAgentDraft(agentSelectedDraftId);
+      if (!ok) {
+        setAgentStatusMessage("审批写盘失败，请检查后端命令是否可用。");
+        return;
+      }
+      setAgentStatusMessage(`draft #${agentSelectedDraftId} 已审批写盘`);
+      await loadAgentDraftsData(agentSelectedRunId, agentSelectedDraftId);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentRunsData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleNavModuleSelect = (moduleId: ModuleId) => {
+    setActiveModule(moduleId);
+    if (moduleId === "stats") {
+      void loadVaultStats();
+      return;
+    }
+    if (moduleId === "agent") {
+      void loadAgentRunsData();
+    }
+  };
+
+  // 侧边栏按“核心 / 运营 / Agent”分组，Agent Studio 独立展示并拉开间距。
+  const navGroups: Array<{
+    id: string;
+    title: string;
+    items: Array<{ id: ModuleId; icon: string; label: string }>;
+    isolated?: boolean;
+  }> = [
+    {
+      id: "core",
+      title: "核心",
+      items: [
+        { id: "inbox", icon: "⊞", label: "概览" },
+        { id: "wiki", icon: "📄", label: "Wiki" },
+        { id: "ask", icon: "💬", label: "Ask" },
+        { id: "lint", icon: "🔍", label: "Lint" },
+        { id: "graph", icon: "🕸", label: "图谱" },
+      ],
+    },
+    {
+      id: "ops",
+      title: "运营",
+      items: [
+        { id: "queue", icon: "📦", label: "队列" },
+        { id: "research", icon: "🔬", label: "研究" },
+        { id: "stats", icon: "📊", label: "统计" },
+        { id: "settings", icon: "⚙", label: "设置" },
+      ],
+    },
+    {
+      id: "agent",
+      title: "Agent",
+      isolated: true,
+      items: [{ id: "agent", icon: "🧠", label: "Agent Studio" }],
+    },
   ];
 
   const handleWindowControl = useCallback(async (action: "minimize" | "toggleMaximize" | "close") => {
@@ -6591,23 +6868,32 @@ export default function App() {
           </div>
           <span className="sidebar__brand-name">LLM Wiki</span>
         </div>
-        <ul className="sidebar__nav">
-          {navItems.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                className={`sidebar__nav-item${activeModule === item.id ? " sidebar__nav-item--active" : ""}`}
-                onClick={() => {
-                  setActiveModule(item.id);
-                  if (item.id === "stats") { void loadVaultStats(); }
-                }}
-              >
-                <span className="sidebar__nav-icon">{item.icon}</span>
-                <span className="sidebar__nav-label">{item.label}</span>
-              </button>
-            </li>
+        <div className="sidebar__nav">
+          {navGroups.map((group) => (
+            <section
+              key={group.id}
+              className={`sidebar__nav-group${group.isolated ? " sidebar__nav-group--isolated" : ""}`}
+            >
+              <header className="sidebar__nav-group-title">{group.title}</header>
+              <ul className="sidebar__nav-group-list">
+                {group.items.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className={`sidebar__nav-item${activeModule === item.id ? " sidebar__nav-item--active" : ""}`}
+                      onClick={() => {
+                        handleNavModuleSelect(item.id);
+                      }}
+                    >
+                      <span className="sidebar__nav-icon">{item.icon}</span>
+                      <span className="sidebar__nav-label">{item.label}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
         <div className="sidebar__footer">
           <div className="sidebar__llm-status">
             <span
@@ -9136,6 +9422,247 @@ export default function App() {
                 </p>
               )}
             </div>
+          )}
+          {/* ---- Agent Studio 模块（H1：run/event + draft 审批） ---- */}
+          {activeModule === "agent" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">Agent Studio</h1>
+                <p className="module-header__sub">
+                  创建 run、追加事件、生成 draft，并在审批后写盘
+                </p>
+              </div>
+              <section className="panel agent-studio">
+                <div className="agent-studio__toolbar">
+                  <div className="agent-studio__create">
+                    <label className="dev-panel__label" htmlFor="agent-topic-input">主题</label>
+                    <input
+                      id="agent-topic-input"
+                      className="dev-panel__input"
+                      type="text"
+                      value={agentTopicInput}
+                      placeholder="例如：整理 Rust Actor 模块设计"
+                      onChange={(event) => setAgentTopicInput(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      disabled={agentActionRunning || !isTauriRuntime()}
+                      onClick={() => {
+                        void handleCreateAgentRun();
+                      }}
+                    >
+                      {agentActionRunning ? "处理中..." : "创建 Run"}
+                    </button>
+                  </div>
+                  <div className="agent-studio__actions">
+                    <label className="dev-panel__label" htmlFor="agent-event-level">事件级别</label>
+                    <select
+                      id="agent-event-level"
+                      className="dev-panel__input"
+                      value={agentEventLevel}
+                      onChange={(event) =>
+                        setAgentEventLevel((event.target.value as AgentRunEventLevel) || "info")
+                      }
+                    >
+                      {agentEventLevelOptions.map((level) => (
+                        <option key={level} value={level}>{level}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="dev-panel__input"
+                      type="text"
+                      value={agentEventMessage}
+                      placeholder="事件内容（例如：完成初始检索）"
+                      onChange={(event) => setAgentEventMessage(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      disabled={agentActionRunning || agentSelectedRunId == null || !isTauriRuntime()}
+                      onClick={() => {
+                        void handleAppendAgentEvent();
+                      }}
+                    >
+                      追加事件
+                    </button>
+                    <select
+                      className="dev-panel__input"
+                      value={agentCompleteStatus}
+                      onChange={(event) =>
+                        setAgentCompleteStatus((event.target.value as AgentRunStatus) || "applied")
+                      }
+                    >
+                      {agentCompleteStatusOptions.map((status) => (
+                        <option key={status} value={status}>{status}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      disabled={agentActionRunning || agentSelectedRunId == null || !isTauriRuntime()}
+                      onClick={() => {
+                        void handleCompleteAgentRun();
+                      }}
+                    >
+                      结束 Run
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      disabled={agentActionRunning || agentSelectedRunId == null || !isTauriRuntime()}
+                      onClick={() => {
+                        void handleGenerateAgentDraft();
+                      }}
+                    >
+                      生成 Draft
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      disabled={agentRunsLoading || !isTauriRuntime()}
+                      onClick={() => {
+                        void loadAgentRunsData(agentSelectedRunId);
+                        if (agentSelectedRunId != null) {
+                          void loadAgentDraftsData(agentSelectedRunId, agentSelectedDraftId);
+                          void loadAgentRunEventsData(agentSelectedRunId);
+                        }
+                      }}
+                    >
+                      刷新
+                    </button>
+                  </div>
+                </div>
+                {agentStatusMessage ? (
+                  <p className="agent-studio__status">{agentStatusMessage}</p>
+                ) : null}
+                <div className="agent-studio__content">
+                  <section className="agent-studio__column">
+                    <h3 className="agent-studio__title">Runs（{agentRuns.length}）</h3>
+                    {agentRunsLoading ? (
+                      <p className="agent-studio__empty">加载中...</p>
+                    ) : agentRuns.length === 0 ? (
+                      <p className="agent-studio__empty">暂无 run，先创建一个主题。</p>
+                    ) : (
+                      <ul className="agent-studio__list">
+                        {agentRuns.map((run) => (
+                          <li key={run.id}>
+                            <button
+                              type="button"
+                              className={`agent-studio__list-item${agentSelectedRunId === run.id ? " agent-studio__list-item--active" : ""}`}
+                              onClick={() => setAgentSelectedRunId(run.id)}
+                            >
+                              <span className="agent-studio__item-main">
+                                <strong>#{run.id}</strong> {run.topic || "未命名主题"}
+                              </span>
+                              <span className="agent-studio__item-meta">
+                                {run.status} · {formatLintCheckedAt(run.updated_at || run.created_at)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                  <section className="agent-studio__column">
+                    <h3 className="agent-studio__title">
+                      Events{agentSelectedRunId != null ? `（Run #${agentSelectedRunId}）` : ""}
+                    </h3>
+                    {agentSelectedRunId == null ? (
+                      <p className="agent-studio__empty">请选择一个 run 查看事件。</p>
+                    ) : agentEventsLoading ? (
+                      <p className="agent-studio__empty">加载中...</p>
+                    ) : agentEvents.length === 0 ? (
+                      <p className="agent-studio__empty">暂无事件，可先追加一条。</p>
+                    ) : (
+                      <ul className="agent-studio__list">
+                        {agentEvents.map((event) => (
+                          <li key={event.id} className="agent-studio__event-row">
+                            <span className={`agent-studio__event-level agent-studio__event-level--${String(event.level).toLowerCase()}`}>
+                              {event.level}
+                            </span>
+                            <span className="agent-studio__event-message">{event.message}</span>
+                            <time className="agent-studio__event-time" dateTime={event.created_at}>
+                              {formatLintCheckedAt(event.created_at)}
+                            </time>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                </div>
+                <div className="agent-studio__drafts">
+                  <section className="agent-studio__column">
+                    <h3 className="agent-studio__title">
+                      Drafts{agentSelectedRunId != null ? `（Run #${agentSelectedRunId}）` : ""}
+                    </h3>
+                    {agentSelectedRunId == null ? (
+                      <p className="agent-studio__empty">请选择一个 run 后再生成或查看 draft。</p>
+                    ) : agentDraftsLoading ? (
+                      <p className="agent-studio__empty">加载中...</p>
+                    ) : agentDrafts.length === 0 ? (
+                      <p className="agent-studio__empty">暂无 draft，可点击“生成 Draft”。</p>
+                    ) : (
+                      <ul className="agent-studio__list">
+                        {agentDrafts.map((draft) => (
+                          <li key={draft.id}>
+                            <button
+                              type="button"
+                              className={`agent-studio__list-item${agentSelectedDraftId === draft.id ? " agent-studio__list-item--active" : ""}`}
+                              onClick={() => setAgentSelectedDraftId(draft.id)}
+                            >
+                              <span className="agent-studio__item-main">
+                                <strong>#{draft.id}</strong> {draft.title || "未命名 Draft"}
+                              </span>
+                              <span className="agent-studio__item-meta">
+                                {draft.status} · {formatLintCheckedAt(draft.updated_at || draft.created_at)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                  <section className="agent-studio__column">
+                    <div className="agent-studio__draft-head">
+                      <h3 className="agent-studio__title">
+                        Draft 预览{selectedAgentDraft ? `（#${selectedAgentDraft.id}）` : ""}
+                      </h3>
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        disabled={
+                          agentActionRunning
+                          || selectedAgentDraft == null
+                          || ["approved", "applied"].includes(
+                            String(selectedAgentDraft?.status ?? "").toLowerCase(),
+                          )
+                          || !isTauriRuntime()
+                        }
+                        onClick={() => {
+                          void handleApproveAgentDraft();
+                        }}
+                      >
+                        审批写盘
+                      </button>
+                    </div>
+                    {selectedAgentDraft == null ? (
+                      <p className="agent-studio__empty">请选择一个 draft 查看内容。</p>
+                    ) : (
+                      <>
+                        <p className="agent-studio__item-meta">
+                          状态：{selectedAgentDraft.status} · 更新：
+                          {formatLintCheckedAt(selectedAgentDraft.updated_at || selectedAgentDraft.created_at)}
+                        </p>
+                        <pre className="agent-studio__draft-preview">
+                          {selectedAgentDraft.content?.trim() || "（该 draft 暂无内容）"}
+                        </pre>
+                      </>
+                    )}
+                  </section>
+                </div>
+              </section>
+            </>
           )}
         </div>
         {ingestPreviewDialog ? (

@@ -121,6 +121,14 @@ import {
   createWikiPageDetailArgs,
   createSetOcrConfigArgs,
   createSetQueryTopKArgs,
+  createStartAgentRunArgs,
+  createAppendAgentRunEventArgs,
+  createListAgentRunsArgs,
+  createListAgentRunEventsArgs,
+  createCompleteAgentRunArgs,
+  createGenerateAgentDraftArgs,
+  createListAgentDraftsArgs,
+  createApproveAgentDraftArgs,
   createVaultInitArgs,
   formatLlmStatusSummary,
   isTauriRuntime,
@@ -131,6 +139,14 @@ import {
   applyLintPatch,
   applyLintPatchesBatch,
   fetchRecentLintPatchEvents,
+  startAgentRun,
+  appendAgentRunEvent,
+  listAgentRuns,
+  listAgentRunEvents,
+  completeAgentRun,
+  generateAgentDraft,
+  listAgentDrafts,
+  approveAgentDraft,
   normalizeLintPatchPreviewResponse,
   normalizeLlmStatus,
   normalizeLlmProviderConfig,
@@ -1193,6 +1209,50 @@ describe("Tauri 运行时与参数映射", () => {
       content: "# Updated",
     });
 
+    expect(createStartAgentRunArgs("Rust 迁移计划")).toEqual({
+      topic: "Rust 迁移计划",
+    });
+
+    expect(createAppendAgentRunEventArgs(12, "warn", "发现冲突")).toEqual({
+      runId: 12,
+      run_id: 12,
+      level: "warn",
+      message: "发现冲突",
+    });
+
+    expect(createListAgentRunsArgs(30)).toEqual({
+      limit: 30,
+    });
+
+    expect(createListAgentRunEventsArgs(12, 100)).toEqual({
+      runId: 12,
+      run_id: 12,
+      limit: 100,
+    });
+
+    expect(createCompleteAgentRunArgs(12, "applied")).toEqual({
+      runId: 12,
+      run_id: 12,
+      status: "applied",
+    });
+
+    expect(createGenerateAgentDraftArgs(12, "Rust Actor 模块设计")).toEqual({
+      runId: 12,
+      run_id: 12,
+      topic: "Rust Actor 模块设计",
+    });
+
+    expect(createListAgentDraftsArgs(12, 40)).toEqual({
+      runId: 12,
+      run_id: 12,
+      limit: 40,
+    });
+
+    expect(createApproveAgentDraftArgs(18)).toEqual({
+      draftId: 18,
+      draft_id: 18,
+    });
+
     expect(createPreviewLintPatchesArgs()).toEqual({});
     expect(createFetchRecentLintPatchEventsArgs()).toEqual({});
 
@@ -1368,6 +1428,18 @@ describe("Tauri 运行时与参数映射", () => {
       previewIngestFile("file", "E:\\llm-wiki\\docs\\sample.docx", "tesseract"),
     ).resolves.toBeNull();
     await expect(applyIngestPreview("preview-1")).resolves.toBeNull();
+  });
+
+  it("浏览器预览模式下 Agent Run/Draft API 回退为 null/false/空数组", async () => {
+    Reflect.deleteProperty(globalThis, "window");
+    await expect(startAgentRun("测试主题")).resolves.toBeNull();
+    await expect(appendAgentRunEvent(1, "info", "事件")).resolves.toBe(false);
+    await expect(listAgentRuns()).resolves.toEqual([]);
+    await expect(listAgentRunEvents(1)).resolves.toEqual([]);
+    await expect(completeAgentRun(1, "failed")).resolves.toBe(false);
+    await expect(generateAgentDraft(1, "测试主题")).resolves.toBe(false);
+    await expect(listAgentDrafts(1)).resolves.toEqual([]);
+    await expect(approveAgentDraft(1)).resolves.toBe(false);
   });
 
   it("浏览器预览模式下 saveWikiPage 直接回退为 null", async () => {

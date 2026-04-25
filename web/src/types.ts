@@ -7,7 +7,17 @@ export interface ModeOption {
   badge: string;
 }
 
-export type ModuleId = "inbox" | "wiki" | "ask" | "lint" | "graph" | "settings" | "queue" | "research" | "stats";
+export type ModuleId =
+  | "inbox"
+  | "wiki"
+  | "ask"
+  | "lint"
+  | "graph"
+  | "settings"
+  | "queue"
+  | "research"
+  | "stats"
+  | "agent";
 
 export interface ModuleItem {
   id: ModuleId;
@@ -176,6 +186,38 @@ export interface WikiPageHistorySummary {
 
 export interface WikiPageHistoryEntry extends WikiPageHistorySummary {
   content: string;
+}
+
+export type AgentRunStatus = "queued" | "running" | "reviewing" | "applied" | "failed";
+export type AgentRunEventLevel = "info" | "warn" | "error";
+
+export interface AgentRunItem {
+  id: number;
+  topic: string;
+  status: AgentRunStatus | string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+export interface AgentRunEventItem {
+  id: number;
+  run_id: number;
+  level: AgentRunEventLevel | string;
+  message: string;
+  created_at: string;
+}
+
+export type AgentDraftStatus = "draft" | "approved" | "applied" | "failed" | string;
+
+export interface AgentDraftItem {
+  id: number;
+  run_id: number;
+  title: string;
+  content: string;
+  status: AgentDraftStatus;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AskHistoryItem {
