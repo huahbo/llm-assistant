@@ -165,6 +165,19 @@ export interface RenameWikiPageResult {
   message: string;
 }
 
+export interface WikiPageHistorySummary {
+  id: number;
+  path: string;
+  title: string;
+  content_hash: string;
+  checksum: string;
+  created_at: string;
+}
+
+export interface WikiPageHistoryEntry extends WikiPageHistorySummary {
+  content: string;
+}
+
 export interface AskHistoryItem {
   id: number;
   question: string;

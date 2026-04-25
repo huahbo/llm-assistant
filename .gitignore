@@ -27,6 +27,13 @@ llm-web.md
 test-llm.md
 
 # ------------------------------
+# Local test data / assets
+# ------------------------------
+test-vault-template/
+test-vault3/
+LLM_icon/
+
+# ------------------------------
 # OS / IDE
 # ------------------------------
 .DS_Store

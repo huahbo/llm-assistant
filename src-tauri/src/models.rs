@@ -450,6 +450,29 @@ pub struct RenameWikiPageResult {
     pub message: String,
 }
 
+/// Wiki 页面历史列表项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageHistoryItem {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub content_hash: String,
+    pub checksum: String,
+    pub created_at: String,
+}
+
+/// Wiki 页面历史详情，包含覆盖前正文。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiPageHistoryDetail {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub content_hash: String,
+    pub checksum: String,
+    pub created_at: String,
+    pub content: String,
+}
+
 /// 长时间操作的进度事件载荷（Tauri emit 用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressPayload {

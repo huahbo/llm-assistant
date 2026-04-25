@@ -64,6 +64,9 @@ fn main() {
             commands::set_ocr_config,
             commands::get_clip_server_status,
             commands::save_wiki_page,
+            commands::list_wiki_page_history,
+            commands::get_wiki_page_history_entry,
+            commands::restore_wiki_page_from_history,
             commands::rename_wiki_page,
             commands::delete_wiki_page,
             commands::save_ask_history,
@@ -99,7 +102,7 @@ fn main() {
             commands::approve_research_queries,
             commands::quick_lint_page,
             commands::get_vault_stats,
-            commands::create_wiki_page_with_ai
+            commands::create_wiki_page_with_ai,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

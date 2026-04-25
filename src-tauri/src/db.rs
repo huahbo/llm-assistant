@@ -120,6 +120,18 @@ pub struct WikiPageRecord {
     pub score: f64,
 }
 
+/// Wiki 页面历史快照记录。
+#[derive(Debug, Clone)]
+pub struct WikiPageHistoryRecord {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub content_hash: String,
+    pub checksum: String,
+    pub created_at: String,
+    pub prev_content: Option<String>,
+}
+
 /// Ask 历史记录。
 #[derive(Debug, Clone)]
 pub struct AskHistoryRecord {
@@ -911,7 +923,116 @@ pub fn upsert_fts_page(
     Ok(())
 }
 
-/// 从数据库中删除 Wiki 页面的所有相关记录（wiki_pages / citations / fts_pages）。
+/// 保存页面覆盖前的内容快照。
+pub fn insert_wiki_page_history(
+    db_path: &Path,
+    page_path: &Path,
+    title: &str,
+    content_hash: &str,
+    prev_content: &str,
+    created_at: &str,
+) -> Result<i64, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.execute(
+        r#"
+        INSERT INTO wiki_page_history (
+            path,
+            title,
+            content_hash,
+            checksum,
+            prev_content,
+            created_at
+        ) VALUES (?1, ?2, ?3, ?3, ?4, ?5)
+        "#,
+        params![
+            page_path.to_string_lossy(),
+            title,
+            content_hash,
+            prev_content,
+            created_at
+        ],
+    )
+    .map_err(|err| format!("写入 wiki_page_history 失败: {}", err))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 按页面路径读取历史快照列表，不返回正文以避免列表过大。
+pub fn list_wiki_page_history(
+    db_path: &Path,
+    page_path: &Path,
+    limit: usize,
+) -> Result<Vec<WikiPageHistoryRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, path, title, content_hash, checksum, created_at
+            FROM wiki_page_history
+            WHERE path = ?1
+            ORDER BY CAST(created_at AS INTEGER) DESC, id DESC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(|err| format!("准备查询 wiki_page_history 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![page_path.to_string_lossy(), limit as i64], |row| {
+            Ok(WikiPageHistoryRecord {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                title: row.get(2)?,
+                content_hash: row.get(3)?,
+                checksum: row.get(4)?,
+                created_at: row.get(5)?,
+                prev_content: None,
+            })
+        })
+        .map_err(|err| format!("读取 wiki_page_history 失败: {}", err))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 wiki_page_history 失败: {}", err))
+}
+
+/// 按 ID 读取单条历史快照，包含覆盖前正文。
+pub fn get_wiki_page_history_entry(
+    db_path: &Path,
+    id: i64,
+) -> Result<Option<WikiPageHistoryRecord>, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, path, title, content_hash, checksum, created_at, prev_content
+            FROM wiki_page_history
+            WHERE id = ?1
+            "#,
+        )
+        .map_err(|err| format!("准备读取 wiki_page_history 失败: {}", err))?;
+
+    match stmt.query_row(params![id], |row| {
+        Ok(WikiPageHistoryRecord {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            title: row.get(2)?,
+            content_hash: row.get(3)?,
+            checksum: row.get(4)?,
+            created_at: row.get(5)?,
+            prev_content: Some(row.get(6)?),
+        })
+    }) {
+        Ok(record) => Ok(Some(record)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(format!("读取 wiki_page_history 失败: {}", err)),
+    }
+}
+
+/// 从数据库中删除 Wiki 页面的所有相关记录（wiki_pages / citations / fts_pages / history）。
 pub fn delete_wiki_page_from_db(db_path: &Path, page_path: &Path) -> Result<(), String> {
     let conn = open_connection(db_path)?;
     let path_str = page_path.to_string_lossy();
@@ -930,6 +1051,13 @@ pub fn delete_wiki_page_from_db(db_path: &Path, page_path: &Path) -> Result<(), 
     )
     .map_err(|err| format!("删除 citations 记录失败: {}", err))?;
 
+    // 删除该页历史，避免删除后仍保留不可见快照。
+    conn.execute(
+        "DELETE FROM wiki_page_history WHERE path = ?1",
+        params![path_str],
+    )
+    .map_err(|err| format!("删除 wiki_page_history 记录失败: {}", err))?;
+
     // 删除主记录
     conn.execute(
         "DELETE FROM wiki_pages WHERE path = ?1",
@@ -941,7 +1069,7 @@ pub fn delete_wiki_page_from_db(db_path: &Path, page_path: &Path) -> Result<(), 
 }
 
 /// 将数据库中所有引用 old_path 的记录更新为 new_path。
-/// 涉及：wiki_pages.path、citations.page_path、citations.cited_page_path、fts_pages.path。
+/// 涉及：wiki_pages.path、citations.page_path、citations.cited_page_path、fts_pages.path、history.path。
 pub fn rename_wiki_page_in_db(
     db_path: &Path,
     old_path: &Path,
@@ -973,6 +1101,13 @@ pub fn rename_wiki_page_in_db(
         params![new_str, old_str],
     )
     .map_err(|err| format!("更新 citations.cited_page_path 失败: {}", err))?;
+
+    // 历史快照跟随页面重命名，保证详情页仍能查到旧版本。
+    conn.execute(
+        "UPDATE wiki_page_history SET path = ?1 WHERE path = ?2",
+        params![new_str, old_str],
+    )
+    .map_err(|err| format!("更新 wiki_page_history.path 失败: {}", err))?;
 
     // fts_pages：删旧插新
     conn.execute(
@@ -1148,6 +1283,16 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(source_id) REFERENCES sources(id)
         );
 
+        CREATE TABLE IF NOT EXISTS wiki_page_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            prev_content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS citations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             page_path TEXT NOT NULL,
@@ -1192,6 +1337,12 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_wiki_outbox_processed_at
             ON wiki_outbox(processed_at);
+
+        CREATE INDEX IF NOT EXISTS idx_wiki_page_history_path_created_at
+            ON wiki_page_history(path, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_wiki_page_history_created_at
+            ON wiki_page_history(created_at);
 
         CREATE TABLE IF NOT EXISTS ask_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2841,6 +2992,15 @@ mod tests {
             .expect("写入 fts_pages 失败");
         upsert_fts_page(&db_path, std::path::Path::new("wiki/other.md"), "其他页面", "内容2")
             .expect("写入 fts_pages 失败");
+        insert_wiki_page_history(
+            &db_path,
+            std::path::Path::new("wiki/target.md"),
+            "目标页面",
+            "history-hash",
+            "旧内容",
+            "3",
+        )
+        .expect("写入 wiki_page_history 失败");
 
         // 执行删除
         delete_wiki_page_from_db(&db_path, std::path::Path::new("wiki/target.md"))
@@ -2869,6 +3029,11 @@ mod tests {
         let fts_target = search_fts_page_paths(&db_path, &["目标".to_string()], 10)
             .expect("FTS 查询失败");
         assert!(fts_target.is_empty());
+
+        let history_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wiki_page_history", [], |r| r.get(0))
+            .expect("查询 wiki_page_history 失败");
+        assert_eq!(history_count, 0);
     }
 
     #[test]
@@ -2920,6 +3085,15 @@ mod tests {
         // 插入 fts_pages
         upsert_fts_page(&db_path, std::path::Path::new("wiki/old.md"), "旧标题", "旧内容")
             .expect("写入 fts_pages 失败");
+        insert_wiki_page_history(
+            &db_path,
+            std::path::Path::new("wiki/old.md"),
+            "旧标题",
+            "history-hash",
+            "旧版本内容",
+            "3",
+        )
+        .expect("写入 wiki_page_history 失败");
 
         // 执行重命名
         rename_wiki_page_in_db(
@@ -2975,6 +3149,11 @@ mod tests {
         let found_old = search_fts_page_paths(&db_path, &["旧内容".to_string()], 10)
             .expect("FTS 查询失败");
         assert!(found_old.is_empty());
+
+        let history_path: String = conn
+            .query_row("SELECT path FROM wiki_page_history", [], |r| r.get(0))
+            .expect("查询 wiki_page_history 失败");
+        assert_eq!(history_path, "wiki/new.md");
     }
 
     #[test]

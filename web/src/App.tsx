@@ -43,6 +43,8 @@ import {
   saveAskHistory,
   saveOcrConfig,
   deleteWikiPage,
+  getWikiPageHistoryEntry,
+  restoreWikiPageFromHistory,
   getKnowledgeGraph,
   getKnowledgeSubgraph,
   markPageStale,
@@ -73,6 +75,7 @@ import {
   askConfirmDialog,
   saveResearchDoc,
   initVaultWithTemplate,
+  listWikiPageHistory,
   listenResearchProgress,
   listenResearchDone,
   listenResearchError,
@@ -131,6 +134,8 @@ import type {
   WikiTemplate,
   WikiPageDetail,
   WikiPageCitation,
+  WikiPageHistoryEntry,
+  WikiPageHistorySummary,
   WikiPageItem,
 } from "./types";
 
@@ -175,6 +180,17 @@ export type TemplateInitPreview = {
 };
 
 export const RECENT_VAULT_PATHS_STORAGE_KEY = "llm_wiki_recent_vault_paths_v1";
+
+// 简单的字符串哈希（用于编辑基线校验和）
+export const simpleHash = (str: string): string => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16);
+};
 
 const normalizeTemplateDirPath = (dir: string): string => {
   const normalized = dir.trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "");
@@ -623,6 +639,82 @@ export const buildWikiFrontmatterDisplay = (detail: WikiPageDetail | null | unde
     totalCount: rows.length + (entities.length ? 1 : 0),
     hasMeta,
   };
+};
+
+export type WikiLineDiffKind = "unchanged" | "added" | "removed";
+
+export type WikiLineDiffRow = {
+  kind: WikiLineDiffKind;
+  line: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+};
+
+export const buildWikiLineDiff = (currentContent: string, historyContent: string): WikiLineDiffRow[] => {
+  const currentLines = currentContent.split(/\r?\n/);
+  const historyLines = historyContent.split(/\r?\n/);
+  const dp = Array.from({ length: historyLines.length + 1 }, () =>
+    Array<number>(currentLines.length + 1).fill(0),
+  );
+
+  for (let i = historyLines.length - 1; i >= 0; i -= 1) {
+    for (let j = currentLines.length - 1; j >= 0; j -= 1) {
+      dp[i][j] = historyLines[i] === currentLines[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const rows: WikiLineDiffRow[] = [];
+  let oldIndex = 0;
+  let newIndex = 0;
+
+  while (oldIndex < historyLines.length && newIndex < currentLines.length) {
+    if (historyLines[oldIndex] === currentLines[newIndex]) {
+      rows.push({
+        kind: "unchanged",
+        line: historyLines[oldIndex],
+        oldLineNumber: oldIndex + 1,
+        newLineNumber: newIndex + 1,
+      });
+      oldIndex += 1;
+      newIndex += 1;
+    } else if (dp[oldIndex + 1][newIndex] >= dp[oldIndex][newIndex + 1]) {
+      rows.push({
+        kind: "removed",
+        line: historyLines[oldIndex],
+        oldLineNumber: oldIndex + 1,
+      });
+      oldIndex += 1;
+    } else {
+      rows.push({
+        kind: "added",
+        line: currentLines[newIndex],
+        newLineNumber: newIndex + 1,
+      });
+      newIndex += 1;
+    }
+  }
+
+  while (oldIndex < historyLines.length) {
+    rows.push({
+      kind: "removed",
+      line: historyLines[oldIndex],
+      oldLineNumber: oldIndex + 1,
+    });
+    oldIndex += 1;
+  }
+
+  while (newIndex < currentLines.length) {
+    rows.push({
+      kind: "added",
+      line: currentLines[newIndex],
+      newLineNumber: newIndex + 1,
+    });
+    newIndex += 1;
+  }
+
+  return rows;
 };
 
 export const normalizeWikiPathForCompare = (path: string | null | undefined) =>
@@ -2694,6 +2786,8 @@ export default function App() {
   const [wikiDebugInfoVisible, setWikiDebugInfoVisible] = useState(false);
   const [wikiEditMode, setWikiEditMode] = useState(false);
   const [wikiEditContent, setWikiEditContent] = useState("");
+  // 编辑基线校验和（用于保存时检测并发编辑冲突）
+  const [wikiEditBaselineChecksum, setWikiEditBaselineChecksum] = useState("");
   // 内链自动补全相关状态
   const [wikiAutocompleteOpen, setWikiAutocompleteOpen] = useState(false);
   const [wikiAutocompleteResults, setWikiAutocompleteResults] = useState<string[]>([]);
@@ -2709,6 +2803,12 @@ export default function App() {
   const [wikiRenameInput, setWikiRenameInput] = useState("");
   const [wikiRenameRunning, setWikiRenameRunning] = useState(false);
   const [wikiRenameError, setWikiRenameError] = useState("");
+  const [wikiHistoryOpen, setWikiHistoryOpen] = useState(false);
+  const [wikiHistoryEntries, setWikiHistoryEntries] = useState<WikiPageHistorySummary[]>([]);
+  const [wikiHistorySelectedEntry, setWikiHistorySelectedEntry] = useState<WikiPageHistoryEntry | null>(null);
+  const [wikiHistoryLoading, setWikiHistoryLoading] = useState(false);
+  const [wikiHistoryEntryLoading, setWikiHistoryEntryLoading] = useState(false);
+  const [wikiHistoryError, setWikiHistoryError] = useState("");
   // LLM Provider 配置（Settings 面板）
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
   const [llmPresets, setLlmPresets] = useState<[string, string, string][]>([]);
@@ -4806,6 +4906,10 @@ export default function App() {
     setWikiEditContent("");
     setWikiSaveRunning(false);
     setWikiSaveError("");
+    setWikiHistoryOpen(false);
+    setWikiHistoryEntries([]);
+    setWikiHistorySelectedEntry(null);
+    setWikiHistoryError("");
     setStatusMessage("");
 
     try {
@@ -5044,6 +5148,10 @@ export default function App() {
     setWikiEditContent("");
     setWikiSaveRunning(false);
     setWikiSaveError("");
+    setWikiHistoryOpen(false);
+    setWikiHistoryEntries([]);
+    setWikiHistorySelectedEntry(null);
+    setWikiHistoryError("");
     setStatusMessage("已关闭页面预览。");
   };
 
@@ -5059,6 +5167,8 @@ export default function App() {
 
     setWikiSaveError("");
     setWikiEditContent(wikiPageDetail.content ?? "");
+    // 保存编辑基线校验和，用于保存时检测并发编辑冲突
+    setWikiEditBaselineChecksum(simpleHash(wikiPageDetail.content ?? ""));
     setWikiEditMode(true);
   };
 
@@ -5161,19 +5271,26 @@ export default function App() {
     setStatusMessage("");
 
     try {
-      const result = await saveWikiPage(targetPath, wikiEditContent);
+      // 传入编辑基线校验和，由后端检测并发编辑冲突
+      const result = await saveWikiPage(targetPath, wikiEditContent, wikiEditBaselineChecksum || undefined);
       if (!result) {
         setWikiSaveError("当前环境不支持保存页面。请检查 Tauri 后端是否可用。");
         return;
       }
 
       setWikiEditMode(false);
+      setWikiEditBaselineChecksum("");
       await refreshAppData();
       await handleOpenWikiPage(targetPath);
       setStatusMessage(result.message || `已保存页面：${targetPath}`);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : String(error);
+      // 检测校验和不匹配（并发编辑冲突）
+      if (message.includes("checksum") || message.includes("校验和")) {
+        setWikiSaveError(`保存失败：页面在编辑期间被外部修改，已阻止覆盖。请重新打开页面后再试。`);
+        return;
+      }
       const errorMessage = `保存页面失败：${message}`;
       setWikiSaveError(errorMessage);
       setStatusMessage(errorMessage);
@@ -5253,6 +5370,91 @@ export default function App() {
     setWikiRenameMode(false);
     setWikiRenameInput("");
     setWikiRenameError("");
+  };
+
+  const handleOpenWikiHistory = async () => {
+    if (!wikiPageDetail) {
+      return;
+    }
+
+    setWikiHistoryOpen(true);
+    setWikiHistoryLoading(true);
+    setWikiHistoryError("");
+    setWikiHistorySelectedEntry(null);
+
+    try {
+      const entries = await listWikiPageHistory(wikiPageDetail.path, 30);
+      setWikiHistoryEntries(entries);
+      if (!isTauriRuntime()) {
+        setWikiHistoryError("浏览器预览模式下无法读取页面历史。");
+      } else if (entries.length === 0) {
+        setWikiHistoryError("当前页面暂无历史版本。");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWikiHistoryError(`读取历史版本失败：${message}`);
+      setWikiHistoryEntries([]);
+    } finally {
+      setWikiHistoryLoading(false);
+    }
+  };
+
+  const handleSelectWikiHistoryEntry = async (entry: WikiPageHistorySummary) => {
+    setWikiHistoryEntryLoading(true);
+    setWikiHistoryError("");
+
+    try {
+      const detail = await getWikiPageHistoryEntry(entry.id);
+      if (!detail) {
+        setWikiHistoryError("无法读取该历史版本内容。");
+        setWikiHistorySelectedEntry(null);
+        return;
+      }
+      setWikiHistorySelectedEntry(detail);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWikiHistoryError(`读取历史内容失败：${message}`);
+      setWikiHistorySelectedEntry(null);
+    } finally {
+      setWikiHistoryEntryLoading(false);
+    }
+  };
+
+  // 从历史版本恢复到当前页面
+  const handleRestoreWikiHistory = async () => {
+    if (!wikiHistorySelectedEntry) return;
+    if (!globalThis.confirm("确定恢复到此历史版本吗？当前内容将被覆盖。")) return;
+    setWikiHistoryLoading(true);
+    setWikiHistoryError("");
+    try {
+      const result = await restoreWikiPageFromHistory(wikiHistorySelectedEntry.id);
+      if (!result) {
+        setWikiHistoryError("恢复失败（后端不可用）。");
+        return;
+      }
+      setWikiHistoryOpen(false);
+      setWikiHistorySelectedEntry(null);
+      // 重新加载页面内容
+      if (wikiPageDetail?.path) {
+        const updated = await fetchWikiPageDetail(wikiPageDetail.path);
+        if (updated) {
+          setWikiPageDetail(updated);
+          setWikiEditContent(updated.content ?? "");
+        }
+      }
+      setStatusMessage(`已从历史版本恢复页面：${wikiPageDetail?.path ?? ""}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWikiHistoryError(`恢复失败：${message}`);
+    } finally {
+      setWikiHistoryLoading(false);
+    }
+  };
+
+  const handleCloseWikiHistory = () => {
+    setWikiHistoryOpen(false);
+    setWikiHistorySelectedEntry(null);
+    setWikiHistoryError("");
   };
 
   const handleConfirmWikiRename = async () => {
@@ -5396,6 +5598,10 @@ export default function App() {
     const html = marked.parse(raw, { gfm: true, breaks: false }) as string;
     return DOMPurify.sanitize(html);
   }, [wikiPageDetail?.content]);
+  const wikiHistoryDiffRows = useMemo(
+    () => buildWikiLineDiff(wikiPageDetail?.content ?? "", wikiHistorySelectedEntry?.content ?? ""),
+    [wikiPageDetail?.content, wikiHistorySelectedEntry?.content],
+  );
   const sortedWikiPages = sortWikiPages(pages, wikiSortMode);
   const allWikiTags = useMemo(() => {
     // 统计标签出现的次数
@@ -5625,6 +5831,15 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  className="dev-panel__button"
+                  onClick={() => void handleOpenWikiHistory()}
+                  disabled={!isTauriRuntime()}
+                  title={isTauriRuntime() ? "查看当前页面历史版本" : "浏览器预览模式下不可读取历史"}
+                >
+                  历史版本
+                </button>
+                <button
+                  type="button"
                   className={`dev-panel__button wiki-detail__action-btn ${wikiPageDetail.frontmatter?.stale ? "wiki-detail__action-btn--stale-active" : ""}`}
                   onClick={() => void handleToggleStale()}
                   title={wikiPageDetail.frontmatter?.stale ? "取消过时标记" : "标记为过时"}
@@ -5648,6 +5863,92 @@ export default function App() {
           </button>
         </div>
       </div>
+      {wikiHistoryOpen ? (
+        <div
+          className="wiki-history-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Wiki 页面历史版本"
+          onClick={handleCloseWikiHistory}
+        >
+          <div className="wiki-history-modal__panel" onClick={(event) => event.stopPropagation()}>
+            <div className="wiki-history-modal__head">
+              <div>
+                <h3>历史版本</h3>
+                <p>{wikiPageDetail?.title ?? "当前页面"}</p>
+              </div>
+              <button type="button" className="dev-panel__button" onClick={handleCloseWikiHistory}>
+                关闭
+              </button>
+            </div>
+            {wikiHistoryError ? <p className="runtime-status">{wikiHistoryError}</p> : null}
+            <div className="wiki-history-modal__body">
+              <aside className="wiki-history-list" aria-label="历史版本列表">
+                {wikiHistoryLoading ? <p className="runtime-hint">正在读取历史版本...</p> : null}
+                {!wikiHistoryLoading && wikiHistoryEntries.length === 0 ? (
+                  <p className="runtime-hint">暂无可展示的历史版本。</p>
+                ) : null}
+                {wikiHistoryEntries.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className={`wiki-history-list__item ${
+                      wikiHistorySelectedEntry?.id === entry.id ? "wiki-history-list__item--active" : ""
+                    }`}
+                    onClick={() => void handleSelectWikiHistoryEntry(entry)}
+                  >
+                    <span>{formatLintCheckedAt(entry.created_at)}</span>
+                    <code>{entry.content_hash}</code>
+                  </button>
+                ))}
+              </aside>
+              <section className="wiki-history-diff">
+                <div className="wiki-history-diff__head">
+                  <h4>当前内容 vs 历史内容</h4>
+                  <div className="wiki-history-diff__head-actions">
+                    <span>
+                      {wikiHistoryEntryLoading
+                        ? "加载中..."
+                        : wikiHistorySelectedEntry
+                          ? `${wikiHistoryDiffRows.length} 行`
+                          : "请选择一个版本"}
+                    </span>
+                    {wikiHistorySelectedEntry && !wikiHistoryEntryLoading && isTauriRuntime() ? (
+                      <button
+                        type="button"
+                        className="dev-panel__button dev-panel__button--danger"
+                        onClick={() => void handleRestoreWikiHistory()}
+                      >
+                        恢复到此版本
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {!wikiHistorySelectedEntry ? (
+                  <p className="runtime-hint">点击左侧版本后查看纯文本行级 diff。</p>
+                ) : (
+                  <div className="wiki-history-diff__rows">
+                    {wikiHistoryDiffRows.map((row, index) => (
+                      <div
+                        key={`${row.kind}-${index}-${row.oldLineNumber ?? 0}-${row.newLineNumber ?? 0}`}
+                        className={`wiki-history-diff__row wiki-history-diff__row--${row.kind}`}
+                      >
+                        <span className="wiki-history-diff__sign">
+                          {row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}
+                        </span>
+                        <span className="wiki-history-diff__line-no">
+                          {row.kind === "added" ? row.newLineNumber : row.oldLineNumber}
+                        </span>
+                        <code>{row.line || " "}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {wikiRenameMode ? (
         <div className="wiki-rename-bar">
           <input

@@ -41,6 +41,8 @@ import type {
   NewPageResult,
   WikiPageDetail,
   WikiPageCitation,
+  WikiPageHistoryEntry,
+  WikiPageHistorySummary,
   WikiPageItem,
 } from "./types";
 
@@ -459,6 +461,15 @@ export const createWikiPageCitationsArgs = (pagePath: string) => ({
   page_path: pagePath,
 });
 
+export const createWikiPageHistoryArgs = (pagePath: string, limit?: number) => ({
+  path: pagePath,
+  pagePath,
+  page_path: pagePath,
+  limit,
+});
+
+export const createWikiPageHistoryEntryArgs = (id: number) => ({ id });
+
 export const createGetKnowledgeSubgraphArgs = (
   params: KnowledgeSubgraphRequestParams,
 ) => ({
@@ -817,6 +828,66 @@ export async function fetchWikiPageCitations(pagePath: string): Promise<WikiPage
     return await withTimeout(
       invoke<WikiPageCitation[]>("get_wiki_page_citations", {
         ...createWikiPageCitationsArgs(pagePath),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function listWikiPageHistory(
+  pagePath: string,
+  limit = 30,
+): Promise<WikiPageHistorySummary[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await withTimeout(
+      invoke<WikiPageHistorySummary[]>("list_wiki_page_history", {
+        ...createWikiPageHistoryArgs(pagePath, limit),
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+export async function getWikiPageHistoryEntry(
+  id: number,
+): Promise<WikiPageHistoryEntry | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  try {
+    return await withTimeout(
+      invoke<WikiPageHistoryEntry>("get_wiki_page_history_entry", {
+        ...createWikiPageHistoryEntryArgs(id),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+// 从历史版本恢复 Wiki 页面内容
+export async function restoreWikiPageFromHistory(
+  id: number,
+): Promise<SaveWikiPageResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<SaveWikiPageResult>("restore_wiki_page_from_history", {
+        id,
       }),
     );
   } catch {
@@ -1297,6 +1368,7 @@ export async function saveQueryAnswer(
 export async function saveWikiPage(
   path: string,
   content: string,
+  expectedChecksum?: string,
 ): Promise<SaveWikiPageResult | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -1306,6 +1378,7 @@ export async function saveWikiPage(
   return withTimeout(
     invoke<SaveWikiPageResult>("save_wiki_page", {
       ...createSaveWikiPageArgs(path, content),
+      expected_checksum: expectedChecksum || null,
     }),
   );
 }

@@ -27,7 +27,8 @@ use crate::{
         ModeChangeResult, OutboxAckResult, OutboxEventItem, ProgressPayload, QueryAnswerResult,
         QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug, QuerySettings,
         SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult, WikiPageCitationItem,
-        WikiPageDetail, WikiPageFrontmatter, WikiPageItem,
+        WikiPageDetail, WikiPageFrontmatter, WikiPageHistoryDetail, WikiPageHistoryItem,
+        WikiPageItem,
     },
     vault,
 };
@@ -3443,11 +3444,72 @@ Wiki 页面：\n{}",
     }
 
     /// 将编辑后的内容写回 vault 文件，并同步更新 SQLite FTS 索引。
+    /// 可选的 expected_checksum 用于在写入前校验文件未被外部修改（协作安全）。
     pub async fn save_wiki_page_impl(
         &self,
         path: &str,
         content: &str,
+        expected_checksum: Option<&str>,
     ) -> Result<crate::models::SaveWikiPageResult, String> {
+        let path_buf = std::path::Path::new(path);
+        match path_buf.extension().and_then(|ext| ext.to_str()) {
+            Some("md") => {}
+            _ => return Err(format!("路径必须是 .md 文件：{path}")),
+        }
+        if let Some(parent) = path_buf.parent() {
+            if !parent.exists() {
+                return Err(format!("父目录不存在：{}", parent.display()));
+            }
+        }
+
+        // 校验 checksum（写入前防止静默覆盖外部编辑）
+        let previous_content = if let Some(expected) = expected_checksum {
+            if path_buf.exists() {
+                let current_raw = std::fs::read_to_string(path_buf)
+                    .map_err(|err| format!("读取现有文件失败：{}", err))?;
+                let current_hash = format!("{:x}", md5_simple(&current_raw));
+                if current_hash != expected {
+                    return Err("checksum_mismatch: 文件已被外部修改，请刷新后再编辑。".to_string());
+                }
+                Some(current_raw)
+            } else {
+                // 文件尚不存在，跳过 checksum 校验
+                None
+            }
+        } else {
+            if path_buf.exists() {
+                Some(
+                    std::fs::read_to_string(path_buf)
+                        .map_err(|err| format!("读取现有文件失败：{}", err))?,
+                )
+            } else {
+                None
+            }
+        };
+
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        };
+        let db_path = vault_path
+            .as_ref()
+            .map(|vault_path| vault_path.join(".app").join("meta.db"));
+
+        if let (Some(prev_content), Some(db_path)) = (previous_content.as_deref(), db_path.as_ref()) {
+            if prev_content != content && db_path.exists() {
+                let previous_hash = format!("{:x}", md5_simple(prev_content));
+                let previous_title = wiki_title_from_content(prev_content, path);
+                db::insert_wiki_page_history(
+                    db_path,
+                    path_buf,
+                    &previous_title,
+                    &previous_hash,
+                    prev_content,
+                    &current_timestamp_ms(),
+                )?;
+            }
+        }
+
         // 1. 写入文件
         let changed = crate::vault::write_wiki_page(path, content)?;
 
@@ -3459,30 +3521,13 @@ Wiki 页面：\n{}",
         }
 
         // 2. 更新 SQLite FTS 索引（复用已有逻辑）
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-
-        if let Some(vault_path) = vault_path {
-            let db_path = vault_path.join(".app").join("meta.db");
+        if let Some(db_path) = db_path {
             if db_path.exists() {
-                // 提取标题（取第一个 # 标题，或用文件名）
-                let title = content
-                    .lines()
-                    .find(|l| l.starts_with("# "))
-                    .map(|l| l.trim_start_matches("# ").trim().to_string())
-                    .unwrap_or_else(|| {
-                        std::path::Path::new(path)
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(path)
-                            .to_string()
-                    });
+                let title = wiki_title_from_content(content, path);
                 let body = content.to_string();
                 // 更新 FTS 索引（失败时仅记录警告，不阻断主流程）
                 if let Err(err) =
-                    db::upsert_fts_page(&db_path, std::path::Path::new(path), &title, &body)
+                    db::upsert_fts_page(&db_path, path_buf, &title, &body)
                 {
                     self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）：{err}"));
                 }
@@ -3501,6 +3546,83 @@ Wiki 页面：\n{}",
             path: path.to_string(),
             message: format!("已保存并更新索引：{path}"),
         })
+    }
+
+    pub fn list_wiki_page_history_impl(
+        &self,
+        path: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<WikiPageHistoryItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        let normalized_limit = limit.unwrap_or(20).clamp(1, 100);
+        db::list_wiki_page_history(&db_path, std::path::Path::new(path), normalized_limit)
+            .map(|records| {
+                records
+                    .into_iter()
+                    .map(|record| WikiPageHistoryItem {
+                        id: record.id,
+                        path: record.path,
+                        title: record.title,
+                        content_hash: record.content_hash,
+                        checksum: record.checksum,
+                        created_at: record.created_at,
+                    })
+                    .collect()
+            })
+    }
+
+    pub fn get_wiki_page_history_entry_impl(
+        &self,
+        id: i64,
+    ) -> Result<WikiPageHistoryDetail, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        let record = db::get_wiki_page_history_entry(&db_path, id)?
+            .ok_or_else(|| format!("未找到页面历史记录：{}", id))?;
+        Ok(WikiPageHistoryDetail {
+            id: record.id,
+            path: record.path,
+            title: record.title,
+            content_hash: record.content_hash,
+            checksum: record.checksum,
+            created_at: record.created_at,
+            content: record.prev_content.unwrap_or_default(),
+        })
+    }
+
+    /// 从历史快照恢复 Wiki 页面内容（"一键恢复到此版本"）。
+    pub async fn restore_wiki_page_from_history_impl(
+        &self,
+        id: i64,
+    ) -> Result<crate::models::SaveWikiPageResult, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        let record = db::get_wiki_page_history_entry(&db_path, id)?
+            .ok_or_else(|| format!("未找到页面历史记录：{}", id))?;
+        let content = record
+            .prev_content
+            .ok_or_else(|| "历史记录中无内容可恢复".to_string())?;
+        let path = record.path;
+        self.save_wiki_page_impl(&path, &content, None).await
     }
 
     pub async fn create_wiki_page_with_ai_impl(
@@ -8732,6 +8854,21 @@ pub(crate) fn topic_to_slug(topic: &str) -> String {
     slug.chars().take(60).collect()
 }
 
+fn wiki_title_from_content(content: &str, fallback_path: &str) -> String {
+    content
+        .lines()
+        .find(|line| line.starts_with("# "))
+        .map(|line| line.trim_start_matches("# ").trim().to_string())
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| {
+            std::path::Path::new(fallback_path)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(fallback_path)
+                .to_string()
+        })
+}
+
 /// 计算字符串的简单 MD5 十六进制摘要（用于生成 content_hash）。
 fn md5_simple(input: &str) -> u64 {
     // 使用 FNV-1a 64-bit 哈希作为轻量内容指纹（无需引入 md5 crate）
@@ -10887,6 +11024,55 @@ entities:
         );
     }
 
+    #[test]
+    fn save_wiki_page_records_previous_content_history() {
+        let vault_dir = make_temp_dir("llm-wiki-page-history");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("history.md");
+        fs::write(&page_path, "# History\nfirst version\n").expect("写入初始页面失败");
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                "# History\nsecond version\n",
+                None,
+            ))
+            .expect("第一次保存失败");
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                "# History\nthird version\n",
+                None,
+            ))
+            .expect("第二次保存失败");
+
+        let history = state
+            .list_wiki_page_history_impl(page_path.to_str().expect("页面路径不是 UTF-8"), Some(10))
+            .expect("读取历史列表失败");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].title, "History");
+
+        let latest = state
+            .get_wiki_page_history_entry_impl(history[0].id)
+            .expect("读取最新历史详情失败");
+        let older = state
+            .get_wiki_page_history_entry_impl(history[1].id)
+            .expect("读取较早历史详情失败");
+
+        assert_eq!(latest.content, "# History\nsecond version\n");
+        assert_eq!(older.content, "# History\nfirst version\n");
+        assert_eq!(
+            fs::read_to_string(&page_path).expect("读取当前页面失败"),
+            "# History\nthird version\n"
+        );
+    }
+
     // ── 语义 Lint 解析测试 ──────────────────────────────────────────
 
     #[test]
@@ -11600,5 +11786,132 @@ entities:
                 .unwrap();
             assert_eq!(result.issues_count, 0);
         }
+    }
+
+    // ── 页面历史恢复测试 ──────────────────────────────────────────
+
+    #[test]
+    fn restore_wiki_page_from_history_replaces_content() {
+        let vault_dir = make_temp_dir("llm-wiki-restore-history");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("restore-test.md");
+        let content_v1 = "# Restore Test\n版本一\n";
+        let content_v2 = "# Restore Test\n版本二\n";
+        let content_v3 = "# Restore Test\n版本三\n";
+
+        fs::write(&page_path, content_v1).expect("写入初始页面失败");
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+
+        // 保存两次，生成两条历史记录（v1→v2, v2→v3）
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                content_v2,
+                None,
+            ))
+            .expect("第一次保存失败");
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                content_v3,
+                None,
+            ))
+            .expect("第二次保存失败");
+
+        // 读取历史列表，取最旧（id 较小）的记录
+        let history = state
+            .list_wiki_page_history_impl(page_path.to_str().expect("页面路径不是 UTF-8"), Some(10))
+            .expect("读取历史列表失败");
+        assert_eq!(history.len(), 2, "应有 2 条历史记录");
+
+        let oldest = state
+            .get_wiki_page_history_entry_impl(history[1].id)
+            .expect("读取最旧历史详情失败");
+        assert_eq!(oldest.content, content_v1);
+
+        // 恢复到最旧版本
+        let result = runtime
+            .block_on(state.restore_wiki_page_from_history_impl(history[1].id))
+            .expect("恢复历史版本失败");
+        assert_eq!(result.path, page_path.to_str().expect("路径不是 UTF-8"));
+
+        // 验证文件内容已恢复为 v1
+        let restored = fs::read_to_string(&page_path).expect("读取恢复后页面失败");
+        assert_eq!(restored, content_v1, "恢复后内容应与 v1 一致");
+
+        // 恢复行为又生成了一条新的历史记录（v3 被保存为历史）
+        let history_after = state
+            .list_wiki_page_history_impl(page_path.to_str().expect("页面路径不是 UTF-8"), Some(10))
+            .expect("读取恢复后历史列表失败");
+        assert_eq!(history_after.len(), 3, "恢复操作应产生新的历史快照");
+    }
+
+    // ── 保存时 checksum 校验测试 ──────────────────────────────────
+
+    #[test]
+    fn save_wiki_page_checksum_mismatch_rejected() {
+        let vault_dir = make_temp_dir("llm-wiki-checksum-mismatch");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("checksum.md");
+        let original = "# Checksum Test\n原始内容\n";
+        fs::write(&page_path, original).expect("写入初始页面失败");
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        // 提供故意不匹配的 checksum
+        let wrong_hash = "deadbeef".to_string();
+        let result = runtime.block_on(state.save_wiki_page_impl(
+            page_path.to_str().expect("页面路径不是 UTF-8"),
+            "# Checksum Test\n新内容\n",
+            Some(&wrong_hash),
+        ));
+        assert!(result.is_err(), "checksum 不匹配应返回 Err");
+        assert!(
+            result.unwrap_err().contains("checksum_mismatch"),
+            "错误消息应包含 checksum_mismatch"
+        );
+
+        // 文件内容不应被修改
+        let current = fs::read_to_string(&page_path).expect("读取页面失败");
+        assert_eq!(current, original, "checksum 校验失败时文件不应被修改");
+    }
+
+    #[test]
+    fn save_wiki_page_checksum_match_accepted() {
+        let vault_dir = make_temp_dir("llm-wiki-checksum-match");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("checksum-ok.md");
+        let original = "# Checksum Test\n原始内容\n";
+        fs::write(&page_path, original).expect("写入初始页面失败");
+
+        // 计算正确的 checksum（与 md5_simple 一致的格式）
+        let correct_hash = format!("{:x}", md5_simple(original));
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        let result = runtime.block_on(state.save_wiki_page_impl(
+            page_path.to_str().expect("页面路径不是 UTF-8"),
+            "# Checksum Test\n新内容\n",
+            Some(&correct_hash),
+        ));
+        assert!(result.is_ok(), "正确 checksum 应保存成功");
+
+        // 验证新内容已写入
+        let current = fs::read_to_string(&page_path).expect("读取页面失败");
+        assert_eq!(current, "# Checksum Test\n新内容\n");
     }
 }

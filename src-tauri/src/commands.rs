@@ -8,7 +8,7 @@ use crate::models::{
     ModeChangeResult, OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult,
     QueryAskOptions, QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult,
     NewPageResult, SearchConfig, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail,
-    WikiPageItem,
+    WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -84,6 +84,34 @@ pub fn get_wiki_page_citations(
     state: State<'_, AppState>,
 ) -> Result<Vec<WikiPageCitationItem>, String> {
     state.wiki_page_citations(page_path)
+}
+
+/// 读取指定 Wiki 页面的历史快照列表。
+#[tauri::command]
+pub fn list_wiki_page_history(
+    path: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<WikiPageHistoryItem>, String> {
+    state.list_wiki_page_history_impl(&path, limit)
+}
+
+/// 读取单条 Wiki 页面历史快照正文。
+#[tauri::command]
+pub fn get_wiki_page_history_entry(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<WikiPageHistoryDetail, String> {
+    state.get_wiki_page_history_entry_impl(id)
+}
+
+/// 从历史快照恢复 Wiki 页面内容（"一键恢复到此版本"）。
+#[tauri::command]
+pub async fn restore_wiki_page_from_history(
+    id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::models::SaveWikiPageResult, String> {
+    state.restore_wiki_page_from_history_impl(id).await
 }
 
 /// 返回当前 lint 报告（规则检查 + LLM 语义分析）。
@@ -348,14 +376,16 @@ pub fn set_ocr_config(state: State<'_, AppState>, provider: Option<String>) -> R
 }
 
 /// 将编辑后的 Markdown 内容写回 vault 文件并更新 FTS 索引。
+/// 可选的 expected_checksum 用于在写入前校验文件未被外部修改（协作安全）。
 #[tauri::command]
 pub async fn save_wiki_page(
     state: tauri::State<'_, AppState>,
     path: String,
     content: String,
+    expected_checksum: Option<String>,
 ) -> Result<crate::models::SaveWikiPageResult, String> {
     eprintln!("[save_wiki_page] called with path={}", path);
-    state.save_wiki_page_impl(&path, &content).await
+    state.save_wiki_page_impl(&path, &content, expected_checksum.as_deref()).await
 }
 
 /// 重命名 Wiki 页面（文件系统 + DB path 同步）。

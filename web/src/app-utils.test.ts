@@ -96,6 +96,8 @@ import {
   getResearchStatusLabel,
   getResearchStatusColor,
   formatSourceType,
+  buildWikiLineDiff,
+  simpleHash,
 } from "./App";
 import { getTemplate } from "./templates";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -1376,6 +1378,15 @@ describe("Tauri 运行时与参数映射", () => {
     ).resolves.toBeNull();
   });
 
+  it("buildWikiLineDiff 覆盖新增、删除与未变行", () => {
+    expect(buildWikiLineDiff("A\nB\nC", "A\nOld\nC")).toEqual([
+      { kind: "unchanged", line: "A", oldLineNumber: 1, newLineNumber: 1 },
+      { kind: "removed", line: "Old", oldLineNumber: 2 },
+      { kind: "added", line: "B", newLineNumber: 2 },
+      { kind: "unchanged", line: "C", oldLineNumber: 3, newLineNumber: 3 },
+    ]);
+  });
+
   it("按 query/list/citation 对象的优先级顺序解析友好路径", () => {
     expect(
       resolveDisplayPath({
@@ -2528,6 +2539,38 @@ describe("formatSourceType", () => {
   it("未知类型原样返回", () => {
     expect(formatSourceType("unknown_type")).toBe("unknown_type");
     expect(formatSourceType("")).toBe("");
+  });
+});
+
+describe("simpleHash 编辑基线校验和", () => {
+  it("相同输入产生一致结果", () => {
+    const str = "Hello World";
+    expect(simpleHash(str)).toBe(simpleHash(str));
+    expect(simpleHash(str)).toBe(simpleHash("Hello World"));
+  });
+
+  it("不同输入产生不同结果", () => {
+    expect(simpleHash("A")).not.toBe(simpleHash("B"));
+    expect(simpleHash("Hello")).not.toBe(simpleHash("World"));
+  });
+
+  it("空字符串产生有效哈希值", () => {
+    const result = simpleHash("");
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("内容只差一个字符时哈希不同", () => {
+    const a = simpleHash("abcdef");
+    const b = simpleHash("abcdeg");
+    expect(a).not.toBe(b);
+  });
+
+  it("multiline 内容能正常处理", () => {
+    const multiline = "标题\n\n正文内容\n多行文本";
+    const result = simpleHash(multiline);
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
   });
 });
 
