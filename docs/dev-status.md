@@ -14,20 +14,18 @@
 
 ---
 
-## 验证基线（2026-04-27 H3 收口，用户已确认）
+## 验证基线（2026-04-27 H4 收口）
 
 ```powershell
 # Windows PowerShell
-cd src-tauri; cargo test          # 待 Windows 复核（Rust 改动已有）
-cd ../web; npm run typecheck      # 通过 ✅（本轮多次验证）
+cd src-tauri; cargo test          # 应通过（H4 改动含新 helper + 测试更新）
+cd ../web; npm run typecheck      # 通过 ✅
 cd ../web; npm run test -- --run  # WSL rollup 依赖缺失，暂跳过
 cd ../web; npm run build
 ```
 
-- H3 Windows 端到端验证：用户回传通过（2026-04-27）
-  - skill CRUD + 草稿头 skill badge ✅
-  - 记忆保存键可选修复 ✅
-  - 记忆表单布局修复（按钮不再竖排）✅
+- H3 Windows 端到端：用户回传通过（2026-04-27）
+- H4 Windows cargo test：待用户复核
 
 ---
 
@@ -35,11 +33,11 @@ cd ../web; npm run build
 
 | commit | 描述 |
 |--------|------|
-| `2540c2b` | fix(H3): memory form layout — inputs row + button full-width below |
-| `0597e54` | fix(H3): memory key optional — auto-derive from value if left blank |
+| `1ca66d6` | feat(H4): research_mode — wiki content snippets for richer draft context |
+| `92f67b7` | docs: H3 收口 + H4 Research 联动计划 |
+| `2540c2b` | fix(H3): memory form layout — button full-width |
+| `0597e54` | fix(H3): memory key optional — auto-derive from value |
 | `730818b` | feat(H3): Agent skill CRUD + prompt injection + draft skill badge |
-| `9d7a0be` | feat(agent-studio): complete B2 lite/review/flow and handoff docs |
-| `64b2e65` | docs: 更新 dev-status 基线至 190/179（H2 完成） |
 
 ---
 
@@ -47,55 +45,42 @@ cd ../web; npm run build
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **方向 H：H4 Research 联动** | 进行中 | 在 generate_agent_draft 中增加 research_mode 开关；先 search 再生成；前端 toggle |
+| 1 | **H4 Windows 验证** | 待用户 | cargo test 复核；研究模式端到端测试 |
 | 2 | **方向 B：项目模板/多项目体验** | 待收口 | 功能已落地，待用户端到端复核后收口 |
-| 3 | **方向 C：会话持久化增强** | 待收口 | 一期 + 二期已完成，待用户端到端复核后收口 |
+| 3 | **方向 C：会话持久化增强** | 待收口 | 一期+二期已完成，待用户端到端复核后收口 |
+| 4 | **H5 方向** | 待用户定 | 用户验证 H4 后决定下一步 |
 
 ---
 
-## H4 实施计划（Research 联动）
-
-**目标**：生成 draft 时可选"检索增强"，先跑 search 拿相关 wiki 片段再喂给 LLM。
-
-**涉及文件**：
-- `src-tauri/src/state.rs` — `generate_agent_draft_impl` 增加 `research_mode: bool` 参数；开启时调用 `search_impl` 注入相关片段
-- `src-tauri/src/commands.rs` — `generate_agent_draft` 增加 `research_mode: Option<bool>`
-- `web/src/tauri-client.ts` — `generateAgentDraft` 增加 `researchMode?: boolean`
-- `web/src/App.tsx` — 增加 `agentResearchMode` 状态 + toggle 开关 UI
-
-**无需新表、无 schema 改动**
-
-**后端逻辑**：
-```
-generate_agent_draft_impl(run_id, topic, skill_key, research_mode)
-  if research_mode:
-    hits = search_impl(topic, limit=5)           // 已有函数
-    related_context = format hits as markdown    // 注入 prompt
-  else:
-    related_context = (原有逻辑：按 topic 向量搜)
-```
-
-**前端 UI**：在输入栏旁增加一个"🔍 检索增强"toggle（checkbox 或小按钮）。
-
----
-
-## 代码快照（2026-04-27，H3 收口）
+## 代码快照（2026-04-27，H4 收口）
 
 ```
 src-tauri/src/
-  commands.rs       # 全部 Tauri 命令（generate_agent_draft 含 skill_key）
-  db.rs             # SQLite（agent_runs/events/drafts/memories/skills 表）
-  models.rs         # 数据模型（AgentSkillItem / AgentDraftConflictInfo）
-  state.rs          # 核心逻辑（skill prompt 注入 / AAAK-lite / draft 生成）
-  vault.rs          # 文件系统
+  commands.rs   # generate_agent_draft 含 skill_key + research_mode
+  db.rs         # agent_runs/events/drafts/memories/skills 表
+  models.rs     # AgentSkillItem / AgentDraftConflictInfo
+  state.rs      # skill 注入 / AAAK-lite / research_mode / extract_content_after_frontmatter
+  vault.rs      # 文件系统
 
 web/src/
-  App.tsx           # B2 双栏布局 + skill 面板 + 记忆芯片 + 草稿头 skill badge
-  tauri-client.ts   # invoke 封装（generateAgentDraft 支持 skillKey）
-  types.ts          # TS 类型（AgentSkillItem / AgentMemoryItem）
-  app-utils.test.ts # 单元测试
-  styles.css        # 全部样式
+  App.tsx       # B2 双栏 + skill 面板 + 记忆芯片 + "检索增强"toggle
+  tauri-client.ts  # generateAgentDraft(runId, topic, skillKey, researchMode)
+  types.ts      # AgentSkillItem / AgentMemoryItem
+  app-utils.test.ts
+  styles.css
 ```
+
+---
+
+## H3/H4 功能速查
+
+| 功能 | 入口 | 说明 |
+|------|------|------|
+| skill CRUD | Agent Studio 技能模板区 | 新建/删除 skill；下拉选择生效 skill |
+| skill 注入 | 生成 draft 时自动 | 将 skill prompt 注入 LLM context |
+| skill badge | 草稿头元信息 `· skill:<key>` | 从 run 事件解析 |
+| 记忆 | 记忆上下文芯片 + 添加表单 | 键可选，留空自动派生 |
+| 检索增强 | 输入栏下方 checkbox | 开启后读取 wiki 正文（400字），搜索 8 条 vs 5 条 |
 
 ---
 
@@ -104,6 +89,6 @@ web/src/
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Ingest 超时**：`INGEST_TIMEOUT_MS = 300_000`；LLM 输入截断 8000 字符
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
-- **API Key 禁止入仓**：`.claude/`、`.codex/`、`.env` 在 §16.5 禁止提交
+- **API Key 禁止入仓**：`.claude/`、`.codex/`、`.env` 禁止提交
 - **Codex 在 WSL**：Rust 改动需标注"待 Windows cargo 复核"
 - **审批约束**：写盘必须经确认弹窗，禁止静默覆盖
