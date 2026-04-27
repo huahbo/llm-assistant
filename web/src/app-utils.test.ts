@@ -2652,3 +2652,26 @@ describe("AI 新建页面", () => {
     await expect(createWikiPageWithAi("测试主题")).rejects.toThrow();
   });
 });
+
+describe("Agent Studio Draft Markdown 渲染", () => {
+  it("marked 将 H1 标题转换为 <h1> 标签", async () => {
+    const { marked } = await import("marked");
+    const html = marked.parse("# 测试标题\n\n正文内容。", {
+      gfm: true,
+      breaks: false,
+    }) as string;
+    expect(html).toContain("<h1");
+    expect(html).toContain("测试标题");
+    expect(html).toContain("正文内容");
+  });
+
+  it("marked 将代码块转换为 <code> 标签", async () => {
+    const { marked } = await import("marked");
+    const html = marked.parse("```rust\nfn main() {}\n```", {
+      gfm: true,
+      breaks: false,
+    }) as string;
+    expect(html).toContain("<code");
+    expect(html).toContain("fn main");
+  });
+});

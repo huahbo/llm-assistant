@@ -220,6 +220,15 @@ export interface AgentDraftItem {
   updated_at: string;
 }
 
+/** 审批前冲突检测结果（H1 确认弹窗用） */
+export interface AgentDraftConflictInfo {
+  draft_id: number;
+  title: string;
+  conflict: boolean;
+  existing_path: string | null;
+  existing_preview: string | null;
+}
+
 export interface AskHistoryItem {
   id: number;
   question: string;

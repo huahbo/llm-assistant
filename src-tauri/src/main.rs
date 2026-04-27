@@ -87,6 +87,7 @@ fn main() {
             commands::complete_agent_run,
             commands::generate_agent_draft,
             commands::list_agent_drafts,
+            commands::check_agent_draft_conflict,
             commands::approve_agent_draft,
             commands::query_ask_session,
             commands::cancel_ask_session,

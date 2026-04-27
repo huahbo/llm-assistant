@@ -92,6 +92,7 @@ import {
   completeAgentRun,
   generateAgentDraft,
   listAgentDrafts,
+  checkAgentDraftConflict,
   approveAgentDraft,
   type OcrProvider,
 } from "./tauri-client";
@@ -110,6 +111,7 @@ import {
 } from "./lint-utils";
 import type { LintSeverityFilter } from "./lint-utils";
 import type {
+  AgentDraftConflictInfo,
   AgentDraftItem,
   AgentRunEventItem,
   AgentRunEventLevel,
@@ -2914,6 +2916,9 @@ export default function App() {
   const [agentCompleteStatus, setAgentCompleteStatus] = useState<AgentRunStatus>("applied");
   const [agentActionRunning, setAgentActionRunning] = useState(false);
   const [agentStatusMessage, setAgentStatusMessage] = useState("");
+  // 审批确认弹窗状态
+  const [agentApproveConfirm, setAgentApproveConfirm] =
+    useState<AgentDraftConflictInfo | null>(null);
 
   useEffect(
     () => () => {
@@ -6692,14 +6697,27 @@ export default function App() {
       setAgentStatusMessage("请先选择一个 draft。");
       return;
     }
+    // 先做冲突预检，再弹确认框
+    const conflictInfo = await checkAgentDraftConflict(agentSelectedDraftId);
+    if (conflictInfo) {
+      setAgentApproveConfirm(conflictInfo);
+    } else {
+      // 非 Tauri 环境降级：直接执行（浏览器预览模式）
+      await doApproveAgentDraft();
+    }
+  };
+
+  const doApproveAgentDraft = async () => {
+    if (agentSelectedRunId == null || agentSelectedDraftId == null) return;
+    setAgentApproveConfirm(null);
     setAgentActionRunning(true);
     try {
       const ok = await approveAgentDraft(agentSelectedDraftId);
       if (!ok) {
-        setAgentStatusMessage("审批写盘失败，请检查后端命令是否可用。");
+        setAgentStatusMessage("审批失败，草稿内容未写盘，可重试或检查 Vault 路径。");
         return;
       }
-      setAgentStatusMessage(`draft #${agentSelectedDraftId} 已审批写盘`);
+      setAgentStatusMessage(`draft #${agentSelectedDraftId} 已审批写盘 ✓`);
       await loadAgentDraftsData(agentSelectedRunId, agentSelectedDraftId);
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
@@ -9534,7 +9552,11 @@ export default function App() {
                   </div>
                 </div>
                 {agentStatusMessage ? (
-                  <p className="agent-studio__status">{agentStatusMessage}</p>
+                  <p
+                    className={`agent-studio__status${agentStatusMessage.includes("失败") ? " agent-studio__status--error" : ""}`}
+                  >
+                    {agentStatusMessage}
+                  </p>
                 ) : null}
                 <div className="agent-studio__content">
                   <section className="agent-studio__column">
@@ -9654,9 +9676,23 @@ export default function App() {
                           状态：{selectedAgentDraft.status} · 更新：
                           {formatLintCheckedAt(selectedAgentDraft.updated_at || selectedAgentDraft.created_at)}
                         </p>
-                        <pre className="agent-studio__draft-preview">
-                          {selectedAgentDraft.content?.trim() || "（该 draft 暂无内容）"}
-                        </pre>
+                        {/* Markdown 渲染，复用 wiki-markdown 样式 */}
+                        {selectedAgentDraft.content?.trim() ? (
+                          <div
+                            className="agent-studio__draft-markdown wiki-markdown"
+                            // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify
+                            dangerouslySetInnerHTML={{
+                              __html: DOMPurify.sanitize(
+                                marked.parse(selectedAgentDraft.content.trim(), {
+                                  gfm: true,
+                                  breaks: false,
+                                }) as string,
+                              ),
+                            }}
+                          />
+                        ) : (
+                          <p className="agent-studio__empty">（该 draft 暂无内容）</p>
+                        )}
                       </>
                     )}
                   </section>
@@ -9665,6 +9701,57 @@ export default function App() {
             </>
           )}
         </div>
+        {/* 审批前确认弹窗（H1） */}
+        {agentApproveConfirm ? (
+          <div
+            className="agent-draft-confirm-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label="确认写盘"
+            onClick={() => setAgentApproveConfirm(null)}
+          >
+            <div
+              className="agent-draft-confirm-dialog"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="agent-draft-confirm-dialog__title">确认写盘</h3>
+              <p className="agent-draft-confirm-dialog__body">
+                即将将 Draft「<strong>{agentApproveConfirm.title}</strong>
+                」写入 Wiki。
+                {agentApproveConfirm.conflict && (
+                  <span className="agent-draft-confirm-dialog__warn">
+                    {" "}
+                    ⚠ 同名页面已存在，写盘将覆盖现有内容。
+                  </span>
+                )}
+                {!agentApproveConfirm.conflict && " 此操作不可撤销，确认继续？"}
+              </p>
+              {agentApproveConfirm.conflict && agentApproveConfirm.existing_preview && (
+                <details className="agent-draft-confirm-dialog__existing">
+                  <summary>查看现有页面预览（前 300 字）</summary>
+                  <pre>{agentApproveConfirm.existing_preview}</pre>
+                </details>
+              )}
+              <div className="agent-draft-confirm-dialog__actions">
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--primary"
+                  disabled={agentActionRunning}
+                  onClick={() => void doApproveAgentDraft()}
+                >
+                  确认写盘
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  onClick={() => setAgentApproveConfirm(null)}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {ingestPreviewDialog ? (
           <div
             className="ingest-preview-modal"

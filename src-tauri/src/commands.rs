@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::models::{
-    AgentDraftItem, AgentRunEventItem, AgentRunItem, AppMode, AppOverview, AskSessionItem,
+    AgentDraftConflictInfo, AgentDraftItem, AgentRunEventItem, AgentRunItem, AppMode, AppOverview, AskSessionItem,
     AskSessionSearchHitItem, AskSessionTurnItem, DefaultPaths, IngestPreview, IngestResult,
     KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput,
     LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview,
@@ -575,6 +575,15 @@ pub fn list_agent_drafts(
     state: State<'_, AppState>,
 ) -> Result<Vec<AgentDraftItem>, String> {
     state.list_agent_drafts_impl(run_id, limit)
+}
+
+/// 审批前冲突预检：检测同名 Wiki 页面是否已存在（H1）。
+#[tauri::command]
+pub fn check_agent_draft_conflict(
+    draft_id: i64,
+    state: State<'_, AppState>,
+) -> Result<AgentDraftConflictInfo, String> {
+    state.check_agent_draft_conflict_impl(draft_id)
 }
 
 /// 审批并写盘草稿（H1）。

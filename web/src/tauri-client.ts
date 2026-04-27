@@ -1,4 +1,5 @@
 import type {
+  AgentDraftConflictInfo,
   AgentDraftItem,
   AgentRunEventItem,
   AgentRunEventLevel,
@@ -1554,6 +1555,11 @@ export const createApproveAgentDraftArgs = (draftId: number) => ({
   draft_id: draftId,
 });
 
+export const createCheckAgentDraftConflictArgs = (draftId: number) => ({
+  draftId,
+  draft_id: draftId,
+});
+
 /** 设置或取消 Wiki 页面的 stale 标记 */
 export async function markPageStale(
   pagePath: string,
@@ -1768,6 +1774,23 @@ export async function approveAgentDraft(draftId: number): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** 审批前冲突预检：返回同名页面是否存在（H1 确认弹窗用） */
+export async function checkAgentDraftConflict(
+  draftId: number,
+): Promise<AgentDraftConflictInfo | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentDraftConflictInfo>("check_agent_draft_conflict", {
+        ...createCheckAgentDraftConflictArgs(draftId),
+      }),
+    );
+  } catch {
+    return null;
   }
 }
 

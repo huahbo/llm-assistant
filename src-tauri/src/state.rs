@@ -4497,6 +4497,44 @@ Wiki 页面：\n{}",
             .collect())
     }
 
+    /// 检测草稿对应的 Wiki 页面是否已存在（审批前冲突预检）。
+    pub fn check_agent_draft_conflict_impl(
+        &self,
+        draft_id: i64,
+    ) -> Result<crate::models::AgentDraftConflictInfo, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.vault_path.clone()
+        }
+        .ok_or_else(|| "请先初始化 Vault".to_string())?;
+        let db_path = vault_path.join(".app").join("meta.db");
+
+        let draft = db::get_agent_draft(&db_path, draft_id)?
+            .ok_or_else(|| format!("未找到 Agent Draft: {}", draft_id))?;
+
+        let wiki_dir = vault_path.join("wiki");
+        let slug = topic_to_slug(&draft.title);
+        let candidate = wiki_dir.join(format!("{}.md", slug));
+
+        let conflict = candidate.exists();
+        let (existing_path, existing_preview) = if conflict {
+            let preview = std::fs::read_to_string(&candidate)
+                .ok()
+                .map(|c| c.chars().take(300).collect::<String>());
+            (Some(candidate.to_string_lossy().to_string()), preview)
+        } else {
+            (None, None)
+        };
+
+        Ok(crate::models::AgentDraftConflictInfo {
+            draft_id,
+            title: draft.title,
+            conflict,
+            existing_path,
+            existing_preview,
+        })
+    }
+
     /// 审批 Agent 草稿并写入 vault/wiki，同时更新 DB 与 FTS。
     pub async fn approve_agent_draft_impl(&self, draft_id: i64) -> Result<NewPageResult, String> {
         let vault_path = {
@@ -12681,5 +12719,35 @@ entities:
         assert_eq!(applied.title, "Rust Actor 模块设计");
         let file_content = fs::read_to_string(&applied.wiki_path).expect("读取写盘文件失败");
         assert!(file_content.contains("这里是草稿正文"));
+    }
+
+    #[test]
+    fn check_agent_draft_conflict_returns_no_conflict_when_page_absent() {
+        let vault_dir = make_temp_dir("llm-wiki-h1-conflict");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let run_id = state.start_agent_run_impl("冲突检测测试").expect("创建 run 失败");
+        let now = current_timestamp_ms();
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let draft = db::create_agent_draft(
+            &db_path,
+            run_id,
+            "唯一不存在的页面标题",
+            "draft content",
+            "draft",
+            &now,
+        )
+        .expect("创建草稿失败");
+
+        let info = state
+            .check_agent_draft_conflict_impl(draft.id)
+            .expect("冲突检测失败");
+        assert_eq!(info.draft_id, draft.id);
+        assert_eq!(info.title, "唯一不存在的页面标题");
+        assert!(!info.conflict);
+        assert!(info.existing_path.is_none());
+        assert!(info.existing_preview.is_none());
     }
 }

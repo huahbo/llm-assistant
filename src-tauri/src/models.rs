@@ -585,6 +585,20 @@ pub struct AgentDraftItem {
     pub updated_at: String,
 }
 
+/// 审批前冲突检测结果（H1 审批弹窗用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDraftConflictInfo {
+    pub draft_id: i64,
+    /// 草稿标题
+    pub title: String,
+    /// true = vault/wiki 下已存在同名页面
+    pub conflict: bool,
+    /// 已有页面的文件路径（仅冲突时有值）
+    pub existing_path: Option<String>,
+    /// 已有页面前 300 字预览（仅冲突时有值）
+    pub existing_preview: Option<String>,
+}
+
 /// Ask 会话单轮记录（多轮对话用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AskTurn {

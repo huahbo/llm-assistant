@@ -4283,6 +4283,11 @@ code {
   font-size: 12.5px;
 }
 
+.agent-studio__status--error {
+  color: var(--error, #d9534f);
+  font-weight: 500;
+}
+
 .agent-studio__content {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.4fr);
@@ -4416,6 +4421,90 @@ code {
   min-height: 180px;
   max-height: 360px;
   overflow: auto;
+}
+
+.agent-studio__draft-markdown {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  flex: 1;
+  min-height: 180px;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* 审批确认弹窗 */
+.agent-draft-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+}
+
+.agent-draft-confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  width: 440px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+}
+
+.agent-draft-confirm-dialog__title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.agent-draft-confirm-dialog__body {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.agent-draft-confirm-dialog__warn {
+  color: var(--warn, #e67e22);
+  font-weight: 500;
+}
+
+.agent-draft-confirm-dialog__existing {
+  margin-bottom: 14px;
+  font-size: 12px;
+}
+
+.agent-draft-confirm-dialog__existing pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.agent-draft-confirm-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dev-panel__button--primary {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  border-color: var(--accent, #3b82f6);
+}
+
+.dev-panel__button--primary:hover:not(:disabled) {
+  opacity: 0.88;
 }
 
 @media (max-width: 980px) {
