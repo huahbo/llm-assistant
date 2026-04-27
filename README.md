@@ -11,10 +11,11 @@
 | 模块 | 说明 |
 |------|------|
 | **Ingest** | 支持 Markdown / PDF / DOCX / PPTX / TXT / 图片 OCR，URL 抓取，拖拽摄入，持久化 ingest 队列（含重试/取消） |
-| **Query / Ask** | FTS5 + embedding + 引用热度 + 链接扩展 四路 RRF 检索；Ollama / OpenAI-compatible 流式对话 |
+| **Query / Ask** | FTS5 + embedding + 引用热度 + 链接扩展 四路 RRF 检索；Ollama / OpenAI-compatible 流式对话；Ask 会话持久化管理 |
 | **Wiki** | Markdown 编辑/渲染/重命名/删除，双向链接，内链补全，实体提取，Frontmatter 元数据 |
 | **Lint** | 语义矛盾/陈旧/覆盖度检测，Wiki-link 级 broken/orphan 检测，可预览/应用修复补丁 |
 | **Graph** | 知识图谱可视化，Global/Local 模式，洞察层（孤立节点/稀疏社区/桥接节点/异常连接 + embedding 相似度评分） |
+| **Agent Studio** | LLM 驱动的 Wiki 草稿生成工作区：Skill 模板、检索增强（research_mode）、Ask 联动、批注重写、审批后自动提炼全局记忆（AAAK-lite） |
 | **Settings** | LLM Provider 配置（Ollama / OpenAI-compatible），OCR Provider，拖拽摄入模式 |
 
 ---
@@ -139,7 +140,7 @@ cd web && npm run test -- --run
 cd web && npm run typecheck
 ```
 
-当前基线：**116 Rust / 149 前端 / typecheck 0 errors**
+当前基线：**typecheck 0 errors**（Rust / 前端单测数量待 Windows 复核；最后验证 173 Rust / 174 前端 @ 2026-04-25）
 
 ---
 
@@ -150,8 +151,8 @@ llm-wiki/
 ├── src-tauri/          # Rust 后端（Tauri v2）
 │   └── src/
 │       ├── commands.rs # 全部 Tauri 命令注册
-│       ├── state.rs    # 业务逻辑（ingest/query/lint/ocr/队列 worker）
-│       ├── db.rs       # SQLite 操作（FTS5 + embedding + 队列）
+│       ├── state.rs    # 业务逻辑（ingest/query/lint/ocr/agent/队列 worker）
+│       ├── db.rs       # SQLite 操作（FTS5 + embedding + 队列 + agent）
 │       ├── vault.rs    # Markdown Vault 文件读写
 │       ├── search.rs   # RRF 四路检索
 │       ├── models.rs   # 数据模型
@@ -164,9 +165,14 @@ llm-wiki/
 │       └── styles.css
 ├── docs/               # 设计与过程文档
 │   ├── v1-technical-design.md
-│   ├── 实施过程记录.md
-│   └── 交接状态卡.md
-└── agents.md           # 三方 Agent 协作协议与进度
+│   ├── dev-status.md              # 活跃开发状态（Agent 交接必读）
+│   ├── 实施过程记录.md            # 最近轮次实施记录
+│   ├── 实施过程记录-归档-2026-04.md
+│   ├── completed-log.md           # 已完成功能完整列表
+│   ├── 交接状态卡.md
+│   └── archive/                   # 历史调研与差距分析文档
+├── agents.md           # 三方 Agent 协作协议与规范
+└── extension/          # 浏览器 Clipper 扩展
 ```
 
 ---
@@ -174,7 +180,7 @@ llm-wiki/
 ## 数据存储
 
 - **Vault**（Markdown 文件）：`%APPDATA%\llm-wiki\vault\`（Windows）或 `~/.local/share/llm-wiki/vault/`（开发）
-- **SQLite DB**：同目录下 `wiki.db`（含 wiki_pages / citations / fts_pages / ask_history / wiki_outbox / ingest_queue_items 等表）
+- **SQLite DB**：同目录下 `meta.db`（含 wiki_pages / citations / fts_pages / ask_history / ask_sessions / wiki_outbox / ingest_queue_items / agent_runs / agent_drafts / agent_memories / agent_skills 等表）
 
 ---
 
