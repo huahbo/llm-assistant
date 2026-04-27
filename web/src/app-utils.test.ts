@@ -1239,12 +1239,14 @@ describe("Tauri 运行时与参数映射", () => {
       status: "applied",
     });
 
-    expect(createGenerateAgentDraftArgs(12, "Rust Actor 模块设计", "writer")).toEqual({
+    expect(createGenerateAgentDraftArgs(12, "Rust Actor 模块设计", "writer", true)).toEqual({
       runId: 12,
       run_id: 12,
       topic: "Rust Actor 模块设计",
       skillKey: "writer",
       skill_key: "writer",
+      researchMode: true,
+      research_mode: true,
     });
 
     expect(createListAgentDraftsArgs(12, 40)).toEqual({

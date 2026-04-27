@@ -4898,6 +4898,22 @@ code {
   gap: 6px;
 }
 
+.agent-studio__research-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.agent-studio__research-toggle input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
 .agent-studio__draft-pane {
   flex: 1;
   min-height: 220px;

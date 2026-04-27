@@ -3055,6 +3055,7 @@ export default function App() {
   const [agentActiveSkillKey, setAgentActiveSkillKey] = useState<string>(
     () => readAgentActiveSkillKeyFromStorage(),
   );
+  const [agentResearchMode, setAgentResearchMode] = useState(false);
   const [agentDebugPanelOpen, setAgentDebugPanelOpen] = useState(false);
 
   useEffect(
@@ -7063,7 +7064,7 @@ export default function App() {
       setAgentStatusMessage(`run #${runId} 已创建，正在生成 draft...`);
       await loadAgentRunsData(runId);
       await loadAgentRunEventsData(runId);
-      const ok = await generateAgentDraft(runId, topic, agentActiveSkillKey || null);
+      const ok = await generateAgentDraft(runId, topic, agentActiveSkillKey || null, agentResearchMode);
       if (!ok) {
         setAgentStatusMessage(`run #${runId} draft 生成失败，请检查后端日志。`);
         return;
@@ -7166,7 +7167,7 @@ export default function App() {
     }
     setAgentActionRunning(true);
     try {
-      const ok = await generateAgentDraft(agentSelectedRunId, topic, agentActiveSkillKey || null);
+      const ok = await generateAgentDraft(agentSelectedRunId, topic, agentActiveSkillKey || null, agentResearchMode);
       if (!ok) {
         setAgentStatusMessage("生成 draft 失败，请检查后端命令是否可用。");
         return;
@@ -10270,6 +10271,14 @@ export default function App() {
                       </button>
                     </div>
                     <div className="agent-studio__composer-tools">
+                      <label className="agent-studio__research-toggle" title="开启后读取 wiki 页面正文（前 400 字）作为上下文，生成质量更高但速度略慢">
+                        <input
+                          type="checkbox"
+                          checked={agentResearchMode}
+                          onChange={(e) => setAgentResearchMode(e.target.checked)}
+                        />
+                        检索增强
+                      </label>
                       <button
                         type="button"
                         className="dev-panel__button"

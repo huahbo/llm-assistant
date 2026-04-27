@@ -1542,12 +1542,15 @@ export const createGenerateAgentDraftArgs = (
   runId: number,
   topic: string,
   skillKey?: string | null,
+  researchMode?: boolean,
 ) => ({
   runId,
   run_id: runId,
   topic,
   skillKey,
   skill_key: skillKey,
+  researchMode,
+  research_mode: researchMode,
 });
 
 /** 构造 list_agent_drafts 命令参数（用于测试） */
@@ -1757,13 +1760,14 @@ export async function generateAgentDraft(
   runId: number,
   topic: string,
   skillKey?: string | null,
+  researchMode?: boolean,
 ): Promise<boolean> {
   if (!isTauriRuntime()) return false;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     await withTimeout(
       invoke<void>("generate_agent_draft", {
-        ...createGenerateAgentDraftArgs(runId, topic, skillKey),
+        ...createGenerateAgentDraftArgs(runId, topic, skillKey, researchMode),
       }),
     );
     return true;

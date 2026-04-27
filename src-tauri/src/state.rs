@@ -3724,11 +3724,13 @@ Wiki 页面：\n{}",
         topic: &str,
         memories_context: Option<&str>,
         skill_prompt: Option<&str>,
+        research_mode: bool,
     ) -> Result<(String, String, String), String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
+        let search_limit = if research_mode { 8 } else { 5 };
         let related_pages = if db_path.exists() {
-            db::search_wiki_pages(db_path, topic, 5).unwrap_or_default()
+            db::search_wiki_pages(db_path, topic, search_limit).unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -3739,12 +3741,26 @@ Wiki 页面：\n{}",
             related_pages
                 .iter()
                 .map(|p| {
-                    let summary = if p.summary.is_empty() {
-                        "（无摘要）".to_string()
+                    let snippet = if research_mode {
+                        std::fs::read_to_string(&p.path)
+                            .ok()
+                            .map(|t| extract_content_after_frontmatter(&t, 400))
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| {
+                                if p.summary.is_empty() {
+                                    "（无摘要）".to_string()
+                                } else {
+                                    p.summary.chars().take(400).collect()
+                                }
+                            })
                     } else {
-                        p.summary.chars().take(120).collect()
+                        if p.summary.is_empty() {
+                            "（无摘要）".to_string()
+                        } else {
+                            p.summary.chars().take(120).collect()
+                        }
                     };
-                    format!("- {}: {}", p.title, summary)
+                    format!("- {}: {}", p.title, snippet)
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -3869,7 +3885,7 @@ Wiki 页面：\n{}",
 
         // e. 生成草稿内容（与 Agent Draft 逻辑共用）。
         let (page_title, llm_content, full_content) = self
-            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None, None)
+            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None, None, false)
             .await?;
         let now_ms = current_timestamp_ms();
 
@@ -4668,6 +4684,7 @@ Wiki 页面：\n{}",
         run_id: i64,
         topic: String,
         skill_key: Option<String>,
+        research_mode: bool,
     ) -> Result<AgentDraftItem, String> {
         let db_path = self
             .outbox_db_path()
@@ -4703,19 +4720,24 @@ Wiki 页面：\n{}",
                 &normalized_topic,
                 memories_context.as_deref(),
                 skill_prompt.as_deref(),
+                research_mode,
             )
             .await?;
         let now = current_timestamp_ms();
         let record =
             db::create_agent_draft(&db_path, run_id, &title, &markdown_content, "draft", &now)?;
 
+        let research_tag = if research_mode { "，research: on" } else { "" };
         let event_msg = if let Some(key) = applied_skill_key {
             format!(
-                "已生成草稿 #{}（topic: {}，skill: {}）",
-                record.id, normalized_topic, key
+                "已生成草稿 #{}（topic: {}，skill: {}{}）",
+                record.id, normalized_topic, key, research_tag
             )
         } else {
-            format!("已生成草稿 #{}（topic: {}）", record.id, normalized_topic)
+            format!(
+                "已生成草稿 #{}（topic: {}{}）",
+                record.id, normalized_topic, research_tag
+            )
         };
         if let Err(err) = db::append_agent_run_event(&db_path, run_id, "info", &event_msg, &now) {
             self.push_log(
@@ -7670,6 +7692,20 @@ struct WikiMatch {
     page_path: String,
     score: usize,
     excerpt: String,
+}
+
+/// 跳过 Markdown frontmatter（--- ... ---），返回正文前 `limit` 个字符。
+fn extract_content_after_frontmatter(text: &str, limit: usize) -> String {
+    let s = text.trim_start();
+    let body = if s.starts_with("---") {
+        let rest = &s[3..];
+        rest.find("\n---")
+            .map(|pos| rest[pos + 4..].trim_start_matches('\n'))
+            .unwrap_or(s)
+    } else {
+        s
+    };
+    body.chars().take(limit).collect()
 }
 
 fn tokenize_query(question: &str) -> Vec<String> {
@@ -12982,6 +13018,7 @@ entities:
                 run_id,
                 "Rust Actor 模块设计".to_string(),
                 None,
+                false,
             ))
             .expect("生成草稿失败");
         assert_eq!(draft.run_id, run_id);
@@ -13030,6 +13067,7 @@ entities:
                 run_id,
                 "技能注入测试".to_string(),
                 Some("writer".to_string()),
+                false,
             ))
             .expect("生成草稿失败");
 

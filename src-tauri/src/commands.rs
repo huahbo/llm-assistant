@@ -563,10 +563,11 @@ pub async fn generate_agent_draft(
     run_id: i64,
     topic: String,
     skill_key: Option<String>,
+    research_mode: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<AgentDraftItem, String> {
     state
-        .generate_agent_draft_impl(run_id, topic, skill_key)
+        .generate_agent_draft_impl(run_id, topic, skill_key, research_mode.unwrap_or(false))
         .await
 }
 
