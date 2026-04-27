@@ -221,10 +221,11 @@
 
 ### 快速恢复（3 步）
 
-1. 读 `docs/dev-status.md` → 确认基线数字与活跃 TODO
+1. 读 `docs/dev-status.md` → 确认基线数字与活跃 TODO；**当前进行中：H6-S1 Shell Tool**
 2. 运行 `cd src-tauri && cargo test` 与 `cd web && npm run test -- --run`，与基线对比
 3. 按 `docs/dev-status.md §活跃 TODO` 的优先级 1→2 开始，**必须使用 §14 子代理并行规则**
 
 **开发规则（每轮必读）：**
 - **§14 强制**：后端/前端/测试各用独立子代理并行开发，主控不直接写代码
-- 每轮结束更新 `docs/dev-status.md` + `docs/实施过程记录.md`，验证基线全绿后 git commit
+- 每轮结束更新 `docs/dev-status.md` + `docs/实施过程记录.md` + `docs/交接状态卡.md`，验证基线全绿后 git commit
+- **H6 完整计划**（含代码片段）在 `docs/dev-status.md` §H6详细计划；参考项目 `refer-rust-daerwen-agent/`
