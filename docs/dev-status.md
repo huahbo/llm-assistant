@@ -15,12 +15,12 @@
 
 ---
 
-## 验证基线（2026-04-27 最新）
+## 验证基线（2026-04-27 H2 最新）
 
 ```powershell
 # Windows PowerShell
 cd src-tauri; cargo test          # 应: 190 passed, 0 failed
-cd ../web; npm run test -- --run  # 应: 177 passed, 0 failed
+cd ../web; npm run test -- --run  # 应: 179 passed, 0 failed
 cd ../web; npm run typecheck      # 应: 0 errors
 cd ../web; npm run build          # 应: 通过
 ```
@@ -35,11 +35,11 @@ cd ../web; npm run build          # 应: 通过
 
 | commit | 描述 |
 |--------|------|
+| `9ea3610` | feat(H2): agent_memories CRUD + AAAK-lite 压缩层 + 记忆面板 UI |
+| `ebacf92` | docs: 更新 dev-status 基线至 190/177（H1-next 完成） |
 | `6cb88e6` | feat(H1-next): 草稿 Markdown 渲染 + 审批确认弹窗 + 冲突预检 |
 | `0f153b2` | feat(H1): Agent Studio 时间优化 + Draft 生成/审批链路（Codex 实现） |
 | `112c988` | fix(test): 修复 agent_draft_generate_and_approve_impl_works 测试 |
-| `2aa0c32` | docs: 分层重构 agents.md（宪法层/活跃层/存档层） |
-| `f8eb579` | docs: 更新 agents.md §18 基线至 183/174 |
 
 ---
 
@@ -47,14 +47,14 @@ cd ../web; npm run build          # 应: 通过
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **方向 H：Agent Studio H1 后续** | 待开始 | H1-next 已完成（Markdown 渲染+确认弹窗+冲突预检）；下一段：H2 记忆增强（agent_memories 表 + AAAK-lite 压缩层），或用户指定其他方向 |
+| 1 | **方向 H：Agent Studio H2 后续** | 待验证 | H2 已完成（记忆 CRUD + AAAK-lite + 面板 UI）；待用户 Windows 复核；下一段 H3：记忆与 Run 联动 / 多 Agent 协同，或用户指定方向 |
 | 2 | **方向 B：项目模板/多项目体验** | 待收口 | 功能已落地，待用户 Windows 端到端复核后收口 |
 | 3 | **方向 C：会话持久化增强** | 待收口 | 一期 + 二期已完成，待用户 Windows 端到端复核后收口 |
 | — | 用户新需求 | 待提 | 用户提到有新需求，尚未描述 |
 
 ---
 
-## 代码快照（2026-04-27，基线 190 Rust / 177 前端）
+## 代码快照（2026-04-27，基线 190 Rust / 179 前端）
 
 ```
 src-tauri/src/
