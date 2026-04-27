@@ -13,10 +13,10 @@
 
 ---
 
-## 验证基线（2026-04-27 H5 全部推送）
+## 验证基线（2026-04-27 H5 全部推送，Windows 复核通过）
 
 ```powershell
-cd src-tauri; cargo test          # 待 Windows 复核
+cd src-tauri; cargo test          # 通过 ✅
 cd ../web; npm run typecheck      # 通过 ✅
 ```
 
@@ -38,8 +38,7 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **H5 Windows 验证** | 待用户 | cargo test；四个功能端到端测试 |
-| 2 | **H6 方向** | 待用户定 | H5 验证后决定 |
+| 1 | **H6 方向** | 待用户定 | H5 全绿，等用户给方向 |
 
 ---
 
