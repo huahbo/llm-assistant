@@ -94,6 +94,9 @@ import {
   listAgentDrafts,
   checkAgentDraftConflict,
   approveAgentDraft,
+  listAgentMemories,
+  upsertAgentMemory,
+  deleteAgentMemory,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -113,6 +116,7 @@ import type { LintSeverityFilter } from "./lint-utils";
 import type {
   AgentDraftConflictInfo,
   AgentDraftItem,
+  AgentMemoryItem,
   AgentRunEventItem,
   AgentRunEventLevel,
   AgentRunItem,
@@ -2919,6 +2923,11 @@ export default function App() {
   // 审批确认弹窗状态
   const [agentApproveConfirm, setAgentApproveConfirm] =
     useState<AgentDraftConflictInfo | null>(null);
+  // H2 记忆面板状态
+  const [agentMemories, setAgentMemories] = useState<AgentMemoryItem[]>([]);
+  const [agentMemoriesLoading, setAgentMemoriesLoading] = useState(false);
+  const [agentMemoryKeyInput, setAgentMemoryKeyInput] = useState("");
+  const [agentMemoryValueInput, setAgentMemoryValueInput] = useState("");
 
   useEffect(
     () => () => {
@@ -6569,6 +6578,17 @@ export default function App() {
     }
   };
 
+  const loadAgentMemoriesData = async (runId: number | null) => {
+    if (!isTauriRuntime()) return;
+    setAgentMemoriesLoading(true);
+    try {
+      const mems = await listAgentMemories(runId);
+      setAgentMemories(mems);
+    } finally {
+      setAgentMemoriesLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (activeModule !== "agent") {
       return;
@@ -6589,6 +6609,7 @@ export default function App() {
     }
     void loadAgentRunEventsData(agentSelectedRunId);
     void loadAgentDraftsData(agentSelectedRunId);
+    void loadAgentMemoriesData(agentSelectedRunId);
     // H0 阶段仅依赖当前 run，避免与其他模块状态耦合。
   }, [activeModule, agentSelectedRunId]);
 
@@ -6721,6 +6742,44 @@ export default function App() {
       await loadAgentDraftsData(agentSelectedRunId, agentSelectedDraftId);
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleUpsertAgentMemory = async () => {
+    const key = agentMemoryKeyInput.trim();
+    const value = agentMemoryValueInput.trim();
+    if (!key || !value) {
+      setAgentStatusMessage("记忆键和值不能为空。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const item = await upsertAgentMemory(agentSelectedRunId, key, value);
+      if (!item) {
+        setAgentStatusMessage("保存记忆失败，请检查后端。");
+        return;
+      }
+      setAgentMemoryKeyInput("");
+      setAgentMemoryValueInput("");
+      setAgentStatusMessage(`记忆「${key}」已保存。`);
+      await loadAgentMemoriesData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleDeleteAgentMemory = async (id: number) => {
+    setAgentActionRunning(true);
+    try {
+      const ok = await deleteAgentMemory(id);
+      if (!ok) {
+        setAgentStatusMessage("删除记忆失败。");
+        return;
+      }
+      setAgentStatusMessage("记忆已删除。");
+      await loadAgentMemoriesData(agentSelectedRunId);
     } finally {
       setAgentActionRunning(false);
     }
@@ -9695,6 +9754,66 @@ export default function App() {
                         )}
                       </>
                     )}
+                  </section>
+                </div>
+                {/* H2：记忆面板 */}
+                <div className="agent-studio__memories">
+                  <section className="agent-studio__column">
+                    <h3 className="agent-studio__title">
+                      记忆{agentSelectedRunId != null ? `（Run #${agentSelectedRunId}）` : "（全局）"}
+                    </h3>
+                    {agentMemoriesLoading ? (
+                      <p className="agent-studio__empty">加载中...</p>
+                    ) : agentMemories.length === 0 ? (
+                      <p className="agent-studio__empty">暂无记忆，可在下方添加。</p>
+                    ) : (
+                      <ul className="agent-studio__memory-list">
+                        {agentMemories.map((mem) => (
+                          <li key={mem.id} className="agent-studio__memory-item">
+                            <span className="agent-studio__memory-key">{mem.memory_key}</span>
+                            <span className="agent-studio__memory-value">{mem.memory_value}</span>
+                            <button
+                              type="button"
+                              className="dev-panel__button agent-studio__memory-delete"
+                              disabled={agentActionRunning || !isTauriRuntime()}
+                              onClick={() => void handleDeleteAgentMemory(mem.id)}
+                              title="删除此记忆"
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="agent-studio__memory-form">
+                      <input
+                        type="text"
+                        className="dev-panel__input"
+                        placeholder="键（如：关注领域）"
+                        value={agentMemoryKeyInput}
+                        onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
+                      />
+                      <textarea
+                        className="dev-panel__input agent-studio__memory-textarea"
+                        placeholder="值（如：城市水网仿真、AI 建模）"
+                        rows={2}
+                        value={agentMemoryValueInput}
+                        onChange={(e) => setAgentMemoryValueInput(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        disabled={
+                          agentActionRunning
+                          || !agentMemoryKeyInput.trim()
+                          || !agentMemoryValueInput.trim()
+                          || !isTauriRuntime()
+                        }
+                        onClick={() => void handleUpsertAgentMemory()}
+                      >
+                        保存记忆
+                      </button>
+                    </div>
                   </section>
                 </div>
               </section>

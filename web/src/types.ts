@@ -220,6 +220,16 @@ export interface AgentDraftItem {
   updated_at: string;
 }
 
+/** Agent 记忆项（H2：记忆增强） */
+export interface AgentMemoryItem {
+  id: number;
+  run_id: number | null;
+  memory_key: string;
+  memory_value: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** 审批前冲突检测结果（H1 确认弹窗用） */
 export interface AgentDraftConflictInfo {
   draft_id: number;

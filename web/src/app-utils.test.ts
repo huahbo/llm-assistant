@@ -2675,3 +2675,31 @@ describe("Agent Studio Draft Markdown 渲染", () => {
     expect(html).toContain("fn main");
   });
 });
+
+describe("Agent Memory 类型检验（H2）", () => {
+  it("AgentMemoryItem 可构造合法对象（run-specific）", () => {
+    const mem = {
+      id: 1,
+      run_id: 42,
+      memory_key: "关注领域",
+      memory_value: "城市水网仿真",
+      created_at: "1714000000000",
+      updated_at: "1714000000000",
+    };
+    expect(mem.memory_key).toBe("关注领域");
+    expect(mem.run_id).toBe(42);
+  });
+
+  it("AgentMemoryItem 支持 run_id 为 null（全局记忆）", () => {
+    const mem = {
+      id: 2,
+      run_id: null as number | null,
+      memory_key: "全局偏好",
+      memory_value: "简洁输出",
+      created_at: "1714000000000",
+      updated_at: "1714000000000",
+    };
+    expect(mem.run_id).toBeNull();
+    expect(mem.memory_key).toBe("全局偏好");
+  });
+});

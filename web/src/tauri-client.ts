@@ -1,6 +1,7 @@
 import type {
   AgentDraftConflictInfo,
   AgentDraftItem,
+  AgentMemoryItem,
   AgentRunEventItem,
   AgentRunEventLevel,
   AgentRunItem,
@@ -1791,6 +1792,62 @@ export async function checkAgentDraftConflict(
     );
   } catch {
     return null;
+  }
+}
+
+// ---- Agent Memory API (H2) ----
+
+/** 写入或更新 agent 记忆（按 run_id + key upsert）。 */
+export async function upsertAgentMemory(
+  runId: number | null,
+  key: string,
+  value: string,
+): Promise<AgentMemoryItem | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentMemoryItem>("upsert_agent_memory", {
+        runId,
+        run_id: runId,
+        key,
+        value,
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** 列出 agent 记忆（null = 全局记忆）。 */
+export async function listAgentMemories(
+  runId: number | null,
+  limit = 50,
+): Promise<AgentMemoryItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentMemoryItem[]>("list_agent_memories", {
+        runId,
+        run_id: runId,
+        limit,
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 删除单条 agent 记忆。 */
+export async function deleteAgentMemory(id: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("delete_agent_memory", { id }));
+    return true;
+  } catch {
+    return false;
   }
 }
 

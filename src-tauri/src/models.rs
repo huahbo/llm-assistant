@@ -772,6 +772,17 @@ impl std::fmt::Display for IngestQueueStatus {
     }
 }
 
+/// Agent 记忆项（H2：记忆增强，前端传输用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMemoryItem {
+    pub id: i64,
+    pub run_id: Option<i64>,
+    pub memory_key: String,
+    pub memory_value: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 impl std::str::FromStr for IngestQueueStatus {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

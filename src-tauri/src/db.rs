@@ -219,6 +219,17 @@ pub struct AgentDraftRecord {
     pub updated_at: String,
 }
 
+/// Agent 记忆数据库记录（H2：记忆增强）。
+#[derive(Debug, Clone)]
+pub struct AgentMemoryRecord {
+    pub id: i64,
+    pub run_id: Option<i64>,
+    pub memory_key: String,
+    pub memory_value: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 页面 Embedding 记录。
 #[derive(Debug, Clone)]
 pub struct PageEmbeddingRecord {
@@ -1496,6 +1507,9 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_agent_drafts_run_id_updated_at
             ON agent_drafts(run_id, updated_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_memories_run_id_updated_at
+            ON agent_memories(run_id, updated_at, id);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -2649,6 +2663,177 @@ pub fn update_agent_draft_status(
     if affected == 0 {
         return Err(format!("Agent Draft 不存在: {}", draft_id));
     }
+    Ok(())
+}
+
+/// 写入或更新 agent 记忆（按 run_id + memory_key upsert）。
+pub fn upsert_agent_memory(
+    db_path: &Path,
+    run_id: Option<i64>,
+    key: &str,
+    value: &str,
+    now: &str,
+) -> Result<AgentMemoryRecord, String> {
+    let normalized_key = key.trim();
+    let normalized_value = value.trim();
+    if normalized_key.is_empty() {
+        return Err("memory_key 不能为空".to_string());
+    }
+    if normalized_value.is_empty() {
+        return Err("memory_value 不能为空".to_string());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let existing_id: Option<i64> = if let Some(rid) = run_id {
+        conn.query_row(
+            "SELECT id FROM agent_memories WHERE run_id = ?1 AND memory_key = ?2",
+            params![rid, normalized_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("查询 agent_memories 失败: {}", e))?
+    } else {
+        conn.query_row(
+            "SELECT id FROM agent_memories WHERE run_id IS NULL AND memory_key = ?1",
+            params![normalized_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("查询 agent_memories 失败: {}", e))?
+    };
+    let id = if let Some(eid) = existing_id {
+        conn.execute(
+            "UPDATE agent_memories SET memory_value = ?1, updated_at = ?2 WHERE id = ?3",
+            params![normalized_value, now, eid],
+        )
+        .map_err(|e| format!("更新 agent_memories 失败: {}", e))?;
+        eid
+    } else {
+        conn.execute(
+            r#"INSERT INTO agent_memories (run_id, memory_key, memory_value, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?4)"#,
+            params![run_id, normalized_key, normalized_value, now],
+        )
+        .map_err(|e| format!("写入 agent_memories 失败: {}", e))?;
+        conn.last_insert_rowid()
+    };
+    conn.query_row(
+        "SELECT id, run_id, memory_key, memory_value, created_at, updated_at FROM agent_memories WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(AgentMemoryRecord {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                memory_key: row.get(2)?,
+                memory_value: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        },
+    )
+    .map_err(|e| format!("读取新建 agent_memory 失败: {}", e))
+}
+
+/// 列出 agent 记忆（None = 全局记忆，Some(id) = 指定 run 的记忆）。
+pub fn list_agent_memories(
+    db_path: &Path,
+    run_id: Option<i64>,
+    limit: usize,
+) -> Result<Vec<AgentMemoryRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let to_record = |row: &rusqlite::Row<'_>| {
+        Ok(AgentMemoryRecord {
+            id: row.get(0)?,
+            run_id: row.get(1)?,
+            memory_key: row.get(2)?,
+            memory_value: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    };
+    if let Some(rid) = run_id {
+        let mut stmt = conn
+            .prepare(
+                r#"SELECT id, run_id, memory_key, memory_value, created_at, updated_at
+                   FROM agent_memories WHERE run_id = ?1
+                   ORDER BY CAST(updated_at AS INTEGER) DESC, id DESC LIMIT ?2"#,
+            )
+            .map_err(|e| format!("准备查询 agent_memories 失败: {}", e))?;
+        let mapped = stmt
+            .query_map(params![rid, limit as i64], to_record)
+            .map_err(|e| format!("执行查询 agent_memories 失败: {}", e))?;
+        let rows: Result<Vec<_>, _> = mapped.collect();
+        rows.map_err(|e| format!("读取 agent_memories 失败: {}", e))
+    } else {
+        let mut stmt = conn
+            .prepare(
+                r#"SELECT id, run_id, memory_key, memory_value, created_at, updated_at
+                   FROM agent_memories WHERE run_id IS NULL
+                   ORDER BY CAST(updated_at AS INTEGER) DESC, id DESC LIMIT ?1"#,
+            )
+            .map_err(|e| format!("准备查询 agent_memories 失败: {}", e))?;
+        let mapped = stmt
+            .query_map(params![limit as i64], to_record)
+            .map_err(|e| format!("执行查询 agent_memories 失败: {}", e))?;
+        let rows: Result<Vec<_>, _> = mapped.collect();
+        rows.map_err(|e| format!("读取 agent_memories 失败: {}", e))
+    }
+}
+
+/// 删除单条 agent 记忆。
+pub fn delete_agent_memory(db_path: &Path, id: i64) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let affected = conn
+        .execute("DELETE FROM agent_memories WHERE id = ?1", params![id])
+        .map_err(|e| format!("删除 agent_memory 失败: {}", e))?;
+    if affected == 0 {
+        return Err(format!("agent_memory 不存在: {}", id));
+    }
+    Ok(())
+}
+
+/// 批量替换 agent 记忆（AAAK-lite 压缩后写回）。
+pub fn bulk_replace_agent_memories(
+    db_path: &Path,
+    run_id: Option<i64>,
+    entries: &[(String, String)],
+    now: &str,
+) -> Result<(), String> {
+    let mut conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启 bulk_replace_memories 事务失败: {}", e))?;
+    if let Some(rid) = run_id {
+        tx.execute(
+            "DELETE FROM agent_memories WHERE run_id = ?1",
+            params![rid],
+        )
+        .map_err(|e| format!("清空 agent_memories 失败: {}", e))?;
+    } else {
+        tx.execute("DELETE FROM agent_memories WHERE run_id IS NULL", [])
+            .map_err(|e| format!("清空全局 agent_memories 失败: {}", e))?;
+    }
+    for (key, value) in entries {
+        let k = key.trim();
+        let v = value.trim();
+        if k.is_empty() || v.is_empty() {
+            continue;
+        }
+        tx.execute(
+            r#"INSERT INTO agent_memories (run_id, memory_key, memory_value, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?4)"#,
+            params![run_id, k, v, now],
+        )
+        .map_err(|e| format!("写入压缩记忆失败: {}", e))?;
+    }
+    tx.commit()
+        .map_err(|e| format!("提交 bulk_replace_memories 事务失败: {}", e))?;
     Ok(())
 }
 

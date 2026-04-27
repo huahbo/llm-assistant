@@ -16,7 +16,7 @@ use crate::{
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AgentDraftItem, AgentRunEventItem, AgentRunItem, AppConfig, AppMode, AppOverview,
+        AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem, AppConfig, AppMode, AppOverview,
         AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem, AskSessionTurnMeta,
         DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
         KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData, KnowledgeSubgraphMeta,
@@ -43,6 +43,10 @@ const QUERY_ROUTE_DEBUG_TOP_CANDIDATES: usize = 5;
 
 /// 默认摘要最大 token 数量
 const LLM_SUMMARY_MAX_TOKENS: usize = 200;
+/// AAAK-lite：记忆值总字符数超过此阈值时触发压缩。
+const MEMORY_COMPRESS_THRESHOLD_CHARS: usize = 2000;
+/// 草稿生成时注入的最大记忆条数（run + global 各自上限）。
+const MEMORY_INJECT_LIMIT: usize = 20;
 
 /// 进程内状态。
 pub struct AppState {
@@ -3717,6 +3721,7 @@ Wiki 页面：\n{}",
         &self,
         db_path: &Path,
         topic: &str,
+        memories_context: Option<&str>,
     ) -> Result<(String, String, String), String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3743,13 +3748,23 @@ Wiki 页面：\n{}",
                 .join("\n")
         };
 
+        let memories_section = if let Some(ctx) = memories_context {
+            if ctx.is_empty() {
+                String::new()
+            } else {
+                format!("\n已记录的上下文记忆（请结合这些信息生成内容）：\n{}\n", ctx)
+            }
+        } else {
+            String::new()
+        };
+
         let prompt = format!(
             "你是一个专业的知识管理助手，负责为个人 Wiki 创建结构化页面。\n\
             \n\
             请为以下主题创建一个结构化的 Wiki 页面初稿。\n\
             \n\
             要创建的主题：{topic}\n\
-            \n\
+            {memories_section}\
             知识库中已有的相关页面：\n\
             {related_context}\n\
             \n\
@@ -3762,6 +3777,7 @@ Wiki 页面：\n{}",
             ## 参考\n\
             {{如有相关已有页面，用 [[页面标题]] 格式列出}}",
             topic = topic,
+            memories_section = memories_section,
             related_context = related_context,
         );
 
@@ -3835,7 +3851,7 @@ Wiki 页面：\n{}",
 
         // e. 生成草稿内容（与 Agent Draft 逻辑共用）。
         let (page_title, llm_content, full_content) = self
-            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic)
+            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None)
             .await?;
         let now_ms = current_timestamp_ms();
 
@@ -4431,6 +4447,154 @@ Wiki 页面：\n{}",
         db::complete_agent_run(&db_path, run_id, normalized_status, &current_timestamp_ms())
     }
 
+    /// 写入或更新 agent 记忆（H2）。
+    pub fn upsert_agent_memory_impl(
+        &self,
+        run_id: Option<i64>,
+        key: &str,
+        value: &str,
+    ) -> Result<AgentMemoryItem, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let now = current_timestamp_ms();
+        let record = db::upsert_agent_memory(&db_path, run_id, key, value, &now)?;
+        Ok(AgentMemoryItem {
+            id: record.id,
+            run_id: record.run_id,
+            memory_key: record.memory_key,
+            memory_value: record.memory_value,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        })
+    }
+
+    /// 列出 agent 记忆（H2）。
+    pub fn list_agent_memories_impl(
+        &self,
+        run_id: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<Vec<AgentMemoryItem>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
+        let records = db::list_agent_memories(&db_path, run_id, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|r| AgentMemoryItem {
+                id: r.id,
+                run_id: r.run_id,
+                memory_key: r.memory_key,
+                memory_value: r.memory_value,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            })
+            .collect())
+    }
+
+    /// 删除单条 agent 记忆（H2）。
+    pub fn delete_agent_memory_impl(&self, id: i64) -> Result<(), String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        db::delete_agent_memory(&db_path, id)
+    }
+
+    /// AAAK-lite：加载记忆，超阈值时用 LLM 压缩，返回格式化的记忆上下文字符串。
+    async fn load_and_maybe_compress_memories_impl(
+        &self,
+        run_id: i64,
+        db_path: &std::path::Path,
+    ) -> Option<String> {
+        let run_mems = db::list_agent_memories(db_path, Some(run_id), MEMORY_INJECT_LIMIT)
+            .unwrap_or_default();
+        let global_mems =
+            db::list_agent_memories(db_path, None, MEMORY_INJECT_LIMIT).unwrap_or_default();
+
+        let all_mems: Vec<_> = run_mems.iter().chain(global_mems.iter()).collect();
+        if all_mems.is_empty() {
+            return None;
+        }
+
+        let total_len: usize = all_mems
+            .iter()
+            .map(|m| m.memory_key.len() + m.memory_value.len())
+            .sum();
+
+        // 仅对当前 run 的记忆做压缩（全局记忆不压缩）。
+        if total_len > MEMORY_COMPRESS_THRESHOLD_CHARS && !run_mems.is_empty() {
+            if let Some(compressed) = self
+                .compress_memories_with_llm(&run_mems, run_id)
+                .await
+            {
+                // 写回压缩后记忆
+                let now = current_timestamp_ms();
+                if let Err(e) =
+                    db::bulk_replace_agent_memories(db_path, Some(run_id), &compressed, &now)
+                {
+                    self.push_log(
+                        LogLevel::Warn,
+                        format!("AAAK-lite 写回压缩记忆失败（降级）: {}", e),
+                    );
+                } else {
+                    // 重新加载压缩后的记忆
+                    let refreshed =
+                        db::list_agent_memories(db_path, Some(run_id), MEMORY_INJECT_LIMIT)
+                            .unwrap_or_default();
+                    return Some(format_memories_for_prompt(&refreshed, &global_mems));
+                }
+            }
+        }
+
+        Some(format_memories_for_prompt(&run_mems, &global_mems))
+    }
+
+    /// AAAK-lite 压缩：调用 LLM 将记忆压缩为紧凑 key-value 列表。
+    async fn compress_memories_with_llm(
+        &self,
+        memories: &[db::AgentMemoryRecord],
+        run_id: i64,
+    ) -> Option<Vec<(String, String)>> {
+        let provider = self.get_llm_provider()?;
+        let memory_text = memories
+            .iter()
+            .map(|m| format!("{}: {}", m.memory_key, m.memory_value))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = format!(
+            "以下是 Agent run #{run_id} 的运行记忆，请精简压缩，保留最重要的信息。\
+            每行输出一条，格式为「键: 值」，不要输出任何其他内容。\n\n{memory_text}",
+            run_id = run_id,
+            memory_text = memory_text,
+        );
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            provider.complete(&prompt),
+        )
+        .await
+        .ok()?  // Elapsed → None
+        .ok()?; // LlmError → None
+        let entries: Vec<(String, String)> = result
+            .lines()
+            .filter_map(|line: &str| {
+                let mut parts = line.splitn(2, ':');
+                let k = parts.next()?.trim().to_string();
+                let v = parts.next()?.trim().to_string();
+                if k.is_empty() || v.is_empty() {
+                    None
+                } else {
+                    Some((k, v))
+                }
+            })
+            .collect();
+        if entries.is_empty() {
+            None
+        } else {
+            Some(entries)
+        }
+    }
+
     /// 生成 Agent 草稿（只落库，不直接写入 Wiki 文件）。
     pub async fn generate_agent_draft_impl(
         &self,
@@ -4446,8 +4610,17 @@ Wiki 页面：\n{}",
         }
         let normalized_topic: String = normalized_topic.chars().take(200).collect();
 
+        // AAAK-lite：加载记忆并在超阈值时自动压缩。
+        let memories_context = self
+            .load_and_maybe_compress_memories_impl(run_id, &db_path)
+            .await;
+
         let (title, _llm_content, markdown_content) = self
-            .generate_ai_wiki_markdown_draft_impl(&db_path, &normalized_topic)
+            .generate_ai_wiki_markdown_draft_impl(
+                &db_path,
+                &normalized_topic,
+                memories_context.as_deref(),
+            )
             .await?;
         let now = current_timestamp_ms();
         let record =
@@ -9351,6 +9524,21 @@ async fn start_research_task(
         &synthesized,
     )
     .await;
+}
+
+/// 将 run 记忆 + 全局记忆格式化为 prompt 注入字符串。
+fn format_memories_for_prompt(
+    run_mems: &[db::AgentMemoryRecord],
+    global_mems: &[db::AgentMemoryRecord],
+) -> String {
+    let mut lines = Vec::new();
+    for m in run_mems {
+        lines.push(format!("[run] {}: {}", m.memory_key, m.memory_value));
+    }
+    for m in global_mems {
+        lines.push(format!("[global] {}: {}", m.memory_key, m.memory_value));
+    }
+    lines.join("\n")
 }
 
 /// 提取 Markdown 首个 H1 标题（`# `）。
