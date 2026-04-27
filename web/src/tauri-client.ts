@@ -1543,6 +1543,7 @@ export const createGenerateAgentDraftArgs = (
   topic: string,
   skillKey?: string | null,
   researchMode?: boolean,
+  askFirst?: boolean,
 ) => ({
   runId,
   run_id: runId,
@@ -1551,6 +1552,8 @@ export const createGenerateAgentDraftArgs = (
   skill_key: skillKey,
   researchMode,
   research_mode: researchMode,
+  askFirst,
+  ask_first: askFirst,
 });
 
 /** 构造 list_agent_drafts 命令参数（用于测试） */
@@ -1761,13 +1764,14 @@ export async function generateAgentDraft(
   topic: string,
   skillKey?: string | null,
   researchMode?: boolean,
+  askFirst?: boolean,
 ): Promise<boolean> {
   if (!isTauriRuntime()) return false;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     await withTimeout(
       invoke<void>("generate_agent_draft", {
-        ...createGenerateAgentDraftArgs(runId, topic, skillKey, researchMode),
+        ...createGenerateAgentDraftArgs(runId, topic, skillKey, researchMode, askFirst),
       }),
     );
     return true;
@@ -1877,6 +1881,27 @@ export async function deleteAgentMemory(id: number): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** 基于批注重写 Agent Draft，返回新草稿（H5-A）。 */
+export async function rewriteAgentDraft(
+  draftId: number,
+  comment: string,
+): Promise<AgentDraftItem | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentDraftItem>("rewrite_agent_draft", {
+        draftId,
+        draft_id: draftId,
+        comment,
+      }),
+      120_000,
+    );
+  } catch {
+    return null;
   }
 }
 

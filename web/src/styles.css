@@ -4898,6 +4898,17 @@ code {
   gap: 6px;
 }
 
+.agent-studio__rewrite-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+.agent-studio__rewrite-bar .dev-panel__input {
+  flex: 1;
+  min-width: 0;
+}
+
 .agent-studio__research-toggle {
   display: inline-flex;
   align-items: center;

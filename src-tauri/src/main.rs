@@ -86,6 +86,7 @@ fn main() {
             commands::list_agent_run_events,
             commands::complete_agent_run,
             commands::generate_agent_draft,
+            commands::rewrite_agent_draft,
             commands::list_agent_drafts,
             commands::check_agent_draft_conflict,
             commands::approve_agent_draft,

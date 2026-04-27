@@ -97,6 +97,7 @@ import {
   listAgentMemories,
   upsertAgentMemory,
   deleteAgentMemory,
+  rewriteAgentDraft,
   listAgentSkills,
   upsertAgentSkill,
   deleteAgentSkill,
@@ -3056,6 +3057,8 @@ export default function App() {
     () => readAgentActiveSkillKeyFromStorage(),
   );
   const [agentResearchMode, setAgentResearchMode] = useState(false);
+  const [agentAskFirst, setAgentAskFirst] = useState(false);
+  const [agentRewriteComment, setAgentRewriteComment] = useState("");
   const [agentDebugPanelOpen, setAgentDebugPanelOpen] = useState(false);
 
   useEffect(
@@ -7064,7 +7067,7 @@ export default function App() {
       setAgentStatusMessage(`run #${runId} 已创建，正在生成 draft...`);
       await loadAgentRunsData(runId);
       await loadAgentRunEventsData(runId);
-      const ok = await generateAgentDraft(runId, topic, agentActiveSkillKey || null, agentResearchMode);
+      const ok = await generateAgentDraft(runId, topic, agentActiveSkillKey || null, agentResearchMode, agentAskFirst);
       if (!ok) {
         setAgentStatusMessage(`run #${runId} draft 生成失败，请检查后端日志。`);
         return;
@@ -7167,7 +7170,7 @@ export default function App() {
     }
     setAgentActionRunning(true);
     try {
-      const ok = await generateAgentDraft(agentSelectedRunId, topic, agentActiveSkillKey || null, agentResearchMode);
+      const ok = await generateAgentDraft(agentSelectedRunId, topic, agentActiveSkillKey || null, agentResearchMode, agentAskFirst);
       if (!ok) {
         setAgentStatusMessage("生成 draft 失败，请检查后端命令是否可用。");
         return;
@@ -7216,6 +7219,29 @@ export default function App() {
       await loadAgentDraftsData(agentSelectedRunId, agentSelectedDraftId);
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleRewriteAgentDraft = async () => {
+    if (agentSelectedDraftId == null) return;
+    const comment = agentRewriteComment.trim();
+    if (!comment) return;
+    setAgentActionRunning(true);
+    try {
+      const newDraft = await rewriteAgentDraft(agentSelectedDraftId, comment);
+      if (!newDraft) {
+        setAgentStatusMessage("重写草稿失败，请检查后端日志。");
+        return;
+      }
+      setAgentRewriteComment("");
+      setAgentSelectedDraftId(newDraft.id);
+      setAgentStatusMessage(`已基于批注生成新草稿 #${newDraft.id}`);
+      if (agentSelectedRunId != null) {
+        await loadAgentDraftsData(agentSelectedRunId, newDraft.id);
+        await loadAgentRunEventsData(agentSelectedRunId);
+      }
     } finally {
       setAgentActionRunning(false);
     }
@@ -10279,6 +10305,14 @@ export default function App() {
                         />
                         检索增强
                       </label>
+                      <label className="agent-studio__research-toggle" title="开启后先对主题做一次 Ask 问答，将知识库现有答案注入草稿上下文（需要 LLM 可用，速度较慢）">
+                        <input
+                          type="checkbox"
+                          checked={agentAskFirst}
+                          onChange={(e) => setAgentAskFirst(e.target.checked)}
+                        />
+                        Ask 联动
+                      </label>
                       <button
                         type="button"
                         className="dev-panel__button"
@@ -10321,6 +10355,29 @@ export default function App() {
                         </span>
                       ) : null}
                     </div>
+                    {selectedAgentDraft != null &&
+                    !["approved", "applied"].includes(String(selectedAgentDraft.status).toLowerCase()) ? (
+                      <div className="agent-studio__rewrite-bar">
+                        <input
+                          type="text"
+                          className="dev-panel__input"
+                          placeholder="批注（如：语气更专业、增加原理推导）"
+                          value={agentRewriteComment}
+                          onChange={(e) => setAgentRewriteComment(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); void handleRewriteAgentDraft(); }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={agentActionRunning || !agentRewriteComment.trim() || !isTauriRuntime()}
+                          onClick={() => void handleRewriteAgentDraft()}
+                        >
+                          基于批注重写
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="agent-studio__review-tabs">
                       <button
                         type="button"

@@ -3725,6 +3725,7 @@ Wiki 页面：\n{}",
         memories_context: Option<&str>,
         skill_prompt: Option<&str>,
         research_mode: bool,
+        ask_context: Option<&str>,
     ) -> Result<(String, String, String), String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3790,6 +3791,17 @@ Wiki 页面：\n{}",
             String::new()
         };
 
+        let ask_section = if let Some(ctx) = ask_context {
+            let trimmed = ctx.trim();
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("\n知识库已有答案（Ask 检索结果，请参考但不要照抄）：\n{}\n", trimmed)
+            }
+        } else {
+            String::new()
+        };
+
         let prompt = format!(
             "你是一个专业的知识管理助手，负责为个人 Wiki 创建结构化页面。\n\
             \n\
@@ -3798,6 +3810,7 @@ Wiki 页面：\n{}",
             要创建的主题：{topic}\n\
             {memories_section}\
             {skill_section}\
+            {ask_section}\
             知识库中已有的相关页面：\n\
             {related_context}\n\
             \n\
@@ -3812,6 +3825,7 @@ Wiki 页面：\n{}",
             topic = topic,
             memories_section = memories_section,
             skill_section = skill_section,
+            ask_section = ask_section,
             related_context = related_context,
         );
 
@@ -3885,7 +3899,7 @@ Wiki 页面：\n{}",
 
         // e. 生成草稿内容（与 Agent Draft 逻辑共用）。
         let (page_title, llm_content, full_content) = self
-            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None, None, false)
+            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None, None, false, None)
             .await?;
         let now_ms = current_timestamp_ms();
 
@@ -4678,6 +4692,67 @@ Wiki 页面：\n{}",
         }
     }
 
+    /// H5-B: 审批写盘后自动从草稿内容提炼全局记忆（降级不阻塞主流程）。
+    async fn extract_and_save_memories_from_draft(
+        &self,
+        run_id: i64,
+        content: &str,
+        db_path: &std::path::Path,
+    ) {
+        let provider = match self.get_llm_provider() {
+            Some(p) => p,
+            None => return,
+        };
+        let snippet: String = content.chars().take(3000).collect();
+        let prompt = format!(
+            "以下是一篇已写入知识库的 Wiki 草稿。\
+            请从中提取 3-5 条最有价值的知识点作为长期记忆，\
+            每条格式严格为「键: 值」（键为简短标识，值为简要说明），\
+            每行一条，不要输出任何其他内容。\n\n{snippet}",
+            snippet = snippet,
+        );
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(40),
+            provider.complete(&prompt),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+        let text = match result {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => return,
+        };
+
+        let now = current_timestamp_ms();
+        let mut saved = 0usize;
+        for line in text.lines() {
+            let mut parts = line.splitn(2, ':');
+            let key = match parts.next().map(str::trim) {
+                Some(k) if !k.is_empty() => k.to_string(),
+                _ => continue,
+            };
+            let value = match parts.next().map(str::trim) {
+                Some(v) if !v.is_empty() => v.to_string(),
+                _ => continue,
+            };
+            if db::upsert_agent_memory(db_path, None, &key, &value, &now).is_ok() {
+                saved += 1;
+            }
+            if saved >= 5 {
+                break;
+            }
+        }
+        if saved > 0 {
+            let msg = format!(
+                "已从 run #{} 草稿自动提炼 {} 条全局记忆",
+                run_id, saved
+            );
+            let _ = db::append_agent_run_event(db_path, run_id, "info", &msg, &now);
+            self.push_log(LogLevel::Info, msg);
+        }
+    }
+
     /// 生成 Agent 草稿（只落库，不直接写入 Wiki 文件）。
     pub async fn generate_agent_draft_impl(
         &self,
@@ -4685,6 +4760,7 @@ Wiki 页面：\n{}",
         topic: String,
         skill_key: Option<String>,
         research_mode: bool,
+        ask_first: bool,
     ) -> Result<AgentDraftItem, String> {
         let db_path = self
             .outbox_db_path()
@@ -4714,6 +4790,25 @@ Wiki 页面：\n{}",
             None
         };
 
+        // H5-C: Ask-first — 先对 topic 做一次 Ask 检索，将现有知识库答案注入 draft prompt。
+        let ask_answer: Option<String> = if ask_first {
+            match self
+                .query_ask_with_options(
+                    normalized_topic.to_string(),
+                    crate::models::QueryAskOptions { top_k: Some(3) },
+                )
+                .await
+            {
+                Ok(result) if !result.answer.trim().is_empty() => {
+                    let snippet: String = result.answer.chars().take(1200).collect();
+                    Some(snippet)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let (title, _llm_content, markdown_content) = self
             .generate_ai_wiki_markdown_draft_impl(
                 &db_path,
@@ -4721,23 +4816,20 @@ Wiki 页面：\n{}",
                 memories_context.as_deref(),
                 skill_prompt.as_deref(),
                 research_mode,
+                ask_answer.as_deref(),
             )
             .await?;
         let now = current_timestamp_ms();
         let record =
             db::create_agent_draft(&db_path, run_id, &title, &markdown_content, "draft", &now)?;
 
-        let research_tag = if research_mode { "，research: on" } else { "" };
+        let mut tags = String::new();
+        if research_mode { tags.push_str("，research: on"); }
+        if ask_first { tags.push_str("，ask: on"); }
         let event_msg = if let Some(key) = applied_skill_key {
-            format!(
-                "已生成草稿 #{}（topic: {}，skill: {}{}）",
-                record.id, normalized_topic, key, research_tag
-            )
+            format!("已生成草稿 #{}（topic: {}，skill: {}{}）", record.id, normalized_topic, key, tags)
         } else {
-            format!(
-                "已生成草稿 #{}（topic: {}{}）",
-                record.id, normalized_topic, research_tag
-            )
+            format!("已生成草稿 #{}（topic: {}{}）", record.id, normalized_topic, tags)
         };
         if let Err(err) = db::append_agent_run_event(&db_path, run_id, "info", &event_msg, &now) {
             self.push_log(
@@ -4884,10 +4976,89 @@ Wiki 页面：\n{}",
             );
         }
 
+        // H5-B: 自动提炼全局记忆（降级不阻塞，LLM 不可用时静默跳过）
+        self.extract_and_save_memories_from_draft(draft.run_id, &draft.content, &db_path)
+            .await;
+
         Ok(NewPageResult {
             wiki_path: wiki_file_path.to_string_lossy().to_string(),
             title: preferred_title,
             content_preview,
+        })
+    }
+
+    /// H5-A: 基于批注重写 Agent 草稿，生成新草稿记录（status=draft）。
+    pub async fn rewrite_agent_draft_impl(
+        &self,
+        draft_id: i64,
+        comment: String,
+    ) -> Result<AgentDraftItem, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let comment = comment.trim().to_string();
+        if comment.is_empty() {
+            return Err("批注内容不能为空".to_string());
+        }
+        let draft = db::get_agent_draft(&db_path, draft_id)?
+            .ok_or_else(|| format!("未找到草稿: {}", draft_id))?;
+        if draft.content.trim().is_empty() {
+            return Err("原草稿内容为空，无法重写".to_string());
+        }
+
+        let provider = self
+            .get_llm_provider()
+            .ok_or_else(|| "LLM provider 未初始化".to_string())?;
+
+        let original: String = draft.content.chars().take(6000).collect();
+        let prompt = format!(
+            "请基于以下草稿和修改意见，生成改进后的完整版本。\n\
+            严格保留原 Markdown 格式与 frontmatter 结构（---...---），\
+            不要添加任何解释，直接输出改进后的完整 Markdown 内容。\n\n\
+            【原始草稿】\n{original}\n\n\
+            【修改意见】\n{comment}",
+            original = original,
+            comment = comment,
+        );
+
+        let llm_content = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            provider.complete(&prompt),
+        )
+        .await
+        .map_err(|_| "重写草稿 LLM 超时（>120s）".to_string())?
+        .map_err(|e| format!("重写草稿 LLM 失败: {:?}", e))?;
+
+        if llm_content.trim().is_empty() {
+            return Err("LLM 返回空内容，重写失败".to_string());
+        }
+
+        let now = current_timestamp_ms();
+        let record = db::create_agent_draft(
+            &db_path,
+            draft.run_id,
+            &draft.title,
+            &llm_content,
+            "draft",
+            &now,
+        )?;
+
+        let event_msg = format!(
+            "已基于批注重写草稿 #{}→#{}: {}",
+            draft_id,
+            record.id,
+            comment.chars().take(60).collect::<String>()
+        );
+        let _ = db::append_agent_run_event(&db_path, draft.run_id, "info", &event_msg, &now);
+
+        Ok(AgentDraftItem {
+            id: record.id,
+            run_id: record.run_id,
+            title: record.title,
+            content: record.content,
+            status: record.status,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
         })
     }
 
@@ -13019,6 +13190,7 @@ entities:
                 "Rust Actor 模块设计".to_string(),
                 None,
                 false,
+                false,
             ))
             .expect("生成草稿失败");
         assert_eq!(draft.run_id, run_id);
@@ -13067,6 +13239,7 @@ entities:
                 run_id,
                 "技能注入测试".to_string(),
                 Some("writer".to_string()),
+                false,
                 false,
             ))
             .expect("生成草稿失败");
