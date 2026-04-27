@@ -10074,20 +10074,22 @@ export default function App() {
                     </div>
                     {agentMemoryComposerOpen ? (
                       <div className="agent-studio__memory-inline-form">
-                        <input
-                          type="text"
-                          className="dev-panel__input"
-                          placeholder="记忆键（可选，留空自动派生）"
-                          value={agentMemoryKeyInput}
-                          onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
-                        />
-                        <input
-                          type="text"
-                          className="dev-panel__input"
-                          placeholder="记忆值（如：城市水网仿真）"
-                          value={agentMemoryValueInput}
-                          onChange={(e) => setAgentMemoryValueInput(e.target.value)}
-                        />
+                        <div className="agent-studio__memory-inline-form-row">
+                          <input
+                            type="text"
+                            className="dev-panel__input"
+                            placeholder="键（可选）"
+                            value={agentMemoryKeyInput}
+                            onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
+                          />
+                          <input
+                            type="text"
+                            className="dev-panel__input"
+                            placeholder="记忆内容"
+                            value={agentMemoryValueInput}
+                            onChange={(e) => setAgentMemoryValueInput(e.target.value)}
+                          />
+                        </div>
                         <button
                           type="button"
                           className="dev-panel__button"

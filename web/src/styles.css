@@ -4683,8 +4683,18 @@ code {
 
 .agent-studio__memory-inline-form {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
+}
+
+.agent-studio__memory-inline-form-row {
+  display: flex;
+  gap: 6px;
+}
+
+.agent-studio__memory-inline-form-row .dev-panel__input {
+  flex: 1;
+  min-width: 0;
 }
 
 .agent-studio__skills {
