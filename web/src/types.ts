@@ -220,6 +220,18 @@ export interface AgentDraftItem {
   updated_at: string;
 }
 
+export type AgentChatRole = "user" | "agent";
+
+export interface AgentChatMessage {
+  id: string;
+  run_id: number;
+  role: AgentChatRole;
+  content: string;
+  created_at: string;
+  status?: string;
+  draft_id?: number | null;
+}
+
 /** Agent 记忆项（H2：记忆增强） */
 export interface AgentMemoryItem {
   id: number;

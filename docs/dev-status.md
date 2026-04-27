@@ -15,15 +15,22 @@
 
 ---
 
-## 验证基线（2026-04-27 H2 最新）
+## 验证基线（2026-04-27 H3，B2-Flow 收口）
 
 ```powershell
-# Windows PowerShell
-cd src-tauri; cargo test          # 应: 190 passed, 0 failed
-cd ../web; npm run test -- --run  # 应: 179 passed, 0 failed
-cd ../web; npm run typecheck      # 应: 0 errors
-cd ../web; npm run build          # 应: 通过
+# Windows PowerShell（待用户复核）
+cd src-tauri; cargo test
+cd ../web; npm run typecheck
+cd ../web; npm run test -- --run
+cd ../web; npm run build
+cd ..; npm run tauri:dev
 ```
+
+- WSL 自动化验证结果占位（本轮）：
+  - `cd web && npm run typecheck`：通过 ✅
+  - `cd web && npm run test -- --run`：失败 ❌（`@rollup/rollup-linux-x64-gnu` 可选依赖缺失）
+  - `cd web && npm run build`：失败 ❌（同上）
+- 结论：`B2-Flow` 已到可验收状态，最终通过条件为用户 Windows 复核回传。
 
 - `scripts/verify_clipper_windows.ps1`：用户回传通过（2026-04-22）
 - `scripts/verify_searxng_windows.ps1`：用户回传通过（2026-04-22）
@@ -47,7 +54,7 @@ cd ../web; npm run build          # 应: 通过
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **方向 H：Agent Studio H2 后续** | 待验证 | H2 已完成（记忆 CRUD + AAAK-lite + 面板 UI）；待用户 Windows 复核；下一段 H3：记忆与 Run 联动 / 多 Agent 协同，或用户指定方向 |
+| 1 | **方向 H：Agent Studio B2 三阶段改造** | reviewing | `B2-Lite`、`B2-Review`、`B2-Flow`（结构先行 + 增量渲染 + 暂停/继续）已完成，待用户 Windows 复核 |
 | 2 | **方向 B：项目模板/多项目体验** | 待收口 | 功能已落地，待用户 Windows 端到端复核后收口 |
 | 3 | **方向 C：会话持久化增强** | 待收口 | 一期 + 二期已完成，待用户 Windows 端到端复核后收口 |
 | — | 用户新需求 | 待提 | 用户提到有新需求，尚未描述 |
@@ -70,7 +77,7 @@ src-tauri/src/
   vault.rs          # 文件系统（ingest_markdown + resolve_wiki_semantic_title）
 
 web/src/
-  App.tsx           # 主界面（含 Agent Studio H1：Markdown 渲染 + 确认弹窗）
+  App.tsx           # 主界面（含 Agent Studio B2：双栏 + Draft/Diff/Citations + Flow 暂停/继续）
   tauri-client.ts   # invoke 封装（含 checkAgentDraftConflict）
   types.ts          # TS 类型（含 AgentDraftConflictInfo）
   app-utils.test.ts # 单元测试（177 通过，含 marked 渲染测试）
