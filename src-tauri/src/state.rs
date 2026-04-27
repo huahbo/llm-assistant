@@ -3785,7 +3785,12 @@ Wiki 页面：\n{}",
             if normalized.is_empty() {
                 String::new()
             } else {
-                format!("\n当前启用技能模板（请优先遵循）：\n{}\n", normalized)
+                // H5-D: 替换模板变量 {{topic}} {{memories}}
+                let memories_text = memories_context.unwrap_or("").trim().to_string();
+                let expanded = normalized
+                    .replace("{{topic}}", topic)
+                    .replace("{{memories}}", &memories_text);
+                format!("\n当前启用技能模板（请优先遵循）：\n{}\n", expanded)
             }
         } else {
             String::new()
