@@ -7221,12 +7221,12 @@ export default function App() {
   };
 
   const handleUpsertAgentMemory = async () => {
-    const key = agentMemoryKeyInput.trim();
     const value = agentMemoryValueInput.trim();
-    if (!key || !value) {
-      setAgentStatusMessage("记忆键和值不能为空。");
+    if (!value) {
+      setAgentStatusMessage("记忆内容不能为空。");
       return;
     }
+    const key = agentMemoryKeyInput.trim() || value.slice(0, 20);
     setAgentActionRunning(true);
     try {
       const item = await upsertAgentMemory(agentSelectedRunId, key, value);
@@ -10077,7 +10077,7 @@ export default function App() {
                         <input
                           type="text"
                           className="dev-panel__input"
-                          placeholder="记忆键（如：关注领域）"
+                          placeholder="记忆键（可选，留空自动派生）"
                           value={agentMemoryKeyInput}
                           onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
                         />
@@ -10093,7 +10093,6 @@ export default function App() {
                           className="dev-panel__button"
                           disabled={
                             agentActionRunning
-                            || !agentMemoryKeyInput.trim()
                             || !agentMemoryValueInput.trim()
                             || !isTauriRuntime()
                           }
