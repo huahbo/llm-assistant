@@ -16,18 +16,19 @@ use crate::{
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{
-        AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem, AppConfig, AppMode, AppOverview,
-        AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem, AskSessionTurnMeta,
-        DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData, KnowledgeGraphDirection,
-        KnowledgeGraphLink, KnowledgeGraphNode, KnowledgeSubgraphData, KnowledgeSubgraphMeta,
-        LintIssue, LintPatchApplyInput, LintPatchApplyResult, LintPatchBatchApplyItemResult,
-        LintPatchBatchApplyResult, LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview,
-        LintPatchSuggestion, LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry,
-        LogLevel, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
-        ProgressPayload, QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug,
-        QuerySearchRouteDebug, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
-        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter,
-        WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
+        AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem, AgentSkillItem,
+        AppConfig, AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem,
+        AskSessionTurnItem, AskSessionTurnMeta, DefaultPaths, IngestPreview, IngestResult,
+        KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeGraphLink, KnowledgeGraphNode,
+        KnowledgeSubgraphData, KnowledgeSubgraphMeta, LintIssue, LintPatchApplyInput,
+        LintPatchApplyResult, LintPatchBatchApplyItemResult, LintPatchBatchApplyResult,
+        LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview, LintPatchSuggestion,
+        LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
+        ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem, ProgressPayload,
+        QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug,
+        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
+        WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageHistoryDetail,
+        WikiPageHistoryItem, WikiPageItem,
     },
     search::reciprocal_rank_fusion,
     vault,
@@ -3722,6 +3723,7 @@ Wiki 页面：\n{}",
         db_path: &Path,
         topic: &str,
         memories_context: Option<&str>,
+        skill_prompt: Option<&str>,
     ) -> Result<(String, String, String), String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3752,7 +3754,21 @@ Wiki 页面：\n{}",
             if ctx.is_empty() {
                 String::new()
             } else {
-                format!("\n已记录的上下文记忆（请结合这些信息生成内容）：\n{}\n", ctx)
+                format!(
+                    "\n已记录的上下文记忆（请结合这些信息生成内容）：\n{}\n",
+                    ctx
+                )
+            }
+        } else {
+            String::new()
+        };
+
+        let skill_section = if let Some(skill) = skill_prompt {
+            let normalized = skill.trim();
+            if normalized.is_empty() {
+                String::new()
+            } else {
+                format!("\n当前启用技能模板（请优先遵循）：\n{}\n", normalized)
             }
         } else {
             String::new()
@@ -3765,6 +3781,7 @@ Wiki 页面：\n{}",
             \n\
             要创建的主题：{topic}\n\
             {memories_section}\
+            {skill_section}\
             知识库中已有的相关页面：\n\
             {related_context}\n\
             \n\
@@ -3778,6 +3795,7 @@ Wiki 页面：\n{}",
             {{如有相关已有页面，用 [[页面标题]] 格式列出}}",
             topic = topic,
             memories_section = memories_section,
+            skill_section = skill_section,
             related_context = related_context,
         );
 
@@ -3851,7 +3869,7 @@ Wiki 页面：\n{}",
 
         // e. 生成草稿内容（与 Agent Draft 逻辑共用）。
         let (page_title, llm_content, full_content) = self
-            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None)
+            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None, None)
             .await?;
         let now_ms = current_timestamp_ms();
 
@@ -4501,14 +4519,66 @@ Wiki 页面：\n{}",
         db::delete_agent_memory(&db_path, id)
     }
 
+    /// 写入或更新 Agent 技能模板（H3）。
+    pub fn upsert_agent_skill_impl(
+        &self,
+        skill_key: &str,
+        prompt_template: &str,
+    ) -> Result<AgentSkillItem, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let now = current_timestamp_ms();
+        let record = db::upsert_agent_skill(&db_path, skill_key, prompt_template, &now)?;
+        Ok(AgentSkillItem {
+            id: record.id,
+            skill_key: record.skill_key,
+            prompt_template: record.prompt_template,
+            version: record.version,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        })
+    }
+
+    /// 列出 Agent 技能模板（H3）。
+    pub fn list_agent_skills_impl(
+        &self,
+        limit: Option<i64>,
+    ) -> Result<Vec<AgentSkillItem>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
+        let records = db::list_agent_skills(&db_path, safe_limit)?;
+        Ok(records
+            .into_iter()
+            .map(|r| AgentSkillItem {
+                id: r.id,
+                skill_key: r.skill_key,
+                prompt_template: r.prompt_template,
+                version: r.version,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            })
+            .collect())
+    }
+
+    /// 删除单条 Agent 技能模板（H3）。
+    pub fn delete_agent_skill_impl(&self, id: i64) -> Result<(), String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        db::delete_agent_skill(&db_path, id)
+    }
+
     /// AAAK-lite：加载记忆，超阈值时用 LLM 压缩，返回格式化的记忆上下文字符串。
     async fn load_and_maybe_compress_memories_impl(
         &self,
         run_id: i64,
         db_path: &std::path::Path,
     ) -> Option<String> {
-        let run_mems = db::list_agent_memories(db_path, Some(run_id), MEMORY_INJECT_LIMIT)
-            .unwrap_or_default();
+        let run_mems =
+            db::list_agent_memories(db_path, Some(run_id), MEMORY_INJECT_LIMIT).unwrap_or_default();
         let global_mems =
             db::list_agent_memories(db_path, None, MEMORY_INJECT_LIMIT).unwrap_or_default();
 
@@ -4524,10 +4594,7 @@ Wiki 页面：\n{}",
 
         // 仅对当前 run 的记忆做压缩（全局记忆不压缩）。
         if total_len > MEMORY_COMPRESS_THRESHOLD_CHARS && !run_mems.is_empty() {
-            if let Some(compressed) = self
-                .compress_memories_with_llm(&run_mems, run_id)
-                .await
-            {
+            if let Some(compressed) = self.compress_memories_with_llm(&run_mems, run_id).await {
                 // 写回压缩后记忆
                 let now = current_timestamp_ms();
                 if let Err(e) =
@@ -4573,7 +4640,7 @@ Wiki 页面：\n{}",
             provider.complete(&prompt),
         )
         .await
-        .ok()?  // Elapsed → None
+        .ok()? // Elapsed → None
         .ok()?; // LlmError → None
         let entries: Vec<(String, String)> = result
             .lines()
@@ -4600,6 +4667,7 @@ Wiki 页面：\n{}",
         &self,
         run_id: i64,
         topic: String,
+        skill_key: Option<String>,
     ) -> Result<AgentDraftItem, String> {
         let db_path = self
             .outbox_db_path()
@@ -4615,18 +4683,40 @@ Wiki 页面：\n{}",
             .load_and_maybe_compress_memories_impl(run_id, &db_path)
             .await;
 
+        let skill_key = skill_key
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let skill_prompt = if let Some(ref key) = skill_key {
+            db::get_agent_skill_by_key(&db_path, key)?.map(|item| item.prompt_template)
+        } else {
+            None
+        };
+        let applied_skill_key = if skill_prompt.is_some() {
+            skill_key.clone()
+        } else {
+            None
+        };
+
         let (title, _llm_content, markdown_content) = self
             .generate_ai_wiki_markdown_draft_impl(
                 &db_path,
                 &normalized_topic,
                 memories_context.as_deref(),
+                skill_prompt.as_deref(),
             )
             .await?;
         let now = current_timestamp_ms();
         let record =
             db::create_agent_draft(&db_path, run_id, &title, &markdown_content, "draft", &now)?;
 
-        let event_msg = format!("已生成草稿 #{}（topic: {}）", record.id, normalized_topic);
+        let event_msg = if let Some(key) = applied_skill_key {
+            format!(
+                "已生成草稿 #{}（topic: {}，skill: {}）",
+                record.id, normalized_topic, key
+            )
+        } else {
+            format!("已生成草稿 #{}（topic: {}）", record.id, normalized_topic)
+        };
         if let Err(err) = db::append_agent_run_event(&db_path, run_id, "info", &event_msg, &now) {
             self.push_log(
                 LogLevel::Warn,
@@ -12888,7 +12978,11 @@ entities:
             .expect("创建 run 失败");
         let runtime = tokio::runtime::Runtime::new().expect("创建 runtime 失败");
         let draft = runtime
-            .block_on(state.generate_agent_draft_impl(run_id, "Rust Actor 模块设计".to_string()))
+            .block_on(state.generate_agent_draft_impl(
+                run_id,
+                "Rust Actor 模块设计".to_string(),
+                None,
+            ))
             .expect("生成草稿失败");
         assert_eq!(draft.run_id, run_id);
         assert_eq!(draft.status, "draft");
@@ -12910,13 +13004,95 @@ entities:
     }
 
     #[test]
+    fn agent_draft_generate_with_skill_injects_skill_prompt() {
+        let vault_dir = make_temp_dir("llm-wiki-agent-h3-skill-generate");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let prompt_log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let _ = state.llm_provider.set(Arc::new(MockQueryProvider::new(
+            "# 技能化页面\n\n正文。\n",
+            prompt_log.clone(),
+        )));
+
+        state
+            .upsert_agent_skill_impl("writer", "输出语气：客观、结构化、严禁口语")
+            .expect("创建技能失败");
+        let run_id = state
+            .start_agent_run_impl("技能注入测试")
+            .expect("创建 run 失败");
+        let runtime = tokio::runtime::Runtime::new().expect("创建 runtime 失败");
+        let _ = runtime
+            .block_on(state.generate_agent_draft_impl(
+                run_id,
+                "技能注入测试".to_string(),
+                Some("writer".to_string()),
+            ))
+            .expect("生成草稿失败");
+
+        let prompts = prompt_log.lock().expect("读取 prompt 失败");
+        assert_eq!(prompts.len(), 1);
+        assert!(
+            prompts[0].contains("当前启用技能模板"),
+            "prompt 应包含技能模板注入段"
+        );
+        assert!(
+            prompts[0].contains("输出语气：客观、结构化、严禁口语"),
+            "prompt 应包含选中 skill 的模板内容"
+        );
+    }
+
+    #[test]
+    fn agent_skill_crud_impl_works() {
+        let vault_dir = make_temp_dir("llm-wiki-agent-h3-skill");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let created = state
+            .upsert_agent_skill_impl("writer", "你是一个简洁的知识写作助手")
+            .expect("创建技能失败");
+        assert_eq!(created.skill_key, "writer");
+        assert_eq!(created.version, 1);
+
+        let updated = state
+            .upsert_agent_skill_impl("writer", "你是一个结构化的知识写作助手")
+            .expect("更新技能失败");
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.version, 2);
+
+        let list = state
+            .list_agent_skills_impl(Some(10))
+            .expect("查询技能失败");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, created.id);
+
+        state
+            .delete_agent_skill_impl(created.id)
+            .expect("删除技能失败");
+        let empty = state
+            .list_agent_skills_impl(Some(10))
+            .expect("查询技能失败");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn check_agent_draft_conflict_returns_no_conflict_when_page_absent() {
         let vault_dir = make_temp_dir("llm-wiki-h1-conflict");
         let _guard = TempDirGuard(vault_dir.clone());
         let state = make_test_state(&vault_dir);
-        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
 
-        let run_id = state.start_agent_run_impl("冲突检测测试").expect("创建 run 失败");
+        let run_id = state
+            .start_agent_run_impl("冲突检测测试")
+            .expect("创建 run 失败");
         let now = current_timestamp_ms();
         let db_path = vault_dir.join(".app").join("meta.db");
         let draft = db::create_agent_draft(

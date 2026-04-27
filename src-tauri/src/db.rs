@@ -230,6 +230,17 @@ pub struct AgentMemoryRecord {
     pub updated_at: String,
 }
 
+/// Agent 技能模板数据库记录（H3：技能化）。
+#[derive(Debug, Clone)]
+pub struct AgentSkillRecord {
+    pub id: i64,
+    pub skill_key: String,
+    pub prompt_template: String,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// 页面 Embedding 记录。
 #[derive(Debug, Clone)]
 pub struct PageEmbeddingRecord {
@@ -1499,6 +1510,15 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
         );
 
+        CREATE TABLE IF NOT EXISTS agent_skills (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_key       TEXT NOT NULL UNIQUE,
+            prompt_template TEXT NOT NULL,
+            version         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_agent_runs_updated_at
             ON agent_runs(updated_at, id);
 
@@ -1510,6 +1530,9 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_agent_memories_run_id_updated_at
             ON agent_memories(run_id, updated_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_skills_updated_at
+            ON agent_skills(updated_at, id);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -2810,11 +2833,8 @@ pub fn bulk_replace_agent_memories(
         .transaction()
         .map_err(|e| format!("开启 bulk_replace_memories 事务失败: {}", e))?;
     if let Some(rid) = run_id {
-        tx.execute(
-            "DELETE FROM agent_memories WHERE run_id = ?1",
-            params![rid],
-        )
-        .map_err(|e| format!("清空 agent_memories 失败: {}", e))?;
+        tx.execute("DELETE FROM agent_memories WHERE run_id = ?1", params![rid])
+            .map_err(|e| format!("清空 agent_memories 失败: {}", e))?;
     } else {
         tx.execute("DELETE FROM agent_memories WHERE run_id IS NULL", [])
             .map_err(|e| format!("清空全局 agent_memories 失败: {}", e))?;
@@ -2834,6 +2854,157 @@ pub fn bulk_replace_agent_memories(
     }
     tx.commit()
         .map_err(|e| format!("提交 bulk_replace_memories 事务失败: {}", e))?;
+    Ok(())
+}
+
+/// 写入或更新 Agent 技能模板（同 key 更新内容并递增版本号）。
+pub fn upsert_agent_skill(
+    db_path: &Path,
+    skill_key: &str,
+    prompt_template: &str,
+    now: &str,
+) -> Result<AgentSkillRecord, String> {
+    let normalized_key = skill_key.trim();
+    let normalized_prompt = prompt_template.trim();
+    if normalized_key.is_empty() {
+        return Err("skill_key 不能为空".to_string());
+    }
+    if normalized_prompt.is_empty() {
+        return Err("prompt_template 不能为空".to_string());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+
+    let existing: Option<(i64, i64, String)> = conn
+        .query_row(
+            "SELECT id, version, created_at FROM agent_skills WHERE skill_key = ?1",
+            params![normalized_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("查询 agent_skills 失败: {}", e))?;
+
+    let id = if let Some((existing_id, existing_version, _)) = existing {
+        let next_version = existing_version.saturating_add(1);
+        conn.execute(
+            r#"
+            UPDATE agent_skills
+            SET prompt_template = ?1, version = ?2, updated_at = ?3
+            WHERE id = ?4
+            "#,
+            params![normalized_prompt, next_version, now, existing_id],
+        )
+        .map_err(|e| format!("更新 agent_skills 失败: {}", e))?;
+        existing_id
+    } else {
+        conn.execute(
+            r#"
+            INSERT INTO agent_skills (skill_key, prompt_template, version, created_at, updated_at)
+            VALUES (?1, ?2, 1, ?3, ?3)
+            "#,
+            params![normalized_key, normalized_prompt, now],
+        )
+        .map_err(|e| format!("写入 agent_skills 失败: {}", e))?;
+        conn.last_insert_rowid()
+    };
+
+    conn.query_row(
+        r#"
+        SELECT id, skill_key, prompt_template, version, created_at, updated_at
+        FROM agent_skills
+        WHERE id = ?1
+        "#,
+        params![id],
+        |row| {
+            Ok(AgentSkillRecord {
+                id: row.get(0)?,
+                skill_key: row.get(1)?,
+                prompt_template: row.get(2)?,
+                version: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        },
+    )
+    .map_err(|e| format!("读取 agent_skill 失败: {}", e))
+}
+
+/// 列出 Agent 技能模板（按更新时间倒序）。
+pub fn list_agent_skills(db_path: &Path, limit: usize) -> Result<Vec<AgentSkillRecord>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, skill_key, prompt_template, version, created_at, updated_at
+            FROM agent_skills
+            ORDER BY CAST(updated_at AS INTEGER) DESC, id DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|e| format!("准备查询 agent_skills 失败: {}", e))?;
+    let mapped = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(AgentSkillRecord {
+                id: row.get(0)?,
+                skill_key: row.get(1)?,
+                prompt_template: row.get(2)?,
+                version: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("执行查询 agent_skills 失败: {}", e))?;
+    let rows: Result<Vec<_>, _> = mapped.collect();
+    rows.map_err(|e| format!("读取 agent_skills 失败: {}", e))
+}
+
+/// 按 skill_key 读取单条 Agent 技能模板。
+pub fn get_agent_skill_by_key(
+    db_path: &Path,
+    skill_key: &str,
+) -> Result<Option<AgentSkillRecord>, String> {
+    let normalized_key = skill_key.trim();
+    if normalized_key.is_empty() {
+        return Ok(None);
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.query_row(
+        r#"
+        SELECT id, skill_key, prompt_template, version, created_at, updated_at
+        FROM agent_skills
+        WHERE skill_key = ?1
+        "#,
+        params![normalized_key],
+        |row| {
+            Ok(AgentSkillRecord {
+                id: row.get(0)?,
+                skill_key: row.get(1)?,
+                prompt_template: row.get(2)?,
+                version: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| format!("读取 agent_skill 失败: {}", e))
+}
+
+/// 删除单条 Agent 技能模板。
+pub fn delete_agent_skill(db_path: &Path, id: i64) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let affected = conn
+        .execute("DELETE FROM agent_skills WHERE id = ?1", params![id])
+        .map_err(|e| format!("删除 agent_skill 失败: {}", e))?;
+    if affected == 0 {
+        return Err(format!("agent_skill 不存在: {}", id));
+    }
     Ok(())
 }
 
@@ -4147,6 +4318,7 @@ mod tests {
             "agent_run_events",
             "agent_drafts",
             "agent_memories",
+            "agent_skills",
         ];
         for name in names {
             let count: i64 = conn
@@ -4214,6 +4386,35 @@ mod tests {
             .expect("草稿应存在");
         assert_eq!(applied.status, "applied");
         assert_eq!(applied.updated_at, "130");
+    }
+
+    #[test]
+    fn agent_skill_upsert_list_delete_work() {
+        let dir = make_temp_dir("llm-wiki-db-agent-skill");
+        let _guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        ensure_meta_db(&db_path).expect("初始化数据库失败");
+
+        let first =
+            upsert_agent_skill(&db_path, "writer", "你是写作助手", "100").expect("创建技能失败");
+        assert_eq!(first.skill_key, "writer");
+        assert_eq!(first.version, 1);
+
+        let second = upsert_agent_skill(&db_path, "writer", "你是高级写作助手", "120")
+            .expect("更新技能失败");
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.version, 2);
+        assert_eq!(second.prompt_template, "你是高级写作助手");
+        assert_eq!(second.created_at, "100");
+        assert_eq!(second.updated_at, "120");
+
+        let list = list_agent_skills(&db_path, 10).expect("查询技能失败");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, first.id);
+
+        delete_agent_skill(&db_path, first.id).expect("删除技能失败");
+        let empty = list_agent_skills(&db_path, 10).expect("查询技能失败");
+        assert!(empty.is_empty());
     }
 
     #[test]

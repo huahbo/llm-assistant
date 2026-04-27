@@ -6,6 +6,7 @@ import type {
   AgentRunEventLevel,
   AgentRunItem,
   AgentRunStatus,
+  AgentSkillItem,
   AppOverview,
   AskHistoryItem,
   AskSessionItem,
@@ -1537,10 +1538,16 @@ export const createCompleteAgentRunArgs = (runId: number, status: AgentRunStatus
 });
 
 /** 构造 generate_agent_draft 命令参数（用于测试） */
-export const createGenerateAgentDraftArgs = (runId: number, topic: string) => ({
+export const createGenerateAgentDraftArgs = (
+  runId: number,
+  topic: string,
+  skillKey?: string | null,
+) => ({
   runId,
   run_id: runId,
   topic,
+  skillKey,
+  skill_key: skillKey,
 });
 
 /** 构造 list_agent_drafts 命令参数（用于测试） */
@@ -1560,6 +1567,20 @@ export const createCheckAgentDraftConflictArgs = (draftId: number) => ({
   draftId,
   draft_id: draftId,
 });
+
+/** 构造 upsert_agent_skill 命令参数（用于测试） */
+export const createUpsertAgentSkillArgs = (skillKey: string, promptTemplate: string) => ({
+  skillKey,
+  skill_key: skillKey,
+  promptTemplate,
+  prompt_template: promptTemplate,
+});
+
+/** 构造 list_agent_skills 命令参数（用于测试） */
+export const createListAgentSkillsArgs = (limit?: number) => ({ limit });
+
+/** 构造 delete_agent_skill 命令参数（用于测试） */
+export const createDeleteAgentSkillArgs = (id: number) => ({ id });
 
 /** 设置或取消 Wiki 页面的 stale 标记 */
 export async function markPageStale(
@@ -1732,13 +1753,17 @@ export async function completeAgentRun(
 }
 
 /** 为指定 run 生成 Draft。后端成功即视为 true。 */
-export async function generateAgentDraft(runId: number, topic: string): Promise<boolean> {
+export async function generateAgentDraft(
+  runId: number,
+  topic: string,
+  skillKey?: string | null,
+): Promise<boolean> {
   if (!isTauriRuntime()) return false;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     await withTimeout(
       invoke<void>("generate_agent_draft", {
-        ...createGenerateAgentDraftArgs(runId, topic),
+        ...createGenerateAgentDraftArgs(runId, topic, skillKey),
       }),
     );
     return true;
@@ -1845,6 +1870,55 @@ export async function deleteAgentMemory(id: number): Promise<boolean> {
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     await withTimeout(invoke<void>("delete_agent_memory", { id }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 写入或更新 Agent 技能模板（H3）。 */
+export async function upsertAgentSkill(
+  skillKey: string,
+  promptTemplate: string,
+): Promise<AgentSkillItem | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentSkillItem>("upsert_agent_skill", {
+        ...createUpsertAgentSkillArgs(skillKey, promptTemplate),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** 列出 Agent 技能模板（H3）。 */
+export async function listAgentSkills(limit = 50): Promise<AgentSkillItem[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<AgentSkillItem[]>("list_agent_skills", {
+        ...createListAgentSkillsArgs(limit),
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 删除单条 Agent 技能模板（H3）。 */
+export async function deleteAgentSkill(id: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(
+      invoke<void>("delete_agent_skill", {
+        ...createDeleteAgentSkillArgs(id),
+      }),
+    );
     return true;
   } catch {
     return false;

@@ -15,7 +15,7 @@
 
 ---
 
-## 验证基线（2026-04-27 H3，B2-Flow 收口）
+## 验证基线（2026-04-27 H3-4，最小可见性增量）
 
 ```powershell
 # Windows PowerShell（待用户复核）
@@ -28,9 +28,7 @@ cd ..; npm run tauri:dev
 
 - WSL 自动化验证结果占位（本轮）：
   - `cd web && npm run typecheck`：通过 ✅
-  - `cd web && npm run test -- --run`：失败 ❌（`@rollup/rollup-linux-x64-gnu` 可选依赖缺失）
-  - `cd web && npm run build`：失败 ❌（同上）
-- 结论：`B2-Flow` 已到可验收状态，最终通过条件为用户 Windows 复核回传。
+- 结论：`H3-4` 最小增量已完成，可交给 Claude 继续 H4。
 
 - `scripts/verify_clipper_windows.ps1`：用户回传通过（2026-04-22）
 - `scripts/verify_searxng_windows.ps1`：用户回传通过（2026-04-22）
@@ -42,11 +40,11 @@ cd ..; npm run tauri:dev
 
 | commit | 描述 |
 |--------|------|
+| `9d7a0be` | feat(agent-studio): complete B2 lite/review/flow and handoff docs |
+| `64b2e65` | docs: 更新 dev-status 基线至 190/179（H2 完成） |
 | `9ea3610` | feat(H2): agent_memories CRUD + AAAK-lite 压缩层 + 记忆面板 UI |
 | `ebacf92` | docs: 更新 dev-status 基线至 190/177（H1-next 完成） |
 | `6cb88e6` | feat(H1-next): 草稿 Markdown 渲染 + 审批确认弹窗 + 冲突预检 |
-| `0f153b2` | feat(H1): Agent Studio 时间优化 + Draft 生成/审批链路（Codex 实现） |
-| `112c988` | fix(test): 修复 agent_draft_generate_and_approve_impl_works 测试 |
 
 ---
 
@@ -54,14 +52,15 @@ cd ..; npm run tauri:dev
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **方向 H：Agent Studio B2 三阶段改造** | reviewing | `B2-Lite`、`B2-Review`、`B2-Flow`（结构先行 + 增量渲染 + 暂停/继续）已完成，待用户 Windows 复核 |
-| 2 | **方向 B：项目模板/多项目体验** | 待收口 | 功能已落地，待用户 Windows 端到端复核后收口 |
-| 3 | **方向 C：会话持久化增强** | 待收口 | 一期 + 二期已完成，待用户 Windows 端到端复核后收口 |
+| 1 | **方向 H：Agent Studio H3-4 草稿 skill 可见性** | reviewing | 草稿头可显示 `skill:<key>`，待用户确认 |
+| 2 | **方向 H：进入 H4 融合** | queued | 交由 Claude 从 H3-4 断点继续 |
+| 3 | **方向 B：项目模板/多项目体验** | 待收口 | 功能已落地，待用户 Windows 端到端复核后收口 |
+| 4 | **方向 C：会话持久化增强** | 待收口 | 一期 + 二期已完成，待用户 Windows 端到端复核后收口 |
 | — | 用户新需求 | 待提 | 用户提到有新需求，尚未描述 |
 
 ---
 
-## 代码快照（2026-04-27，基线 190 Rust / 179 前端）
+## 代码快照（2026-04-27，H3-4 完成后）
 
 ```
 src-tauri/src/
@@ -70,18 +69,18 @@ src-tauri/src/
     ollama.rs       # OllamaProvider
     openai.rs       # OpenAiProvider
   search.rs         # RRF + embedding 余弦排序
-  commands.rs       # 全部 Tauri 命令（含 check_agent_draft_conflict）
-  db.rs             # SQLite（含 agent_runs/events/drafts/memories 表）
-  models.rs         # 全部数据模型（含 AgentDraftConflictInfo）
-  state.rs          # 核心逻辑（含 check_agent_draft_conflict_impl、make_test_state_bare）
+  commands.rs       # 全部 Tauri 命令（含 generate_agent_draft.skill_key）
+  db.rs             # SQLite（含 agent_runs/events/drafts/memories/skills 表）
+  models.rs         # 全部数据模型（含 AgentDraftConflictInfo / AgentSkillItem）
+  state.rs          # 核心逻辑（含 skill prompt 注入 draft 生成）
   vault.rs          # 文件系统（ingest_markdown + resolve_wiki_semantic_title）
 
 web/src/
-  App.tsx           # 主界面（含 Agent Studio B2：双栏 + Draft/Diff/Citations + Flow 暂停/继续）
-  tauri-client.ts   # invoke 封装（含 checkAgentDraftConflict）
-  types.ts          # TS 类型（含 AgentDraftConflictInfo）
-  app-utils.test.ts # 单元测试（177 通过，含 marked 渲染测试）
-  styles.css        # 样式（含 agent-draft-confirm-dialog、agent-studio__draft-markdown）
+  App.tsx           # 主界面（草稿头显示已应用 skill key）
+  tauri-client.ts   # invoke 封装（generateAgentDraft 支持 skillKey）
+  types.ts          # TS 类型（含 AgentSkillItem）
+  app-utils.test.ts # 单元测试（含 agent skills 参数构造断言）
+  styles.css        # 样式（含调试区网格修复与 skills 收口）
 ```
 
 ---

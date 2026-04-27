@@ -783,6 +783,17 @@ pub struct AgentMemoryItem {
     pub updated_at: String,
 }
 
+/// Agent 技能模板项（H3：技能化基础资产）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSkillItem {
+    pub id: i64,
+    pub skill_key: String,
+    pub prompt_template: String,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 impl std::str::FromStr for IngestQueueStatus {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

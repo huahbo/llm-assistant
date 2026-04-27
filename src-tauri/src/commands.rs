@@ -1,15 +1,15 @@
 use tauri::State;
 
 use crate::models::{
-    AgentDraftConflictInfo, AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem, AppMode, AppOverview, AskSessionItem,
-    AskSessionSearchHitItem, AskSessionTurnItem, DefaultPaths, IngestPreview, IngestResult,
-    KnowledgeGraphData, KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput,
-    LintPatchApplyResult, LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview,
-    LintReport, LlmProviderConfig, LlmStatus, LogEntry, ModeChangeResult, NewPageResult,
-    OutboxAckResult, OutboxEventItem, PageQuickLint, QueryAnswerResult, QueryAskOptions,
-    QuerySettings, ResearchTaskItem, SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig,
-    VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail, WikiPageHistoryDetail,
-    WikiPageHistoryItem, WikiPageItem,
+    AgentDraftConflictInfo, AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem,
+    AgentSkillItem, AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem,
+    AskSessionTurnItem, DefaultPaths, IngestPreview, IngestResult, KnowledgeGraphData,
+    KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult,
+    LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
+    LlmStatus, LogEntry, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
+    PageQuickLint, QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem,
+    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, VaultInitResult, VaultStats,
+    WikiPageCitationItem, WikiPageDetail, WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -562,9 +562,12 @@ pub fn complete_agent_run(
 pub async fn generate_agent_draft(
     run_id: i64,
     topic: String,
+    skill_key: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AgentDraftItem, String> {
-    state.generate_agent_draft_impl(run_id, topic).await
+    state
+        .generate_agent_draft_impl(run_id, topic, skill_key)
+        .await
 }
 
 /// 列出指定 Run 的草稿（H1）。
@@ -618,11 +621,33 @@ pub fn list_agent_memories(
 
 /// 删除单条 agent 记忆（H2）。
 #[tauri::command]
-pub fn delete_agent_memory(
-    id: i64,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn delete_agent_memory(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     state.delete_agent_memory_impl(id)
+}
+
+/// 写入或更新 agent 技能模板（H3）。
+#[tauri::command]
+pub fn upsert_agent_skill(
+    skill_key: String,
+    prompt_template: String,
+    state: State<'_, AppState>,
+) -> Result<AgentSkillItem, String> {
+    state.upsert_agent_skill_impl(&skill_key, &prompt_template)
+}
+
+/// 列出 agent 技能模板（H3）。
+#[tauri::command]
+pub fn list_agent_skills(
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentSkillItem>, String> {
+    state.list_agent_skills_impl(limit)
+}
+
+/// 删除单条 agent 技能模板（H3）。
+#[tauri::command]
+pub fn delete_agent_skill(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.delete_agent_skill_impl(id)
 }
 
 /// 多轮会话问答（携带 session_id 和历史上下文）。

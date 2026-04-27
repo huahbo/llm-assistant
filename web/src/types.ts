@@ -242,6 +242,16 @@ export interface AgentMemoryItem {
   updated_at: string;
 }
 
+/** Agent 技能模板项（H3） */
+export interface AgentSkillItem {
+  id: number;
+  skill_key: string;
+  prompt_template: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 /** 审批前冲突检测结果（H1 确认弹窗用） */
 export interface AgentDraftConflictInfo {
   draft_id: number;

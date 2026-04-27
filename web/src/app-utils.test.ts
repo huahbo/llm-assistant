@@ -129,6 +129,9 @@ import {
   createGenerateAgentDraftArgs,
   createListAgentDraftsArgs,
   createApproveAgentDraftArgs,
+  createUpsertAgentSkillArgs,
+  createListAgentSkillsArgs,
+  createDeleteAgentSkillArgs,
   createVaultInitArgs,
   formatLlmStatusSummary,
   isTauriRuntime,
@@ -1236,10 +1239,12 @@ describe("Tauri 运行时与参数映射", () => {
       status: "applied",
     });
 
-    expect(createGenerateAgentDraftArgs(12, "Rust Actor 模块设计")).toEqual({
+    expect(createGenerateAgentDraftArgs(12, "Rust Actor 模块设计", "writer")).toEqual({
       runId: 12,
       run_id: 12,
       topic: "Rust Actor 模块设计",
+      skillKey: "writer",
+      skill_key: "writer",
     });
 
     expect(createListAgentDraftsArgs(12, 40)).toEqual({
@@ -1251,6 +1256,21 @@ describe("Tauri 运行时与参数映射", () => {
     expect(createApproveAgentDraftArgs(18)).toEqual({
       draftId: 18,
       draft_id: 18,
+    });
+
+    expect(createUpsertAgentSkillArgs("writer", "你是写作助手")).toEqual({
+      skillKey: "writer",
+      skill_key: "writer",
+      promptTemplate: "你是写作助手",
+      prompt_template: "你是写作助手",
+    });
+
+    expect(createListAgentSkillsArgs(20)).toEqual({
+      limit: 20,
+    });
+
+    expect(createDeleteAgentSkillArgs(9)).toEqual({
+      id: 9,
     });
 
     expect(createPreviewLintPatchesArgs()).toEqual({});

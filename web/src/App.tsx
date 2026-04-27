@@ -97,6 +97,9 @@ import {
   listAgentMemories,
   upsertAgentMemory,
   deleteAgentMemory,
+  listAgentSkills,
+  upsertAgentSkill,
+  deleteAgentSkill,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -122,6 +125,7 @@ import type {
   AgentRunEventLevel,
   AgentRunItem,
   AgentRunStatus,
+  AgentSkillItem,
   AppOverview,
   AskHistoryItem,
   AskSessionItem,
@@ -173,6 +177,8 @@ const ASK_SESSION_SEARCH_LIMIT = 80;
 const AGENT_RUN_LIST_LIMIT = 50;
 const AGENT_RUN_EVENT_LIST_LIMIT = 200;
 const AGENT_DRAFT_LIST_LIMIT = 50;
+const AGENT_SKILL_LIST_LIMIT = 50;
+const AGENT_ACTIVE_SKILL_STORAGE_KEY = "llm_wiki_agent_active_skill";
 const agentEventLevelOptions: AgentRunEventLevel[] = ["info", "warn", "error"];
 const agentCompleteStatusOptions: AgentRunStatus[] = ["applied", "failed"];
 type AgentReviewTab = "draft" | "diff" | "citations";
@@ -186,6 +192,42 @@ const formatAgentRunStatusLabel = (status: string): string => {
   if (normalized === "reviewing") return "待审阅";
   if (normalized === "queued") return "排队中";
   return status || "未知状态";
+};
+
+const extractSkillKeyFromEventMessage = (message: string): string => {
+  const normalized = message.trim();
+  if (!normalized) {
+    return "";
+  }
+  const matched = normalized.match(/skill:\s*([^\s，,)\]）]+)/i);
+  return matched?.[1]?.trim() ?? "";
+};
+
+const readAgentActiveSkillKeyFromStorage = (): string => {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  try {
+    const raw = globalThis.localStorage?.getItem(AGENT_ACTIVE_SKILL_STORAGE_KEY) ?? "";
+    return raw.trim();
+  } catch {
+    return "";
+  }
+};
+
+const writeAgentActiveSkillKeyToStorage = (skillKey: string): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    if (skillKey.trim()) {
+      globalThis.localStorage?.setItem(AGENT_ACTIVE_SKILL_STORAGE_KEY, skillKey.trim());
+    } else {
+      globalThis.localStorage?.removeItem(AGENT_ACTIVE_SKILL_STORAGE_KEY);
+    }
+  } catch {
+    // 本地存储异常时静默降级，不阻塞主流程。
+  }
 };
 
 const chunkAgentDraftBlock = (block: string, maxLen = 180): string[] => {
@@ -3005,6 +3047,14 @@ export default function App() {
   const [agentMemoryKeyInput, setAgentMemoryKeyInput] = useState("");
   const [agentMemoryValueInput, setAgentMemoryValueInput] = useState("");
   const [agentMemoryComposerOpen, setAgentMemoryComposerOpen] = useState(false);
+  const [agentSkills, setAgentSkills] = useState<AgentSkillItem[]>([]);
+  const [agentSkillsLoading, setAgentSkillsLoading] = useState(false);
+  const [agentSkillKeyInput, setAgentSkillKeyInput] = useState("");
+  const [agentSkillPromptInput, setAgentSkillPromptInput] = useState("");
+  const [agentSkillComposerOpen, setAgentSkillComposerOpen] = useState(false);
+  const [agentActiveSkillKey, setAgentActiveSkillKey] = useState<string>(
+    () => readAgentActiveSkillKeyFromStorage(),
+  );
   const [agentDebugPanelOpen, setAgentDebugPanelOpen] = useState(false);
 
   useEffect(
@@ -3113,6 +3163,22 @@ export default function App() {
     }
     return Math.min(100, Math.round((agentFlowCursor / agentFlowChunks.length) * 100));
   }, [agentFlowChunks.length, agentFlowCursor, agentFlowMode]);
+  const agentDraftAppliedSkillKey = useMemo(() => {
+    if (agentSelectedRunId == null || agentEvents.length === 0) {
+      return "";
+    }
+    for (let index = agentEvents.length - 1; index >= 0; index -= 1) {
+      const event = agentEvents[index];
+      if (!event || event.run_id !== agentSelectedRunId) {
+        continue;
+      }
+      const skillKey = extractSkillKeyFromEventMessage(event.message ?? "");
+      if (skillKey) {
+        return skillKey;
+      }
+    }
+    return "";
+  }, [agentEvents, agentSelectedRunId]);
 
   const graphNodes = graphData?.nodes ?? [];
   const graphNodeById = useMemo(() => {
@@ -6748,6 +6814,30 @@ export default function App() {
     }
   };
 
+  const loadAgentSkillsData = async () => {
+    if (!isTauriRuntime()) return;
+    setAgentSkillsLoading(true);
+    try {
+      const skills = await listAgentSkills(AGENT_SKILL_LIST_LIMIT);
+      setAgentSkills(skills);
+      if (skills.length === 0) {
+        setAgentActiveSkillKey("");
+        return;
+      }
+      setAgentActiveSkillKey((prev) => {
+        if (prev === "") {
+          return "";
+        }
+        if (skills.some((item) => item.skill_key === prev)) {
+          return prev;
+        }
+        return "";
+      });
+    } finally {
+      setAgentSkillsLoading(false);
+    }
+  };
+
   const emitAgentFlowEvent = async (message: string) => {
     if (agentSelectedRunId == null || !isTauriRuntime()) {
       return;
@@ -6769,8 +6859,13 @@ export default function App() {
       return;
     }
     void loadAgentRunsData();
+    void loadAgentSkillsData();
     // H0 阶段仅在切到 Agent Studio 时刷新，不做后台轮询。
   }, [activeModule]);
+
+  useEffect(() => {
+    writeAgentActiveSkillKeyToStorage(agentActiveSkillKey);
+  }, [agentActiveSkillKey]);
 
   useEffect(() => {
     if (activeModule !== "agent") {
@@ -6968,7 +7063,7 @@ export default function App() {
       setAgentStatusMessage(`run #${runId} 已创建，正在生成 draft...`);
       await loadAgentRunsData(runId);
       await loadAgentRunEventsData(runId);
-      const ok = await generateAgentDraft(runId, topic);
+      const ok = await generateAgentDraft(runId, topic, agentActiveSkillKey || null);
       if (!ok) {
         setAgentStatusMessage(`run #${runId} draft 生成失败，请检查后端日志。`);
         return;
@@ -6976,7 +7071,9 @@ export default function App() {
       await loadAgentDraftsData(runId);
       await loadAgentRunEventsData(runId);
       await loadAgentRunsData(runId);
-      setAgentStatusMessage(`run #${runId} draft 已就绪，可在右侧预览并审批。`);
+      setAgentStatusMessage(
+        `run #${runId} draft 已就绪${agentActiveSkillKey ? `（skill: ${agentActiveSkillKey}）` : ""}，可在右侧预览并审批。`,
+      );
     } finally {
       setAgentActionRunning(false);
     }
@@ -7069,12 +7166,14 @@ export default function App() {
     }
     setAgentActionRunning(true);
     try {
-      const ok = await generateAgentDraft(agentSelectedRunId, topic);
+      const ok = await generateAgentDraft(agentSelectedRunId, topic, agentActiveSkillKey || null);
       if (!ok) {
         setAgentStatusMessage("生成 draft 失败，请检查后端命令是否可用。");
         return;
       }
-      setAgentStatusMessage(`已触发 run #${agentSelectedRunId} 的 draft 生成`);
+      setAgentStatusMessage(
+        `已触发 run #${agentSelectedRunId} 的 draft 生成${agentActiveSkillKey ? `（skill: ${agentActiveSkillKey}）` : ""}`,
+      );
       await loadAgentDraftsData(agentSelectedRunId);
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
@@ -7160,6 +7259,46 @@ export default function App() {
     }
   };
 
+  const handleUpsertAgentSkill = async () => {
+    const skillKey = agentSkillKeyInput.trim();
+    const promptTemplate = agentSkillPromptInput.trim();
+    if (!skillKey || !promptTemplate) {
+      setAgentStatusMessage("技能键与模板内容不能为空。");
+      return;
+    }
+    setAgentActionRunning(true);
+    try {
+      const item = await upsertAgentSkill(skillKey, promptTemplate);
+      if (!item) {
+        setAgentStatusMessage("保存技能模板失败，请检查后端。");
+        return;
+      }
+      setAgentSkillKeyInput("");
+      setAgentSkillPromptInput("");
+      setAgentSkillComposerOpen(false);
+      setAgentActiveSkillKey(item.skill_key);
+      setAgentStatusMessage(`技能模板「${item.skill_key}」已保存（v${item.version}）。`);
+      await loadAgentSkillsData();
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleDeleteAgentSkill = async (id: number, skillKey: string) => {
+    setAgentActionRunning(true);
+    try {
+      const ok = await deleteAgentSkill(id);
+      if (!ok) {
+        setAgentStatusMessage("删除技能模板失败。");
+        return;
+      }
+      setAgentStatusMessage(`技能模板「${skillKey}」已删除。`);
+      await loadAgentSkillsData();
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
   const handleNavModuleSelect = (moduleId: ModuleId) => {
     setActiveModule(moduleId);
     if (moduleId === "stats") {
@@ -7168,6 +7307,7 @@ export default function App() {
     }
     if (moduleId === "agent") {
       void loadAgentRunsData();
+      void loadAgentSkillsData();
     }
   };
 
@@ -9963,6 +10103,113 @@ export default function App() {
                         </button>
                       </div>
                     ) : null}
+                    <div className="agent-studio__skills">
+                      <div className="agent-studio__skills-head">
+                        <div className="agent-studio__skills-head-main">
+                          <span className="agent-studio__memory-chipbar-title">技能模板</span>
+                          <select
+                            className="dev-panel__input agent-studio__skill-active-select"
+                            value={agentActiveSkillKey}
+                            onChange={(event) => setAgentActiveSkillKey(event.target.value)}
+                            disabled={agentSkillsLoading || agentSkills.length === 0}
+                            title="选择本次生成生效的技能模板"
+                          >
+                            <option value="">不使用技能模板</option>
+                            {agentSkills.map((skill) => (
+                              <option key={`active-skill-${skill.id}`} value={skill.skill_key}>
+                                {skill.skill_key} (v{skill.version})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          className="agent-studio__memory-chip-add"
+                          disabled={agentActionRunning || !isTauriRuntime()}
+                          onClick={() => setAgentSkillComposerOpen((prev) => !prev)}
+                        >
+                          {agentSkillComposerOpen ? "收起" : "+ 新建"}
+                        </button>
+                      </div>
+                      {agentSkillComposerOpen ? (
+                        <div className="agent-studio__skill-form">
+                          <input
+                            type="text"
+                            className="dev-panel__input"
+                            placeholder="技能键（如：writer）"
+                            value={agentSkillKeyInput}
+                            onChange={(e) => setAgentSkillKeyInput(e.target.value)}
+                          />
+                          <textarea
+                            className="dev-panel__input"
+                            placeholder="模板提示词（将用于后续技能化编排）"
+                            value={agentSkillPromptInput}
+                            onChange={(e) => setAgentSkillPromptInput(e.target.value)}
+                            rows={3}
+                          />
+                          <button
+                            type="button"
+                            className="dev-panel__button"
+                            disabled={
+                              agentActionRunning
+                              || !agentSkillKeyInput.trim()
+                              || !agentSkillPromptInput.trim()
+                              || !isTauriRuntime()
+                            }
+                            onClick={() => void handleUpsertAgentSkill()}
+                          >
+                            保存技能
+                          </button>
+                        </div>
+                      ) : null}
+                      {agentSkillsLoading ? (
+                        <p className="agent-studio__empty">技能模板加载中...</p>
+                      ) : agentSkills.length === 0 ? (
+                        <p className="agent-studio__empty">暂无技能模板，可先创建 writer/reviewer 等角色提示。</p>
+                      ) : (
+                        <>
+                          <p className="agent-studio__skill-active-hint">
+                            当前生效：<strong>{agentActiveSkillKey || "不使用技能模板"}</strong>
+                          </p>
+                          <ul className="agent-studio__skill-list">
+                          {agentSkills.map((skill) => (
+                            <li
+                              key={skill.id}
+                              className={`agent-studio__skill-item${agentActiveSkillKey === skill.skill_key ? " agent-studio__skill-item--active" : ""}`}
+                            >
+                              <div className="agent-studio__skill-main">
+                                <button
+                                  type="button"
+                                  className="agent-studio__skill-select"
+                                  onClick={() => setAgentActiveSkillKey(skill.skill_key)}
+                                >
+                                  <strong>{skill.skill_key}</strong>
+                                  {agentActiveSkillKey === skill.skill_key ? (
+                                    <span className="agent-studio__skill-badge">生效中</span>
+                                  ) : null}
+                                </button>
+                                <span>v{skill.version}</span>
+                              </div>
+                              <p title={skill.prompt_template}>{skill.prompt_template}</p>
+                              <div className="agent-studio__skill-actions">
+                                <time dateTime={skill.updated_at}>
+                                  {formatLintCheckedAt(skill.updated_at)}
+                                </time>
+                                <button
+                                  type="button"
+                                  className="dev-panel__button"
+                                  disabled={agentActionRunning || !isTauriRuntime()}
+                                  onClick={() => void handleDeleteAgentSkill(skill.id, skill.skill_key)}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </li>
+                          ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
                     <div className="agent-studio__chat-thread">
                       {agentRunsLoading ? (
                         <p className="agent-studio__empty">加载历史 run...</p>
@@ -10057,7 +10304,10 @@ export default function App() {
                       </h3>
                       {selectedAgentDraft ? (
                         <span className="agent-studio__item-meta">
-                          {selectedAgentDraft.status} · {formatLintCheckedAt(selectedAgentDraft.updated_at || selectedAgentDraft.created_at)}
+                          {selectedAgentDraft.status}
+                          {" · "}
+                          {formatLintCheckedAt(selectedAgentDraft.updated_at || selectedAgentDraft.created_at)}
+                          {agentDraftAppliedSkillKey ? ` · skill:${agentDraftAppliedSkillKey}` : ""}
                         </span>
                       ) : null}
                     </div>
