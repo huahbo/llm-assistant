@@ -25,6 +25,8 @@
 - H6-S2 runtime 返回结果已统一为 `ToolExecOutcome`，并补充了 `read_wiki` 集成测试。
 - H6-S2 主服务已下沉到 `src-tauri/src/agent_service.rs`，`run_agent_task_impl` 变为薄委托。
 - H6-S2 PathGuard(write) 已前置：新增 `validate_agent_write_path`（仅允许 `vault/wiki/*.md`）。
+- H6-S2 `write_wiki` 工具链已打通到审批前置：支持决策解析/事件展示/路径校验，当前统一 `require_approval` 且不落盘。
+- H6-S2 循环新增审批暂停语义：遇到 `decision=require_approval` 会写入 `awaiting_approval` 事件并中止后续迭代。
 
 ---
 
@@ -41,11 +43,11 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | commit | 描述 |
 |--------|------|
+| `6d4f2a0` | Stabilize Agent S2 by modularizing runtime loop before next phase |
+| `81ce437` | docs: H6 计划落盘（Shell Tool + Agentic Loop 两阶段方案） |
 | `262edc6` | chore: H5 Windows 验证全绿，更新基线 |
 | `dcd3f0a` | docs: 归档实施过程记录 + 整理协作文档 + 更新 README |
-| `2bdd80c` | feat(H5-D): skill 模板变量 `{{topic}}` `{{memories}}` |
-| `efe238e` | feat(H5): auto-memory + draft rewrite + ask-first injection |
-| `1ca66d6` | feat(H4): research_mode |
+| `690fa87` | docs: H5 全部收口 |
 
 ---
 
@@ -53,7 +55,7 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **H6-S2：Agentic Loop** | 进行中（multi-tool beta） | 已支持多轮决策 + `run_shell/search_wiki/read_wiki` |
+| 1 | **H6-S2：Agentic Loop** | 进行中（multi-tool beta） | 已支持多轮决策 + `run_shell/search_wiki/read_wiki/write_wiki(审批前置)` |
 | 2 | **H6-S1.5：安全前置** | 已实现待持续回归 | 已拆到 `agent_policy.rs`，后续接 PathGuard |
 | 3 | **H6-S1：Shell Tool MVP 收口** | 已实现待持续回归 | 前端交互与策略元信息已上线 |
 
@@ -105,10 +107,11 @@ Agent Studio 目前是"一次性 LLM 调用 → 生成草稿"，H6 目标是升�
 
 **当前进展（已完成 skeleton+next）**：
 1. 后端新增 `run_agent_task` 命令与 `run_agent_task_impl`。
-2. `run_agent_task_impl` 已支持多轮决策与受控工具调用（`run_shell/search_wiki/read_wiki`）。
+2. `run_agent_task_impl` 已支持多轮决策与受控工具调用（`run_shell/search_wiki/read_wiki/write_wiki`）。
 3. 前端新增任务模式 Beta 面板（任务指令、预算轮次、结果区）。
 4. 任务执行后自动写入 run events，并将 run 状态置为 `reviewing`。
 5. `run_shell` 策略判定已统一到 `src-tauri/src/agent_policy.rs`，避免重复实现漂移。
+6. `write_wiki` 当前走审批前置策略：触发 `require_approval` 日志，暂不执行真实写盘。
 
 #### 要移植的模块（来自 `refer-rust-daerwen-agent/`）
 

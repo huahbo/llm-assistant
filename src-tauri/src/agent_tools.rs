@@ -15,6 +15,7 @@ pub enum AgentToolAction {
     RunShell { command: String, timeout_ms: u64 },
     SearchWiki { query: String, limit: usize },
     ReadWiki { path: String, max_chars: usize },
+    WriteWiki { path: String, content: String },
 }
 
 /// 解析单轮 agent 决策（best-effort）。
@@ -115,6 +116,22 @@ fn parse_agent_tool_action(item: &Value) -> Option<AgentToolAction> {
                 .clamp(200, 5000);
             Some(AgentToolAction::ReadWiki { path, max_chars })
         }
+        "write_wiki" => {
+            let path = item
+                .get("path")
+                .or_else(|| item.get("page_path"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            let content = item
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            Some(AgentToolAction::WriteWiki { path, content })
+        }
         _ => None,
     }
 }
@@ -159,5 +176,19 @@ mod tests {
         assert!(decision.done);
         assert_eq!(decision.final_answer.as_deref(), Some("已完成"));
         assert!(decision.action.is_none());
+    }
+
+    #[test]
+    fn parse_agent_loop_decision_supports_write_wiki() {
+        let raw =
+            r##"{"done":false,"action":{"tool":"write_wiki","path":"wiki/a.md","content":"# A"}}"##;
+        let decision = parse_agent_loop_decision(raw).expect("应能解析决策");
+        match decision.action {
+            Some(AgentToolAction::WriteWiki { path, content }) => {
+                assert_eq!(path, "wiki/a.md");
+                assert_eq!(content, "# A");
+            }
+            _ => panic!("应解析为 write_wiki"),
+        }
     }
 }

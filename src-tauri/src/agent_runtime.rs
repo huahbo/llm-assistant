@@ -1,11 +1,11 @@
 use crate::{
     agent_loop::AgentLoopRuntime,
-    agent_policy::validate_agent_read_path,
+    agent_policy::{validate_agent_read_path, validate_agent_write_path},
     agent_tools::AgentToolAction,
     db,
     state::{resolve_existing_wiki_page_path, strip_think_tags, AppState},
 };
-use std::fs;
+use std::{fs, path::PathBuf};
 
 /// 工具执行后的统一日志结果（用于事件流与后续审批扩展）。
 struct ToolExecOutcome {
@@ -48,6 +48,9 @@ impl AgentLoopRuntime for AppState {
             }
             AgentToolAction::ReadWiki { path, max_chars } => {
                 execute_read_wiki_action(self, idx, path, max_chars).into_tuple()
+            }
+            AgentToolAction::WriteWiki { path, content } => {
+                execute_write_wiki_action(self, idx, path, content).into_tuple()
             }
         }
     }
@@ -200,6 +203,48 @@ fn execute_read_wiki_action(
     }
 }
 
+fn execute_write_wiki_action(
+    state: &AppState,
+    idx: u32,
+    path: String,
+    content: String,
+) -> ToolExecOutcome {
+    let preview = truncate_chars(&content, 200);
+    let content_chars = content.chars().count();
+    let target_display = match resolve_agent_write_target_path(state, &path) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(err) => {
+            return outcome_warn(format!(
+                "[tool#{}/write_wiki] path=`{}` chars={} error={}",
+                idx + 1,
+                path,
+                content_chars,
+                err
+            ));
+        }
+    };
+    outcome_warn(format!(
+        "[tool#{}/write_wiki] path=`{}` resolved=`{}` chars={} decision=require_approval output=当前阶段为审批前置，未落盘。preview={}",
+        idx + 1,
+        path,
+        target_display,
+        content_chars,
+        preview
+    ))
+}
+
+fn resolve_agent_write_target_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
+    let vault_path = state.vault_path_or_err()?;
+    let raw = PathBuf::from(path.trim());
+    let target_path = if raw.is_absolute() {
+        raw
+    } else {
+        vault_path.join(&raw)
+    };
+    validate_agent_write_path(&vault_path, &target_path)?;
+    Ok(target_path)
+}
+
 fn read_wiki_page_for_agent(
     state: &AppState,
     page_path: &str,
@@ -239,7 +284,7 @@ fn outcome_warn(line: String) -> ToolExecOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::read_wiki_page_for_agent;
+    use super::{read_wiki_page_for_agent, resolve_agent_write_target_path};
     use crate::state::AppState;
     use std::{
         fs,
@@ -301,6 +346,39 @@ mod tests {
                 || err.contains("PathGuard 拒绝")
                 || err.contains("页面不存在"),
             "错误信息应体现路径受限，实际: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_write_target_path_allows_wiki_markdown() {
+        let vault_dir = make_temp_dir("llm-wiki-agent-runtime-write-allow");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let config_path = vault_dir.join(".app").join("config.json");
+        let state = AppState::new_with_path(config_path);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 vault 失败");
+
+        let resolved =
+            resolve_agent_write_target_path(&state, "wiki/new-page.md").expect("应允许写路径");
+        assert!(resolved.to_string_lossy().ends_with("wiki/new-page.md"));
+    }
+
+    #[test]
+    fn resolve_agent_write_target_path_rejects_non_markdown() {
+        let vault_dir = make_temp_dir("llm-wiki-agent-runtime-write-deny");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let config_path = vault_dir.join(".app").join("config.json");
+        let state = AppState::new_with_path(config_path);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 vault 失败");
+
+        let err = resolve_agent_write_target_path(&state, "wiki/new-page.txt")
+            .expect_err("非 markdown 路径应拒绝");
+        assert!(
+            err.contains("仅允许写入 Markdown 页面") || err.contains("PathGuard 拒绝"),
+            "错误信息应体现扩展名受限，实际: {err}"
         );
     }
 }

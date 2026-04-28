@@ -77,6 +77,15 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
             end_level.as_str(),
             format!("🔧 tool_end #{} {}", idx + 1, log_line),
         );
+        if log_line.contains("decision=require_approval") {
+            runtime.append_event(
+                run_id,
+                "awaiting_approval",
+                format!("⏸️ 第 {} 轮触发审批前置，任务循环暂停等待人工确认", idx + 1),
+            );
+            final_hint = Some("触发审批前置，等待人工确认".to_string());
+            break;
+        }
     }
 
     Ok(AgentLoopOutcome {
@@ -140,6 +149,12 @@ fn build_tool_start_message(idx: u32, action: &AgentToolAction) -> String {
             path.chars().take(80).collect::<String>(),
             max_chars
         ),
+        AgentToolAction::WriteWiki { path, content } => format!(
+            "🔧 tool_start #{} write_wiki: {} (chars={})",
+            idx + 1,
+            path.chars().take(80).collect::<String>(),
+            content.chars().count()
+        ),
     }
 }
 
@@ -156,7 +171,8 @@ pub fn build_loop_prompt(
 可用工具：\n\
 1) run_shell: {{\"tool\":\"run_shell\",\"command\":\"...\",\"timeout_ms\":30000}}\n\
 2) search_wiki: {{\"tool\":\"search_wiki\",\"query\":\"...\",\"limit\":5}}\n\
-3) read_wiki: {{\"tool\":\"read_wiki\",\"path\":\"wiki/xxx.md\",\"max_chars\":1200}}\n\n\
+3) read_wiki: {{\"tool\":\"read_wiki\",\"path\":\"wiki/xxx.md\",\"max_chars\":1200}}\n\
+4) write_wiki: {{\"tool\":\"write_wiki\",\"path\":\"wiki/xxx.md\",\"content\":\"...\"}}\n\n\
 返回格式（必须是 JSON 对象）：\n\
 {{\"done\":false,\"note\":\"...\",\"action\":{{...}}}}\n\
 或\n\
@@ -165,7 +181,8 @@ pub fn build_loop_prompt(
 1. 本轮最多 1 个 action；总预算 {iteration_budget} 轮。\n\
 2. run_shell 仅允许只读探测命令；可能被策略拒绝。\n\
 3. 优先使用 search_wiki/read_wiki 获取知识库证据。\n\
-4. 信息不足时可继续下一轮；若已足够则 done=true。\n\n\
+4. write_wiki 当前为审批前置：会先返回 require_approval，不会直接落盘。\n\
+5. 信息不足时可继续下一轮；若已足够则 done=true。\n\n\
 用户任务：\n{instruction}\n\n\
 知识库索引摘要：\n{wiki_excerpt}\n\n\
 当前工具历史：\n{history}\n"
@@ -199,8 +216,8 @@ Agent 自述完成信号：\n{final_hint}\n\n\
 #[cfg(test)]
 mod tests {
     use super::{
-        build_final_prompt, build_loop_prompt, summarize_agent_task, AgentLoopOutcome,
-        AgentLoopRuntime,
+        build_final_prompt, build_loop_prompt, run_agent_task_loop, summarize_agent_task,
+        AgentLoopOutcome, AgentLoopRuntime,
     };
     use crate::agent_tools::AgentToolAction;
     use async_trait::async_trait;
@@ -230,6 +247,7 @@ mod tests {
         assert!(p.contains("run_shell"));
         assert!(p.contains("search_wiki"));
         assert!(p.contains("read_wiki"));
+        assert!(p.contains("write_wiki"));
         assert!(p.contains("总预算 3 轮"));
     }
 
@@ -256,5 +274,43 @@ mod tests {
             .await
             .expect("总结应成功");
         assert_eq!(answer, "最终答案");
+    }
+
+    struct ApprovalRuntime;
+
+    #[async_trait]
+    impl AgentLoopRuntime for ApprovalRuntime {
+        async fn complete_prompt(&self, _prompt: String) -> Result<String, String> {
+            Ok(
+                r##"{"done":false,"action":{"tool":"write_wiki","path":"wiki/a.md","content":"# A"}}"##
+                    .to_string(),
+            )
+        }
+
+        async fn execute_tool_action(
+            &self,
+            _idx: u32,
+            _action: AgentToolAction,
+        ) -> (String, String) {
+            (
+                "warn".to_string(),
+                "[tool#1/write_wiki] decision=require_approval".to_string(),
+            )
+        }
+
+        fn append_event(&self, _run_id: i64, _level: &str, _message: String) {}
+    }
+
+    #[tokio::test]
+    async fn run_agent_task_loop_stops_on_approval_required() {
+        let runtime = ApprovalRuntime;
+        let outcome = run_agent_task_loop(&runtime, 1, "任务", 4, "index")
+            .await
+            .expect("循环应成功返回");
+        assert_eq!(outcome.tool_logs.len(), 1);
+        assert_eq!(
+            outcome.final_hint.as_deref(),
+            Some("触发审批前置，等待人工确认")
+        );
     }
 }
