@@ -943,3 +943,65 @@ pub async fn run_shell(
         .run_shell_impl(command, timeout_ms.unwrap_or(30_000), source)
         .await
 }
+
+/// 批准 Agent write_wiki 写盘（H6-S2 审批流）。
+#[tauri::command]
+pub async fn approve_agent_write(
+    run_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let pending = state
+        .take_pending_agent_write(run_id)
+        .ok_or_else(|| format!("run #{run_id} 无待审批写入"))?;
+
+    // PathGuard 二次校验（防 TOCTOU）
+    let vault_path = state.vault_path_or_err()?;
+    let target = std::path::PathBuf::from(&pending.resolved_path);
+    crate::agent_policy::validate_agent_write_path(&vault_path, &target)?;
+
+    // 写盘
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    std::fs::write(&target, &pending.content)
+        .map_err(|e| format!("写盘失败: {e}"))?;
+
+    // 记录事件
+    if let Some(db_path) = state.outbox_db_path() {
+        let ts = crate::state::current_timestamp_ms();
+        let _ = crate::db::append_agent_run_event(
+            &db_path,
+            run_id,
+            "info",
+            &format!("✅ 审批通过：已写入 {}", pending.resolved_path),
+            &ts,
+        );
+        let _ = crate::db::complete_agent_run(&db_path, run_id, "applied", &ts);
+    }
+    Ok(format!("已写入: {}", pending.resolved_path))
+}
+
+/// 拒绝 Agent write_wiki 写盘（H6-S2 审批流）。
+#[tauri::command]
+pub async fn reject_agent_write(
+    run_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let pending = state
+        .take_pending_agent_write(run_id)
+        .ok_or_else(|| format!("run #{run_id} 无待审批写入"))?;
+
+    if let Some(db_path) = state.outbox_db_path() {
+        let ts = crate::state::current_timestamp_ms();
+        let _ = crate::db::append_agent_run_event(
+            &db_path,
+            run_id,
+            "warn",
+            &format!("🚫 审批拒绝：已取消写入 {}", pending.resolved_path),
+            &ts,
+        );
+        let _ = crate::db::complete_agent_run(&db_path, run_id, "failed", &ts);
+    }
+    Ok(format!("已拒绝: {}", pending.resolved_path))
+}

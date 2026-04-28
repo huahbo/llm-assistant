@@ -1,4 +1,4 @@
-use crate::agent_tools::{parse_agent_loop_decision, AgentToolAction};
+use crate::agent_tools::{parse_agent_loop_decision, AgentToolAction, ToolActionResult};
 use async_trait::async_trait;
 
 /// Agent 循环主控结果。
@@ -6,13 +6,14 @@ pub struct AgentLoopOutcome {
     pub tool_logs: Vec<String>,
     pub planner_notes: Vec<String>,
     pub final_hint: Option<String>,
+    pub pending_write: Option<(String, String)>, // (resolved_path, content)
 }
 
 /// Agent 循环运行时接口（由 AppState 实现）。
 #[async_trait]
 pub trait AgentLoopRuntime {
     async fn complete_prompt(&self, prompt: String) -> Result<String, String>;
-    async fn execute_tool_action(&self, idx: u32, action: AgentToolAction) -> (String, String);
+    async fn execute_tool_action(&self, idx: u32, action: AgentToolAction) -> ToolActionResult;
     fn append_event(&self, run_id: i64, level: &str, message: String);
 }
 
@@ -27,6 +28,7 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
     let mut tool_logs: Vec<String> = Vec::new();
     let mut planner_notes: Vec<String> = Vec::new();
     let mut final_hint: Option<String> = None;
+    let mut pending_write: Option<(String, String)> = None;
 
     for idx in 0..iteration_budget {
         let history = if tool_logs.is_empty() {
@@ -70,20 +72,21 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
             break;
         };
         runtime.append_event(run_id, "info", build_tool_start_message(idx, &action));
-        let (end_level, log_line) = runtime.execute_tool_action(idx, action).await;
-        tool_logs.push(log_line.clone());
+        let tool_result = runtime.execute_tool_action(idx, action).await;
+        tool_logs.push(tool_result.log_line.clone());
         runtime.append_event(
             run_id,
-            end_level.as_str(),
-            format!("🔧 tool_end #{} {}", idx + 1, log_line),
+            tool_result.level.as_str(),
+            format!("🔧 tool_end #{} {}", idx + 1, tool_result.log_line),
         );
-        if log_line.contains("decision=require_approval") {
+        if tool_result.requires_approval {
+            final_hint = Some("触发审批前置，等待人工确认".to_string());
+            pending_write = tool_result.pending_write.clone();
             runtime.append_event(
                 run_id,
                 "awaiting_approval",
                 format!("⏸️ 第 {} 轮触发审批前置，任务循环暂停等待人工确认", idx + 1),
             );
-            final_hint = Some("触发审批前置，等待人工确认".to_string());
             break;
         }
     }
@@ -92,6 +95,7 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
         tool_logs,
         planner_notes,
         final_hint,
+        pending_write,
     })
 }
 
@@ -219,7 +223,7 @@ mod tests {
         build_final_prompt, build_loop_prompt, run_agent_task_loop, summarize_agent_task,
         AgentLoopOutcome, AgentLoopRuntime,
     };
-    use crate::agent_tools::AgentToolAction;
+    use crate::agent_tools::{AgentToolAction, ToolActionResult};
     use async_trait::async_trait;
 
     struct MockRuntime {
@@ -235,8 +239,13 @@ mod tests {
             &self,
             _idx: u32,
             _action: AgentToolAction,
-        ) -> (String, String) {
-            ("info".to_string(), String::new())
+        ) -> ToolActionResult {
+            ToolActionResult {
+                level: "info".to_string(),
+                log_line: String::new(),
+                requires_approval: false,
+                pending_write: None,
+            }
         }
         fn append_event(&self, _run_id: i64, _level: &str, _message: String) {}
     }
@@ -269,6 +278,7 @@ mod tests {
             tool_logs: vec!["tool-log".to_string()],
             planner_notes: vec!["note".to_string()],
             final_hint: Some("hint".to_string()),
+            pending_write: None,
         };
         let answer = summarize_agent_task(&runtime, "任务", "索引", &outcome)
             .await
@@ -291,11 +301,13 @@ mod tests {
             &self,
             _idx: u32,
             _action: AgentToolAction,
-        ) -> (String, String) {
-            (
-                "warn".to_string(),
-                "[tool#1/write_wiki] decision=require_approval".to_string(),
-            )
+        ) -> ToolActionResult {
+            ToolActionResult {
+                level: "warn".to_string(),
+                log_line: "[tool#1/write_wiki] decision=require_approval".to_string(),
+                requires_approval: true,
+                pending_write: Some(("vault/wiki/a.md".to_string(), "# A".to_string())),
+            }
         }
 
         fn append_event(&self, _run_id: i64, _level: &str, _message: String) {}
@@ -312,5 +324,7 @@ mod tests {
             outcome.final_hint.as_deref(),
             Some("触发审批前置，等待人工确认")
         );
+        assert!(outcome.pending_write.is_some());
+        assert_eq!(outcome.pending_write.as_ref().unwrap().0, "vault/wiki/a.md");
     }
 }

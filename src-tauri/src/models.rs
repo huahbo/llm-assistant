@@ -946,6 +946,15 @@ pub struct NewPageResult {
     pub content_preview: String, // 前 300 字符
 }
 
+/// Agent 写入审批队列中的待处理条目（H6-S2）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingAgentWrite {
+    pub run_id: i64,
+    pub resolved_path: String,
+    pub content: String,
+    pub created_at: String,
+}
+
 /// Shell 命令执行结果（H6-S1：Agent Studio PowerShell 执行能力）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellResult {

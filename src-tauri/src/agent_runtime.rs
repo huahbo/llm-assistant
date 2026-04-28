@@ -1,23 +1,11 @@
 use crate::{
     agent_loop::AgentLoopRuntime,
     agent_policy::{validate_agent_read_path, validate_agent_write_path},
-    agent_tools::AgentToolAction,
+    agent_tools::{AgentToolAction, ToolActionResult},
     db,
     state::{resolve_existing_wiki_page_path, strip_think_tags, AppState},
 };
 use std::{fs, path::PathBuf};
-
-/// 工具执行后的统一日志结果（用于事件流与后续审批扩展）。
-struct ToolExecOutcome {
-    level: String,
-    line: String,
-}
-
-impl ToolExecOutcome {
-    fn into_tuple(self) -> (String, String) {
-        (self.level, self.line)
-    }
-}
 
 #[async_trait::async_trait]
 impl AgentLoopRuntime for AppState {
@@ -35,22 +23,20 @@ impl AgentLoopRuntime for AppState {
         Ok(strip_think_tags(&raw).trim().to_string())
     }
 
-    async fn execute_tool_action(&self, idx: u32, action: AgentToolAction) -> (String, String) {
+    async fn execute_tool_action(&self, idx: u32, action: AgentToolAction) -> ToolActionResult {
         match action {
             AgentToolAction::RunShell {
                 command,
                 timeout_ms,
-            } => execute_shell_action(self, idx, command, timeout_ms)
-                .await
-                .into_tuple(),
+            } => execute_shell_action(self, idx, command, timeout_ms).await,
             AgentToolAction::SearchWiki { query, limit } => {
-                execute_search_wiki_action(self, idx, query, limit).into_tuple()
+                execute_search_wiki_action(self, idx, query, limit)
             }
             AgentToolAction::ReadWiki { path, max_chars } => {
-                execute_read_wiki_action(self, idx, path, max_chars).into_tuple()
+                execute_read_wiki_action(self, idx, path, max_chars)
             }
             AgentToolAction::WriteWiki { path, content } => {
-                execute_write_wiki_action(self, idx, path, content).into_tuple()
+                execute_write_wiki_action(self, idx, path, content)
             }
         }
     }
@@ -74,7 +60,7 @@ async fn execute_shell_action(
     idx: u32,
     command: String,
     timeout_ms: u64,
-) -> ToolExecOutcome {
+) -> ToolActionResult {
     match state
         .run_shell_impl(command.clone(), timeout_ms, Some("agent".to_string()))
         .await
@@ -101,7 +87,7 @@ async fn execute_shell_action(
             }
             let preview = truncate_chars(&content, 320);
             if result.blocked || result.exit_code != 0 {
-                outcome_warn(format!(
+                make_result("warn", format!(
                     "[tool#{}/run_shell] cmd=`{}` action={} decision={} exit={} blocked={} output={}",
                     idx + 1,
                     command,
@@ -112,7 +98,7 @@ async fn execute_shell_action(
                     preview
                 ))
             } else {
-                outcome_info(format!(
+                make_result("info", format!(
                     "[tool#{}/run_shell] cmd=`{}` action={} decision={} exit={} blocked={} output={}",
                     idx + 1,
                     command,
@@ -124,7 +110,7 @@ async fn execute_shell_action(
                 ))
             }
         }
-        Err(err) => outcome_warn(format!(
+        Err(err) => make_result("warn", format!(
             "[tool#{}/run_shell] cmd=`{}` error={}",
             idx + 1,
             command,
@@ -138,7 +124,7 @@ fn execute_search_wiki_action(
     idx: u32,
     query: String,
     limit: usize,
-) -> ToolExecOutcome {
+) -> ToolActionResult {
     match state.search_wiki_pages(query.clone(), limit) {
         Ok(pages) => {
             let lines = pages
@@ -160,7 +146,7 @@ fn execute_search_wiki_action(
             } else {
                 lines
             };
-            outcome_info(format!(
+            make_result("info", format!(
                 "[tool#{}/search_wiki] query=`{}` limit={} hits={} output={}",
                 idx + 1,
                 query,
@@ -169,7 +155,7 @@ fn execute_search_wiki_action(
                 summary
             ))
         }
-        Err(err) => outcome_warn(format!(
+        Err(err) => make_result("warn", format!(
             "[tool#{}/search_wiki] query=`{}` limit={} error={}",
             idx + 1,
             query,
@@ -184,16 +170,16 @@ fn execute_read_wiki_action(
     idx: u32,
     path: String,
     max_chars: usize,
-) -> ToolExecOutcome {
+) -> ToolActionResult {
     match read_wiki_page_for_agent(state, &path, max_chars) {
-        Ok(content) => outcome_info(format!(
+        Ok(content) => make_result("info", format!(
             "[tool#{}/read_wiki] path=`{}` max_chars={} output={}",
             idx + 1,
             path,
             max_chars,
             truncate_chars(&content, 320)
         )),
-        Err(err) => outcome_warn(format!(
+        Err(err) => make_result("warn", format!(
             "[tool#{}/read_wiki] path=`{}` max_chars={} error={}",
             idx + 1,
             path,
@@ -208,13 +194,13 @@ fn execute_write_wiki_action(
     idx: u32,
     path: String,
     content: String,
-) -> ToolExecOutcome {
+) -> ToolActionResult {
     let preview = truncate_chars(&content, 200);
     let content_chars = content.chars().count();
-    let target_display = match resolve_agent_write_target_path(state, &path) {
-        Ok(p) => p.to_string_lossy().to_string(),
+    let target = match resolve_agent_write_target_path(state, &path) {
+        Ok(p) => p,
         Err(err) => {
-            return outcome_warn(format!(
+            return make_result("warn", format!(
                 "[tool#{}/write_wiki] path=`{}` chars={} error={}",
                 idx + 1,
                 path,
@@ -223,14 +209,16 @@ fn execute_write_wiki_action(
             ));
         }
     };
-    outcome_warn(format!(
-        "[tool#{}/write_wiki] path=`{}` resolved=`{}` chars={} decision=require_approval output=当前阶段为审批前置，未落盘。preview={}",
-        idx + 1,
-        path,
-        target_display,
-        content_chars,
-        preview
-    ))
+    let resolved = target.to_string_lossy().to_string();
+    ToolActionResult {
+        level: "warn".to_string(),
+        log_line: format!(
+            "[tool#{}/write_wiki] path=`{}` resolved=`{}` chars={} decision=require_approval preview={}",
+            idx + 1, path, resolved, content_chars, preview
+        ),
+        requires_approval: true,
+        pending_write: Some((resolved, content)),
+    }
 }
 
 fn resolve_agent_write_target_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
@@ -268,17 +256,12 @@ fn truncate_chars(content: &str, max: usize) -> String {
     content.chars().take(max).collect::<String>()
 }
 
-fn outcome_info(line: String) -> ToolExecOutcome {
-    ToolExecOutcome {
-        level: "info".to_string(),
-        line,
-    }
-}
-
-fn outcome_warn(line: String) -> ToolExecOutcome {
-    ToolExecOutcome {
-        level: "warn".to_string(),
-        line,
+fn make_result(level: &str, line: String) -> ToolActionResult {
+    ToolActionResult {
+        level: level.to_string(),
+        log_line: line,
+        requires_approval: false,
+        pending_write: None,
     }
 }
 

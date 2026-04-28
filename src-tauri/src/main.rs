@@ -126,6 +126,8 @@ fn main() {
             commands::get_vault_stats,
             commands::create_wiki_page_with_ai,
             commands::run_shell,
+            commands::approve_agent_write,
+            commands::reject_agent_write,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

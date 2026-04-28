@@ -2219,3 +2219,21 @@ export async function runShell(
     (timeoutMs ?? 30_000) + 5_000
   );
 }
+
+export async function approveAgentWrite(runId: number): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<string>("approve_agent_write", { runId }),
+    30_000
+  );
+}
+
+export async function rejectAgentWrite(runId: number): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<string>("reject_agent_write", { runId }),
+    15_000
+  );
+}

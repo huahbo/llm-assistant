@@ -103,6 +103,8 @@ import {
   deleteAgentSkill,
   runAgentTask,
   runShell,
+  approveAgentWrite,
+  rejectAgentWrite,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -7319,6 +7321,36 @@ export default function App() {
     }
   };
 
+  const handleApproveAgentWrite = async () => {
+    if (!agentSelectedRunId) return;
+    setAgentActionRunning(true);
+    try {
+      const msg = await approveAgentWrite(agentSelectedRunId);
+      if (msg) setAgentStatusMessage(`✅ ${msg}`);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentRunsData(agentSelectedRunId);
+    } catch (e) {
+      setAgentStatusMessage(`审批失败: ${String(e)}`);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
+  const handleRejectAgentWrite = async () => {
+    if (!agentSelectedRunId) return;
+    setAgentActionRunning(true);
+    try {
+      const msg = await rejectAgentWrite(agentSelectedRunId);
+      if (msg) setAgentStatusMessage(`🚫 ${msg}`);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentRunsData(agentSelectedRunId);
+    } catch (e) {
+      setAgentStatusMessage(`拒绝失败: ${String(e)}`);
+    } finally {
+      setAgentActionRunning(false);
+    }
+  };
+
   const handleUpsertAgentMemory = async () => {
     const value = agentMemoryValueInput.trim();
     if (!value) {
@@ -10552,6 +10584,29 @@ export default function App() {
                         <pre className="agent-studio__task-mode-result">{agentTaskResult}</pre>
                       ) : (
                         <p className="agent-studio__empty">任务结果将在此显示。</p>
+                      )}
+                      {selectedAgentRun?.status === "awaiting_approval" && (
+                        <div className="agent-studio__approval-bar">
+                          <span className="agent-studio__approval-label">
+                            ⏸ Agent 请求写入 Wiki，等待审批
+                          </span>
+                          <div className="agent-studio__approval-actions">
+                            <button
+                              className="agent-studio__approval-approve"
+                              disabled={agentActionRunning}
+                              onClick={() => void handleApproveAgentWrite()}
+                            >
+                              ✅ 批准写入
+                            </button>
+                            <button
+                              className="agent-studio__approval-reject"
+                              disabled={agentActionRunning}
+                              onClick={() => void handleRejectAgentWrite()}
+                            >
+                              🚫 拒绝
+                            </button>
+                          </div>
+                        </div>
                       )}
                     </section>
                     <div className="agent-studio__review-tabs">

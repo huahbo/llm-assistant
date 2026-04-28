@@ -5428,3 +5428,58 @@ code {
 .new-page-modal__btn--primary:hover:not(:disabled) {
   opacity: 0.9;
 }
+
+/* ── Agent Studio: 审批确认栏 ─────────────────────────────── */
+.agent-studio__approval-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  border: 1px solid var(--warning, #e65100);
+  border-radius: 4px;
+  background: var(--warning-bg, #fff3e0);
+}
+.agent-studio__approval-label {
+  font-size: 13px;
+  color: var(--warning, #e65100);
+  flex: 1;
+}
+.agent-studio__approval-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.agent-studio__approval-approve {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: var(--success, #2e7d32);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.agent-studio__approval-approve:hover {
+  opacity: 0.85;
+}
+.agent-studio__approval-approve:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agent-studio__approval-reject {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--danger, #c62828);
+  border: 1px solid var(--danger, #c62828);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.agent-studio__approval-reject:hover {
+  background: var(--danger-light, #ffebee);
+}
+.agent-studio__approval-reject:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

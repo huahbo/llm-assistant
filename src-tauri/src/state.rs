@@ -101,6 +101,8 @@ struct AppStateData {
     embed_ollama_model: Option<String>,
     /// Embedding 专用 Ollama Base URL
     embed_ollama_base_url: Option<String>,
+    /// Agent 写入审批队列（run_id -> 待处理条目）
+    pending_agent_writes: std::collections::HashMap<i64, crate::models::PendingAgentWrite>,
 }
 
 /// 预览审批到落盘之间的一次性缓存。
@@ -146,6 +148,7 @@ impl AppState {
                 ollama_base_url: config.ollama_base_url,
                 embed_ollama_model: config.embed_ollama_model,
                 embed_ollama_base_url: config.embed_ollama_base_url,
+                pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path,
             llm_provider: OnceLock::new(),
@@ -227,6 +230,7 @@ impl AppState {
                 ollama_base_url: config.ollama_base_url,
                 embed_ollama_model: config.embed_ollama_model,
                 embed_ollama_base_url: config.embed_ollama_base_url,
+                pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path,
             llm_provider: OnceLock::new(),
@@ -5592,6 +5596,34 @@ Wiki 页面：\n{}",
             .vault_path
             .clone()
             .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())
+    }
+
+    /// 存储 Agent 待审批写入条目。
+    pub(crate) fn store_pending_agent_write(
+        &self,
+        run_id: i64,
+        resolved_path: String,
+        content: String,
+    ) {
+        let mut data = self.inner.lock().expect("状态锁已被污染");
+        data.pending_agent_writes.insert(
+            run_id,
+            crate::models::PendingAgentWrite {
+                run_id,
+                resolved_path,
+                content,
+                created_at: current_timestamp_ms(),
+            },
+        );
+    }
+
+    /// 取出并移除 Agent 待审批写入条目（审批或拒绝时调用）。
+    pub(crate) fn take_pending_agent_write(
+        &self,
+        run_id: i64,
+    ) -> Option<crate::models::PendingAgentWrite> {
+        let mut data = self.inner.lock().expect("状态锁已被污染");
+        data.pending_agent_writes.remove(&run_id)
     }
 
     /// 追加 outbox 事件，失败仅记录日志，不中断主流程。
@@ -12260,6 +12292,7 @@ entities:
                 ollama_base_url: None,
                 embed_ollama_model: None,
                 embed_ollama_base_url: None,
+                pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path: vault_dir.join(".runtime").join("app-config.json"),
             llm_provider: OnceLock::new(),

@@ -1,5 +1,15 @@
 use serde_json::Value;
 
+/// 工具执行结果（携带结构化 decision，不靠字符串解析）。
+#[derive(Debug)]
+pub struct ToolActionResult {
+    pub level: String,
+    pub log_line: String,
+    pub requires_approval: bool,
+    /// 等待审批的写入内容 (resolved_path, content)
+    pub pending_write: Option<(String, String)>,
+}
+
 /// Agent 循环单步决策。
 #[derive(Debug)]
 pub struct AgentLoopDecision {
