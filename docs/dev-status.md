@@ -11,7 +11,7 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
-## 本轮快讯（2026-04-28）
+## 本轮快讯（2026-04-28，Claude 收口）
 
 - 已修复 Windows 任务栏白色方块图标：`src-tauri/icons/icon.ico` 替换为多尺寸 ico，并在 `tauri.conf` 显式绑定窗口图标。
 - H6-S2 模块化第一步已完成：新增 `src-tauri/src/agent_tools.rs`，决策解析逻辑已从 `state.rs` 抽离。
@@ -27,6 +27,7 @@
 - H6-S2 PathGuard(write) 已前置：新增 `validate_agent_write_path`（仅允许 `vault/wiki/*.md`）。
 - H6-S2 `write_wiki` 工具链已打通到审批前置：支持决策解析/事件展示/路径校验，当前统一 `require_approval` 且不落盘。
 - H6-S2 循环新增审批暂停语义：遇到 `decision=require_approval` 会写入 `awaiting_approval` 事件并中止后续迭代。
+- **Claude 质量收口**：`ToolActionResult` struct 替代字符串解析，`requires_approval` 靠字段判断；`PendingAgentWrite` 存储 + `approve/reject_agent_write` 命令 + 前端审批确认栏；代码质量 B+ → **A**。
 
 ---
 
@@ -43,6 +44,7 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | commit | 描述 |
 |--------|------|
+| `ad0bc6f` | feat(H6-S2): write_wiki 审批确认闭环 + ToolActionResult 重构 |
 | `6d4f2a0` | Stabilize Agent S2 by modularizing runtime loop before next phase |
 | `81ce437` | docs: H6 计划落盘（Shell Tool + Agentic Loop 两阶段方案） |
 | `262edc6` | chore: H5 Windows 验证全绿，更新基线 |
@@ -55,9 +57,8 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **H6-S2：Agentic Loop** | 进行中（multi-tool beta） | 已支持多轮决策 + `run_shell/search_wiki/read_wiki/write_wiki(审批前置)` |
-| 2 | **H6-S1.5：安全前置** | 已实现待持续回归 | 已拆到 `agent_policy.rs`，后续接 PathGuard |
-| 3 | **H6-S1：Shell Tool MVP 收口** | 已实现待持续回归 | 前端交互与策略元信息已上线 |
+| 1 | **H6-S2 Windows 验证** | 待用户 | cargo test；write_wiki 触发审批 → 批准/拒绝端到端测试 |
+| 2 | **H6-S2 edit_wiki（patch）** | 待开发 | 审批验证通过后，增加 edit_wiki 增量修改工具 |
 
 ---
 
