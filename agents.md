@@ -221,7 +221,7 @@
 
 ### 快速恢复（3 步）
 
-1. 读 `docs/dev-status.md` → 确认基线数字与活跃 TODO；**当前进行中：H6-S1 Shell Tool**
+1. 读 `docs/dev-status.md` → 确认基线数字与活跃 TODO；**当前进行中：H6-S2 multi-tool beta（run_shell/search_wiki/read_wiki）**
 2. 运行 `cd src-tauri && cargo test` 与 `cd web && npm run test -- --run`，与基线对比
 3. 按 `docs/dev-status.md §活跃 TODO` 的优先级 1→2 开始，**必须使用 §14 子代理并行规则**
 

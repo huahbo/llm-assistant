@@ -10,7 +10,8 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    db,
+    agent_policy::classify_shell_policy,
+    agent_service, db,
     llm::{
         LlmError, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider,
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
@@ -26,7 +27,7 @@ use crate::{
         LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
         ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem, ProgressPayload,
         QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug,
-        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, VaultInitResult,
+        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, ShellResult, VaultInitResult,
         WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageHistoryDetail,
         WikiPageHistoryItem, WikiPageItem,
     },
@@ -381,7 +382,7 @@ impl AppState {
     /// 获取 LLM Provider，按模式路由：
     /// - StrictLocal → 仅 Ollama
     /// - Hybrid → 优先使用 active_provider（仅 cloud/ollama），并在无 key 时安全回退到 ollama
-    fn get_llm_provider(&self) -> Option<Arc<dyn LlmProvider>> {
+    pub(crate) fn get_llm_provider(&self) -> Option<Arc<dyn LlmProvider>> {
         // 如果 OnceLock 已经设置（例如测试注入了 Mock），直接返回
         if let Some(p) = self.llm_provider.get() {
             return Some(p.clone());
@@ -3801,7 +3802,10 @@ Wiki 页面：\n{}",
             if trimmed.is_empty() {
                 String::new()
             } else {
-                format!("\n知识库已有答案（Ask 检索结果，请参考但不要照抄）：\n{}\n", trimmed)
+                format!(
+                    "\n知识库已有答案（Ask 检索结果，请参考但不要照抄）：\n{}\n",
+                    trimmed
+                )
             }
         } else {
             String::new()
@@ -4489,10 +4493,11 @@ Wiki 页面：\n{}",
     pub fn complete_agent_run_impl(&self, run_id: i64, status: &str) -> Result<(), String> {
         let normalized_status = status.trim();
         if normalized_status != "running"
+            && normalized_status != "reviewing"
             && normalized_status != "applied"
             && normalized_status != "failed"
         {
-            return Err("status 仅支持 running/applied/failed".to_string());
+            return Err("status 仅支持 running/reviewing/applied/failed".to_string());
         }
         let db_path = self
             .outbox_db_path()
@@ -4749,10 +4754,7 @@ Wiki 页面：\n{}",
             }
         }
         if saved > 0 {
-            let msg = format!(
-                "已从 run #{} 草稿自动提炼 {} 条全局记忆",
-                run_id, saved
-            );
+            let msg = format!("已从 run #{} 草稿自动提炼 {} 条全局记忆", run_id, saved);
             let _ = db::append_agent_run_event(db_path, run_id, "info", &msg, &now);
             self.push_log(LogLevel::Info, msg);
         }
@@ -4829,12 +4831,22 @@ Wiki 页面：\n{}",
             db::create_agent_draft(&db_path, run_id, &title, &markdown_content, "draft", &now)?;
 
         let mut tags = String::new();
-        if research_mode { tags.push_str("，research: on"); }
-        if ask_first { tags.push_str("，ask: on"); }
+        if research_mode {
+            tags.push_str("，research: on");
+        }
+        if ask_first {
+            tags.push_str("，ask: on");
+        }
         let event_msg = if let Some(key) = applied_skill_key {
-            format!("已生成草稿 #{}（topic: {}，skill: {}{}）", record.id, normalized_topic, key, tags)
+            format!(
+                "已生成草稿 #{}（topic: {}，skill: {}{}）",
+                record.id, normalized_topic, key, tags
+            )
         } else {
-            format!("已生成草稿 #{}（topic: {}{}）", record.id, normalized_topic, tags)
+            format!(
+                "已生成草稿 #{}（topic: {}{}）",
+                record.id, normalized_topic, tags
+            )
         };
         if let Err(err) = db::append_agent_run_event(&db_path, run_id, "info", &event_msg, &now) {
             self.push_log(
@@ -4852,6 +4864,16 @@ Wiki 页面：\n{}",
             created_at: record.created_at,
             updated_at: record.updated_at,
         })
+    }
+
+    /// H6-S2：执行任务模式（多轮决策 + 受控工具调用）。
+    pub async fn run_agent_task_impl(
+        &self,
+        run_id: i64,
+        instruction: String,
+        max_iterations: Option<u32>,
+    ) -> Result<String, String> {
+        agent_service::run_agent_task(self, run_id, instruction, max_iterations).await
     }
 
     /// 列出指定 Run 的 Agent 草稿。
@@ -5551,7 +5573,7 @@ Wiki 页面：\n{}",
     }
 
     /// 计算 outbox 对应的数据库路径（Vault 未初始化时返回 None）。
-    fn outbox_db_path(&self) -> Option<PathBuf> {
+    pub(crate) fn outbox_db_path(&self) -> Option<PathBuf> {
         let vault_path = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             guard.vault_path.clone()
@@ -5562,6 +5584,14 @@ Wiki 页面：\n{}",
         } else {
             None
         }
+    }
+
+    pub(crate) fn vault_path_or_err(&self) -> Result<PathBuf, String> {
+        let guard = self.inner.lock().expect("状态锁已被污染");
+        guard
+            .vault_path
+            .clone()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())
     }
 
     /// 追加 outbox 事件，失败仅记录日志，不中断主流程。
@@ -5931,6 +5961,69 @@ Wiki 页面：\n{}",
             }),
         );
         Ok(())
+    }
+
+    /// 执行 Shell 命令（Windows: PowerShell；其他: bash）并返回执行结果。
+    /// H6-S1.5：增加最小策略分级（来源 + action + decision），为后续 agent 审批门做准备。
+    pub async fn run_shell_impl(
+        &self,
+        command: String,
+        timeout_ms: u64,
+        source: Option<String>,
+    ) -> Result<ShellResult, String> {
+        let executor = source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("manual")
+            .to_lowercase();
+        let (policy_action, policy_decision, block_reason) =
+            classify_shell_policy(&command, &executor);
+        if let Some(reason) = block_reason {
+            return Ok(ShellResult {
+                command: command.clone(),
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                blocked: true,
+                blocked_reason: Some(reason),
+                policy_action: policy_action.to_string(),
+                policy_decision: policy_decision.to_string(),
+                executor,
+            });
+        }
+        let cwd = {
+            let data = self.inner.lock().unwrap();
+            data.vault_path.clone().unwrap_or_else(std::env::temp_dir)
+        };
+        #[cfg(target_os = "windows")]
+        let mut child = tokio::process::Command::new("powershell");
+        #[cfg(target_os = "windows")]
+        child.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        #[cfg(not(target_os = "windows"))]
+        let mut child = tokio::process::Command::new("bash");
+        #[cfg(not(target_os = "windows"))]
+        child.arg("-c").arg(&command);
+        child
+            .current_dir(&cwd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let timeout = std::time::Duration::from_millis(timeout_ms.min(120_000));
+        match tokio::time::timeout(timeout, child.output()).await {
+            Ok(Ok(out)) => Ok(ShellResult {
+                command,
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                exit_code: out.status.code().unwrap_or(-1),
+                blocked: false,
+                blocked_reason: None,
+                policy_action: policy_action.to_string(),
+                policy_decision: policy_decision.to_string(),
+                executor,
+            }),
+            Ok(Err(e)) => Err(format!("执行失败: {e}")),
+            Err(_) => Err(format!("超时（{timeout_ms}ms）")),
+        }
     }
 }
 
@@ -7263,7 +7356,7 @@ impl AppStateData {
     }
 }
 
-fn current_timestamp_ms() -> String {
+pub(crate) fn current_timestamp_ms() -> String {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -7558,7 +7651,10 @@ fn resolve_wiki_page_candidate(vault_path: &Path, raw_path: &str) -> Result<Path
     })
 }
 
-fn resolve_existing_wiki_page_path(vault_path: &Path, raw_path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_existing_wiki_page_path(
+    vault_path: &Path,
+    raw_path: &str,
+) -> Result<PathBuf, String> {
     let wiki_root = vault_path.join("wiki");
     let candidate = resolve_wiki_page_candidate(vault_path, raw_path)?;
     if !candidate.exists() {
@@ -9146,7 +9242,7 @@ fn make_research_slug(topic: &str) -> String {
 }
 
 /// 去除 <think>/<thinking> 标签及其内容。
-fn strip_think_tags(text: &str) -> String {
+pub(crate) fn strip_think_tags(text: &str) -> String {
     let mut result = text.to_string();
     for tag in &["think", "thinking"] {
         let open = format!("<{}>", tag);

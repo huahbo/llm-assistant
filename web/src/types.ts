@@ -584,3 +584,22 @@ export interface NewPageResult {
   title: string;
   content_preview: string;
 }
+
+export interface ShellResult {
+  command: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  blocked: boolean;
+  blocked_reason: string | null;
+  policy_action: string;
+  policy_decision: string;
+  executor: string;
+}
+
+export interface ShellHistoryEntry {
+  id: number;
+  command: string;
+  result: ShellResult;
+  ts: number;
+}

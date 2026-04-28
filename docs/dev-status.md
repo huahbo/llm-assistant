@@ -11,6 +11,21 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
+## 本轮快讯（2026-04-28）
+
+- 已修复 Windows 任务栏白色方块图标：`src-tauri/icons/icon.ico` 替换为多尺寸 ico，并在 `tauri.conf` 显式绑定窗口图标。
+- H6-S2 模块化第一步已完成：新增 `src-tauri/src/agent_tools.rs`，决策解析逻辑已从 `state.rs` 抽离。
+- H6-S2 继续收敛：新增 `src-tauri/src/agent_loop.rs`，`run_agent_task` 的 prompt 组装已迁出。
+- H6-S2 主循环已迁移到 `agent_loop::run_agent_task_loop`，`state.rs` 仅保留运行入口与 runtime 实现。
+- H6-S2 总结阶段已迁移到 `agent_loop::summarize_agent_task`，任务模式闭环进一步去 state 化。
+- H6-S2 runtime 实现已迁移到 `src-tauri/src/agent_runtime.rs`，`state.rs` 进一步瘦身。
+- H6-S2 runtime 工具执行已按分支拆分（shell/search_wiki/read_wiki），便于后续扩展审批流与新工具。
+- H6-S2 PathGuard（read）已接入：`read_wiki` 仅允许访问 `vault/wiki/*.md`。
+- H6-S2 `read_wiki` 已从 `state.rs` 下沉到 `agent_runtime.rs`，state 继续瘦身。
+- H6-S2 runtime 返回结果已统一为 `ToolExecOutcome`，并补充了 `read_wiki` 集成测试。
+- H6-S2 主服务已下沉到 `src-tauri/src/agent_service.rs`，`run_agent_task_impl` 变为薄委托。
+- H6-S2 PathGuard(write) 已前置：新增 `validate_agent_write_path`（仅允许 `vault/wiki/*.md`）。
+
 ---
 
 ## 验证基线（2026-04-27 H5 全部推送，Windows 复核通过）
@@ -38,8 +53,9 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **H6-S1：Shell Tool MVP** | 进行中 | 见下方详细计划 |
-| 2 | **H6-S2：Agentic Loop** | 待 S1 完成 | daerwen-agent 移植，见下方计划 |
+| 1 | **H6-S2：Agentic Loop** | 进行中（multi-tool beta） | 已支持多轮决策 + `run_shell/search_wiki/read_wiki` |
+| 2 | **H6-S1.5：安全前置** | 已实现待持续回归 | 已拆到 `agent_policy.rs`，后续接 PathGuard |
+| 3 | **H6-S1：Shell Tool MVP 收口** | 已实现待持续回归 | 前端交互与策略元信息已上线 |
 
 ---
 
@@ -51,211 +67,48 @@ Agent Studio 目前是"一次性 LLM 调用 → 生成草稿"，H6 目标是升�
 
 ---
 
-### H6-S1：Shell Tool MVP（不含 agentic loop）
+### H6-S1：Shell Tool MVP（待手测）
 
-**目标**：Agent Studio 获得 PowerShell 执行面板，用户手动输入命令，Agent 将来可以建议命令。
+**目标**：Agent Studio 支持手动执行 shell（PowerShell/bash），用于后续 agent 工具调用打底。  
+**当前收口项**：
+1. 前端排版：补齐 `.agent-studio__shell*` 样式并做移动端适配。
+2. 前端编译：修复 `React.useRef` 模块化导入错误（改为 `useRef`）。
+3. 最小验证：`npm run typecheck` 通过；Windows 端手动跑 `Get-Date` / 非法命令回显。
 
-#### 后端改动
+---
 
-**`src-tauri/src/models.rs`** — 新增：
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellResult {
-    pub command: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,
-    pub blocked: bool,
-    pub blocked_reason: Option<String>,
-}
-```
+### H6-S1.5：安全前置（新增，S2 前必须完成）
 
-**`src-tauri/src/state.rs`** — 在 `AppStateData` impl 块末尾新增：
-```rust
-pub async fn run_shell_impl(&self, command: String, timeout_ms: u64) -> Result<ShellResult, String> {
-    // 1. 黑名单检查（case-insensitive）
-    const BLACKLIST: &[&str] = &[
-        "rm -rf", "rm -r", "format ", "reg delete", "reg add", "shutdown",
-        "del /f", "rmdir /s", "remove-item -recurse", "clear-recyclebin",
-        "diskpart", "bcdedit", "mkfs", "dd if=", ":(){ :|:& };:",
-    ];
-    let lower = command.to_lowercase();
-    for pat in BLACKLIST {
-        if lower.contains(pat) {
-            return Ok(ShellResult {
-                command: command.clone(),
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: -1,
-                blocked: true,
-                blocked_reason: Some(format!("命令包含高危模式: {pat}")),
-            });
-        }
-    }
-    // 2. 确定 cwd（vault 路径优先，fallback 到 temp）
-    let cwd = {
-        let data = self.data.lock().unwrap();
-        data.vault_path.clone().map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-    };
-    // 3. 执行（Windows: pwsh，其他: bash）
-    let child = {
-        #[cfg(target_os = "windows")]
-        { tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-            .current_dir(&cwd)
-            .stdout(Stdio::piped()).stderr(Stdio::piped()) }
-        #[cfg(not(target_os = "windows"))]
-        { tokio::process::Command::new("bash")
-            .arg("-c").arg(&command)
-            .current_dir(&cwd)
-            .stdout(Stdio::piped()).stderr(Stdio::piped()) }
-    };
-    let timeout = std::time::Duration::from_millis(timeout_ms.min(120_000));
-    match tokio::time::timeout(timeout, child.output()).await {
-        Ok(Ok(out)) => Ok(ShellResult {
-            command,
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            exit_code: out.status.code().unwrap_or(-1),
-            blocked: false,
-            blocked_reason: None,
-        }),
-        Ok(Err(e)) => Err(format!("执行失败: {e}")),
-        Err(_) => Err(format!("超时（{timeout_ms}ms）")),
-    }
-}
-```
+**目标**：在真正 agent 自动执行前，先把策略判定前置到 `run_shell`，避免黑名单单点风险。  
+**实施要点**：
+1. `ShellResult` 新增策略元信息：`policy_action`、`policy_decision`、`executor`。
+2. `run_shell` 新增 `source` 入参（`manual|agent`），默认 `manual`。
+3. 后端增加最小策略分类：
+   - destructive → `deny`（直接拦截）
+   - `source=agent` 且 write/unknown → `require_approval`（先拦截，等待审批流）
+   - 其他 → `auto_allow`
+4. 前端 shell 历史展示策略元信息，便于调试和交接。
 
-需要在文件顶部补 import：`use std::process::Stdio; use std::path::PathBuf;`（若尚未引入）
-
-**`src-tauri/src/commands.rs`** — 新增命令 + import：
-```rust
-// import 区加入 ShellResult
-use crate::models::ShellResult;
-
-#[tauri::command]
-pub async fn run_shell(
-    command: String,
-    timeout_ms: Option<u64>,
-    state: State<'_, AppState>,
-) -> Result<ShellResult, String> {
-    state.run_shell_impl(command, timeout_ms.unwrap_or(30_000)).await
-}
-```
-
-**`src-tauri/src/main.rs`** — `.invoke_handler` 中加入 `run_shell`。
-
-#### 前端改动
-
-**`web/src/types.ts`** — 新增：
-```ts
-export interface ShellResult {
-  command: string;
-  stdout: string;
-  stderr: string;
-  exit_code: number;
-  blocked: boolean;
-  blocked_reason: string | null;
-}
-export interface ShellHistoryEntry {
-  id: number;
-  command: string;
-  result: ShellResult;
-  ts: number;
-}
-```
-
-**`web/src/tauri-client.ts`** — 新增：
-```ts
-export async function runShell(
-  command: string,
-  timeoutMs?: number
-): Promise<ShellResult | null> {
-  return withTimeout(
-    invoke<ShellResult>("run_shell", { command, timeoutMs }),
-    (timeoutMs ?? 30_000) + 5_000
-  );
-}
-```
-
-**`web/src/App.tsx`** — 在 Agent Studio 区块：
-- 新增 state：
-  ```ts
-  const [agentShellCmd, setAgentShellCmd] = useState("");
-  const [agentShellHistory, setAgentShellHistory] = useState<ShellHistoryEntry[]>([]);
-  const [agentShellRunning, setAgentShellRunning] = useState(false);
-  const [agentShellOpen, setAgentShellOpen] = useState(false);
-  ```
-- `handleRunShell`：调 `runShell`，push 到 `agentShellHistory`
-- Shell 面板 JSX（折叠区，放在 rewrite-bar 下方）：
-  ```jsx
-  <div className="agent-studio__shell">
-    <button className="agent-studio__shell-toggle"
-      onClick={() => setAgentShellOpen(o => !o)}>
-      {agentShellOpen ? "▼" : "▶"} Shell
-    </button>
-    {agentShellOpen && (
-      <div className="agent-studio__shell-body">
-        <div className="agent-studio__shell-history">
-          {agentShellHistory.map(e => (
-            <div key={e.id} className={`agent-studio__shell-entry ${e.result.exit_code === 0 ? "ok" : e.result.blocked ? "blocked" : "err"}`}>
-              <span className="agent-studio__shell-prompt">❯ {e.command}</span>
-              {e.result.blocked
-                ? <span className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</span>
-                : <pre className="agent-studio__shell-output">{e.result.stdout || e.result.stderr}</pre>}
-            </div>
-          ))}
-        </div>
-        <div className="agent-studio__shell-input-row">
-          <input
-            type="text"
-            className="agent-studio__shell-input"
-            placeholder="PowerShell 命令（Enter 执行）"
-            value={agentShellCmd}
-            onChange={e => setAgentShellCmd(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && !agentShellRunning && handleRunShell()}
-            disabled={agentShellRunning}
-          />
-          <button
-            className="agent-studio__shell-run-btn"
-            disabled={!agentShellCmd.trim() || agentShellRunning}
-            onClick={handleRunShell}>
-            {agentShellRunning ? "…" : "运行"}
-          </button>
-        </div>
-      </div>
-    )}
-  </div>
-  ```
-
-**`web/src/styles.css`** — 新增 shell 相关样式：
-- `.agent-studio__shell`：`margin-top: 6px; border: 1px solid var(--border); border-radius: 4px;`
-- `.agent-studio__shell-toggle`：`width: 100%; text-align: left; padding: 4px 8px; background: var(--bg-subtle); border: none; cursor: pointer; font-size: 12px;`
-- `.agent-studio__shell-body`：`padding: 6px 8px;`
-- `.agent-studio__shell-history`：`max-height: 240px; overflow-y: auto; margin-bottom: 6px;`
-- `.agent-studio__shell-entry`：`margin-bottom: 8px; font-size: 12px; font-family: monospace;`
-- `.agent-studio__shell-entry.ok .agent-studio__shell-prompt`：`color: var(--success);`
-- `.agent-studio__shell-entry.err .agent-studio__shell-prompt`：`color: var(--danger);`
-- `.agent-studio__shell-entry.blocked .agent-studio__shell-blocked`：`color: var(--warning);`
-- `.agent-studio__shell-output`：`margin: 2px 0 0 12px; white-space: pre-wrap; word-break: break-all;`
-- `.agent-studio__shell-input-row`：`display: flex; gap: 6px;`
-- `.agent-studio__shell-input`：`flex: 1; font-family: monospace; font-size: 12px;`
-
-#### 验收标准
-1. `cargo test` 全绿
-2. `npm run typecheck` 0 errors
-3. 在 Agent Studio 打开 Shell 面板，执行 `Get-Date` → 显示当前时间
-4. 执行 `rm -rf /` → 显示 ⛔ 黑名单拦截
-5. 执行不存在命令 → 显示 stderr + 非零 exit code（红色）
+**验收标准**：
+1. `npm run typecheck` 通过；
+2. 手动执行常见只读命令正常；
+3. 高危命令返回 `blocked=true` 且带策略原因；
+4. （后续）`source=agent` 的写入命令被要求审批而非直接执行。
 
 ---
 
 ### H6-S2：Agentic Tool-Call Loop（daerwen 移植）
 
-> **前置**：H6-S1 验收通过后才开始 S2。
+> **前置**：H6-S1 与 H6-S1.5 验收通过后才开始 S2。
 
 **目标**：Agent Studio 新增"任务模式"——用户输入自然语言指令，LLM 自主循环调用工具（shell、文件读写、wiki 检索）直到完成任务。
+
+**当前进展（已完成 skeleton+next）**：
+1. 后端新增 `run_agent_task` 命令与 `run_agent_task_impl`。
+2. `run_agent_task_impl` 已支持多轮决策与受控工具调用（`run_shell/search_wiki/read_wiki`）。
+3. 前端新增任务模式 Beta 面板（任务指令、预算轮次、结果区）。
+4. 任务执行后自动写入 run events，并将 run 状态置为 `reviewing`。
+5. `run_shell` 策略判定已统一到 `src-tauri/src/agent_policy.rs`，避免重复实现漂移。
 
 #### 要移植的模块（来自 `refer-rust-daerwen-agent/`）
 
@@ -287,6 +140,12 @@ run_agent_task(run_id: i64, instruction: String, max_iterations: Option<u32>, st
 - 任务输入框 + "运行任务"按钮
 - 工具调用实时可视化：每次 `on_tool_start` 事件显示 `🔧 tool_name(input...)`，结束后折叠
 - 最终答案区
+
+#### 交接注意（给 Claude/Codex/Gemini）
+
+1. 先完成 S1/S1.5 收口，再进入 S2；不要跳阶段并行改 S2。
+2. 若遇到“技能不能自由选择”反馈，先确认 `skill_key` 唯一 upsert 语义（不是多选能力缺失）。
+3. `opencode.json` 是协作辅助文件，保持忽略，不纳入提交。
 
 ---
 

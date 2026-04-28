@@ -4739,6 +4739,12 @@ code {
   font-family: inherit;
 }
 
+.agent-studio__skill-form-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .agent-studio__skill-list {
   margin: 0;
   padding: 0;
@@ -4815,6 +4821,163 @@ code {
 .agent-studio__skill-actions time {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.agent-studio__shell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-content);
+  overflow: hidden;
+}
+
+.agent-studio__shell-toggle {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-muted) 82%, white 18%);
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-studio__shell-body {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-studio__shell-history {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-muted) 70%, black 1%);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-studio__shell-entry {
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-studio__shell-entry.ok {
+  border-left-color: var(--success);
+}
+
+.agent-studio__shell-entry.err {
+  border-left-color: var(--error);
+}
+
+.agent-studio__shell-entry.blocked {
+  border-left-color: var(--warning);
+}
+
+.agent-studio__shell-prompt {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-studio__shell-output {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-content) 86%, black 2%);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.agent-studio__shell-blocked {
+  color: var(--warning-strong, #ad6200);
+  font-size: 12px;
+}
+
+.agent-studio__shell-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.agent-studio__shell-input-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.agent-studio__shell-input {
+  width: 100%;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.agent-studio__shell-run-btn {
+  min-width: 70px;
+}
+
+.agent-studio__task-mode {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-content);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-studio__task-mode-input {
+  resize: vertical;
+  min-height: 76px;
+}
+
+.agent-studio__task-mode-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-studio__task-mode-budget {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.agent-studio__task-mode-budget .dev-panel__input {
+  width: 76px;
+}
+
+.agent-studio__task-mode-result {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-muted) 64%, white 36%);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .agent-studio__chat-thread {
@@ -5117,6 +5280,10 @@ code {
   .agent-studio__skill-active-select {
     min-width: 0;
     width: 100%;
+  }
+
+  .agent-studio__shell-input-row {
+    grid-template-columns: 1fr;
   }
 
   .agent-studio__content,

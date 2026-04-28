@@ -2471,7 +2471,7 @@ pub fn list_agent_run_events(
         .map_err(|err| format!("读取 agent_run_events 失败: {}", err))
 }
 
-/// 将 Agent Run 置为终态（applied/failed），并写入完成时间。
+/// 更新 Agent Run 状态；仅 applied/failed 视为终态并写入完成时间。
 pub fn complete_agent_run(
     db_path: &Path,
     run_id: i64,
@@ -2487,7 +2487,7 @@ pub fn complete_agent_run(
     let tx = conn
         .transaction()
         .map_err(|err| format!("开启结束 run 事务失败: {}", err))?;
-    let completed_at = if normalized_status == "running" {
+    let completed_at = if normalized_status == "running" || normalized_status == "reviewing" {
         None
     } else {
         Some(now)

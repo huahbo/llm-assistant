@@ -101,6 +101,8 @@ import {
   listAgentSkills,
   upsertAgentSkill,
   deleteAgentSkill,
+  runAgentTask,
+  runShell,
   type OcrProvider,
 } from "./tauri-client";
 import { formatBackendMode, formatLogLevel } from "./app-formatters";
@@ -156,6 +158,8 @@ import type {
   IngestPreview,
   VaultStats,
   NewPageResult,
+  ShellResult,
+  ShellHistoryEntry,
   WikiTemplate,
   WikiPageDetail,
   WikiPageCitation,
@@ -3060,6 +3064,15 @@ export default function App() {
   const [agentAskFirst, setAgentAskFirst] = useState(false);
   const [agentRewriteComment, setAgentRewriteComment] = useState("");
   const [agentDebugPanelOpen, setAgentDebugPanelOpen] = useState(false);
+  const [agentTaskInstruction, setAgentTaskInstruction] = useState("");
+  const [agentTaskMaxIterations, setAgentTaskMaxIterations] = useState(4);
+  const [agentTaskRunning, setAgentTaskRunning] = useState(false);
+  const [agentTaskResult, setAgentTaskResult] = useState("");
+  const [agentShellCmd, setAgentShellCmd] = useState<string>("");
+  const [agentShellHistory, setAgentShellHistory] = useState<ShellHistoryEntry[]>([]);
+  const [agentShellRunning, setAgentShellRunning] = useState<boolean>(false);
+  const [agentShellOpen, setAgentShellOpen] = useState<boolean>(false);
+  const agentShellIdRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -7247,6 +7260,65 @@ export default function App() {
     }
   };
 
+  const handleRunShell = async () => {
+    const cmd = agentShellCmd.trim();
+    if (!cmd || agentShellRunning) return;
+    setAgentShellRunning(true);
+    const id = ++agentShellIdRef.current;
+    try {
+      const result = await runShell(cmd, undefined, "manual");
+      if (result) {
+        setAgentShellHistory(h => [...h, { id, command: cmd, result, ts: Date.now() }]);
+      }
+    } catch (e) {
+      setAgentShellHistory(h => [...h, {
+        id, command: cmd,
+        result: {
+          command: cmd,
+          stdout: "",
+          stderr: String(e),
+          exit_code: -1,
+          blocked: false,
+          blocked_reason: null,
+          policy_action: "unknown",
+          policy_decision: "error",
+          executor: "manual",
+        },
+        ts: Date.now()
+      }]);
+    } finally {
+      setAgentShellRunning(false);
+      setAgentShellCmd("");
+    }
+  };
+
+  const handleRunAgentTask = async () => {
+    if (agentSelectedRunId == null) {
+      setAgentStatusMessage("请先选择一个 run。");
+      return;
+    }
+    const instruction = agentTaskInstruction.trim();
+    if (!instruction) {
+      setAgentStatusMessage("请输入任务指令。");
+      return;
+    }
+    const budget = Math.min(8, Math.max(1, agentTaskMaxIterations));
+    setAgentTaskRunning(true);
+    try {
+      const result = await runAgentTask(agentSelectedRunId, instruction, budget);
+      if (!result) {
+        setAgentStatusMessage("任务模式执行失败，请检查后端日志。");
+        return;
+      }
+      setAgentTaskResult(result);
+      setAgentStatusMessage(`任务模式已完成（run #${agentSelectedRunId}）。`);
+      await loadAgentRunEventsData(agentSelectedRunId);
+      await loadAgentRunsData(agentSelectedRunId);
+    } finally {
+      setAgentTaskRunning(false);
+    }
+  };
+
   const handleUpsertAgentMemory = async () => {
     const value = agentMemoryValueInput.trim();
     if (!value) {
@@ -10175,6 +10247,9 @@ export default function App() {
                             onChange={(e) => setAgentSkillPromptInput(e.target.value)}
                             rows={3}
                           />
+                          <p className="agent-studio__skill-form-hint">
+                            同名技能键会覆盖并递增版本；如需并存请使用不同技能键。
+                          </p>
                           <button
                             type="button"
                             className="dev-panel__button"
@@ -10378,6 +10453,107 @@ export default function App() {
                         </button>
                       </div>
                     ) : null}
+                    {/* Shell 面板 */}
+                    <div className="agent-studio__shell">
+                      <button
+                        className="agent-studio__shell-toggle"
+                        onClick={() => setAgentShellOpen(o => !o)}
+                      >
+                        {agentShellOpen ? "▼" : "▶"} Shell
+                      </button>
+                      {agentShellOpen && (
+                        <div className="agent-studio__shell-body">
+                          <div className="agent-studio__shell-history">
+                            {agentShellHistory.map(e => (
+                              <div
+                                key={e.id}
+                                className={`agent-studio__shell-entry ${e.result.blocked ? "blocked" : e.result.exit_code === 0 ? "ok" : "err"}`}
+                              >
+                                <div className="agent-studio__shell-prompt">❯ {e.command}</div>
+                                {e.result.blocked ? (
+                                  <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
+                                ) : (
+                                  <pre className="agent-studio__shell-output">
+                                    {e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`}
+                                  </pre>
+                                )}
+                                <div className="agent-studio__shell-meta">
+                                  {e.result.executor} · {e.result.policy_action} · {e.result.policy_decision}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="agent-studio__shell-input-row">
+                            <input
+                              type="text"
+                              className="agent-studio__shell-input"
+                              placeholder="PowerShell 命令（Enter 执行）"
+                              value={agentShellCmd}
+                              onChange={ev => setAgentShellCmd(ev.target.value)}
+                              onKeyDown={ev => ev.key === "Enter" && !agentShellRunning && void handleRunShell()}
+                              disabled={agentShellRunning}
+                            />
+                            <button
+                              className="agent-studio__shell-run-btn"
+                              disabled={!agentShellCmd.trim() || agentShellRunning}
+                              onClick={() => void handleRunShell()}
+                            >
+                              {agentShellRunning ? "…" : "运行"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <section className="agent-studio__task-mode">
+                      <h3 className="agent-studio__title">任务模式（Beta）</h3>
+                      <textarea
+                        className="dev-panel__input agent-studio__task-mode-input"
+                        rows={3}
+                        placeholder="输入任务指令，例如：梳理当前 run 的草稿风险并给出下一步执行计划。"
+                        value={agentTaskInstruction}
+                        onChange={(event) => setAgentTaskInstruction(event.target.value)}
+                        disabled={agentTaskRunning}
+                      />
+                      <div className="agent-studio__task-mode-actions">
+                        <label className="agent-studio__task-mode-budget">
+                          预算轮次
+                          <input
+                            type="number"
+                            min={1}
+                            max={8}
+                            className="dev-panel__input"
+                            value={agentTaskMaxIterations}
+                            onChange={(event) => {
+                              const next = Number(event.target.value);
+                              if (Number.isFinite(next)) {
+                                setAgentTaskMaxIterations(Math.min(8, Math.max(1, Math.floor(next))));
+                              }
+                            }}
+                            disabled={agentTaskRunning}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={
+                            agentTaskRunning
+                            || !agentTaskInstruction.trim()
+                            || agentSelectedRunId == null
+                            || !isTauriRuntime()
+                          }
+                          onClick={() => {
+                            void handleRunAgentTask();
+                          }}
+                        >
+                          {agentTaskRunning ? "执行中..." : "运行任务"}
+                        </button>
+                      </div>
+                      {agentTaskResult ? (
+                        <pre className="agent-studio__task-mode-result">{agentTaskResult}</pre>
+                      ) : (
+                        <p className="agent-studio__empty">任务结果将在此显示。</p>
+                      )}
+                    </section>
                     <div className="agent-studio__review-tabs">
                       <button
                         type="button"

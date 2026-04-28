@@ -1,5 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_loop;
+mod agent_policy;
+mod agent_runtime;
+mod agent_service;
+mod agent_tools;
 mod clip_server;
 mod commands;
 mod db;
@@ -86,6 +91,7 @@ fn main() {
             commands::list_agent_run_events,
             commands::complete_agent_run,
             commands::generate_agent_draft,
+            commands::run_agent_task,
             commands::rewrite_agent_draft,
             commands::list_agent_drafts,
             commands::check_agent_draft_conflict,
@@ -119,6 +125,7 @@ fn main() {
             commands::quick_lint_page,
             commands::get_vault_stats,
             commands::create_wiki_page_with_ai,
+            commands::run_shell,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

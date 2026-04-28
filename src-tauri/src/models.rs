@@ -945,3 +945,17 @@ pub struct NewPageResult {
     pub title: String,
     pub content_preview: String, // 前 300 字符
 }
+
+/// Shell 命令执行结果（H6-S1：Agent Studio PowerShell 执行能力）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellResult {
+    pub command: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+    pub policy_action: String,
+    pub policy_decision: String,
+    pub executor: String,
+}

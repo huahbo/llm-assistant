@@ -8,8 +8,9 @@ use crate::models::{
     LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
     LlmStatus, LogEntry, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
     PageQuickLint, QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem,
-    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, VaultInitResult, VaultStats,
-    WikiPageCitationItem, WikiPageDetail, WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
+    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, ShellResult, VaultInitResult,
+    VaultStats, WikiPageCitationItem, WikiPageDetail, WikiPageHistoryDetail, WikiPageHistoryItem,
+    WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -578,6 +579,19 @@ pub async fn generate_agent_draft(
         .await
 }
 
+/// 执行 Agent 任务模式（H6-S2 skeleton）。
+#[tauri::command]
+pub async fn run_agent_task(
+    run_id: i64,
+    instruction: String,
+    max_iterations: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .run_agent_task_impl(run_id, instruction, max_iterations)
+        .await
+}
+
 /// 基于批注重写 Agent Draft（H5-A）。
 #[tauri::command]
 pub async fn rewrite_agent_draft(
@@ -915,4 +929,17 @@ pub async fn create_wiki_page_with_ai(
     state: State<'_, AppState>,
 ) -> Result<NewPageResult, String> {
     state.create_wiki_page_with_ai_impl(topic).await
+}
+
+/// 执行 Shell 命令（H6-S1：Agent Studio PowerShell 执行能力）。
+#[tauri::command]
+pub async fn run_shell(
+    command: String,
+    timeout_ms: Option<u64>,
+    source: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ShellResult, String> {
+    state
+        .run_shell_impl(command, timeout_ms.unwrap_or(30_000), source)
+        .await
 }

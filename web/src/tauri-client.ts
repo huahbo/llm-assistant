@@ -47,6 +47,7 @@ import type {
   VaultInitResult,
   VaultStats,
   NewPageResult,
+  ShellResult,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageHistoryEntry,
@@ -1556,6 +1557,19 @@ export const createGenerateAgentDraftArgs = (
   ask_first: askFirst,
 });
 
+/** 构造 run_agent_task 命令参数（用于测试） */
+export const createRunAgentTaskArgs = (
+  runId: number,
+  instruction: string,
+  maxIterations?: number,
+) => ({
+  runId,
+  run_id: runId,
+  instruction,
+  maxIterations,
+  max_iterations: maxIterations,
+});
+
 /** 构造 list_agent_drafts 命令参数（用于测试） */
 export const createListAgentDraftsArgs = (runId: number, limit?: number) => ({
   runId,
@@ -1777,6 +1791,26 @@ export async function generateAgentDraft(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** 运行 Agent 任务模式（H6-S2 skeleton）。 */
+export async function runAgentTask(
+  runId: number,
+  instruction: string,
+  maxIterations?: number,
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<string>("run_agent_task", {
+        ...createRunAgentTaskArgs(runId, instruction, maxIterations),
+      }),
+      95_000,
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -2169,5 +2203,19 @@ export async function createWikiPageWithAi(topic: string): Promise<NewPageResult
   return withTimeout(
     invoke<NewPageResult>("create_wiki_page_with_ai", { topic }),
     90_000,
+  );
+}
+
+/** 执行 PowerShell 命令（H6-S1）。非 Tauri 环境返回 null。 */
+export async function runShell(
+  command: string,
+  timeoutMs?: number,
+  source?: "manual" | "agent",
+): Promise<ShellResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<ShellResult>("run_shell", { command, timeoutMs, source }),
+    (timeoutMs ?? 30_000) + 5_000
   );
 }
