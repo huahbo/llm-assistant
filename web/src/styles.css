@@ -8,6 +8,7 @@
   --bg-sidebar:   #ffffff;
   --bg-content:   #f8faff;
   --bg-card:      #ffffff;
+  --bg-muted:     #eef2f7;
 
   --accent:       #4f46e5;   /* indigo-600 */
   --accent-2:     #7c3aed;   /* violet-600 */
@@ -4454,7 +4455,7 @@ code {
 }
 
 .agent-draft-confirm-dialog {
-  background: var(--surface);
+  background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 24px;
@@ -4489,7 +4490,7 @@ code {
 .agent-draft-confirm-dialog__existing pre {
   margin: 6px 0 0;
   padding: 8px;
-  background: var(--bg);
+  background: var(--bg-content);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
@@ -5429,22 +5430,23 @@ code {
   opacity: 0.9;
 }
 
-/* ── Agent Studio: 审批确认栏 ─────────────────────────────── */
+/* ── Agent Studio: 审批确认栏（H6-S2 write_wiki 审批） ─────── */
 .agent-studio__approval-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   margin-top: 8px;
-  border: 1px solid var(--warning, #e65100);
-  border-radius: 4px;
-  background: var(--warning-bg, #fff3e0);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
 }
 .agent-studio__approval-label {
   font-size: 13px;
-  color: var(--warning, #e65100);
+  color: var(--warning);
   flex: 1;
+  font-weight: 500;
 }
 .agent-studio__approval-actions {
   display: flex;
@@ -5452,32 +5454,35 @@ code {
   flex-shrink: 0;
 }
 .agent-studio__approval-approve {
-  padding: 4px 12px;
+  padding: 6px 14px;
   font-size: 12px;
-  background: var(--success, #2e7d32);
+  font-weight: 600;
+  background: var(--success);
   color: #fff;
-  border: none;
-  border-radius: 3px;
+  border: 1px solid var(--success);
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: opacity 0.12s, background 0.12s;
 }
-.agent-studio__approval-approve:hover {
-  opacity: 0.85;
+.agent-studio__approval-approve:hover:not(:disabled) {
+  opacity: 0.88;
 }
 .agent-studio__approval-approve:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 .agent-studio__approval-reject {
-  padding: 4px 12px;
+  padding: 6px 14px;
   font-size: 12px;
-  background: transparent;
-  color: var(--danger, #c62828);
-  border: 1px solid var(--danger, #c62828);
-  border-radius: 3px;
+  background: var(--bg-card);
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition: background 0.12s;
 }
-.agent-studio__approval-reject:hover {
-  background: var(--danger-light, #ffebee);
+.agent-studio__approval-reject:hover:not(:disabled) {
+  background: var(--error-bg);
 }
 .agent-studio__approval-reject:disabled {
   opacity: 0.5;
