@@ -4876,8 +4876,10 @@ Wiki 页面：\n{}",
         run_id: i64,
         instruction: String,
         max_iterations: Option<u32>,
+        memory_context: Option<String>,
     ) -> Result<String, String> {
-        agent_service::run_agent_task(self, run_id, instruction, max_iterations).await
+        agent_service::run_agent_task(self, run_id, instruction, max_iterations, memory_context)
+            .await
     }
 
     /// 列出指定 Run 的 Agent 草稿。

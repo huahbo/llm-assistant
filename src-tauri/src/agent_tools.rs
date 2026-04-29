@@ -24,11 +24,27 @@ pub struct AgentLoopDecision {
 /// Agent 最小工具动作集合（H6-S2）。
 #[derive(Debug)]
 pub enum AgentToolAction {
-    RunShell { command: String, timeout_ms: u64 },
-    SearchWiki { query: String, limit: usize },
-    ReadWiki { path: String, max_chars: usize },
-    WriteWiki { path: String, content: String },
-    EditWiki { path: String, old_str: String, new_str: String },
+    RunShell {
+        command: String,
+        timeout_ms: u64,
+    },
+    SearchWiki {
+        query: String,
+        limit: usize,
+    },
+    ReadWiki {
+        path: String,
+        max_chars: usize,
+    },
+    WriteWiki {
+        path: String,
+        content: String,
+    },
+    EditWiki {
+        path: String,
+        old_str: String,
+        new_str: String,
+    },
 }
 
 /// 解析单轮 agent 决策（best-effort）。
@@ -163,7 +179,11 @@ fn parse_agent_tool_action(item: &Value) -> Option<AgentToolAction> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Some(AgentToolAction::EditWiki { path, old_str, new_str })
+            Some(AgentToolAction::EditWiki {
+                path,
+                old_str,
+                new_str,
+            })
         }
         _ => None,
     }
@@ -230,7 +250,11 @@ mod tests {
         let raw = r##"{"done":false,"action":{"tool":"edit_wiki","path":"wiki/a.md","old_str":"旧内容","new_str":"新内容"}}"##;
         let decision = parse_agent_loop_decision(raw).expect("应能解析决策");
         match decision.action {
-            Some(AgentToolAction::EditWiki { path, old_str, new_str }) => {
+            Some(AgentToolAction::EditWiki {
+                path,
+                old_str,
+                new_str,
+            }) => {
                 assert_eq!(path, "wiki/a.md");
                 assert_eq!(old_str, "旧内容");
                 assert_eq!(new_str, "新内容");

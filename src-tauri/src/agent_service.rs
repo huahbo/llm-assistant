@@ -12,6 +12,7 @@ pub async fn run_agent_task(
     run_id: i64,
     instruction: String,
     max_iterations: Option<u32>,
+    memory_context: Option<String>,
 ) -> Result<String, String> {
     let db_path = state
         .outbox_db_path()
@@ -41,9 +42,22 @@ pub async fn run_agent_task(
         .chars()
         .take(1200)
         .collect::<String>();
+    let memory_context = memory_context
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(2400)
+        .collect::<String>();
 
-    let loop_outcome =
-        run_agent_task_loop(state, run_id, &instruction, iteration_budget, &wiki_excerpt).await?;
+    let loop_outcome = run_agent_task_loop(
+        state,
+        run_id,
+        &instruction,
+        iteration_budget,
+        &wiki_excerpt,
+        &memory_context,
+    )
+    .await?;
 
     // 如果有 pending_write 或 pending_edit，存入 state 等待审批
     if let Some((path, content)) = loop_outcome.pending_write.clone() {

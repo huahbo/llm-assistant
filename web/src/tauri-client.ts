@@ -1562,12 +1562,15 @@ export const createRunAgentTaskArgs = (
   runId: number,
   instruction: string,
   maxIterations?: number,
+  memoryContext?: string,
 ) => ({
   runId,
   run_id: runId,
   instruction,
   maxIterations,
   max_iterations: maxIterations,
+  memoryContext,
+  memory_context: memoryContext,
 });
 
 /** 构造 list_agent_drafts 命令参数（用于测试） */
@@ -1799,13 +1802,14 @@ export async function runAgentTask(
   runId: number,
   instruction: string,
   maxIterations?: number,
+  memoryContext?: string,
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     return await withTimeout(
       invoke<string>("run_agent_task", {
-        ...createRunAgentTaskArgs(runId, instruction, maxIterations),
+        ...createRunAgentTaskArgs(runId, instruction, maxIterations, memoryContext),
       }),
       95_000,
     );

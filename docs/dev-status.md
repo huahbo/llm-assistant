@@ -31,6 +31,13 @@
 - DWM shadow 保留（投影+三侧边框），CSS border-top 补顶边，焦点监听动态切换颜色深浅
 - `data-tauri-drag-region` 修复窗口拖动
 
+### 2026-04-29（Codex 续做）
+- 已补齐任务模式“上下文面板实质注入”链路：
+  - 前端 `runAgentTask` 传入 `memory_context`
+  - 后端 `run_agent_task` 命令签名与服务链路接收 `memory_context`
+  - `build_loop_prompt` 新增“上下文配置（记忆/技能）”段落
+- 技能模板变量在任务模式生效：`{{topic}}` / `{{memories}}` 在前端传参前完成替换后注入。
+
 ---
 
 ## 验证基线（2026-04-29）
@@ -46,11 +53,11 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | commit | 描述 |
 |--------|------|
-| 最新 | fix: agent 聊天框内滚动修复 |
-| 04128ea | style: agent 聊天框背景色优化 |
-| 4acd166 | fix: 标题栏窗口控制按钮细节对齐 |
-| 4162c20 | fix: 缩小标题栏高度并修复窗口拖动 |
-| d3772dd | fix: 顶部边框随窗口激活状态匹配 DWM 颜色深浅 |
+| `9e23631` | Reclaim Agent Studio workspace by collapsing non-critical controls |
+| `f4f9708` | fix: agent 聊天框内滚动 + 更新 dev-status 待补任务 |
+| `04128ea` | style: agent 聊天框背景色优化 |
+| `6b482b1` | fix: 最小化 — 向上偏移修正垂直居中 |
+| `4acd166` | fix: 标题栏窗口控制按钮细节对齐 |
 
 ---
 
@@ -60,7 +67,7 @@ cd ../web; npm run typecheck      # 零错误 ✅
 |--------|------|------|------|
 | 🔴 1 | **write_wiki / edit_wiki 端到端验证** | 待用户手测 | 任务模式触发审批 → 批准 → 验证文件写入；拒绝 → 验证无变化 |
 | 🔴 2 | **Agent 运行历史 UI** | 待开发 | 左侧聊天区应能列出历史 runs 并点击查看各 run 的事件流；目前只有当前 run 可见 |
-| 🟡 3 | **上下文面板实质注入** | 待开发 | 记忆/技能折叠区内容是否真正注入 agent loop prompt？Skill 模板变量 `{{topic}}` 在任务模式里是否生效？需审查 `build_loop_prompt` |
+| 🟢 3 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |
 | 🟡 4 | **工具调用结构化可视化** | 待开发 | 当前执行日志是纯文字流；H6 原计划：`🔧 tool_name(参数摘要)` + 折叠展开，tool_start/tool_end 配对显示耗时 |
 | 🟡 5 | **任务续跑 / 错误恢复** | 待开发 | LLM 请求失败后能否从中断处继续？还是只能重新发指令？当前无续跑机制 |
 | 🟢 6 | **任务模式 vs 草稿模式 UX 清晰度** | 待评估 | 用户是否清楚两个模式的区别？入口是否足够清晰 |

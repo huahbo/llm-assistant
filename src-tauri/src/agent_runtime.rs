@@ -38,9 +38,11 @@ impl AgentLoopRuntime for AppState {
             AgentToolAction::WriteWiki { path, content } => {
                 execute_write_wiki_action(self, idx, path, content)
             }
-            AgentToolAction::EditWiki { path, old_str, new_str } => {
-                execute_edit_wiki_action(self, idx, path, old_str, new_str)
-            }
+            AgentToolAction::EditWiki {
+                path,
+                old_str,
+                new_str,
+            } => execute_edit_wiki_action(self, idx, path, old_str, new_str),
         }
     }
 
@@ -113,12 +115,15 @@ async fn execute_shell_action(
                 ))
             }
         }
-        Err(err) => make_result("warn", format!(
-            "[tool#{}/run_shell] cmd=`{}` error={}",
-            idx + 1,
-            command,
-            err
-        )),
+        Err(err) => make_result(
+            "warn",
+            format!(
+                "[tool#{}/run_shell] cmd=`{}` error={}",
+                idx + 1,
+                command,
+                err
+            ),
+        ),
     }
 }
 
@@ -149,22 +154,28 @@ fn execute_search_wiki_action(
             } else {
                 lines
             };
-            make_result("info", format!(
-                "[tool#{}/search_wiki] query=`{}` limit={} hits={} output={}",
+            make_result(
+                "info",
+                format!(
+                    "[tool#{}/search_wiki] query=`{}` limit={} hits={} output={}",
+                    idx + 1,
+                    query,
+                    limit,
+                    pages.len(),
+                    summary
+                ),
+            )
+        }
+        Err(err) => make_result(
+            "warn",
+            format!(
+                "[tool#{}/search_wiki] query=`{}` limit={} error={}",
                 idx + 1,
                 query,
                 limit,
-                pages.len(),
-                summary
-            ))
-        }
-        Err(err) => make_result("warn", format!(
-            "[tool#{}/search_wiki] query=`{}` limit={} error={}",
-            idx + 1,
-            query,
-            limit,
-            err
-        )),
+                err
+            ),
+        ),
     }
 }
 
@@ -175,20 +186,26 @@ fn execute_read_wiki_action(
     max_chars: usize,
 ) -> ToolActionResult {
     match read_wiki_page_for_agent(state, &path, max_chars) {
-        Ok(content) => make_result("info", format!(
-            "[tool#{}/read_wiki] path=`{}` max_chars={} output={}",
-            idx + 1,
-            path,
-            max_chars,
-            truncate_chars(&content, 320)
-        )),
-        Err(err) => make_result("warn", format!(
-            "[tool#{}/read_wiki] path=`{}` max_chars={} error={}",
-            idx + 1,
-            path,
-            max_chars,
-            err
-        )),
+        Ok(content) => make_result(
+            "info",
+            format!(
+                "[tool#{}/read_wiki] path=`{}` max_chars={} output={}",
+                idx + 1,
+                path,
+                max_chars,
+                truncate_chars(&content, 320)
+            ),
+        ),
+        Err(err) => make_result(
+            "warn",
+            format!(
+                "[tool#{}/read_wiki] path=`{}` max_chars={} error={}",
+                idx + 1,
+                path,
+                max_chars,
+                err
+            ),
+        ),
     }
 }
 
@@ -203,13 +220,16 @@ fn execute_write_wiki_action(
     let target = match resolve_agent_write_target_path(state, &path) {
         Ok(p) => p,
         Err(err) => {
-            return make_result("warn", format!(
-                "[tool#{}/write_wiki] path=`{}` chars={} error={}",
-                idx + 1,
-                path,
-                content_chars,
-                err
-            ));
+            return make_result(
+                "warn",
+                format!(
+                    "[tool#{}/write_wiki] path=`{}` chars={} error={}",
+                    idx + 1,
+                    path,
+                    content_chars,
+                    err
+                ),
+            );
         }
     };
     let resolved = target.to_string_lossy().to_string();
@@ -237,10 +257,10 @@ fn execute_edit_wiki_action(
     let target = match resolve_agent_write_target_path(state, &path) {
         Ok(p) => p,
         Err(err) => {
-            return make_result("warn", format!(
-                "[tool#{}/edit_wiki] path=`{}` error={}",
-                idx + 1, path, err
-            ));
+            return make_result(
+                "warn",
+                format!("[tool#{}/edit_wiki] path=`{}` error={}", idx + 1, path, err),
+            );
         }
     };
     let resolved = target.to_string_lossy().to_string();

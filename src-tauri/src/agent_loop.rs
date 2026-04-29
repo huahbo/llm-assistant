@@ -6,8 +6,8 @@ pub struct AgentLoopOutcome {
     pub tool_logs: Vec<String>,
     pub planner_notes: Vec<String>,
     pub final_hint: Option<String>,
-    pub pending_write: Option<(String, String)>,               // (resolved_path, content)
-    pub pending_edit: Option<(String, String, String)>,        // (resolved_path, old_str, new_str)
+    pub pending_write: Option<(String, String)>, // (resolved_path, content)
+    pub pending_edit: Option<(String, String, String)>, // (resolved_path, old_str, new_str)
 }
 
 /// Agent 循环运行时接口（由 AppState 实现）。
@@ -25,6 +25,7 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
     instruction: &str,
     iteration_budget: u32,
     wiki_excerpt: &str,
+    memory_context: &str,
 ) -> Result<AgentLoopOutcome, String> {
     let mut tool_logs: Vec<String> = Vec::new();
     let mut planner_notes: Vec<String> = Vec::new();
@@ -38,7 +39,13 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
         } else {
             tool_logs.join("\n")
         };
-        let loop_prompt = build_loop_prompt(instruction, iteration_budget, wiki_excerpt, &history);
+        let loop_prompt = build_loop_prompt(
+            instruction,
+            iteration_budget,
+            wiki_excerpt,
+            memory_context,
+            &history,
+        );
         let planner_raw = runtime.complete_prompt(loop_prompt).await?;
         let Some(decision) = parse_agent_loop_decision(&planner_raw) else {
             runtime.append_event(
@@ -163,7 +170,11 @@ fn build_tool_start_message(idx: u32, action: &AgentToolAction) -> String {
             path.chars().take(80).collect::<String>(),
             content.chars().count()
         ),
-        AgentToolAction::EditWiki { path, old_str, new_str } => format!(
+        AgentToolAction::EditWiki {
+            path,
+            old_str,
+            new_str,
+        } => format!(
             "🔧 tool_start #{} edit_wiki: {} (old={} chars, new={} chars)",
             idx + 1,
             path.chars().take(80).collect::<String>(),
@@ -178,8 +189,14 @@ pub fn build_loop_prompt(
     instruction: &str,
     iteration_budget: u32,
     wiki_excerpt: &str,
+    memory_context: &str,
     history: &str,
 ) -> String {
+    let memory_section = if memory_context.trim().is_empty() {
+        "（无）".to_string()
+    } else {
+        memory_context.trim().to_string()
+    };
     format!(
         "你是 LLM Wiki 的 Agent 执行器。\
 你每轮只能返回 1 个 JSON 决策，不要 markdown 代码块，不要额外解释。\n\n\
@@ -201,6 +218,7 @@ pub fn build_loop_prompt(
 5. 修改现有页面优先用 edit_wiki；创建新页面用 write_wiki。\n\
 6. 信息不足时可继续下一轮；若已足够则 done=true。\n\n\
 用户任务：\n{instruction}\n\n\
+上下文配置（记忆/技能）：\n{memory_section}\n\n\
 知识库索引摘要：\n{wiki_excerpt}\n\n\
 当前工具历史：\n{history}\n"
     )
@@ -266,13 +284,15 @@ mod tests {
 
     #[test]
     fn loop_prompt_contains_tool_contract() {
-        let p = build_loop_prompt("任务", 3, "index", "history");
+        let p = build_loop_prompt("任务", 3, "index", "上下文", "history");
         assert!(p.contains("run_shell"));
         assert!(p.contains("search_wiki"));
         assert!(p.contains("read_wiki"));
         assert!(p.contains("write_wiki"));
         assert!(p.contains("edit_wiki"));
         assert!(p.contains("总预算 3 轮"));
+        assert!(p.contains("上下文配置（记忆/技能）"));
+        assert!(p.contains("上下文"));
     }
 
     #[test]
@@ -333,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn run_agent_task_loop_stops_on_approval_required() {
         let runtime = ApprovalRuntime;
-        let outcome = run_agent_task_loop(&runtime, 1, "任务", 4, "index")
+        let outcome = run_agent_task_loop(&runtime, 1, "任务", 4, "index", "记忆")
             .await
             .expect("循环应成功返回");
         assert_eq!(outcome.tool_logs.len(), 1);

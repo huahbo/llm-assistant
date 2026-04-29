@@ -7356,9 +7356,34 @@ export default function App() {
       return;
     }
     const budget = Math.min(8, Math.max(1, agentTaskMaxIterations));
+    const memoryLines = agentMemories
+      .map((mem) => `- ${mem.memory_key || "记忆"}: ${mem.memory_value}`)
+      .join("\n");
+    const activeSkill = agentSkills.find((item) => item.skill_key === agentActiveSkillKey);
+    const skillPromptRendered = activeSkill?.prompt_template
+      ? activeSkill.prompt_template
+          .replaceAll("{{topic}}", instruction)
+          .replaceAll("{{memories}}", memoryLines || "（无）")
+          .trim()
+      : "";
+    const contextSections: string[] = [];
+    if (skillPromptRendered) {
+      contextSections.push(`[技能模板：${activeSkill?.skill_key || "未命名"}]\n${skillPromptRendered}`);
+    } else if (agentActiveSkillKey) {
+      contextSections.push(`[技能模板：${agentActiveSkillKey}]`);
+    }
+    if (memoryLines) {
+      contextSections.push(`[记忆上下文]\n${memoryLines}`);
+    }
+    const memoryContext = contextSections.join("\n\n");
     setAgentTaskRunning(true);
     try {
-      const result = await runAgentTask(agentSelectedRunId, instruction, budget);
+      const result = await runAgentTask(
+        agentSelectedRunId,
+        instruction,
+        budget,
+        memoryContext || undefined,
+      );
       if (!result) {
         setAgentStatusMessage("任务模式执行失败，请检查后端日志。");
         return;
