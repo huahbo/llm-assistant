@@ -10771,6 +10771,32 @@ export default function App() {
                     ) : null}
                     <section className="agent-studio__task-mode">
                       <h3 className="agent-studio__title">任务模式（Beta）</h3>
+                      <div className="agent-studio__task-presets">
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={agentTaskRunning}
+                          onClick={() => {
+                            setAgentTaskInstruction(
+                              "请新建页面 wiki/agent-e2e-write.md，内容包含标题“Agent E2E Write”，并在执行前说明为什么要调用 write_wiki。",
+                            );
+                          }}
+                        >
+                          填充：写入审批验证
+                        </button>
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={agentTaskRunning}
+                          onClick={() => {
+                            setAgentTaskInstruction(
+                              "请编辑页面 wiki/agent-e2e-write.md，把“Agent E2E Write”替换为“Agent E2E Edited”，并优先使用 edit_wiki。",
+                            );
+                          }}
+                        >
+                          填充：编辑审批验证
+                        </button>
+                      </div>
                       <textarea
                         className="dev-panel__input agent-studio__task-mode-input"
                         rows={3}

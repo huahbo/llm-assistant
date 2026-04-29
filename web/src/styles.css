@@ -5110,6 +5110,17 @@ code {
   gap: 8px;
 }
 
+.agent-studio__task-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-studio__task-presets .dev-panel__button {
+  font-size: 11.5px;
+  padding: 4px 8px;
+}
+
 .agent-studio__task-mode-input {
   resize: vertical;
   min-height: 76px;
