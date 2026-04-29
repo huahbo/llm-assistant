@@ -7455,15 +7455,18 @@ export default function App() {
     }
   };
 
-  const handleRunAgentTask = async () => {
+  const executeAgentTask = async (
+    instructionInput: string,
+    statusLabel: string,
+  ): Promise<boolean> => {
     if (agentSelectedRunId == null) {
       setAgentStatusMessage("请先选择一个 run。");
-      return;
+      return false;
     }
-    const instruction = agentTaskInstruction.trim();
+    const instruction = instructionInput.trim();
     if (!instruction) {
       setAgentStatusMessage("请输入任务指令。");
-      return;
+      return false;
     }
     const budget = Math.min(8, Math.max(1, agentTaskMaxIterations));
     const memoryLines = agentMemories
@@ -7495,16 +7498,45 @@ export default function App() {
         memoryContext || undefined,
       );
       if (!result) {
-        setAgentStatusMessage("任务模式执行失败，请检查后端日志。");
-        return;
+        setAgentStatusMessage(`${statusLabel}执行失败，请检查后端日志。`);
+        return false;
       }
       setAgentTaskResult(result);
-      setAgentStatusMessage(`任务模式已完成（run #${agentSelectedRunId}）。`);
+      setAgentStatusMessage(`${statusLabel}已完成（run #${agentSelectedRunId}）。`);
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
+      return true;
     } finally {
       setAgentTaskRunning(false);
     }
+  };
+
+  const handleRunAgentTask = async () => {
+    await executeAgentTask(agentTaskInstruction, "任务模式");
+  };
+
+  const handleContinueAgentTask = async () => {
+    const baseInstruction = agentTaskInstruction.trim() || selectedAgentRun?.topic?.trim() || "继续当前任务";
+    const recentTrace = agentEvents
+      .slice(0, 16)
+      .reverse()
+      .filter((event) => {
+        const msg = String(event.message ?? "");
+        return /tool_start|tool_end|awaiting_approval|任务模式/.test(msg);
+      })
+      .map((event) => `- [${formatLintCheckedAt(event.created_at)}] ${truncateText(String(event.message ?? ""), 180)}`)
+      .join("\n");
+    const previousResult = agentTaskResult.trim().slice(0, 900);
+    const continuationInstruction = [
+      "继续上次未完成的任务，优先复用已获得信息，避免重复调用工具。",
+      `原始指令：${baseInstruction}`,
+      previousResult ? `上次阶段性结果：\n${previousResult}` : "",
+      recentTrace ? `最近执行轨迹：\n${recentTrace}` : "",
+      "若仍需工具调用，请先说明理由，再执行最小必要步骤。",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    await executeAgentTask(continuationInstruction, "续跑任务");
   };
 
   const handleApproveAgentWrite = async () => {
@@ -10779,6 +10811,21 @@ export default function App() {
                           }}
                         >
                           {agentTaskRunning ? "执行中..." : "运行任务"}
+                        </button>
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          disabled={
+                            agentTaskRunning
+                            || agentSelectedRunId == null
+                            || !isTauriRuntime()
+                            || (agentEvents.length === 0 && !agentTaskResult.trim())
+                          }
+                          onClick={() => {
+                            void handleContinueAgentTask();
+                          }}
+                        >
+                          继续任务
                         </button>
                       </div>
                       {agentTaskResult ? (
