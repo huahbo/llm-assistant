@@ -28,6 +28,7 @@
 - H6-S2 `write_wiki` 工具链已打通到审批前置：支持决策解析/事件展示/路径校验，当前统一 `require_approval` 且不落盘。
 - H6-S2 循环新增审批暂停语义：遇到 `decision=require_approval` 会写入 `awaiting_approval` 事件并中止后续迭代。
 - **Claude 质量收口**：`ToolActionResult` struct 替代字符串解析，`requires_approval` 靠字段判断；`PendingAgentWrite` 存储 + `approve/reject_agent_write` 命令 + 前端审批确认栏；代码质量 B+ → **A**。
+- Agent Studio 布局优化：左侧“记忆/技能”改为可折叠上下文区；右侧 Shell 调整为“调试 Shell（可选）”默认收起，释放聊天与任务区域空间。
 
 ---
 
