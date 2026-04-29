@@ -7729,7 +7729,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}`}>
+        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}`}>
           {/* ---- 概览模块 ---- */}
           {activeModule === "inbox" && (
             <>

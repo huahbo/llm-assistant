@@ -11,32 +11,33 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
-## 本轮快讯（2026-04-28，Claude 收口）
+## 本轮快讯（2026-04-29，Claude 收口）
 
-- 已修复 Windows 任务栏白色方块图标：`src-tauri/icons/icon.ico` 替换为多尺寸 ico，并在 `tauri.conf` 显式绑定窗口图标。
-- H6-S2 模块化第一步已完成：新增 `src-tauri/src/agent_tools.rs`，决策解析逻辑已从 `state.rs` 抽离。
-- H6-S2 继续收敛：新增 `src-tauri/src/agent_loop.rs`，`run_agent_task` 的 prompt 组装已迁出。
-- H6-S2 主循环已迁移到 `agent_loop::run_agent_task_loop`，`state.rs` 仅保留运行入口与 runtime 实现。
-- H6-S2 总结阶段已迁移到 `agent_loop::summarize_agent_task`，任务模式闭环进一步去 state 化。
-- H6-S2 runtime 实现已迁移到 `src-tauri/src/agent_runtime.rs`，`state.rs` 进一步瘦身。
-- H6-S2 runtime 工具执行已按分支拆分（shell/search_wiki/read_wiki），便于后续扩展审批流与新工具。
-- H6-S2 PathGuard（read）已接入：`read_wiki` 仅允许访问 `vault/wiki/*.md`。
-- H6-S2 `read_wiki` 已从 `state.rs` 下沉到 `agent_runtime.rs`，state 继续瘦身。
-- H6-S2 runtime 返回结果已统一为 `ToolExecOutcome`，并补充了 `read_wiki` 集成测试。
-- H6-S2 主服务已下沉到 `src-tauri/src/agent_service.rs`，`run_agent_task_impl` 变为薄委托。
-- H6-S2 PathGuard(write) 已前置：新增 `validate_agent_write_path`（仅允许 `vault/wiki/*.md`）。
-- H6-S2 `write_wiki` 工具链已打通到审批前置：支持决策解析/事件展示/路径校验，当前统一 `require_approval` 且不落盘。
-- H6-S2 循环新增审批暂停语义：遇到 `decision=require_approval` 会写入 `awaiting_approval` 事件并中止后续迭代。
-- **Claude 质量收口**：`ToolActionResult` struct 替代字符串解析，`requires_approval` 靠字段判断；`PendingAgentWrite` 存储 + `approve/reject_agent_write` 命令 + 前端审批确认栏；代码质量 B+ → **A**。
-- Agent Studio 布局优化：左侧“记忆/技能”改为可折叠上下文区；右侧 Shell 调整为“调试 Shell（可选）”默认收起，释放聊天与任务区域空间。
+### H6-S2 工具链补全
+- `edit_wiki` 工具已实现：`AgentToolAction::EditWiki { path, old_str, new_str }`，`replacen` 字符串替换，走与 `write_wiki` 相同审批流
+- `PendingAgentWrite.old_str: Option<String>` 区分全写（None）与 patch（Some）
+- `approve_agent_write` 双模式：有 old_str 时执行 patch，无则全写
+- loop prompt 增加 edit_wiki 工具 #5，规则：修改现有页面用 edit_wiki，新建用 write_wiki
+- cargo test：**213 通过，0 失败**
+
+### Agent Studio UI 完善
+- 内联执行日志（tool_start/tool_end/awaiting_approval 直接显示在任务区）
+- 三栏拖拽分割 + 侧边栏折叠为图标模式（52px）
+- `body.split-dragging` 持久高亮分割线
+- 聊天框内滚动修复：module-viewport--agent + flex:1 传导，chat-thread 内部 overflow: auto 生效
+
+### 窗口 UI 打磨
+- 标题栏高 32px，按钮 44px，X=14px / —=11px translateY(-2px) / □=11px 1.5px边
+- DWM shadow 保留（投影+三侧边框），CSS border-top 补顶边，焦点监听动态切换颜色深浅
+- `data-tauri-drag-region` 修复窗口拖动
 
 ---
 
-## 验证基线（2026-04-27 H5 全部推送，Windows 复核通过）
+## 验证基线（2026-04-29）
 
 ```powershell
-cd src-tauri; cargo test          # 通过 ✅
-cd ../web; npm run typecheck      # 通过 ✅
+cd src-tauri; cargo test          # 213 通过 ✅
+cd ../web; npm run typecheck      # 零错误 ✅
 ```
 
 ---
@@ -45,12 +46,11 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | commit | 描述 |
 |--------|------|
-| `ad0bc6f` | feat(H6-S2): write_wiki 审批确认闭环 + ToolActionResult 重构 |
-| `6d4f2a0` | Stabilize Agent S2 by modularizing runtime loop before next phase |
-| `81ce437` | docs: H6 计划落盘（Shell Tool + Agentic Loop 两阶段方案） |
-| `262edc6` | chore: H5 Windows 验证全绿，更新基线 |
-| `dcd3f0a` | docs: 归档实施过程记录 + 整理协作文档 + 更新 README |
-| `690fa87` | docs: H5 全部收口 |
+| 最新 | fix: agent 聊天框内滚动修复 |
+| 04128ea | style: agent 聊天框背景色优化 |
+| 4acd166 | fix: 标题栏窗口控制按钮细节对齐 |
+| 4162c20 | fix: 缩小标题栏高度并修复窗口拖动 |
+| d3772dd | fix: 顶部边框随窗口激活状态匹配 DWM 颜色深浅 |
 
 ---
 
@@ -58,8 +58,13 @@ cd ../web; npm run typecheck      # 通过 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 1 | **H6-S2 Windows 验证** | 待用户 | cargo test；write_wiki 触发审批 → 批准/拒绝端到端测试 |
-| 2 | **H6-S2 edit_wiki（patch）** | 待开发 | 审批验证通过后，增加 edit_wiki 增量修改工具 |
+| 🔴 1 | **write_wiki / edit_wiki 端到端验证** | 待用户手测 | 任务模式触发审批 → 批准 → 验证文件写入；拒绝 → 验证无变化 |
+| 🔴 2 | **Agent 运行历史 UI** | 待开发 | 左侧聊天区应能列出历史 runs 并点击查看各 run 的事件流；目前只有当前 run 可见 |
+| 🟡 3 | **上下文面板实质注入** | 待开发 | 记忆/技能折叠区内容是否真正注入 agent loop prompt？Skill 模板变量 `{{topic}}` 在任务模式里是否生效？需审查 `build_loop_prompt` |
+| 🟡 4 | **工具调用结构化可视化** | 待开发 | 当前执行日志是纯文字流；H6 原计划：`🔧 tool_name(参数摘要)` + 折叠展开，tool_start/tool_end 配对显示耗时 |
+| 🟡 5 | **任务续跑 / 错误恢复** | 待开发 | LLM 请求失败后能否从中断处继续？还是只能重新发指令？当前无续跑机制 |
+| 🟢 6 | **任务模式 vs 草稿模式 UX 清晰度** | 待评估 | 用户是否清楚两个模式的区别？入口是否足够清晰 |
+| 🟢 7 | **run 状态标签可见度** | 待评估 | pending/reviewing/done/failed 状态在 UI 里是否显眼 |
 
 ---
 

@@ -530,6 +530,14 @@ body.split-dragging .split-handle::after {
   flex-direction: column;
 }
 
+/* Agent 模块：同 Ask，外层不滚动，内部各区域自管 */
+.module-viewport--agent {
+  padding: 16px 24px 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 /* 模块标题区 */
 .module-header {
   margin-bottom: 22px;
@@ -4669,6 +4677,7 @@ code {
 }
 
 .agent-studio--b2 {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -4682,6 +4691,7 @@ code {
 }
 
 .agent-studio__layout {
+  flex: 1;
   display: grid;
   grid-template-columns: minmax(0, 1.18fr) minmax(0, 1fr);
   gap: 12px;
