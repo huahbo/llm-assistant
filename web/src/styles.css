@@ -170,9 +170,9 @@ html.window-focused .window-titlebar {
   justify-content: center;
 }
 
-/* — 在多数字体中渲染偏上，向下微调 1px */
+/* em dash 在多数字体中渲染偏下，向上微调 */
 .window-titlebar__action-btn--minimize .window-titlebar__action-glyph {
-  transform: translateY(1px);
+  transform: translateY(-2px);
 }
 
 .window-titlebar__action-glyph--maximize {
