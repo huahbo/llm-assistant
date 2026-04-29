@@ -64,13 +64,12 @@ input, select, textarea { font: inherit; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* 顶部补一条与 Windows DWM 左/右/下三侧边框视觉匹配的细线 */
-  box-shadow: inset 0 1px 0 rgba(0,0,0,0.28);
 }
 
 .window-titlebar {
   height: 38px;
   background: var(--bg-sidebar);
+  border-top: 1px solid rgba(0,0,0,0.28);
   border-bottom: 1px solid var(--border-light);
   display: flex;
   align-items: center;
