@@ -255,6 +255,35 @@ const normalizeEventLevel = (level: string): AgentRunEventLevel | "awaiting_appr
   return "info";
 };
 
+const isAwaitingApprovalMarker = (level: string, message: string): boolean => {
+  const normalizedLevel = normalizeEventLevel(level);
+  if (normalizedLevel === "awaiting_approval") {
+    return true;
+  }
+  const text = String(message ?? "");
+  return text.includes("等待审批") || text.includes("等待人工确认") || text.includes("require_approval");
+};
+
+const isApprovalResolvedMarker = (message: string): boolean => {
+  const text = String(message ?? "");
+  return (
+    text.includes("审批通过")
+    || text.includes("审批拒绝")
+    || text.includes("已取消写入")
+    || text.includes("已写入:")
+    || text.includes("已编辑:")
+  );
+};
+
+const getAgentStatusTone = (message: string): "info" | "success" | "warn" | "error" => {
+  const text = String(message ?? "");
+  if (!text) return "info";
+  if (text.includes("失败") || text.includes("错误")) return "error";
+  if (text.includes("拒绝") || text.includes("取消")) return "warn";
+  if (text.includes("✅") || text.includes("已写入") || text.includes("已审批")) return "success";
+  return "info";
+};
+
 const parseEventTimestamp = (value: string): number | null => {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
@@ -3110,6 +3139,8 @@ export default function App() {
   const [agentShellRunning, setAgentShellRunning] = useState<boolean>(false);
   const [agentShellOpen, setAgentShellOpen] = useState<boolean>(false);
   const [agentContextOpen, setAgentContextOpen] = useState<boolean>(false);
+  const [agentMemoryPanelOpen, setAgentMemoryPanelOpen] = useState<boolean>(true);
+  const [agentSkillPanelOpen, setAgentSkillPanelOpen] = useState<boolean>(false);
   const agentShellIdRef = useRef(0);
 
   // ── 面板拖拽分割 ──────────────────────────────────────────────
@@ -3359,6 +3390,28 @@ export default function App() {
 
     return timeline;
   }, [agentEvents]);
+  const agentHasPendingApproval = useMemo(() => {
+    if (!selectedAgentRun || agentSelectedRunId == null) {
+      return false;
+    }
+    const normalizedStatus = String(selectedAgentRun.status ?? "").trim().toLowerCase();
+    if (normalizedStatus === "awaiting_approval") {
+      return true;
+    }
+    let latestAwaitingIndex = -1;
+    let latestResolvedIndex = -1;
+    // 后端按事件 id 正序返回，使用索引即可稳定判断“最后一个审批事件”的状态。
+    for (let i = 0; i < agentEvents.length; i += 1) {
+      const event = agentEvents[i];
+      if (isAwaitingApprovalMarker(event.level, event.message)) {
+        latestAwaitingIndex = i;
+      }
+      if (isApprovalResolvedMarker(event.message)) {
+        latestResolvedIndex = i;
+      }
+    }
+    return latestAwaitingIndex >= 0 && latestAwaitingIndex > latestResolvedIndex;
+  }, [selectedAgentRun, agentSelectedRunId, agentEvents]);
 
   const graphNodes = graphData?.nodes ?? [];
   const graphNodeById = useMemo(() => {
@@ -7544,7 +7597,11 @@ export default function App() {
     setAgentActionRunning(true);
     try {
       const msg = await approveAgentWrite(agentSelectedRunId);
-      if (msg) setAgentStatusMessage(`✅ ${msg}`);
+      if (msg) {
+        setAgentStatusMessage(`✅ 已写入 Wiki：${msg}`);
+      } else {
+        setAgentStatusMessage("✅ 已写入 Wiki。");
+      }
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
     } catch (e) {
@@ -7559,7 +7616,11 @@ export default function App() {
     setAgentActionRunning(true);
     try {
       const msg = await rejectAgentWrite(agentSelectedRunId);
-      if (msg) setAgentStatusMessage(`🚫 ${msg}`);
+      if (msg) {
+        setAgentStatusMessage(`🚫 已拒绝写入：${msg}`);
+      } else {
+        setAgentStatusMessage("🚫 已拒绝写入。");
+      }
       await loadAgentRunEventsData(agentSelectedRunId);
       await loadAgentRunsData(agentSelectedRunId);
     } catch (e) {
@@ -7896,7 +7957,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}`}>
+        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}${activeModule === "agent" && agentDebugPanelOpen ? " module-viewport--agent-debug" : ""}`}>
           {/* ---- 概览模块 ---- */}
           {activeModule === "inbox" && (
             <>
@@ -10401,10 +10462,10 @@ export default function App() {
                   左侧对话驱动，右侧草稿预览与审批写盘
                 </p>
               </div>
-              <section className="panel agent-studio agent-studio--b2">
+              <section className={`panel agent-studio agent-studio--b2${agentDebugPanelOpen ? " agent-studio--debug-open" : ""}`}>
                 {agentStatusMessage ? (
                   <p
-                    className={`agent-studio__status${agentStatusMessage.includes("失败") ? " agent-studio__status--error" : ""}`}
+                    className={`agent-studio__status agent-studio__status--${getAgentStatusTone(agentStatusMessage)}`}
                   >
                     {agentStatusMessage}
                   </p>
@@ -10428,186 +10489,214 @@ export default function App() {
                       </button>
                       {agentContextOpen ? (
                         <div className="agent-studio__context-body">
-                          <div className="agent-studio__memory-chipbar">
-                            <div className="agent-studio__memory-chipbar-title">记忆上下文</div>
-                            <div className="agent-studio__memory-chipbar-list">
-                              {agentMemoriesLoading ? (
-                                <span className="agent-studio__memory-chip-placeholder">加载中...</span>
-                              ) : agentMemories.length === 0 ? (
-                                <span className="agent-studio__memory-chip-placeholder">暂无记忆</span>
-                              ) : (
-                                agentMemories.map((mem) => (
-                                  <span
-                                    key={mem.id}
-                                    className="agent-studio__memory-chip"
-                                    title={`${mem.memory_key}: ${mem.memory_value}`}
-                                  >
-                                    <strong>{mem.memory_key}</strong>
-                                    <span>{mem.memory_value}</span>
+                          <section className="agent-studio__context-section">
+                            <button
+                              type="button"
+                              className="agent-studio__section-toggle"
+                              onClick={() => setAgentMemoryPanelOpen((prev) => !prev)}
+                            >
+                              <span>{agentMemoryPanelOpen ? "▼" : "▶"} 记忆上下文</span>
+                              <span className="agent-studio__section-meta">{agentMemories.length} 条</span>
+                            </button>
+                            {agentMemoryPanelOpen ? (
+                              <div className="agent-studio__section-body">
+                                <div className="agent-studio__memory-chipbar">
+                                  <div className="agent-studio__memory-chipbar-list">
+                                    {agentMemoriesLoading ? (
+                                      <span className="agent-studio__memory-chip-placeholder">加载中...</span>
+                                    ) : agentMemories.length === 0 ? (
+                                      <span className="agent-studio__memory-chip-placeholder">暂无记忆</span>
+                                    ) : (
+                                      agentMemories.map((mem) => (
+                                        <span
+                                          key={mem.id}
+                                          className="agent-studio__memory-chip"
+                                          title={`${mem.memory_key}: ${mem.memory_value}`}
+                                        >
+                                          <strong>{mem.memory_key}</strong>
+                                          <span>{mem.memory_value}</span>
+                                          <button
+                                            type="button"
+                                            className="agent-studio__memory-chip-remove"
+                                            disabled={agentActionRunning || !isTauriRuntime()}
+                                            onClick={() => void handleDeleteAgentMemory(mem.id)}
+                                            aria-label={`删除记忆 ${mem.memory_key}`}
+                                          >
+                                            ×
+                                          </button>
+                                        </span>
+                                      ))
+                                    )}
                                     <button
                                       type="button"
-                                      className="agent-studio__memory-chip-remove"
+                                      className="agent-studio__memory-chip-add"
                                       disabled={agentActionRunning || !isTauriRuntime()}
-                                      onClick={() => void handleDeleteAgentMemory(mem.id)}
-                                      aria-label={`删除记忆 ${mem.memory_key}`}
+                                      onClick={() => setAgentMemoryComposerOpen((prev) => !prev)}
                                     >
-                                      ×
+                                      {agentMemoryComposerOpen ? "收起" : "+ 添加"}
                                     </button>
-                                  </span>
-                                ))
-                              )}
-                              <button
-                                type="button"
-                                className="agent-studio__memory-chip-add"
-                                disabled={agentActionRunning || !isTauriRuntime()}
-                                onClick={() => setAgentMemoryComposerOpen((prev) => !prev)}
-                              >
-                                {agentMemoryComposerOpen ? "收起" : "+ 添加"}
-                              </button>
-                            </div>
-                          </div>
-                          {agentMemoryComposerOpen ? (
-                            <div className="agent-studio__memory-inline-form">
-                              <div className="agent-studio__memory-inline-form-row">
-                                <input
-                                  type="text"
-                                  className="dev-panel__input"
-                                  placeholder="键（可选）"
-                                  value={agentMemoryKeyInput}
-                                  onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
-                                />
-                                <input
-                                  type="text"
-                                  className="dev-panel__input"
-                                  placeholder="记忆内容"
-                                  value={agentMemoryValueInput}
-                                  onChange={(e) => setAgentMemoryValueInput(e.target.value)}
-                                />
-                              </div>
-                              <button
-                                type="button"
-                                className="dev-panel__button"
-                                disabled={
-                                  agentActionRunning
-                                  || !agentMemoryValueInput.trim()
-                                  || !isTauriRuntime()
-                                }
-                                onClick={() => void handleUpsertAgentMemory()}
-                              >
-                                保存记忆
-                              </button>
-                            </div>
-                          ) : null}
-                          <div className="agent-studio__skills">
-                            <div className="agent-studio__skills-head">
-                              <div className="agent-studio__skills-head-main">
-                                <span className="agent-studio__memory-chipbar-title">技能模板</span>
-                                <select
-                                  className="dev-panel__input agent-studio__skill-active-select"
-                                  value={agentActiveSkillKey}
-                                  onChange={(event) => setAgentActiveSkillKey(event.target.value)}
-                                  disabled={agentSkillsLoading || agentSkills.length === 0}
-                                  title="选择本次生成生效的技能模板"
-                                >
-                                  <option value="">不使用技能模板</option>
-                                  {agentSkills.map((skill) => (
-                                    <option key={`active-skill-${skill.id}`} value={skill.skill_key}>
-                                      {skill.skill_key} (v{skill.version})
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <button
-                                type="button"
-                                className="agent-studio__memory-chip-add"
-                                disabled={agentActionRunning || !isTauriRuntime()}
-                                onClick={() => setAgentSkillComposerOpen((prev) => !prev)}
-                              >
-                                {agentSkillComposerOpen ? "收起" : "+ 新建"}
-                              </button>
-                            </div>
-                            {agentSkillComposerOpen ? (
-                              <div className="agent-studio__skill-form">
-                                <input
-                                  type="text"
-                                  className="dev-panel__input"
-                                  placeholder="技能键（如：writer）"
-                                  value={agentSkillKeyInput}
-                                  onChange={(e) => setAgentSkillKeyInput(e.target.value)}
-                                />
-                                <textarea
-                                  className="dev-panel__input"
-                                  placeholder="模板提示词（将用于后续技能化编排）"
-                                  value={agentSkillPromptInput}
-                                  onChange={(e) => setAgentSkillPromptInput(e.target.value)}
-                                  rows={3}
-                                />
-                                <p className="agent-studio__skill-form-hint">
-                                  同名技能键会覆盖并递增版本；如需并存请使用不同技能键。
-                                </p>
-                                <button
-                                  type="button"
-                                  className="dev-panel__button"
-                                  disabled={
-                                    agentActionRunning
-                                    || !agentSkillKeyInput.trim()
-                                    || !agentSkillPromptInput.trim()
-                                    || !isTauriRuntime()
-                                  }
-                                  onClick={() => void handleUpsertAgentSkill()}
-                                >
-                                  保存技能
-                                </button>
+                                  </div>
+                                </div>
+                                {agentMemoryComposerOpen ? (
+                                  <div className="agent-studio__memory-inline-form">
+                                    <div className="agent-studio__memory-inline-form-row">
+                                      <input
+                                        type="text"
+                                        className="dev-panel__input"
+                                        placeholder="键（可选）"
+                                        value={agentMemoryKeyInput}
+                                        onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
+                                      />
+                                      <input
+                                        type="text"
+                                        className="dev-panel__input"
+                                        placeholder="记忆内容"
+                                        value={agentMemoryValueInput}
+                                        onChange={(e) => setAgentMemoryValueInput(e.target.value)}
+                                      />
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="dev-panel__button"
+                                      disabled={
+                                        agentActionRunning
+                                        || !agentMemoryValueInput.trim()
+                                        || !isTauriRuntime()
+                                      }
+                                      onClick={() => void handleUpsertAgentMemory()}
+                                    >
+                                      保存记忆
+                                    </button>
+                                  </div>
+                                ) : null}
                               </div>
                             ) : null}
-                            {agentSkillsLoading ? (
-                              <p className="agent-studio__empty">技能模板加载中...</p>
-                            ) : agentSkills.length === 0 ? (
-                              <p className="agent-studio__empty">暂无技能模板，可先创建 writer/reviewer 等角色提示。</p>
-                            ) : (
-                              <>
-                                <p className="agent-studio__skill-active-hint">
-                                  当前生效：<strong>{agentActiveSkillKey || "不使用技能模板"}</strong>
-                                </p>
-                                <ul className="agent-studio__skill-list">
-                                {agentSkills.map((skill) => (
-                                  <li
-                                    key={skill.id}
-                                    className={`agent-studio__skill-item${agentActiveSkillKey === skill.skill_key ? " agent-studio__skill-item--active" : ""}`}
-                                  >
-                                    <div className="agent-studio__skill-main">
-                                      <button
-                                        type="button"
-                                        className="agent-studio__skill-select"
-                                        onClick={() => setAgentActiveSkillKey(skill.skill_key)}
+                          </section>
+                          <section className="agent-studio__context-section">
+                            <button
+                              type="button"
+                              className="agent-studio__section-toggle"
+                              onClick={() => setAgentSkillPanelOpen((prev) => !prev)}
+                            >
+                              <span>{agentSkillPanelOpen ? "▼" : "▶"} 技能模板</span>
+                              <span className="agent-studio__section-meta">
+                                {agentSkills.length} 个
+                              </span>
+                            </button>
+                            {agentSkillPanelOpen ? (
+                              <div className="agent-studio__section-body">
+                                <div className="agent-studio__skills">
+                                  <div className="agent-studio__skills-head">
+                                    <div className="agent-studio__skills-head-main">
+                                      <select
+                                        className="dev-panel__input agent-studio__skill-active-select"
+                                        value={agentActiveSkillKey}
+                                        onChange={(event) => setAgentActiveSkillKey(event.target.value)}
+                                        disabled={agentSkillsLoading || agentSkills.length === 0}
+                                        title="选择本次生成生效的技能模板"
                                       >
-                                        <strong>{skill.skill_key}</strong>
-                                        {agentActiveSkillKey === skill.skill_key ? (
-                                          <span className="agent-studio__skill-badge">生效中</span>
-                                        ) : null}
-                                      </button>
-                                      <span>v{skill.version}</span>
+                                        <option value="">不使用技能模板</option>
+                                        {agentSkills.map((skill) => (
+                                          <option key={`active-skill-${skill.id}`} value={skill.skill_key}>
+                                            {skill.skill_key} (v{skill.version})
+                                          </option>
+                                        ))}
+                                      </select>
                                     </div>
-                                    <p title={skill.prompt_template}>{skill.prompt_template}</p>
-                                    <div className="agent-studio__skill-actions">
-                                      <time dateTime={skill.updated_at}>
-                                        {formatLintCheckedAt(skill.updated_at)}
-                                      </time>
+                                    <button
+                                      type="button"
+                                      className="agent-studio__memory-chip-add"
+                                      disabled={agentActionRunning || !isTauriRuntime()}
+                                      onClick={() => setAgentSkillComposerOpen((prev) => !prev)}
+                                    >
+                                      {agentSkillComposerOpen ? "收起" : "+ 新建"}
+                                    </button>
+                                  </div>
+                                  {agentSkillComposerOpen ? (
+                                    <div className="agent-studio__skill-form">
+                                      <input
+                                        type="text"
+                                        className="dev-panel__input"
+                                        placeholder="技能键（如：writer）"
+                                        value={agentSkillKeyInput}
+                                        onChange={(e) => setAgentSkillKeyInput(e.target.value)}
+                                      />
+                                      <textarea
+                                        className="dev-panel__input"
+                                        placeholder="模板提示词（将用于后续技能化编排）"
+                                        value={agentSkillPromptInput}
+                                        onChange={(e) => setAgentSkillPromptInput(e.target.value)}
+                                        rows={3}
+                                      />
+                                      <p className="agent-studio__skill-form-hint">
+                                        同名技能键会覆盖并递增版本；如需并存请使用不同技能键。
+                                      </p>
                                       <button
                                         type="button"
                                         className="dev-panel__button"
-                                        disabled={agentActionRunning || !isTauriRuntime()}
-                                        onClick={() => void handleDeleteAgentSkill(skill.id, skill.skill_key)}
+                                        disabled={
+                                          agentActionRunning
+                                          || !agentSkillKeyInput.trim()
+                                          || !agentSkillPromptInput.trim()
+                                          || !isTauriRuntime()
+                                        }
+                                        onClick={() => void handleUpsertAgentSkill()}
                                       >
-                                        删除
+                                        保存技能
                                       </button>
                                     </div>
-                                  </li>
-                                ))}
-                                </ul>
-                              </>
-                            )}
-                          </div>
+                                  ) : null}
+                                  {agentSkillsLoading ? (
+                                    <p className="agent-studio__empty">技能模板加载中...</p>
+                                  ) : agentSkills.length === 0 ? (
+                                    <p className="agent-studio__empty">暂无技能模板，可先创建 writer/reviewer 等角色提示。</p>
+                                  ) : (
+                                    <>
+                                      <p className="agent-studio__skill-active-hint">
+                                        当前生效：<strong>{agentActiveSkillKey || "不使用技能模板"}</strong>
+                                      </p>
+                                      <ul className="agent-studio__skill-list">
+                                      {agentSkills.map((skill) => (
+                                        <li
+                                          key={skill.id}
+                                          className={`agent-studio__skill-item${agentActiveSkillKey === skill.skill_key ? " agent-studio__skill-item--active" : ""}`}
+                                        >
+                                          <div className="agent-studio__skill-main">
+                                            <button
+                                              type="button"
+                                              className="agent-studio__skill-select"
+                                              onClick={() => setAgentActiveSkillKey(skill.skill_key)}
+                                            >
+                                              <strong>{skill.skill_key}</strong>
+                                              {agentActiveSkillKey === skill.skill_key ? (
+                                                <span className="agent-studio__skill-badge">生效中</span>
+                                              ) : null}
+                                            </button>
+                                            <span>v{skill.version}</span>
+                                          </div>
+                                          <p title={skill.prompt_template}>{skill.prompt_template}</p>
+                                          <div className="agent-studio__skill-actions">
+                                            <time dateTime={skill.updated_at}>
+                                              {formatLintCheckedAt(skill.updated_at)}
+                                            </time>
+                                            <button
+                                              type="button"
+                                              className="dev-panel__button"
+                                              disabled={agentActionRunning || !isTauriRuntime()}
+                                              onClick={() => void handleDeleteAgentSkill(skill.id, skill.skill_key)}
+                                            >
+                                              删除
+                                            </button>
+                                          </div>
+                                        </li>
+                                      ))}
+                                      </ul>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            ) : null}
+                          </section>
                         </div>
                       ) : null}
                     </div>
@@ -10746,6 +10835,19 @@ export default function App() {
                         </span>
                       ) : null}
                     </div>
+                    <div className="agent-studio__quick-tools">
+                      <button
+                        type="button"
+                        className="dev-panel__button"
+                        onClick={() => setAgentShellOpen((o) => !o)}
+                      >
+                        {agentShellOpen ? "收起工具能力" : "打开工具能力"}
+                      </button>
+                      <span className="agent-studio__quick-tools-meta">
+                        Shell（历史 {agentShellHistory.length} 条）
+                      </span>
+                    </div>
+                    <div className="agent-studio__right-main">
                     {selectedAgentDraft != null &&
                     !["approved", "applied"].includes(String(selectedAgentDraft.status).toLowerCase()) ? (
                       <div className="agent-studio__rewrite-bar">
@@ -10889,7 +10991,7 @@ export default function App() {
                           </ul>
                         </div>
                       )}
-                      {selectedAgentRun?.status === "awaiting_approval" && (
+                      {agentHasPendingApproval && (
                         <div className="agent-studio__approval-bar">
                           <span className="agent-studio__approval-label">
                             ⏸ Agent 请求修改 Wiki（写入 / 编辑），等待审批
@@ -10913,60 +11015,6 @@ export default function App() {
                         </div>
                       )}
                     </section>
-                    {/* 调试工具（开发者选项，折叠） */}
-                    <div className="agent-studio__shell">
-                      <button
-                        className="agent-studio__shell-toggle"
-                        onClick={() => setAgentShellOpen(o => !o)}
-                      >
-                        {agentShellOpen ? "▼" : "▶"} 开发者工具：手动 Shell
-                      </button>
-                      {agentShellOpen && (
-                        <div className="agent-studio__shell-body">
-                          <p className="agent-studio__shell-hint">
-                            任务模式中 Agent 会自动调用工具；此处仅用于手动调试命令，不影响 Agent 运行。
-                          </p>
-                          <div className="agent-studio__shell-history">
-                            {agentShellHistory.map(e => (
-                              <div
-                                key={e.id}
-                                className={`agent-studio__shell-entry ${e.result.blocked ? "blocked" : e.result.exit_code === 0 ? "ok" : "err"}`}
-                              >
-                                <div className="agent-studio__shell-prompt">❯ {e.command}</div>
-                                {e.result.blocked ? (
-                                  <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
-                                ) : (
-                                  <pre className="agent-studio__shell-output">
-                                    {e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`}
-                                  </pre>
-                                )}
-                                <div className="agent-studio__shell-meta">
-                                  {e.result.executor} · {e.result.policy_action} · {e.result.policy_decision}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="agent-studio__shell-input-row">
-                            <input
-                              type="text"
-                              className="agent-studio__shell-input"
-                              placeholder="PowerShell 命令（Enter 执行）"
-                              value={agentShellCmd}
-                              onChange={ev => setAgentShellCmd(ev.target.value)}
-                              onKeyDown={ev => ev.key === "Enter" && !agentShellRunning && void handleRunShell()}
-                              disabled={agentShellRunning}
-                            />
-                            <button
-                              className="agent-studio__shell-run-btn"
-                              disabled={!agentShellCmd.trim() || agentShellRunning}
-                              onClick={() => void handleRunShell()}
-                            >
-                              {agentShellRunning ? "…" : "运行"}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
                     <div className="agent-studio__review-tabs">
                       <button
                         type="button"
@@ -11154,6 +11202,66 @@ export default function App() {
                       >
                         丢弃
                       </button>
+                    </div>
+                    </div>
+                    <div className={`agent-studio__shell-drawer${agentShellOpen ? " is-open" : ""}`}>
+                      <button
+                        type="button"
+                        className="agent-studio__shell-drawer-toggle"
+                        onClick={() => setAgentShellOpen((o) => !o)}
+                      >
+                        <span>{agentShellOpen ? "▼ 收起 Shell 抽屉" : "▲ 展开 Shell 抽屉"}</span>
+                        <span className="agent-studio__shell-drawer-meta">PowerShell 工具能力</span>
+                      </button>
+                      {agentShellOpen ? (
+                        <div className="agent-studio__shell-drawer-body">
+                          <p className="agent-studio__shell-hint">
+                            任务模式中 Agent 会自动调用工具；此处仅用于手动调试命令，不影响 Agent 运行。
+                          </p>
+                          <div className="agent-studio__shell-history">
+                            {agentShellHistory.length === 0 ? (
+                              <p className="agent-studio__shell-empty">暂无执行历史，输入命令后可在此查看结果。</p>
+                            ) : (
+                              agentShellHistory.map((e) => (
+                                <div
+                                  key={e.id}
+                                  className={`agent-studio__shell-entry ${e.result.blocked ? "blocked" : e.result.exit_code === 0 ? "ok" : "err"}`}
+                                >
+                                  <div className="agent-studio__shell-prompt">❯ {e.command}</div>
+                                  {e.result.blocked ? (
+                                    <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
+                                  ) : (
+                                    <pre className="agent-studio__shell-output">
+                                      {e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`}
+                                    </pre>
+                                  )}
+                                  <div className="agent-studio__shell-meta">
+                                    {e.result.executor} · {e.result.policy_action} · {e.result.policy_decision}
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                          <div className="agent-studio__shell-input-row">
+                            <input
+                              type="text"
+                              className="agent-studio__shell-input"
+                              placeholder="PowerShell 命令（Enter 执行）"
+                              value={agentShellCmd}
+                              onChange={(ev) => setAgentShellCmd(ev.target.value)}
+                              onKeyDown={(ev) => ev.key === "Enter" && !agentShellRunning && void handleRunShell()}
+                              disabled={agentShellRunning}
+                            />
+                            <button
+                              className="agent-studio__shell-run-btn"
+                              disabled={!agentShellCmd.trim() || agentShellRunning}
+                              onClick={() => void handleRunShell()}
+                            >
+                              {agentShellRunning ? "…" : "运行"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </section>
                 </div>
