@@ -69,7 +69,7 @@ input, select, textarea { font: inherit; }
 .window-titlebar {
   height: 38px;
   background: var(--bg-sidebar);
-  border-top: 1px solid rgba(0,0,0,0.15);
+  border-top: 1px solid rgba(0,0,0,0.22);
   border-bottom: 1px solid var(--border-light);
   transition: border-top-color 0.1s;
   display: flex;
