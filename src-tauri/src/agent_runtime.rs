@@ -67,7 +67,13 @@ async fn execute_shell_action(
     timeout_ms: u64,
 ) -> ToolActionResult {
     match state
-        .run_shell_impl(command.clone(), timeout_ms, Some("agent".to_string()))
+        .run_shell_impl(
+            command.clone(),
+            timeout_ms,
+            Some("agent".to_string()),
+            None,
+            None,
+        )
         .await
     {
         Ok(result) => {

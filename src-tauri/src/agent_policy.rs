@@ -1,3 +1,4 @@
+use crate::models::{ShellPolicyConfig, ShellPolicyDecision};
 use std::path::Path;
 
 /// Shell 命令最小策略分类（H6-S1.5/S2）。
@@ -5,6 +6,16 @@ use std::path::Path;
 pub fn classify_shell_policy(
     command: &str,
     executor: &str,
+) -> (&'static str, &'static str, Option<String>) {
+    classify_shell_policy_with_config(command, executor, &ShellPolicyConfig::default())
+}
+
+/// Shell 命令策略分类（可配置版）。
+/// 返回：(action, decision, block_reason)。
+pub fn classify_shell_policy_with_config(
+    command: &str,
+    executor: &str,
+    config: &ShellPolicyConfig,
 ) -> (&'static str, &'static str, Option<String>) {
     const DESTRUCTIVE_PATTERNS: &[&str] = &[
         "rm -rf",
@@ -66,15 +77,51 @@ pub fn classify_shell_policy(
         "unknown"
     };
 
-    if executor == "agent" && (action == "write" || action == "unknown") {
-        return (
+    if executor == "agent" && action == "write" {
+        return decision_tuple(
             action,
-            "require_approval",
-            Some("策略要求审批：agent 来源写入/未知命令需人工确认".to_string()),
+            config.agent_write_decision,
+            "策略命中：agent 来源写入命令",
+        );
+    }
+
+    if executor == "agent" && action == "unknown" {
+        return decision_tuple(
+            action,
+            config.agent_unknown_decision,
+            "策略命中：agent 来源未知命令",
+        );
+    }
+
+    if executor == "manual" && action == "unknown" {
+        return decision_tuple(
+            action,
+            config.manual_unknown_decision,
+            "策略命中：manual 来源未知命令",
         );
     }
 
     (action, "auto_allow", None)
+}
+
+fn decision_tuple(
+    action: &'static str,
+    decision: ShellPolicyDecision,
+    reason_prefix: &str,
+) -> (&'static str, &'static str, Option<String>) {
+    match decision {
+        ShellPolicyDecision::AutoAllow => (action, "auto_allow", None),
+        ShellPolicyDecision::RequireApproval => (
+            action,
+            "require_approval",
+            Some(format!("{reason_prefix}，需人工确认")),
+        ),
+        ShellPolicyDecision::Deny => (
+            action,
+            "deny",
+            Some(format!("{reason_prefix}，策略拒绝执行")),
+        ),
+    }
 }
 
 /// PathGuard（最小版）：限制 agent 的 read_wiki 只能读取当前 vault/wiki 下的 markdown 文件。
@@ -127,7 +174,11 @@ pub fn validate_agent_write_path(vault_path: &Path, target_path: &Path) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_shell_policy, validate_agent_read_path, validate_agent_write_path};
+    use super::{
+        classify_shell_policy, classify_shell_policy_with_config, validate_agent_read_path,
+        validate_agent_write_path,
+    };
+    use crate::models::{ShellPolicyConfig, ShellPolicyDecision};
     use std::{
         fs,
         path::PathBuf,
@@ -175,6 +226,32 @@ mod tests {
         assert_eq!(action, "read");
         assert_eq!(decision, "auto_allow");
         assert!(reason.is_none());
+    }
+
+    #[test]
+    fn manual_unknown_can_be_forced_to_approval() {
+        let cfg = ShellPolicyConfig {
+            manual_unknown_decision: ShellPolicyDecision::RequireApproval,
+            ..ShellPolicyConfig::default()
+        };
+        let (action, decision, reason) =
+            classify_shell_policy_with_config("foo-bar-custom", "manual", &cfg);
+        assert_eq!(action, "unknown");
+        assert_eq!(decision, "require_approval");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn agent_write_can_be_forced_to_deny() {
+        let cfg = ShellPolicyConfig {
+            agent_write_decision: ShellPolicyDecision::Deny,
+            ..ShellPolicyConfig::default()
+        };
+        let (action, decision, reason) =
+            classify_shell_policy_with_config("mkdir test-dir", "agent", &cfg);
+        assert_eq!(action, "write");
+        assert_eq!(decision, "deny");
+        assert!(reason.is_some());
     }
 
     #[test]

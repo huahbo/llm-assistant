@@ -41,6 +41,7 @@ import type {
   SaveQueryAnswerInput,
   SaveQueryAnswerResult,
   SearchConfig,
+  ShellPolicyConfig,
   DeleteWikiPageResult,
   RenameWikiPageResult,
   SaveWikiPageResult,
@@ -48,6 +49,8 @@ import type {
   VaultStats,
   NewPageResult,
   ShellResult,
+  ShellSessionInfo,
+  ShellStreamChunk,
   WikiPageDetail,
   WikiPageCitation,
   WikiPageHistoryEntry,
@@ -2215,13 +2218,73 @@ export async function runShell(
   command: string,
   timeoutMs?: number,
   source?: "manual" | "agent",
+  sessionId?: string | null,
+  streamId?: string | null,
 ): Promise<ShellResult | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import("@tauri-apps/api/core");
   return withTimeout(
-    invoke<ShellResult>("run_shell", { command, timeoutMs, source }),
+    invoke<ShellResult>("run_shell", { command, timeoutMs, source, sessionId, streamId }),
     (timeoutMs ?? 30_000) + 5_000
   );
+}
+
+/** 创建 Shell 会话（会话内 cwd 持久化）。 */
+export async function createShellSession(source?: "manual" | "agent"): Promise<ShellSessionInfo | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(invoke<ShellSessionInfo>("create_shell_session", { source }), 8000);
+  } catch {
+    return null;
+  }
+}
+
+/** 关闭 Shell 会话。 */
+export async function closeShellSession(sessionId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(invoke<boolean>("close_shell_session", { sessionId }), 5000);
+  } catch {
+    return false;
+  }
+}
+
+/** 订阅 Shell 流式输出事件。 */
+export async function listenShellStreamChunk(
+  handler: (payload: ShellStreamChunk) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ShellStreamChunk>("shell_stream_chunk", (e) => handler(e.payload));
+  return unlisten;
+}
+
+/** 读取 Shell 策略配置。 */
+export async function getShellPolicyConfig(): Promise<ShellPolicyConfig | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(invoke<ShellPolicyConfig>("get_shell_policy_config"), 5000);
+  } catch {
+    return null;
+  }
+}
+
+/** 保存 Shell 策略配置。 */
+export async function setShellPolicyConfig(
+  config: ShellPolicyConfig,
+): Promise<ShellPolicyConfig | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(invoke<ShellPolicyConfig>("set_shell_policy_config", { config }), 5000);
+  } catch {
+    return null;
+  }
 }
 
 export async function approveAgentWrite(runId: number): Promise<string | null> {

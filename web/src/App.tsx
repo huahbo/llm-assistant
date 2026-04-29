@@ -103,6 +103,11 @@ import {
   deleteAgentSkill,
   runAgentTask,
   runShell,
+  createShellSession,
+  closeShellSession,
+  listenShellStreamChunk,
+  getShellPolicyConfig,
+  setShellPolicyConfig,
   approveAgentWrite,
   rejectAgentWrite,
   type OcrProvider,
@@ -162,6 +167,10 @@ import type {
   NewPageResult,
   ShellResult,
   ShellHistoryEntry,
+  ShellSessionInfo,
+  ShellStreamChunk,
+  ShellPolicyConfig,
+  ShellPolicyDecision,
   WikiTemplate,
   WikiPageDetail,
   WikiPageCitation,
@@ -173,6 +182,45 @@ import type {
 const defaultVaultPath = "vault";
 const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultIngestPdfPath = "E:\\llm-wiki\\test.pdf";
+
+const shellPolicyDecisionOptions: Array<{ value: ShellPolicyDecision; label: string }> = [
+  { value: "auto_allow", label: "自动放行" },
+  { value: "require_approval", label: "需要审批" },
+  { value: "deny", label: "直接拒绝" },
+];
+const shellPolicyProfiles: Array<{
+  key: "strict" | "balanced" | "power_user";
+  label: string;
+  config: ShellPolicyConfig;
+}> = [
+  {
+    key: "strict",
+    label: "严格",
+    config: {
+      manual_unknown_decision: "require_approval",
+      agent_write_decision: "deny",
+      agent_unknown_decision: "deny",
+    },
+  },
+  {
+    key: "balanced",
+    label: "平衡",
+    config: {
+      manual_unknown_decision: "auto_allow",
+      agent_write_decision: "require_approval",
+      agent_unknown_decision: "require_approval",
+    },
+  },
+  {
+    key: "power_user",
+    label: "高能力",
+    config: {
+      manual_unknown_decision: "auto_allow",
+      agent_write_decision: "auto_allow",
+      agent_unknown_decision: "require_approval",
+    },
+  },
+];
 const defaultIngestFilePath = "E:\\llm-wiki\\test.docx";
 const defaultIngestFileOcrProvider: OcrProvider = "tesseract";
 const defaultQueryTopKMin = 1;
@@ -190,6 +238,7 @@ const agentEventLevelOptions: AgentRunEventLevel[] = ["info", "warn", "error"];
 const agentCompleteStatusOptions: AgentRunStatus[] = ["applied", "failed"];
 type AgentReviewTab = "draft" | "diff" | "citations";
 type AgentFlowMode = "idle" | "playing" | "paused" | "done";
+type AgentRightTab = "task" | "draft" | "tools";
 type AgentExecTimelineItem = {
   key: string;
   kind: "tool" | "marker";
@@ -3100,6 +3149,7 @@ export default function App() {
   const [agentActionRunning, setAgentActionRunning] = useState(false);
   const [agentStatusMessage, setAgentStatusMessage] = useState("");
   const [agentReviewTab, setAgentReviewTab] = useState<AgentReviewTab>("draft");
+  const [agentRightTab, setAgentRightTab] = useState<AgentRightTab>("task");
   const [agentDraftConflictPreview, setAgentDraftConflictPreview] = useState<AgentDraftConflictInfo | null>(null);
   const [agentDraftDiffBaseContent, setAgentDraftDiffBaseContent] = useState("");
   const [agentDraftConflictLoading, setAgentDraftConflictLoading] = useState(false);
@@ -3137,11 +3187,22 @@ export default function App() {
   const [agentShellCmd, setAgentShellCmd] = useState<string>("");
   const [agentShellHistory, setAgentShellHistory] = useState<ShellHistoryEntry[]>([]);
   const [agentShellRunning, setAgentShellRunning] = useState<boolean>(false);
-  const [agentShellOpen, setAgentShellOpen] = useState<boolean>(false);
+  const [agentShellSession, setAgentShellSession] = useState<ShellSessionInfo | null>(null);
+  const [agentShellPolicyConfig, setAgentShellPolicyConfig] = useState<ShellPolicyConfig | null>(null);
+  const [agentShellPolicySaving, setAgentShellPolicySaving] = useState<boolean>(false);
+  const [agentShellPolicyDirty, setAgentShellPolicyDirty] = useState<boolean>(false);
+  const [agentShellTheme, setAgentShellTheme] = useState<"deep" | "light">("deep");
+  const [agentShellHistoryCursor, setAgentShellHistoryCursor] = useState<number>(-1);
+  const [agentShellDraftInput, setAgentShellDraftInput] = useState<string>("");
+  const [agentToolsSeenCount, setAgentToolsSeenCount] = useState<number>(0);
   const [agentContextOpen, setAgentContextOpen] = useState<boolean>(false);
   const [agentMemoryPanelOpen, setAgentMemoryPanelOpen] = useState<boolean>(true);
   const [agentSkillPanelOpen, setAgentSkillPanelOpen] = useState<boolean>(false);
   const agentShellIdRef = useRef(0);
+  const agentShellSessionIdRef = useRef("");
+  const agentShellHistoryRef = useRef<HTMLDivElement>(null);
+  const agentShellAutoFollowRef = useRef(true);
+  const agentShellInputRef = useRef<HTMLInputElement>(null);
 
   // ── 面板拖拽分割 ──────────────────────────────────────────────
   const [sidebarWidth, setSidebarWidth] = useState(220);
@@ -3412,6 +3473,111 @@ export default function App() {
     }
     return latestAwaitingIndex >= 0 && latestAwaitingIndex > latestResolvedIndex;
   }, [selectedAgentRun, agentSelectedRunId, agentEvents]);
+  const agentToolsNeedsAttention = useMemo(
+    () =>
+      (agentRightTab !== "tools")
+      && (agentShellRunning || agentShellHistory.length > agentToolsSeenCount),
+    [agentRightTab, agentShellRunning, agentShellHistory.length, agentToolsSeenCount],
+  );
+
+  useEffect(() => {
+    if (agentRightTab === "tools") {
+      setAgentToolsSeenCount(agentShellHistory.length);
+    }
+  }, [agentRightTab, agentShellHistory.length]);
+
+  useEffect(() => {
+    if (agentRightTab !== "tools" || !agentShellAutoFollowRef.current) {
+      return;
+    }
+    const container = agentShellHistoryRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [agentRightTab, agentShellHistory]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    if (activeModule === "agent" && !agentShellSession) {
+      void createShellSession("manual").then((session) => {
+        if (disposed || !session) return;
+        setAgentShellSession(session);
+        agentShellSessionIdRef.current = session.session_id;
+      });
+    }
+    return () => {
+      disposed = true;
+    };
+  }, [activeModule, agentShellSession]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    if (activeModule !== "agent" || agentShellPolicyConfig) return;
+    let disposed = false;
+    void getShellPolicyConfig().then((cfg) => {
+      if (disposed || !cfg) return;
+      setAgentShellPolicyConfig(cfg);
+      setAgentShellPolicyDirty(false);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [activeModule, agentShellPolicyConfig]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void listenShellStreamChunk((payload: ShellStreamChunk) => {
+      if (disposed) return;
+      setAgentShellHistory((history) =>
+        history.map((entry) => {
+          if (!entry.stream_id || entry.stream_id !== payload.stream_id) {
+            return entry;
+          }
+          const chunk = payload.chunk ?? "";
+          if (payload.stream === "stderr") {
+            return {
+              ...entry,
+              live_stderr: `${entry.live_stderr ?? ""}${chunk}${chunk ? "\n" : ""}`,
+              running: payload.done ? false : entry.running,
+            };
+          }
+          if (payload.stream === "stdout") {
+            return {
+              ...entry,
+              live_stdout: `${entry.live_stdout ?? ""}${chunk}${chunk ? "\n" : ""}`,
+              running: payload.done ? false : entry.running,
+            };
+          }
+          return {
+            ...entry,
+            running: payload.done ? false : entry.running,
+          };
+        }),
+      );
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const sid = agentShellSessionIdRef.current.trim();
+      if (!sid || !isTauriRuntime()) return;
+      void closeShellSession(sid);
+    };
+  }, []);
+
+  useEffect(() => {
+    agentShellSessionIdRef.current = agentShellSession?.session_id ?? "";
+  }, [agentShellSession?.session_id]);
 
   const graphNodes = graphData?.nodes ?? [];
   const graphNodeById = useMemo(() => {
@@ -7476,36 +7642,211 @@ export default function App() {
     }
   };
 
-  const handleRunShell = async () => {
-    const cmd = agentShellCmd.trim();
+  const agentShellQuickCommands = [
+    { label: "pwd", command: "pwd", run: true },
+    { label: "ls", command: "ls", run: true },
+    { label: "ls -a", command: "ls -a", run: true },
+    { label: "cd ..", command: "cd ..", run: true },
+    { label: "git status", command: "git status", run: true },
+  ] as const;
+
+  const handleApplyShellCommand = (command: string, runImmediately = false) => {
+    setAgentShellCmd(command);
+    setAgentShellHistoryCursor(-1);
+    setAgentShellDraftInput("");
+    if (runImmediately) {
+      void runShellCommand(command);
+    }
+  };
+
+  const handleShellHistoryNav = (direction: "prev" | "next") => {
+    const commands = agentShellHistory.map((entry) => entry.command);
+    if (commands.length === 0) {
+      return;
+    }
+    if (direction === "prev") {
+      if (agentShellHistoryCursor === -1) {
+        setAgentShellDraftInput(agentShellCmd);
+        setAgentShellHistoryCursor(commands.length - 1);
+        setAgentShellCmd(commands[commands.length - 1] ?? "");
+        return;
+      }
+      const nextCursor = Math.max(0, agentShellHistoryCursor - 1);
+      setAgentShellHistoryCursor(nextCursor);
+      setAgentShellCmd(commands[nextCursor] ?? "");
+      return;
+    }
+    if (agentShellHistoryCursor === -1) {
+      return;
+    }
+    const nextCursor = agentShellHistoryCursor + 1;
+    if (nextCursor >= commands.length) {
+      setAgentShellHistoryCursor(-1);
+      setAgentShellCmd(agentShellDraftInput);
+      return;
+    }
+    setAgentShellHistoryCursor(nextCursor);
+    setAgentShellCmd(commands[nextCursor] ?? "");
+  };
+
+  const handleCopyShellOutput = async (entry: ShellHistoryEntry) => {
+    const payload = [
+      `> ${entry.command}`,
+      entry.result.stdout || "",
+      entry.result.stderr || "",
+    ]
+      .filter((line) => line.trim().length > 0)
+      .join("\n");
+    const copied = await copyTextToClipboard(payload || entry.command);
+    setAgentStatusMessage(copied ? "已复制命令输出。" : "复制失败：当前环境不支持写入剪贴板。");
+  };
+
+  const handleClearShellHistory = () => {
+    setAgentShellHistory([]);
+    setAgentToolsSeenCount(0);
+    setAgentShellHistoryCursor(-1);
+    setAgentShellDraftInput("");
+  };
+
+  const handleChangeShellPolicyDecision = (
+    field: keyof ShellPolicyConfig,
+    decision: ShellPolicyDecision,
+  ) => {
+    setAgentShellPolicyConfig((prev) => {
+      const base = prev ?? {
+        manual_unknown_decision: "auto_allow" as ShellPolicyDecision,
+        agent_write_decision: "require_approval" as ShellPolicyDecision,
+        agent_unknown_decision: "require_approval" as ShellPolicyDecision,
+      };
+      return { ...base, [field]: decision };
+    });
+    setAgentShellPolicyDirty(true);
+  };
+
+  const handleSaveShellPolicy = async () => {
+    if (!agentShellPolicyConfig || agentShellPolicySaving) return;
+    setAgentShellPolicySaving(true);
+    try {
+      const saved = await setShellPolicyConfig(agentShellPolicyConfig);
+      if (!saved) {
+        setAgentStatusMessage("Shell 策略保存失败，请检查后端日志。");
+        return;
+      }
+      setAgentShellPolicyConfig(saved);
+      setAgentShellPolicyDirty(false);
+      setAgentStatusMessage("Shell 策略已保存，后续命令将按新策略执行。");
+    } finally {
+      setAgentShellPolicySaving(false);
+    }
+  };
+
+  const applyShellPolicyProfile = (profileKey: "strict" | "balanced" | "power_user") => {
+    const profile = shellPolicyProfiles.find((item) => item.key === profileKey);
+    if (!profile) return;
+    setAgentShellPolicyConfig(profile.config);
+    setAgentShellPolicyDirty(true);
+  };
+
+  const focusAgentShellInput = () => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        agentShellInputRef.current?.focus();
+      });
+    });
+  };
+
+  const runShellCommand = async (rawCommand?: string) => {
+    const cmd = (rawCommand ?? agentShellCmd).trim();
     if (!cmd || agentShellRunning) return;
+    const sessionId = agentShellSession?.session_id ?? null;
+    const streamId = `sh-${Date.now()}-${Math.floor(Math.random() * 1_000_000).toString(16)}`;
     setAgentShellRunning(true);
     const id = ++agentShellIdRef.current;
-    try {
-      const result = await runShell(cmd, undefined, "manual");
-      if (result) {
-        setAgentShellHistory(h => [...h, { id, command: cmd, result, ts: Date.now() }]);
-      }
-    } catch (e) {
-      setAgentShellHistory(h => [...h, {
-        id, command: cmd,
+    setAgentShellHistory((h) => [
+      ...h,
+      {
+        id,
+        command: cmd,
         result: {
           command: cmd,
           stdout: "",
-          stderr: String(e),
-          exit_code: -1,
+          stderr: "",
+          exit_code: 0,
+          working_dir: agentShellSession?.working_dir ?? "",
           blocked: false,
           blocked_reason: null,
           policy_action: "unknown",
-          policy_decision: "error",
+          policy_decision: "streaming",
           executor: "manual",
         },
-        ts: Date.now()
-      }]);
+        ts: Date.now(),
+        running: true,
+        live_stdout: "",
+        live_stderr: "",
+        stream_id: streamId,
+        session_id: sessionId,
+      },
+    ]);
+    try {
+      const result = await runShell(cmd, undefined, "manual", sessionId, streamId);
+      if (result) {
+        setAgentShellHistory((h) =>
+          h.map((entry) =>
+            entry.id === id
+              ? {
+                  ...entry,
+                  result: {
+                    ...result,
+                    stdout: entry.live_stdout?.trim().length ? entry.live_stdout : result.stdout,
+                    stderr: entry.live_stderr?.trim().length ? entry.live_stderr : result.stderr,
+                  },
+                  running: false,
+                }
+              : entry,
+          ),
+        );
+        if (result.working_dir && sessionId) {
+          setAgentShellSession((prev) =>
+            prev && prev.session_id === sessionId
+              ? { ...prev, working_dir: result.working_dir }
+              : prev,
+          );
+        }
+      }
+    } catch (e) {
+      setAgentShellHistory((h) =>
+        h.map((entry) =>
+          entry.id === id
+            ? {
+                ...entry,
+                result: {
+                  command: cmd,
+                  stdout: entry.live_stdout || "",
+                  stderr: entry.live_stderr || String(e),
+                  exit_code: -1,
+                  working_dir: agentShellSession?.working_dir ?? "",
+                  blocked: false,
+                  blocked_reason: null,
+                  policy_action: "unknown",
+                  policy_decision: "error",
+                  executor: "manual",
+                },
+                running: false,
+              }
+            : entry,
+        ),
+      );
     } finally {
       setAgentShellRunning(false);
       setAgentShellCmd("");
+      setAgentShellHistoryCursor(-1);
+      setAgentShellDraftInput("");
+      focusAgentShellInput();
     }
+  };
+
+  const handleRunShell = async () => {
+    await runShellCommand(agentShellCmd);
   };
 
   const executeAgentTask = async (
@@ -10835,390 +11176,518 @@ export default function App() {
                         </span>
                       ) : null}
                     </div>
-                    <div className="agent-studio__quick-tools">
+                    <div className="agent-studio__main-tabs">
                       <button
                         type="button"
-                        className="dev-panel__button"
-                        onClick={() => setAgentShellOpen((o) => !o)}
+                        className={`agent-studio__main-tab${agentRightTab === "task" ? " agent-studio__main-tab--active" : ""}`}
+                        onClick={() => setAgentRightTab("task")}
                       >
-                        {agentShellOpen ? "收起工具能力" : "打开工具能力"}
+                        任务
+                        {agentHasPendingApproval ? <span className="agent-studio__main-tab-dot">审批中</span> : null}
                       </button>
-                      <span className="agent-studio__quick-tools-meta">
-                        Shell（历史 {agentShellHistory.length} 条）
-                      </span>
+                      <button
+                        type="button"
+                        className={`agent-studio__main-tab${agentRightTab === "draft" ? " agent-studio__main-tab--active" : ""}`}
+                        onClick={() => setAgentRightTab("draft")}
+                      >
+                        草稿
+                      </button>
+                      <button
+                        type="button"
+                        className={`agent-studio__main-tab${agentRightTab === "tools" ? " agent-studio__main-tab--active" : ""}${agentToolsNeedsAttention ? " agent-studio__main-tab--attention" : ""}`}
+                        onClick={() => setAgentRightTab("tools")}
+                      >
+                        工具
+                        <span className="agent-studio__main-tab-meta">
+                          {agentShellRunning ? "运行中" : `历史 ${agentShellHistory.length} 条`}
+                        </span>
+                      </button>
                     </div>
                     <div className="agent-studio__right-main">
-                    {selectedAgentDraft != null &&
-                    !["approved", "applied"].includes(String(selectedAgentDraft.status).toLowerCase()) ? (
-                      <div className="agent-studio__rewrite-bar">
-                        <input
-                          type="text"
-                          className="dev-panel__input"
-                          placeholder="批注（如：语气更专业、增加原理推导）"
-                          value={agentRewriteComment}
-                          onChange={(e) => setAgentRewriteComment(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") { e.preventDefault(); void handleRewriteAgentDraft(); }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="dev-panel__button"
-                          disabled={agentActionRunning || !agentRewriteComment.trim() || !isTauriRuntime()}
-                          onClick={() => void handleRewriteAgentDraft()}
-                        >
-                          基于批注重写
-                        </button>
-                      </div>
-                    ) : null}
-                    <section className="agent-studio__task-mode">
-                      <h3 className="agent-studio__title">任务模式（Beta）</h3>
-                      <div className="agent-studio__task-presets">
-                        <button
-                          type="button"
-                          className="dev-panel__button"
-                          disabled={agentTaskRunning}
-                          onClick={() => {
-                            setAgentTaskInstruction(
-                              "请新建页面 wiki/agent-e2e-write.md，内容包含标题“Agent E2E Write”，并在执行前说明为什么要调用 write_wiki。",
-                            );
-                          }}
-                        >
-                          填充：写入审批验证
-                        </button>
-                        <button
-                          type="button"
-                          className="dev-panel__button"
-                          disabled={agentTaskRunning}
-                          onClick={() => {
-                            setAgentTaskInstruction(
-                              "请编辑页面 wiki/agent-e2e-write.md，把“Agent E2E Write”替换为“Agent E2E Edited”，并优先使用 edit_wiki。",
-                            );
-                          }}
-                        >
-                          填充：编辑审批验证
-                        </button>
-                      </div>
-                      <textarea
-                        className="dev-panel__input agent-studio__task-mode-input"
-                        rows={3}
-                        placeholder="输入任务指令，例如：梳理当前 run 的草稿风险并给出下一步执行计划。"
-                        value={agentTaskInstruction}
-                        onChange={(event) => setAgentTaskInstruction(event.target.value)}
-                        disabled={agentTaskRunning}
-                      />
-                      <div className="agent-studio__task-mode-actions">
-                        <label className="agent-studio__task-mode-budget">
-                          预算轮次
-                          <input
-                            type="number"
-                            min={1}
-                            max={8}
-                            className="dev-panel__input"
-                            value={agentTaskMaxIterations}
-                            onChange={(event) => {
-                              const next = Number(event.target.value);
-                              if (Number.isFinite(next)) {
-                                setAgentTaskMaxIterations(Math.min(8, Math.max(1, Math.floor(next))));
-                              }
-                            }}
+                      {agentRightTab === "task" ? (
+                        <section className="agent-studio__task-mode">
+                          <h3 className="agent-studio__title">任务模式（Beta）</h3>
+                          <div className="agent-studio__task-presets">
+                            <button
+                              type="button"
+                              className="dev-panel__button"
+                              disabled={agentTaskRunning}
+                              onClick={() => {
+                                setAgentTaskInstruction(
+                                  "请新建页面 wiki/agent-e2e-write.md，内容包含标题“Agent E2E Write”，并在执行前说明为什么要调用 write_wiki。",
+                                );
+                              }}
+                            >
+                              填充：写入审批验证
+                            </button>
+                            <button
+                              type="button"
+                              className="dev-panel__button"
+                              disabled={agentTaskRunning}
+                              onClick={() => {
+                                setAgentTaskInstruction(
+                                  "请编辑页面 wiki/agent-e2e-write.md，把“Agent E2E Write”替换为“Agent E2E Edited”，并优先使用 edit_wiki。",
+                                );
+                              }}
+                            >
+                              填充：编辑审批验证
+                            </button>
+                          </div>
+                          <textarea
+                            className="dev-panel__input agent-studio__task-mode-input"
+                            rows={3}
+                            placeholder="输入任务指令，例如：梳理当前 run 的草稿风险并给出下一步执行计划。"
+                            value={agentTaskInstruction}
+                            onChange={(event) => setAgentTaskInstruction(event.target.value)}
                             disabled={agentTaskRunning}
                           />
-                        </label>
-                        <button
-                          type="button"
-                          className="dev-panel__button"
-                          disabled={
-                            agentTaskRunning
-                            || !agentTaskInstruction.trim()
-                            || agentSelectedRunId == null
-                            || !isTauriRuntime()
-                          }
-                          onClick={() => {
-                            void handleRunAgentTask();
-                          }}
-                        >
-                          {agentTaskRunning ? "执行中..." : "运行任务"}
-                        </button>
-                        <button
-                          type="button"
-                          className="dev-panel__button"
-                          disabled={
-                            agentTaskRunning
-                            || agentSelectedRunId == null
-                            || !isTauriRuntime()
-                            || (agentEvents.length === 0 && !agentTaskResult.trim())
-                          }
-                          onClick={() => {
-                            void handleContinueAgentTask();
-                          }}
-                        >
-                          继续任务
-                        </button>
-                      </div>
-                      {agentTaskResult ? (
-                        <pre className="agent-studio__task-mode-result">{agentTaskResult}</pre>
-                      ) : (
-                        <p className="agent-studio__empty">任务结果将在此显示。</p>
-                      )}
-                      {/* 执行日志：任务运行时工具调用过程 */}
-                      {agentSelectedRunId != null && agentExecTimeline.length > 0 && (
-                        <div className="agent-studio__exec-log">
-                          <div className="agent-studio__exec-log-head">
-                            <span>工具时间线</span>
-                            <span className="agent-studio__exec-log-count">{agentExecTimeline.length} 条</span>
-                          </div>
-                          <ul className="agent-studio__exec-log-list">
-                            {agentExecTimeline.map((item) => (
-                              <li key={item.key} className={`agent-studio__exec-log-row agent-studio__exec-log-row--${item.level}`}>
-                                <div className="agent-studio__exec-log-row-main">
-                                  <span className="agent-studio__exec-log-title">{item.title}</span>
-                                  <span className="agent-studio__exec-log-side">
-                                    {item.durationMs != null ? `${item.durationMs}ms` : "—"}
-                                    {" · "}
-                                    {formatLintCheckedAt(item.createdAt)}
-                                  </span>
-                                </div>
-                                <span className="agent-studio__exec-log-msg">{item.summary}</span>
-                                {item.detail ? (
-                                  <details className="agent-studio__exec-log-detail">
-                                    <summary>展开详情</summary>
-                                    <pre>{item.detail}</pre>
-                                  </details>
-                                ) : null}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {agentHasPendingApproval && (
-                        <div className="agent-studio__approval-bar">
-                          <span className="agent-studio__approval-label">
-                            ⏸ Agent 请求修改 Wiki（写入 / 编辑），等待审批
-                          </span>
-                          <div className="agent-studio__approval-actions">
+                          <div className="agent-studio__task-mode-actions">
+                            <label className="agent-studio__task-mode-budget">
+                              预算轮次
+                              <input
+                                type="number"
+                                min={1}
+                                max={8}
+                                className="dev-panel__input"
+                                value={agentTaskMaxIterations}
+                                onChange={(event) => {
+                                  const next = Number(event.target.value);
+                                  if (Number.isFinite(next)) {
+                                    setAgentTaskMaxIterations(Math.min(8, Math.max(1, Math.floor(next))));
+                                  }
+                                }}
+                                disabled={agentTaskRunning}
+                              />
+                            </label>
                             <button
-                              className="agent-studio__approval-approve"
-                              disabled={agentActionRunning}
-                              onClick={() => void handleApproveAgentWrite()}
+                              type="button"
+                              className="dev-panel__button"
+                              disabled={
+                                agentTaskRunning
+                                || !agentTaskInstruction.trim()
+                                || agentSelectedRunId == null
+                                || !isTauriRuntime()
+                              }
+                              onClick={() => {
+                                void handleRunAgentTask();
+                              }}
                             >
-                              ✅ 批准
+                              {agentTaskRunning ? "执行中..." : "运行任务"}
                             </button>
                             <button
-                              className="agent-studio__approval-reject"
-                              disabled={agentActionRunning}
-                              onClick={() => void handleRejectAgentWrite()}
+                              type="button"
+                              className="dev-panel__button"
+                              disabled={
+                                agentTaskRunning
+                                || agentSelectedRunId == null
+                                || !isTauriRuntime()
+                                || (agentEvents.length === 0 && !agentTaskResult.trim())
+                              }
+                              onClick={() => {
+                                void handleContinueAgentTask();
+                              }}
                             >
-                              🚫 拒绝
+                              继续任务
                             </button>
                           </div>
-                        </div>
-                      )}
-                    </section>
-                    <div className="agent-studio__review-tabs">
-                      <button
-                        type="button"
-                        className={`agent-studio__review-tab${agentReviewTab === "draft" ? " agent-studio__review-tab--active" : ""}`}
-                        onClick={() => setAgentReviewTab("draft")}
-                      >
-                        Draft
-                      </button>
-                      <button
-                        type="button"
-                        className={`agent-studio__review-tab${agentReviewTab === "diff" ? " agent-studio__review-tab--active" : ""}`}
-                        onClick={() => setAgentReviewTab("diff")}
-                        disabled={selectedAgentDraft == null}
-                      >
-                        Diff
-                      </button>
-                      <button
-                        type="button"
-                        className={`agent-studio__review-tab${agentReviewTab === "citations" ? " agent-studio__review-tab--active" : ""}`}
-                        onClick={() => setAgentReviewTab("citations")}
-                        disabled={selectedAgentDraft == null}
-                      >
-                        Citations
-                      </button>
-                    </div>
-                    {agentReviewTab === "draft" && selectedAgentDraft ? (
-                      <div className="agent-studio__flow-controls">
-                        <div className="agent-studio__flow-meta">
-                          <span className="agent-studio__flow-badge">
-                            {agentFlowMode === "playing"
-                              ? "流式生成中"
-                              : agentFlowMode === "paused"
-                                ? "已暂停"
-                                : agentFlowMode === "done"
-                                  ? "已完成"
-                                  : "待开始"}
-                          </span>
-                          <span className="agent-studio__flow-progress-text">{agentFlowProgress}%</span>
-                        </div>
-                        <div className="agent-studio__flow-progress">
-                          <div
-                            className="agent-studio__flow-progress-fill"
-                            style={{ width: `${agentFlowProgress}%` }}
-                          />
-                        </div>
-                        <div className="agent-studio__flow-buttons">
-                          <button
-                            type="button"
-                            className="dev-panel__button"
-                            disabled={agentFlowMode !== "playing"}
-                            onClick={handlePauseAgentFlow}
-                          >
-                            暂停
-                          </button>
-                          <button
-                            type="button"
-                            className="dev-panel__button"
-                            disabled={agentFlowMode !== "paused"}
-                            onClick={handleResumeAgentFlow}
-                          >
-                            继续
-                          </button>
-                          <button
-                            type="button"
-                            className="dev-panel__button"
-                            disabled={agentFlowMode === "done"}
-                            onClick={handleCompleteAgentFlow}
-                          >
-                            完成
-                          </button>
-                          <button
-                            type="button"
-                            className="dev-panel__button"
-                            onClick={handleReplayAgentFlow}
-                          >
-                            重播
-                          </button>
-                        </div>
-                        {agentFlowOutline.length > 0 ? (
-                          <p className="agent-studio__flow-outline">
-                            提纲：{agentFlowOutline.join(" / ")}
-                          </p>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <div className="agent-studio__draft-pane">
-                      {selectedAgentDraft == null ? (
-                        agentActionRunning ? (
-                          <div className="agent-studio__draft-skeleton" aria-live="polite">
-                            <span />
-                            <span />
-                            <span />
-                            <span />
-                          </div>
-                        ) : (
-                          <p className="agent-studio__empty">请选择左侧 run，右侧将显示对应草稿内容。</p>
-                        )
-                      ) : agentReviewTab === "diff" ? (
-                        agentDraftConflictLoading ? (
-                          <p className="agent-studio__empty">正在加载差异基线...</p>
-                        ) : agentDraftConflictPreview?.conflict && agentDraftDiffRows.length > 0 ? (
-                          <div className="wiki-history-diff__rows">
-                            {agentDraftDiffRows.map((row, index) => (
-                              <div
-                                key={`agent-diff-${index}-${row.kind}-${row.oldLineNumber ?? "na"}-${row.newLineNumber ?? "na"}`}
-                                className={`wiki-history-diff__row wiki-history-diff__row--${row.kind}`}
-                              >
-                                <span className="wiki-history-diff__sign">
-                                  {row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}
-                                </span>
-                                <span className="wiki-history-diff__line-no">
-                                  {row.kind === "added" ? row.newLineNumber : row.oldLineNumber}
-                                </span>
-                                <code>{row.line || " "}</code>
+                          {agentTaskResult ? (
+                            <pre className="agent-studio__task-mode-result">{agentTaskResult}</pre>
+                          ) : (
+                            <p className="agent-studio__empty">任务结果将在此显示。</p>
+                          )}
+                          {agentSelectedRunId != null && agentExecTimeline.length > 0 && (
+                            <div className="agent-studio__exec-log">
+                              <div className="agent-studio__exec-log-head">
+                                <span>工具时间线</span>
+                                <span className="agent-studio__exec-log-count">{agentExecTimeline.length} 条</span>
                               </div>
+                              <ul className="agent-studio__exec-log-list">
+                                {agentExecTimeline.map((item) => (
+                                  <li key={item.key} className={`agent-studio__exec-log-row agent-studio__exec-log-row--${item.level}`}>
+                                    <div className="agent-studio__exec-log-row-main">
+                                      <span className="agent-studio__exec-log-title">{item.title}</span>
+                                      <span className="agent-studio__exec-log-side">
+                                        {item.durationMs != null ? `${item.durationMs}ms` : "—"}
+                                        {" · "}
+                                        {formatLintCheckedAt(item.createdAt)}
+                                      </span>
+                                    </div>
+                                    <span className="agent-studio__exec-log-msg">{item.summary}</span>
+                                    {item.detail ? (
+                                      <details className="agent-studio__exec-log-detail">
+                                        <summary>展开详情</summary>
+                                        <pre>{item.detail}</pre>
+                                      </details>
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {agentHasPendingApproval ? (
+                            <div className="agent-studio__approval-bar">
+                              <span className="agent-studio__approval-label">
+                                ⏸ Agent 请求修改 Wiki（写入 / 编辑），等待审批
+                              </span>
+                              <div className="agent-studio__approval-actions">
+                                <button
+                                  className="agent-studio__approval-approve"
+                                  disabled={agentActionRunning}
+                                  onClick={() => void handleApproveAgentWrite()}
+                                >
+                                  ✅ 批准
+                                </button>
+                                <button
+                                  className="agent-studio__approval-reject"
+                                  disabled={agentActionRunning}
+                                  onClick={() => void handleRejectAgentWrite()}
+                                >
+                                  🚫 拒绝
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </section>
+                      ) : null}
+                      {agentRightTab === "draft" ? (
+                        <>
+                          {selectedAgentDraft != null &&
+                          !["approved", "applied"].includes(String(selectedAgentDraft.status).toLowerCase()) ? (
+                            <div className="agent-studio__rewrite-bar">
+                              <input
+                                type="text"
+                                className="dev-panel__input"
+                                placeholder="批注（如：语气更专业、增加原理推导）"
+                                value={agentRewriteComment}
+                                onChange={(e) => setAgentRewriteComment(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") { e.preventDefault(); void handleRewriteAgentDraft(); }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="dev-panel__button"
+                                disabled={agentActionRunning || !agentRewriteComment.trim() || !isTauriRuntime()}
+                                onClick={() => void handleRewriteAgentDraft()}
+                              >
+                                基于批注重写
+                              </button>
+                            </div>
+                          ) : null}
+                          <div className="agent-studio__review-tabs">
+                            <button
+                              type="button"
+                              className={`agent-studio__review-tab${agentReviewTab === "draft" ? " agent-studio__review-tab--active" : ""}`}
+                              onClick={() => setAgentReviewTab("draft")}
+                            >
+                              Draft
+                            </button>
+                            <button
+                              type="button"
+                              className={`agent-studio__review-tab${agentReviewTab === "diff" ? " agent-studio__review-tab--active" : ""}`}
+                              onClick={() => setAgentReviewTab("diff")}
+                              disabled={selectedAgentDraft == null}
+                            >
+                              Diff
+                            </button>
+                            <button
+                              type="button"
+                              className={`agent-studio__review-tab${agentReviewTab === "citations" ? " agent-studio__review-tab--active" : ""}`}
+                              onClick={() => setAgentReviewTab("citations")}
+                              disabled={selectedAgentDraft == null}
+                            >
+                              Citations
+                            </button>
+                          </div>
+                          {agentReviewTab === "draft" && selectedAgentDraft ? (
+                            <div className="agent-studio__flow-controls">
+                              <div className="agent-studio__flow-meta">
+                                <span className="agent-studio__flow-badge">
+                                  {agentFlowMode === "playing"
+                                    ? "流式生成中"
+                                    : agentFlowMode === "paused"
+                                      ? "已暂停"
+                                      : agentFlowMode === "done"
+                                        ? "已完成"
+                                        : "待开始"}
+                                </span>
+                                <span className="agent-studio__flow-progress-text">{agentFlowProgress}%</span>
+                              </div>
+                              <div className="agent-studio__flow-progress">
+                                <div
+                                  className="agent-studio__flow-progress-fill"
+                                  style={{ width: `${agentFlowProgress}%` }}
+                                />
+                              </div>
+                              <div className="agent-studio__flow-buttons">
+                                <button
+                                  type="button"
+                                  className="dev-panel__button"
+                                  disabled={agentFlowMode !== "playing"}
+                                  onClick={handlePauseAgentFlow}
+                                >
+                                  暂停
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dev-panel__button"
+                                  disabled={agentFlowMode !== "paused"}
+                                  onClick={handleResumeAgentFlow}
+                                >
+                                  继续
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dev-panel__button"
+                                  disabled={agentFlowMode === "done"}
+                                  onClick={handleCompleteAgentFlow}
+                                >
+                                  完成
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dev-panel__button"
+                                  onClick={handleReplayAgentFlow}
+                                >
+                                  重播
+                                </button>
+                              </div>
+                              {agentFlowOutline.length > 0 ? (
+                                <p className="agent-studio__flow-outline">
+                                  提纲：{agentFlowOutline.join(" / ")}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <div className="agent-studio__draft-pane">
+                            {selectedAgentDraft == null ? (
+                              agentActionRunning ? (
+                                <div className="agent-studio__draft-skeleton" aria-live="polite">
+                                  <span />
+                                  <span />
+                                  <span />
+                                  <span />
+                                </div>
+                              ) : (
+                                <p className="agent-studio__empty">请选择左侧 run，右侧将显示对应草稿内容。</p>
+                              )
+                            ) : agentReviewTab === "diff" ? (
+                              agentDraftConflictLoading ? (
+                                <p className="agent-studio__empty">正在加载差异基线...</p>
+                              ) : agentDraftConflictPreview?.conflict && agentDraftDiffRows.length > 0 ? (
+                                <div className="wiki-history-diff__rows">
+                                  {agentDraftDiffRows.map((row, index) => (
+                                    <div
+                                      key={`agent-diff-${index}-${row.kind}-${row.oldLineNumber ?? "na"}-${row.newLineNumber ?? "na"}`}
+                                      className={`wiki-history-diff__row wiki-history-diff__row--${row.kind}`}
+                                    >
+                                      <span className="wiki-history-diff__sign">
+                                        {row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}
+                                      </span>
+                                      <span className="wiki-history-diff__line-no">
+                                        {row.kind === "added" ? row.newLineNumber : row.oldLineNumber}
+                                      </span>
+                                      <code>{row.line || " "}</code>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="agent-studio__empty">
+                                  当前没有可用差异基线（仅在同名页面存在时展示 Diff）。
+                                </p>
+                              )
+                            ) : agentReviewTab === "citations" ? (
+                              agentDraftCitations.length > 0 ? (
+                                <ul className="agent-studio__citation-list">
+                                  {agentDraftCitations.map((citation) => (
+                                    <li key={citation}>
+                                      <code>[[{citation}]]</code>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="agent-studio__empty">当前草稿未检测到 `[[wiki-link]]` 引用。</p>
+                              )
+                            ) : agentDraftDisplayContent.trim() ? (
+                              <div
+                                className="agent-studio__draft-markdown wiki-markdown"
+                                // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify
+                                dangerouslySetInnerHTML={{
+                                  __html: DOMPurify.sanitize(
+                                    marked.parse(agentDraftDisplayContent.trim(), {
+                                      gfm: true,
+                                      breaks: false,
+                                    }) as string,
+                                  ),
+                                }}
+                              />
+                            ) : (
+                              <p className="agent-studio__empty">（该 draft 暂无内容）</p>
+                            )}
+                          </div>
+                          <div className="agent-studio__draft-actions">
+                            <button
+                              type="button"
+                              className="dev-panel__button dev-panel__button--primary"
+                              disabled={
+                                agentActionRunning
+                                || selectedAgentDraft == null
+                                || ["approved", "applied"].includes(
+                                  String(selectedAgentDraft?.status ?? "").toLowerCase(),
+                                )
+                                || !isTauriRuntime()
+                              }
+                              onClick={() => {
+                                void handleApproveAgentDraft();
+                              }}
+                            >
+                              写入 Wiki
+                            </button>
+                            <button
+                              type="button"
+                              className="dev-panel__button"
+                              disabled={agentActionRunning || agentSelectedRunId == null || !isTauriRuntime()}
+                              onClick={() => {
+                                void handleGenerateAgentDraft();
+                              }}
+                            >
+                              重写
+                            </button>
+                            <button
+                              type="button"
+                              className="dev-panel__button"
+                              disabled={agentActionRunning || selectedAgentDraft == null}
+                              onClick={handleDiscardAgentDraftSelection}
+                            >
+                              丢弃
+                            </button>
+                          </div>
+                        </>
+                      ) : null}
+                      {agentRightTab === "tools" ? (
+                        <section className={`agent-studio__tools-workspace agent-studio__tools-workspace--${agentShellTheme}`}>
+                          <div className="agent-studio__tools-head">
+                            <div className="agent-studio__tools-session">
+                              <span>会话：{agentShellSession?.session_id ? agentShellSession.session_id.slice(-8) : "未就绪"}</span>
+                              <span>目录：{agentShellSession?.working_dir || "—"}</span>
+                            </div>
+                            <div className="agent-studio__tools-actions">
+                              <button
+                                type="button"
+                                className="dev-panel__button"
+                                onClick={handleClearShellHistory}
+                                disabled={agentShellRunning || agentShellHistory.length === 0}
+                              >
+                                清空历史
+                              </button>
+                              <button
+                                type="button"
+                                className="dev-panel__button"
+                                onClick={() => setAgentShellTheme((prev) => (prev === "deep" ? "light" : "deep"))}
+                              >
+                                {agentShellTheme === "deep" ? "浅色" : "深色"}
+                              </button>
+                            </div>
+                          </div>
+                          <p className="agent-studio__shell-hint">
+                            任务模式中 Agent 会自动调用工具；此处为会话式终端，支持连续命令与目录上下文。
+                          </p>
+                          <div className="agent-studio__shell-policy">
+                            <div className="agent-studio__shell-policy-head">
+                              <strong>Shell 策略</strong>
+                              <button
+                                type="button"
+                                className="dev-panel__button"
+                                disabled={!agentShellPolicyDirty || agentShellPolicySaving || !agentShellPolicyConfig}
+                                onClick={() => {
+                                  void handleSaveShellPolicy();
+                                }}
+                              >
+                                {agentShellPolicySaving ? "保存中..." : "保存策略"}
+                              </button>
+                            </div>
+                            <div className="agent-studio__shell-policy-presets">
+                              <span>档位：</span>
+                              {shellPolicyProfiles.map((profile) => (
+                                <button
+                                  key={profile.key}
+                                  type="button"
+                                  className="agent-studio__shell-policy-preset"
+                                  disabled={agentShellPolicySaving || !agentShellPolicyConfig}
+                                  onClick={() => applyShellPolicyProfile(profile.key)}
+                                >
+                                  {profile.label}
+                                </button>
+                              ))}
+                            </div>
+                            {agentShellPolicyConfig ? (
+                              <div className="agent-studio__shell-policy-grid">
+                                <label>
+                                  <span>manual: unknown</span>
+                                  <select
+                                    className="dev-panel__input"
+                                    value={agentShellPolicyConfig.manual_unknown_decision}
+                                    onChange={(ev) => handleChangeShellPolicyDecision("manual_unknown_decision", ev.target.value as ShellPolicyDecision)}
+                                  >
+                                    {shellPolicyDecisionOptions.map((option) => (
+                                      <option key={`manual-${option.value}`} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label>
+                                  <span>agent: write</span>
+                                  <select
+                                    className="dev-panel__input"
+                                    value={agentShellPolicyConfig.agent_write_decision}
+                                    onChange={(ev) => handleChangeShellPolicyDecision("agent_write_decision", ev.target.value as ShellPolicyDecision)}
+                                  >
+                                    {shellPolicyDecisionOptions.map((option) => (
+                                      <option key={`write-${option.value}`} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label>
+                                  <span>agent: unknown</span>
+                                  <select
+                                    className="dev-panel__input"
+                                    value={agentShellPolicyConfig.agent_unknown_decision}
+                                    onChange={(ev) => handleChangeShellPolicyDecision("agent_unknown_decision", ev.target.value as ShellPolicyDecision)}
+                                  >
+                                    {shellPolicyDecisionOptions.map((option) => (
+                                      <option key={`unknown-${option.value}`} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </div>
+                            ) : (
+                              <p className="agent-studio__shell-policy-empty">策略加载中...</p>
+                            )}
+                            <p className="agent-studio__shell-policy-tip">
+                              建议默认使用“平衡”：手动未知命令放行，Agent 写入与未知命令需审批。
+                            </p>
+                          </div>
+                          <div className="agent-studio__shell-quick">
+                            {agentShellQuickCommands.map((item) => (
+                              <button
+                                key={item.label}
+                                type="button"
+                                className="agent-studio__shell-quick-btn"
+                                disabled={agentShellRunning || !agentShellSession}
+                                onClick={() => handleApplyShellCommand(item.command, item.run)}
+                              >
+                                {item.label}
+                              </button>
                             ))}
                           </div>
-                        ) : (
-                          <p className="agent-studio__empty">
-                            当前没有可用差异基线（仅在同名页面存在时展示 Diff）。
-                          </p>
-                        )
-                      ) : agentReviewTab === "citations" ? (
-                        agentDraftCitations.length > 0 ? (
-                          <ul className="agent-studio__citation-list">
-                            {agentDraftCitations.map((citation) => (
-                              <li key={citation}>
-                                <code>[[{citation}]]</code>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="agent-studio__empty">当前草稿未检测到 `[[wiki-link]]` 引用。</p>
-                        )
-                      ) : agentDraftDisplayContent.trim() ? (
-                        <div
-                          className="agent-studio__draft-markdown wiki-markdown"
-                          // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify
-                          dangerouslySetInnerHTML={{
-                            __html: DOMPurify.sanitize(
-                              marked.parse(agentDraftDisplayContent.trim(), {
-                                gfm: true,
-                                breaks: false,
-                              }) as string,
-                            ),
-                          }}
-                        />
-                      ) : (
-                        <p className="agent-studio__empty">（该 draft 暂无内容）</p>
-                      )}
-                    </div>
-                    <div className="agent-studio__draft-actions">
-                      <button
-                        type="button"
-                        className="dev-panel__button dev-panel__button--primary"
-                        disabled={
-                          agentActionRunning
-                          || selectedAgentDraft == null
-                          || ["approved", "applied"].includes(
-                            String(selectedAgentDraft?.status ?? "").toLowerCase(),
-                          )
-                          || !isTauriRuntime()
-                        }
-                        onClick={() => {
-                          void handleApproveAgentDraft();
-                        }}
-                      >
-                        写入 Wiki
-                      </button>
-                      <button
-                        type="button"
-                        className="dev-panel__button"
-                        disabled={agentActionRunning || agentSelectedRunId == null || !isTauriRuntime()}
-                        onClick={() => {
-                          void handleGenerateAgentDraft();
-                        }}
-                      >
-                        重写
-                      </button>
-                      <button
-                        type="button"
-                        className="dev-panel__button"
-                        disabled={agentActionRunning || selectedAgentDraft == null}
-                        onClick={handleDiscardAgentDraftSelection}
-                      >
-                        丢弃
-                      </button>
-                    </div>
-                    </div>
-                    <div className={`agent-studio__shell-drawer${agentShellOpen ? " is-open" : ""}`}>
-                      <button
-                        type="button"
-                        className="agent-studio__shell-drawer-toggle"
-                        onClick={() => setAgentShellOpen((o) => !o)}
-                      >
-                        <span>{agentShellOpen ? "▼ 收起 Shell 抽屉" : "▲ 展开 Shell 抽屉"}</span>
-                        <span className="agent-studio__shell-drawer-meta">PowerShell 工具能力</span>
-                      </button>
-                      {agentShellOpen ? (
-                        <div className="agent-studio__shell-drawer-body">
-                          <p className="agent-studio__shell-hint">
-                            任务模式中 Agent 会自动调用工具；此处仅用于手动调试命令，不影响 Agent 运行。
-                          </p>
-                          <div className="agent-studio__shell-history">
+                          <div
+                            className="agent-studio__shell-history"
+                            ref={agentShellHistoryRef}
+                            onScroll={(event) => {
+                              const el = event.currentTarget;
+                              const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+                              agentShellAutoFollowRef.current = gap < 56;
+                            }}
+                          >
                             {agentShellHistory.length === 0 ? (
                               <p className="agent-studio__shell-empty">暂无执行历史，输入命令后可在此查看结果。</p>
                             ) : (
@@ -11227,40 +11696,86 @@ export default function App() {
                                   key={e.id}
                                   className={`agent-studio__shell-entry ${e.result.blocked ? "blocked" : e.result.exit_code === 0 ? "ok" : "err"}`}
                                 >
-                                  <div className="agent-studio__shell-prompt">❯ {e.command}</div>
+                                  <div className="agent-studio__shell-entry-head">
+                                    <div className="agent-studio__shell-prompt">❯ {e.command}</div>
+                                    <div className="agent-studio__shell-entry-actions">
+                                      <span className={`agent-studio__shell-status-badge ${e.running ? "running" : e.result.exit_code === 0 ? "ok" : "err"}`}>
+                                        {e.running ? "运行中" : `exit ${e.result.exit_code}`}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="agent-studio__shell-copy-btn"
+                                        onClick={() => {
+                                          void handleCopyShellOutput(e);
+                                        }}
+                                      >
+                                        复制
+                                      </button>
+                                    </div>
+                                  </div>
                                   {e.result.blocked ? (
                                     <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
                                   ) : (
                                     <pre className="agent-studio__shell-output">
-                                      {e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`}
+                                      {(e.running
+                                        ? `${e.live_stdout || ""}${e.live_stderr || ""}`.trim() || "执行中..."
+                                        : (e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`))
+                                      }
                                     </pre>
                                   )}
                                   <div className="agent-studio__shell-meta">
                                     {e.result.executor} · {e.result.policy_action} · {e.result.policy_decision}
+                                    {e.result.working_dir ? ` · cwd=${e.result.working_dir}` : ""}
+                                    {e.running ? " · streaming..." : ""}
                                   </div>
                                 </div>
                               ))
                             )}
                           </div>
-                          <div className="agent-studio__shell-input-row">
-                            <input
-                              type="text"
-                              className="agent-studio__shell-input"
-                              placeholder="PowerShell 命令（Enter 执行）"
-                              value={agentShellCmd}
-                              onChange={(ev) => setAgentShellCmd(ev.target.value)}
-                              onKeyDown={(ev) => ev.key === "Enter" && !agentShellRunning && void handleRunShell()}
-                              disabled={agentShellRunning}
-                            />
-                            <button
-                              className="agent-studio__shell-run-btn"
-                              disabled={!agentShellCmd.trim() || agentShellRunning}
-                              onClick={() => void handleRunShell()}
-                            >
-                              {agentShellRunning ? "…" : "运行"}
-                            </button>
+                          <div className="agent-studio__shell-input-wrap">
+                            <div className="agent-studio__shell-input-row">
+                              <input
+                                ref={agentShellInputRef}
+                                type="text"
+                                className="agent-studio__shell-input"
+                                placeholder="PowerShell 命令（Enter 执行，↑↓ 浏览历史）"
+                                value={agentShellCmd}
+                                onChange={(ev) => {
+                                  setAgentShellCmd(ev.target.value);
+                                  setAgentShellHistoryCursor(-1);
+                                }}
+                                onKeyDown={(ev) => {
+                                  if (ev.key === "ArrowUp") {
+                                    ev.preventDefault();
+                                    handleShellHistoryNav("prev");
+                                    return;
+                                  }
+                                  if (ev.key === "ArrowDown") {
+                                    ev.preventDefault();
+                                    handleShellHistoryNav("next");
+                                    return;
+                                  }
+                                  if (ev.key === "Enter" && !agentShellRunning) {
+                                    ev.preventDefault();
+                                    void handleRunShell();
+                                  }
+                                }}
+                                disabled={agentShellRunning || !agentShellSession}
+                              />
+                              <button
+                                className="agent-studio__shell-run-btn"
+                                disabled={!agentShellCmd.trim() || agentShellRunning || !agentShellSession}
+                                onMouseDown={(ev) => {
+                                  ev.preventDefault();
+                                }}
+                                onClick={() => void handleRunShell()}
+                              >
+                                {agentShellRunning ? "执行中" : "运行"}
+                              </button>
+                            </div>
+                            <p className="agent-studio__shell-input-tip">支持会话命令（例如 `cd ..`）和流式输出；工具调用与任务模式隔离。</p>
                           </div>
-                        </div>
+                        </section>
                       ) : null}
                     </div>
                   </section>

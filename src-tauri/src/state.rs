@@ -6,11 +6,12 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    agent_policy::classify_shell_policy,
+    agent_policy::classify_shell_policy_with_config,
     agent_service, db,
     llm::{
         LlmError, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider,
@@ -27,9 +28,9 @@ use crate::{
         LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
         ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem, ProgressPayload,
         QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug,
-        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, ShellResult, VaultInitResult,
-        WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter, WikiPageHistoryDetail,
-        WikiPageHistoryItem, WikiPageItem,
+        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, ShellPolicyConfig, ShellResult,
+        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter,
+        WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
     },
     search::reciprocal_rank_fusion,
     vault,
@@ -70,6 +71,8 @@ pub struct AppState {
         Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Vec<String>>>>,
     /// 摄入预览缓存（preview_id -> 预览上下文）。
     ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
+    /// Shell 会话缓存（session_id -> 会话状态）。
+    shell_sessions: Mutex<std::collections::HashMap<String, ShellSessionState>>,
 }
 
 /// 状态快照。
@@ -101,6 +104,8 @@ struct AppStateData {
     embed_ollama_model: Option<String>,
     /// Embedding 专用 Ollama Base URL
     embed_ollama_base_url: Option<String>,
+    /// Shell 策略配置（安全与能力平衡）。
+    shell_policy: ShellPolicyConfig,
     /// Agent 写入审批队列（run_id -> 待处理条目）
     pending_agent_writes: std::collections::HashMap<i64, crate::models::PendingAgentWrite>,
 }
@@ -113,6 +118,13 @@ struct CachedIngestPreview {
     source_content: String,
     summary: String,
     entities: Vec<String>,
+}
+
+/// Shell 会话状态（仅存储必要上下文）。
+#[derive(Debug, Clone)]
+struct ShellSessionState {
+    cwd: PathBuf,
+    last_active_at: String,
 }
 
 impl Default for AppState {
@@ -148,6 +160,7 @@ impl AppState {
                 ollama_base_url: config.ollama_base_url,
                 embed_ollama_model: config.embed_ollama_model,
                 embed_ollama_base_url: config.embed_ollama_base_url,
+                shell_policy: config.shell_policy.unwrap_or_default(),
                 pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path,
@@ -158,6 +171,7 @@ impl AppState {
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
+            shell_sessions: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -185,6 +199,7 @@ impl AppState {
             ollama_base_url: config.ollama_base_url.clone(),
             embed_ollama_model: config.embed_ollama_model.clone(),
             embed_ollama_base_url: config.embed_ollama_base_url.clone(),
+            shell_policy: config.shell_policy.clone(),
         });
         let mut runtime_snapshot = config_snapshot.clone();
 
@@ -230,6 +245,7 @@ impl AppState {
                 ollama_base_url: config.ollama_base_url,
                 embed_ollama_model: config.embed_ollama_model,
                 embed_ollama_base_url: config.embed_ollama_base_url,
+                shell_policy: config.shell_policy.unwrap_or_default(),
                 pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path,
@@ -240,6 +256,7 @@ impl AppState {
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
+            shell_sessions: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1079,6 +1096,55 @@ impl AppState {
                     LogLevel::Warn,
                     format!("OCR Provider 配置持久化失败: {}", err),
                 );
+                Err(err)
+            }
+        }
+    }
+
+    /// 读取 Shell 策略配置。
+    pub fn get_shell_policy_config(&self) -> ShellPolicyConfig {
+        let guard = self.inner.lock().expect("状态锁已被污染");
+        guard.shell_policy.clone()
+    }
+
+    /// 保存 Shell 策略配置并持久化到磁盘。
+    pub fn set_shell_policy_config(
+        &self,
+        config: ShellPolicyConfig,
+    ) -> Result<ShellPolicyConfig, String> {
+        let (mode, vault_path, query_top_k, expected_snapshot) = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            (
+                guard.mode,
+                guard.vault_path.clone(),
+                guard.query_top_k,
+                guard.config_snapshot.clone(),
+            )
+        };
+
+        {
+            let mut guard = self.inner.lock().expect("状态锁已被污染");
+            guard.shell_policy = config;
+        }
+
+        match self.persist_config(
+            mode,
+            vault_path.as_deref(),
+            query_top_k,
+            expected_snapshot.as_deref(),
+        ) {
+            Ok(serialized) => {
+                let mut guard = self.inner.lock().expect("状态锁已被污染");
+                guard.config_snapshot = Some(serialized);
+                guard.push_log(
+                    LogLevel::Info,
+                    "Shell 策略配置已保存".to_string(),
+                    current_timestamp_ms(),
+                );
+                Ok(guard.shell_policy.clone())
+            }
+            Err(err) => {
+                self.push_log(LogLevel::Warn, format!("Shell 策略配置持久化失败: {}", err));
                 Err(err)
             }
         }
@@ -5505,6 +5571,7 @@ Wiki 页面：\n{}",
                 ollama_base_url: guard.ollama_base_url.clone(),
                 embed_ollama_model: guard.embed_ollama_model.clone(),
                 embed_ollama_base_url: guard.embed_ollama_base_url.clone(),
+                shell_policy: Some(guard.shell_policy.clone()),
             }
         };
         let serialized = Self::serialize_config_full(&config);
@@ -6006,6 +6073,8 @@ Wiki 页面：\n{}",
         command: String,
         timeout_ms: u64,
         source: Option<String>,
+        session_id: Option<String>,
+        stream_id: Option<String>,
     ) -> Result<ShellResult, String> {
         let executor = source
             .as_deref()
@@ -6013,14 +6082,25 @@ Wiki 页面：\n{}",
             .filter(|s| !s.is_empty())
             .unwrap_or("manual")
             .to_lowercase();
+        let raw_command = command.trim().to_string();
+        if raw_command.is_empty() {
+            return Err("命令不能为空".to_string());
+        }
+        let command = normalize_shell_command_for_executor(&raw_command, &executor);
+        let shell_policy_config = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard.shell_policy.clone()
+        };
         let (policy_action, policy_decision, block_reason) =
-            classify_shell_policy(&command, &executor);
+            classify_shell_policy_with_config(&command, &executor, &shell_policy_config);
+        let cwd = self.resolve_shell_cwd(session_id.as_deref())?;
         if let Some(reason) = block_reason {
             return Ok(ShellResult {
-                command: command.clone(),
+                command: raw_command,
                 stdout: String::new(),
                 stderr: String::new(),
                 exit_code: -1,
+                working_dir: cwd.to_string_lossy().to_string(),
                 blocked: true,
                 blocked_reason: Some(reason),
                 policy_action: policy_action.to_string(),
@@ -6028,39 +6108,389 @@ Wiki 页面：\n{}",
                 executor,
             });
         }
-        let cwd = {
-            let data = self.inner.lock().unwrap();
-            data.vault_path.clone().unwrap_or_else(std::env::temp_dir)
-        };
-        #[cfg(target_os = "windows")]
-        let mut child = tokio::process::Command::new("powershell");
-        #[cfg(target_os = "windows")]
-        child.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
-        #[cfg(not(target_os = "windows"))]
-        let mut child = tokio::process::Command::new("bash");
-        #[cfg(not(target_os = "windows"))]
-        child.arg("-c").arg(&command);
-        child
-            .current_dir(&cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let timeout = std::time::Duration::from_millis(timeout_ms.min(120_000));
-        match tokio::time::timeout(timeout, child.output()).await {
-            Ok(Ok(out)) => Ok(ShellResult {
-                command,
-                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-                exit_code: out.status.code().unwrap_or(-1),
+        // 处理 cd 内建命令：在会话模式下持久化工作目录，增强“终端对话感”。
+        if let Some(target) = parse_cd_target(&raw_command) {
+            let resolved = resolve_cd_target(&cwd, &target)?;
+            self.update_shell_cwd(session_id.as_deref(), resolved.clone());
+            return Ok(ShellResult {
+                command: raw_command,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                working_dir: resolved.to_string_lossy().to_string(),
                 blocked: false,
                 blocked_reason: None,
                 policy_action: policy_action.to_string(),
                 policy_decision: policy_decision.to_string(),
                 executor,
-            }),
-            Ok(Err(e)) => Err(format!("执行失败: {e}")),
-            Err(_) => Err(format!("超时（{timeout_ms}ms）")),
+            });
+        }
+        #[cfg(target_os = "windows")]
+        let mut child = tokio::process::Command::new("powershell");
+        #[cfg(target_os = "windows")]
+        child.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[System.Text.UTF8Encoding]::new($false); {}",
+                command
+            ),
+        ]);
+        #[cfg(not(target_os = "windows"))]
+        let mut child = tokio::process::Command::new("bash");
+        #[cfg(not(target_os = "windows"))]
+        child.arg("-c").arg(&command);
+        let mut child = child
+            .current_dir(&cwd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("执行失败: {e}"))?;
+        let timeout = std::time::Duration::from_millis(timeout_ms.min(120_000));
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut stdout_closed = false;
+        let mut stderr_closed = false;
+        let mut exit_code: Option<i32> = None;
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        let mut stdout_reader = child.stdout.take().map(BufReader::new);
+        let mut stderr_reader = child.stderr.take().map(BufReader::new);
+
+        loop {
+            if tokio::time::Instant::now() >= deadline && exit_code.is_none() {
+                let _ = child.kill().await;
+                self.emit_shell_stream_chunk(
+                    stream_id.as_deref(),
+                    session_id.as_deref(),
+                    "命令执行超时，已中止。",
+                    "system",
+                    true,
+                );
+                return Err(format!("超时（{timeout_ms}ms）"));
+            }
+            tokio::select! {
+                line = async {
+                    if let Some(reader) = &mut stdout_reader {
+                        let mut buf = Vec::new();
+                        reader.read_until(b'\n', &mut buf).await.map(|size| {
+                            if size == 0 {
+                                None
+                            } else {
+                                Some(buf)
+                            }
+                        })
+                    } else {
+                        Ok(None)
+                    }
+                }, if !stdout_closed => {
+                    match line {
+                        Ok(Some(raw)) => {
+                            let text = decode_shell_output_chunk(&raw);
+                            stdout.push_str(&text);
+                            if !text.ends_with('\n') {
+                                stdout.push('\n');
+                            }
+                            self.emit_shell_stream_chunk(stream_id.as_deref(), session_id.as_deref(), &text, "stdout", false);
+                        }
+                        Ok(None) => {
+                            stdout_closed = true;
+                        }
+                        Err(e) => {
+                            stderr.push_str(&format!("读取 stdout 失败: {e}\n"));
+                            stdout_closed = true;
+                        }
+                    }
+                }
+                line = async {
+                    if let Some(reader) = &mut stderr_reader {
+                        let mut buf = Vec::new();
+                        reader.read_until(b'\n', &mut buf).await.map(|size| {
+                            if size == 0 {
+                                None
+                            } else {
+                                Some(buf)
+                            }
+                        })
+                    } else {
+                        Ok(None)
+                    }
+                }, if !stderr_closed => {
+                    match line {
+                        Ok(Some(raw)) => {
+                            let text = decode_shell_output_chunk(&raw);
+                            stderr.push_str(&text);
+                            if !text.ends_with('\n') {
+                                stderr.push('\n');
+                            }
+                            self.emit_shell_stream_chunk(stream_id.as_deref(), session_id.as_deref(), &text, "stderr", false);
+                        }
+                        Ok(None) => {
+                            stderr_closed = true;
+                        }
+                        Err(e) => {
+                            stderr.push_str(&format!("读取 stderr 失败: {e}\n"));
+                            stderr_closed = true;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(18)) => {}
+            }
+            if exit_code.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        exit_code = Some(status.code().unwrap_or(-1));
+                    }
+                    Ok(None) => {}
+                    Err(e) => return Err(format!("执行失败: {e}")),
+                }
+            }
+            if stdout_closed && stderr_closed && exit_code.is_some() {
+                break;
+            }
+        }
+        self.emit_shell_stream_chunk(
+            stream_id.as_deref(),
+            session_id.as_deref(),
+            "",
+            "system",
+            true,
+        );
+        self.update_shell_cwd(session_id.as_deref(), cwd.clone());
+        Ok(ShellResult {
+            command: raw_command,
+            stdout,
+            stderr,
+            exit_code: exit_code.unwrap_or(-1),
+            working_dir: cwd.to_string_lossy().to_string(),
+            blocked: false,
+            blocked_reason: None,
+            policy_action: policy_action.to_string(),
+            policy_decision: policy_decision.to_string(),
+            executor,
+        })
+    }
+
+    /// 创建 Shell 会话（持久化 cwd，供前端终端模式复用）。
+    pub fn create_shell_session_impl(
+        &self,
+        source: Option<String>,
+    ) -> Result<crate::models::ShellSessionInfo, String> {
+        let executor = source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("manual")
+            .to_lowercase();
+        let now = current_timestamp_ms();
+        let session_id = format!("sh-{}-{}", now, rand_suffix());
+        let cwd = {
+            let data = self.inner.lock().unwrap();
+            data.vault_path.clone().unwrap_or_else(std::env::temp_dir)
+        };
+        let state = ShellSessionState {
+            cwd: cwd.clone(),
+            last_active_at: now.clone(),
+        };
+        self.shell_sessions
+            .lock()
+            .expect("shell_sessions lock")
+            .insert(session_id.clone(), state);
+        Ok(crate::models::ShellSessionInfo {
+            session_id,
+            working_dir: cwd.to_string_lossy().to_string(),
+            executor,
+            created_at: now,
+        })
+    }
+
+    /// 关闭 Shell 会话。
+    pub fn close_shell_session_impl(&self, session_id: String) -> bool {
+        self.shell_sessions
+            .lock()
+            .expect("shell_sessions lock")
+            .remove(session_id.trim())
+            .is_some()
+    }
+
+    fn resolve_shell_cwd(&self, session_id: Option<&str>) -> Result<PathBuf, String> {
+        if let Some(id) = session_id.map(str::trim).filter(|v| !v.is_empty()) {
+            let map = self.shell_sessions.lock().expect("shell_sessions lock");
+            if let Some(state) = map.get(id) {
+                return Ok(state.cwd.clone());
+            }
+            return Err(format!("Shell 会话不存在: {}", id));
+        }
+        let data = self.inner.lock().unwrap();
+        Ok(data.vault_path.clone().unwrap_or_else(std::env::temp_dir))
+    }
+
+    fn update_shell_cwd(&self, session_id: Option<&str>, cwd: PathBuf) {
+        let Some(id) = session_id.map(str::trim).filter(|v| !v.is_empty()) else {
+            return;
+        };
+        let mut map = self.shell_sessions.lock().expect("shell_sessions lock");
+        if let Some(state) = map.get_mut(id) {
+            state.cwd = cwd;
+            state.last_active_at = current_timestamp_ms();
         }
     }
+
+    fn emit_shell_stream_chunk(
+        &self,
+        stream_id: Option<&str>,
+        session_id: Option<&str>,
+        chunk: &str,
+        stream: &str,
+        done: bool,
+    ) {
+        let Some(handle) = self.app_handle.get() else {
+            return;
+        };
+        let Some(stream_id) = stream_id.map(str::trim).filter(|v| !v.is_empty()) else {
+            return;
+        };
+        let payload = crate::models::ShellStreamChunk {
+            stream_id: stream_id.to_string(),
+            session_id: session_id
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string()),
+            chunk: chunk.to_string(),
+            stream: stream.to_string(),
+            done,
+        };
+        let _ = handle.emit("shell_stream_chunk", payload);
+    }
+}
+
+/// PowerShell 兼容增强：将最常用的 bash 风格短命令翻译到 Windows 习惯命令。
+fn normalize_shell_command_for_executor(command: &str, executor: &str) -> String {
+    if executor != "manual" {
+        return command.to_string();
+    }
+    let trimmed = command.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.is_empty() {
+        return trimmed.to_string();
+    }
+    let head = parts[0].to_ascii_lowercase();
+    if head == "pwd" {
+        return "Get-Location".to_string();
+    }
+    if head == "ls" {
+        if parts.len() == 1 {
+            return "Get-ChildItem".to_string();
+        }
+        let mut show_all = false;
+        for arg in parts.iter().skip(1) {
+            let normalized = arg.to_ascii_lowercase();
+            if matches!(normalized.as_str(), "-a" | "-la" | "-al" | "--all") {
+                show_all = true;
+                continue;
+            }
+            // 一旦出现未知参数，保留原命令，避免误翻译。
+            return command.to_string();
+        }
+        return if show_all {
+            "Get-ChildItem -Force".to_string()
+        } else {
+            "Get-ChildItem".to_string()
+        };
+    }
+    command.to_string()
+}
+
+/// 解析 cd 命令目标（仅处理最常见 `cd xxx` 场景）。
+fn parse_cd_target(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    if trimmed.eq_ignore_ascii_case("cd") {
+        return Some(".".to_string());
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let raw = if lowered.starts_with("cd /d ") {
+        trimmed[6..].trim()
+    } else if lowered.starts_with("cd ") {
+        trimmed[3..].trim()
+    } else {
+        return None;
+    };
+    if raw.is_empty() {
+        return Some(".".to_string());
+    }
+    Some(raw.trim_matches('"').trim_matches('\'').to_string())
+}
+
+/// 解析并校验 cd 目标路径。
+fn resolve_cd_target(base: &Path, target: &str) -> Result<PathBuf, String> {
+    let target_path = PathBuf::from(target);
+    let next = if target_path.is_absolute() {
+        target_path
+    } else {
+        base.join(target_path)
+    };
+    let canonical = next
+        .canonicalize()
+        .map_err(|e| format!("切换目录失败: {}", e))?;
+    if !canonical.is_dir() {
+        return Err(format!("目标不是目录: {}", canonical.to_string_lossy()));
+    }
+    Ok(canonical)
+}
+
+/// 生成短随机后缀，用于 session id 去重。
+fn rand_suffix() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|v| v.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}", seed & 0xfffff)
+}
+
+/// 解码 shell 输出分片：优先尝试 UTF-16（Windows 场景），否则回退 UTF-8 lossy。
+fn decode_shell_output_chunk(raw: &[u8]) -> String {
+    if let Some(text) = decode_utf16_chunk(raw) {
+        return text.trim_end_matches(['\r', '\n']).to_string();
+    }
+    String::from_utf8_lossy(raw)
+        .trim_end_matches(['\r', '\n'])
+        .to_string()
+}
+
+fn decode_utf16_chunk(raw: &[u8]) -> Option<String> {
+    if raw.len() < 2 {
+        return None;
+    }
+    if raw.len() % 2 != 0 {
+        return None;
+    }
+    // UTF-16 BOM
+    if raw.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    if raw.starts_with(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = raw[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    // 无 BOM 时用 NUL 比例做启发式判断，避免误判普通 UTF-8。
+    let nul_count = raw.iter().filter(|&&b| b == 0).count();
+    if nul_count * 3 < raw.len() {
+        return None;
+    }
+    let units: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Some(String::from_utf16_lossy(&units))
 }
 
 fn validate_ingest_source_path(source_path: &Path) -> Result<(), String> {
@@ -12296,6 +12726,7 @@ entities:
                 ollama_base_url: None,
                 embed_ollama_model: None,
                 embed_ollama_base_url: None,
+                shell_policy: ShellPolicyConfig::default(),
                 pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path: vault_dir.join(".runtime").join("app-config.json"),
@@ -12306,6 +12737,7 @@ entities:
             search_config: Mutex::new(crate::models::SearchConfig::default()),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
+            shell_sessions: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

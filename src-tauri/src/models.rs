@@ -75,6 +75,9 @@ pub struct AppConfig {
     /// Embedding 专用 Ollama Base URL（默认与 ollama_base_url 相同）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed_ollama_base_url: Option<String>,
+    /// Shell 策略配置（H6-S3：能力最大化与安全收敛）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_policy: Option<ShellPolicyConfig>,
 }
 
 impl Default for AppConfig {
@@ -93,6 +96,62 @@ impl Default for AppConfig {
             ollama_base_url: None,
             embed_ollama_model: None,
             embed_ollama_base_url: None,
+            shell_policy: None,
+        }
+    }
+}
+
+/// Shell 决策枚举（用于策略配置）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellPolicyDecision {
+    AutoAllow,
+    RequireApproval,
+    Deny,
+}
+
+impl ShellPolicyDecision {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ShellPolicyDecision::AutoAllow => "auto_allow",
+            ShellPolicyDecision::RequireApproval => "require_approval",
+            ShellPolicyDecision::Deny => "deny",
+        }
+    }
+}
+
+/// Shell 策略配置（P0：先暴露核心旋钮，后续迭代细化到 action/resource 维度）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellPolicyConfig {
+    /// `manual` 来源且 action=unknown 时的决策。
+    #[serde(default = "default_shell_policy_manual_unknown_decision")]
+    pub manual_unknown_decision: ShellPolicyDecision,
+    /// `agent` 来源且 action=write 时的决策。
+    #[serde(default = "default_shell_policy_agent_write_decision")]
+    pub agent_write_decision: ShellPolicyDecision,
+    /// `agent` 来源且 action=unknown 时的决策。
+    #[serde(default = "default_shell_policy_agent_unknown_decision")]
+    pub agent_unknown_decision: ShellPolicyDecision,
+}
+
+fn default_shell_policy_manual_unknown_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::AutoAllow
+}
+
+fn default_shell_policy_agent_write_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::RequireApproval
+}
+
+fn default_shell_policy_agent_unknown_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::RequireApproval
+}
+
+impl Default for ShellPolicyConfig {
+    fn default() -> Self {
+        Self {
+            manual_unknown_decision: default_shell_policy_manual_unknown_decision(),
+            agent_write_decision: default_shell_policy_agent_write_decision(),
+            agent_unknown_decision: default_shell_policy_agent_unknown_decision(),
         }
     }
 }
@@ -964,9 +1023,29 @@ pub struct ShellResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    pub working_dir: String,
     pub blocked: bool,
     pub blocked_reason: Option<String>,
     pub policy_action: String,
     pub policy_decision: String,
     pub executor: String,
+}
+
+/// Shell 会话元信息（H6-S3：会话型终端）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellSessionInfo {
+    pub session_id: String,
+    pub working_dir: String,
+    pub executor: String,
+    pub created_at: String,
+}
+
+/// Shell 流式输出事件载荷（前端通过 tauri event 订阅）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellStreamChunk {
+    pub stream_id: String,
+    pub session_id: Option<String>,
+    pub chunk: String,
+    pub stream: String, // stdout | stderr | system
+    pub done: bool,
 }

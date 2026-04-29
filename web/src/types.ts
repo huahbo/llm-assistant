@@ -590,6 +590,7 @@ export interface ShellResult {
   stdout: string;
   stderr: string;
   exit_code: number;
+  working_dir: string;
   blocked: boolean;
   blocked_reason: string | null;
   policy_action: string;
@@ -602,4 +603,32 @@ export interface ShellHistoryEntry {
   command: string;
   result: ShellResult;
   ts: number;
+  running?: boolean;
+  live_stdout?: string;
+  live_stderr?: string;
+  stream_id?: string;
+  session_id?: string | null;
+}
+
+export interface ShellSessionInfo {
+  session_id: string;
+  working_dir: string;
+  executor: string;
+  created_at: string;
+}
+
+export interface ShellStreamChunk {
+  stream_id: string;
+  session_id: string | null;
+  chunk: string;
+  stream: "stdout" | "stderr" | "system" | string;
+  done: boolean;
+}
+
+export type ShellPolicyDecision = "auto_allow" | "require_approval" | "deny";
+
+export interface ShellPolicyConfig {
+  manual_unknown_decision: ShellPolicyDecision;
+  agent_write_decision: ShellPolicyDecision;
+  agent_unknown_decision: ShellPolicyDecision;
 }

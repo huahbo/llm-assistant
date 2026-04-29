@@ -45,6 +45,23 @@
   - 工具入口改为右上显式按钮（打开/收起工具能力）+ 抽屉二级开关，避免误判“未展开”。
   - 清理旧的未使用 shell 容器样式，完成 JSX/CSS 对齐。
 
+### 2026-04-29（Codex 继续）
+- Agent Studio Shell 升级为“会话型流式终端（方案 B）+ 深色皮肤”：
+  - 工具区加入快捷命令、历史清空、单条输出复制、`↑/↓` 历史回填、流式状态 badge。
+  - 输入区固定在工具卡底部，长历史时仍可持续输入，不再被输出区挤走。
+  - 深色终端皮肤重做（背景层次、边框对比、提示/输出可读性）。
+- 后端 Shell 兼容增强：
+  - `ls/ls -a/ls -la/ls --all` 在 manual 模式统一翻译为 `Get-ChildItem`，避免 PowerShell 参数歧义。
+  - `cd` / `cd /d <path>` 在会话模式下作为内建命令处理并持久化 cwd。
+
+### 2026-04-29（Codex 新推进）
+- 新增独立计划文件：`docs/h6-shell-max-safety-plan.md`（P0~P3 全路径，便于限流后接手）。
+- H6-S3 P0 已开工并落地后端骨架：
+  - `ShellPolicyConfig` 入模（可持久化到 `app-config.json`）。
+  - `run_shell_impl` 改为读取配置执行策略。
+  - 新增 Tauri 命令：`get_shell_policy_config` / `set_shell_policy_config`。
+  - 前端 SDK 新增同名接口，并已在 Agent 工具页接入最小策略面板（3 个决策旋钮 + 保存 + 档位预设）。
+
 ---
 
 ## 验证基线（2026-04-29）
@@ -74,6 +91,7 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
+| 🔴 0 | **H6-S3 P0 Shell 策略可配置收口** | 进行中 | 完成 Rust/TS 编译与 Windows 手测，确认策略改动可立即影响命令决策 |
 | 🔴 1 | **write_wiki / edit_wiki 端到端验证** | 待用户手测 | 任务模式触发审批 → 批准 → 验证文件写入；拒绝 → 验证无变化 |
 | 🔴 2 | **Agent 运行历史 UI** | 待开发 | 左侧聊天区应能列出历史 runs 并点击查看各 run 的事件流；目前只有当前 run 可见 |
 | 🟢 3 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |

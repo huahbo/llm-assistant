@@ -8,9 +8,9 @@ use crate::models::{
     LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
     LlmStatus, LogEntry, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
     PageQuickLint, QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem,
-    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, ShellResult, VaultInitResult,
-    VaultStats, WikiPageCitationItem, WikiPageDetail, WikiPageHistoryDetail, WikiPageHistoryItem,
-    WikiPageItem,
+    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, ShellPolicyConfig, ShellResult,
+    ShellSessionInfo, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail,
+    WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -375,6 +375,21 @@ pub fn set_ocr_config(state: State<'_, AppState>, provider: Option<String>) -> R
         provider.as_deref().unwrap_or("None")
     );
     state.set_ocr_config(provider)
+}
+
+/// 读取 Shell 策略配置。
+#[tauri::command]
+pub fn get_shell_policy_config(state: State<'_, AppState>) -> ShellPolicyConfig {
+    state.get_shell_policy_config()
+}
+
+/// 保存 Shell 策略配置。
+#[tauri::command]
+pub fn set_shell_policy_config(
+    config: ShellPolicyConfig,
+    state: State<'_, AppState>,
+) -> Result<ShellPolicyConfig, String> {
+    state.set_shell_policy_config(config)
 }
 
 /// 将编辑后的 Markdown 内容写回 vault 文件并更新 FTS 索引。
@@ -938,11 +953,34 @@ pub async fn run_shell(
     command: String,
     timeout_ms: Option<u64>,
     source: Option<String>,
+    session_id: Option<String>,
+    stream_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ShellResult, String> {
     state
-        .run_shell_impl(command, timeout_ms.unwrap_or(30_000), source)
+        .run_shell_impl(
+            command,
+            timeout_ms.unwrap_or(30_000),
+            source,
+            session_id,
+            stream_id,
+        )
         .await
+}
+
+/// 创建 Shell 会话（会话内 cwd 持久化，支持终端式连续交互）。
+#[tauri::command]
+pub fn create_shell_session(
+    source: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ShellSessionInfo, String> {
+    state.create_shell_session_impl(source)
+}
+
+/// 关闭 Shell 会话。
+#[tauri::command]
+pub fn close_shell_session(session_id: String, state: State<'_, AppState>) -> bool {
+    state.close_shell_session_impl(session_id)
 }
 
 /// 批准 Agent write_wiki 写盘（H6-S2 审批流）。
