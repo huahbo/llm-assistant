@@ -7603,7 +7603,7 @@ export default function App() {
           <div className="window-titlebar__actions">
             <button
               type="button"
-              className="window-titlebar__action-btn"
+              className="window-titlebar__action-btn window-titlebar__action-btn--minimize"
               aria-label="最小化窗口"
               onClick={() => {
                 void handleWindowControl("minimize");

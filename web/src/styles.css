@@ -136,11 +136,11 @@ html.window-focused .window-titlebar {
 }
 
 .window-titlebar__action-btn {
-  width: 46px;
+  width: 44px;
   height: 100%;
   border-radius: 0;
-  color: var(--text-muted);
-  font-size: 13px;
+  color: rgba(0,0,0,0.55);
+  font-size: 11px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -157,24 +157,29 @@ html.window-focused .window-titlebar {
   color: #fff;
 }
 
-.window-titlebar__action-btn--maximize {
+/* X 号单独放大一点 */
+.window-titlebar__action-btn--close {
   font-size: 14px;
 }
 
 .window-titlebar__action-glyph {
   line-height: 1;
-  font-weight: 500;
+  font-weight: 400;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
+/* — 在多数字体中渲染偏上，向下微调 1px */
+.window-titlebar__action-btn--minimize .window-titlebar__action-glyph {
+  transform: translateY(1px);
+}
+
 .window-titlebar__action-glyph--maximize {
-  width: 14px;
-  height: 14px;
-  border: 1.8px solid currentColor;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
   border-radius: 1px;
-  transform: translateY(-1px);
   box-sizing: border-box;
 }
 
