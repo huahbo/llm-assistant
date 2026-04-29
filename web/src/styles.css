@@ -4692,7 +4692,7 @@ code {
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-card);
+  background: var(--bg-content);
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -4704,7 +4704,7 @@ code {
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-card);
+  background: var(--bg-content);
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -5200,7 +5200,10 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-right: 2px;
+  padding: 10px 8px 10px 10px;
+  background: var(--bg-page);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
 }
 
 .agent-studio__chat-bubble {
