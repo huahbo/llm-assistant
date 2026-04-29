@@ -6,8 +6,10 @@ pub struct ToolActionResult {
     pub level: String,
     pub log_line: String,
     pub requires_approval: bool,
-    /// 等待审批的写入内容 (resolved_path, content)
+    /// 等待审批的全量写入 (resolved_path, content)
     pub pending_write: Option<(String, String)>,
+    /// 等待审批的增量编辑 (resolved_path, old_str, new_str)
+    pub pending_edit: Option<(String, String, String)>,
 }
 
 /// Agent 循环单步决策。
@@ -26,6 +28,7 @@ pub enum AgentToolAction {
     SearchWiki { query: String, limit: usize },
     ReadWiki { path: String, max_chars: usize },
     WriteWiki { path: String, content: String },
+    EditWiki { path: String, old_str: String, new_str: String },
 }
 
 /// 解析单轮 agent 决策（best-effort）。
@@ -142,6 +145,26 @@ fn parse_agent_tool_action(item: &Value) -> Option<AgentToolAction> {
                 .to_string();
             Some(AgentToolAction::WriteWiki { path, content })
         }
+        "edit_wiki" => {
+            let path = item
+                .get("path")
+                .or_else(|| item.get("page_path"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            let old_str = item
+                .get("old_str")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            let new_str = item
+                .get("new_str")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(AgentToolAction::EditWiki { path, old_str, new_str })
+        }
         _ => None,
     }
 }
@@ -199,6 +222,20 @@ mod tests {
                 assert_eq!(content, "# A");
             }
             _ => panic!("应解析为 write_wiki"),
+        }
+    }
+
+    #[test]
+    fn parse_agent_loop_decision_supports_edit_wiki() {
+        let raw = r##"{"done":false,"action":{"tool":"edit_wiki","path":"wiki/a.md","old_str":"旧内容","new_str":"新内容"}}"##;
+        let decision = parse_agent_loop_decision(raw).expect("应能解析决策");
+        match decision.action {
+            Some(AgentToolAction::EditWiki { path, old_str, new_str }) => {
+                assert_eq!(path, "wiki/a.md");
+                assert_eq!(old_str, "旧内容");
+                assert_eq!(new_str, "新内容");
+            }
+            _ => panic!("应解析为 edit_wiki"),
         }
     }
 }

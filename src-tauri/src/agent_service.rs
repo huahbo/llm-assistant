@@ -45,9 +45,11 @@ pub async fn run_agent_task(
     let loop_outcome =
         run_agent_task_loop(state, run_id, &instruction, iteration_budget, &wiki_excerpt).await?;
 
-    // 如果有 pending_write，存入 state 等待审批
+    // 如果有 pending_write 或 pending_edit，存入 state 等待审批
     if let Some((path, content)) = loop_outcome.pending_write.clone() {
-        state.store_pending_agent_write(run_id, path, content);
+        state.store_pending_agent_write(run_id, path, content, None);
+    } else if let Some((path, old_str, new_str)) = loop_outcome.pending_edit.clone() {
+        state.store_pending_agent_write(run_id, path, new_str, Some(old_str));
     }
 
     let answer = summarize_agent_task(state, &instruction, &wiki_excerpt, &loop_outcome).await?;

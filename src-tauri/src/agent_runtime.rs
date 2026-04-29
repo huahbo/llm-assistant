@@ -38,6 +38,9 @@ impl AgentLoopRuntime for AppState {
             AgentToolAction::WriteWiki { path, content } => {
                 execute_write_wiki_action(self, idx, path, content)
             }
+            AgentToolAction::EditWiki { path, old_str, new_str } => {
+                execute_edit_wiki_action(self, idx, path, old_str, new_str)
+            }
         }
     }
 
@@ -218,6 +221,38 @@ fn execute_write_wiki_action(
         ),
         requires_approval: true,
         pending_write: Some((resolved, content)),
+        pending_edit: None,
+    }
+}
+
+fn execute_edit_wiki_action(
+    state: &AppState,
+    idx: u32,
+    path: String,
+    old_str: String,
+    new_str: String,
+) -> ToolActionResult {
+    let old_preview = truncate_chars(&old_str, 80);
+    let new_preview = truncate_chars(&new_str, 80);
+    let target = match resolve_agent_write_target_path(state, &path) {
+        Ok(p) => p,
+        Err(err) => {
+            return make_result("warn", format!(
+                "[tool#{}/edit_wiki] path=`{}` error={}",
+                idx + 1, path, err
+            ));
+        }
+    };
+    let resolved = target.to_string_lossy().to_string();
+    ToolActionResult {
+        level: "warn".to_string(),
+        log_line: format!(
+            "[tool#{}/edit_wiki] path=`{}` resolved=`{}` old_preview=`{}` new_preview=`{}` decision=require_approval",
+            idx + 1, path, resolved, old_preview, new_preview
+        ),
+        requires_approval: true,
+        pending_write: None,
+        pending_edit: Some((resolved, old_str, new_str)),
     }
 }
 
@@ -262,6 +297,7 @@ fn make_result(level: &str, line: String) -> ToolActionResult {
         log_line: line,
         requires_approval: false,
         pending_write: None,
+        pending_edit: None,
     }
 }
 

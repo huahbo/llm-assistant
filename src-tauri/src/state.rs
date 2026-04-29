@@ -5598,12 +5598,13 @@ Wiki 页面：\n{}",
             .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())
     }
 
-    /// 存储 Agent 待审批写入条目。
+    /// 存储 Agent 待审批写入条目。old_str=None 为全量写入，Some 为精确替换。
     pub(crate) fn store_pending_agent_write(
         &self,
         run_id: i64,
         resolved_path: String,
         content: String,
+        old_str: Option<String>,
     ) {
         let mut data = self.inner.lock().expect("状态锁已被污染");
         data.pending_agent_writes.insert(
@@ -5612,6 +5613,7 @@ Wiki 页面：\n{}",
                 run_id,
                 resolved_path,
                 content,
+                old_str,
                 created_at: current_timestamp_ms(),
             },
         );

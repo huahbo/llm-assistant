@@ -6,7 +6,8 @@ pub struct AgentLoopOutcome {
     pub tool_logs: Vec<String>,
     pub planner_notes: Vec<String>,
     pub final_hint: Option<String>,
-    pub pending_write: Option<(String, String)>, // (resolved_path, content)
+    pub pending_write: Option<(String, String)>,               // (resolved_path, content)
+    pub pending_edit: Option<(String, String, String)>,        // (resolved_path, old_str, new_str)
 }
 
 /// Agent 循环运行时接口（由 AppState 实现）。
@@ -29,6 +30,7 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
     let mut planner_notes: Vec<String> = Vec::new();
     let mut final_hint: Option<String> = None;
     let mut pending_write: Option<(String, String)> = None;
+    let mut pending_edit: Option<(String, String, String)> = None;
 
     for idx in 0..iteration_budget {
         let history = if tool_logs.is_empty() {
@@ -82,6 +84,7 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
         if tool_result.requires_approval {
             final_hint = Some("触发审批前置，等待人工确认".to_string());
             pending_write = tool_result.pending_write.clone();
+            pending_edit = tool_result.pending_edit.clone();
             runtime.append_event(
                 run_id,
                 "awaiting_approval",
@@ -96,6 +99,7 @@ pub async fn run_agent_task_loop<R: AgentLoopRuntime + Sync>(
         planner_notes,
         final_hint,
         pending_write,
+        pending_edit,
     })
 }
 
@@ -159,6 +163,13 @@ fn build_tool_start_message(idx: u32, action: &AgentToolAction) -> String {
             path.chars().take(80).collect::<String>(),
             content.chars().count()
         ),
+        AgentToolAction::EditWiki { path, old_str, new_str } => format!(
+            "🔧 tool_start #{} edit_wiki: {} (old={} chars, new={} chars)",
+            idx + 1,
+            path.chars().take(80).collect::<String>(),
+            old_str.chars().count(),
+            new_str.chars().count()
+        ),
     }
 }
 
@@ -176,7 +187,8 @@ pub fn build_loop_prompt(
 1) run_shell: {{\"tool\":\"run_shell\",\"command\":\"...\",\"timeout_ms\":30000}}\n\
 2) search_wiki: {{\"tool\":\"search_wiki\",\"query\":\"...\",\"limit\":5}}\n\
 3) read_wiki: {{\"tool\":\"read_wiki\",\"path\":\"wiki/xxx.md\",\"max_chars\":1200}}\n\
-4) write_wiki: {{\"tool\":\"write_wiki\",\"path\":\"wiki/xxx.md\",\"content\":\"...\"}}\n\n\
+4) write_wiki: {{\"tool\":\"write_wiki\",\"path\":\"wiki/xxx.md\",\"content\":\"...\"}}\n\
+5) edit_wiki: {{\"tool\":\"edit_wiki\",\"path\":\"wiki/xxx.md\",\"old_str\":\"...\",\"new_str\":\"...\"}}\n\n\
 返回格式（必须是 JSON 对象）：\n\
 {{\"done\":false,\"note\":\"...\",\"action\":{{...}}}}\n\
 或\n\
@@ -185,8 +197,9 @@ pub fn build_loop_prompt(
 1. 本轮最多 1 个 action；总预算 {iteration_budget} 轮。\n\
 2. run_shell 仅允许只读探测命令；可能被策略拒绝。\n\
 3. 优先使用 search_wiki/read_wiki 获取知识库证据。\n\
-4. write_wiki 当前为审批前置：会先返回 require_approval，不会直接落盘。\n\
-5. 信息不足时可继续下一轮；若已足够则 done=true。\n\n\
+4. write_wiki 为全量覆盖写入，需审批；edit_wiki 为精确替换，需审批（old_str 必须在文件中存在）。\n\
+5. 修改现有页面优先用 edit_wiki；创建新页面用 write_wiki。\n\
+6. 信息不足时可继续下一轮；若已足够则 done=true。\n\n\
 用户任务：\n{instruction}\n\n\
 知识库索引摘要：\n{wiki_excerpt}\n\n\
 当前工具历史：\n{history}\n"
@@ -245,6 +258,7 @@ mod tests {
                 log_line: String::new(),
                 requires_approval: false,
                 pending_write: None,
+                pending_edit: None,
             }
         }
         fn append_event(&self, _run_id: i64, _level: &str, _message: String) {}
@@ -257,6 +271,7 @@ mod tests {
         assert!(p.contains("search_wiki"));
         assert!(p.contains("read_wiki"));
         assert!(p.contains("write_wiki"));
+        assert!(p.contains("edit_wiki"));
         assert!(p.contains("总预算 3 轮"));
     }
 
@@ -279,6 +294,7 @@ mod tests {
             planner_notes: vec!["note".to_string()],
             final_hint: Some("hint".to_string()),
             pending_write: None,
+            pending_edit: None,
         };
         let answer = summarize_agent_task(&runtime, "任务", "索引", &outcome)
             .await
@@ -307,6 +323,7 @@ mod tests {
                 log_line: "[tool#1/write_wiki] decision=require_approval".to_string(),
                 requires_approval: true,
                 pending_write: Some(("vault/wiki/a.md".to_string(), "# A".to_string())),
+                pending_edit: None,
             }
         }
 

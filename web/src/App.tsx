@@ -10502,60 +10502,6 @@ export default function App() {
                         </button>
                       </div>
                     ) : null}
-                    {/* Shell 面板 */}
-                    <div className="agent-studio__shell">
-                      <button
-                        className="agent-studio__shell-toggle"
-                        onClick={() => setAgentShellOpen(o => !o)}
-                      >
-                        {agentShellOpen ? "▼" : "▶"} 调试 Shell（可选）
-                      </button>
-                      {agentShellOpen && (
-                        <div className="agent-studio__shell-body">
-                          <p className="agent-studio__shell-hint">
-                            任务模式中的 Agent 会自动调用 shell/read/search/write 工具；此处仅用于人工调试命令。
-                          </p>
-                          <div className="agent-studio__shell-history">
-                            {agentShellHistory.map(e => (
-                              <div
-                                key={e.id}
-                                className={`agent-studio__shell-entry ${e.result.blocked ? "blocked" : e.result.exit_code === 0 ? "ok" : "err"}`}
-                              >
-                                <div className="agent-studio__shell-prompt">❯ {e.command}</div>
-                                {e.result.blocked ? (
-                                  <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
-                                ) : (
-                                  <pre className="agent-studio__shell-output">
-                                    {e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`}
-                                  </pre>
-                                )}
-                                <div className="agent-studio__shell-meta">
-                                  {e.result.executor} · {e.result.policy_action} · {e.result.policy_decision}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="agent-studio__shell-input-row">
-                            <input
-                              type="text"
-                              className="agent-studio__shell-input"
-                              placeholder="PowerShell 命令（Enter 执行）"
-                              value={agentShellCmd}
-                              onChange={ev => setAgentShellCmd(ev.target.value)}
-                              onKeyDown={ev => ev.key === "Enter" && !agentShellRunning && void handleRunShell()}
-                              disabled={agentShellRunning}
-                            />
-                            <button
-                              className="agent-studio__shell-run-btn"
-                              disabled={!agentShellCmd.trim() || agentShellRunning}
-                              onClick={() => void handleRunShell()}
-                            >
-                              {agentShellRunning ? "…" : "运行"}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
                     <section className="agent-studio__task-mode">
                       <h3 className="agent-studio__title">任务模式（Beta）</h3>
                       <textarea
@@ -10608,7 +10554,7 @@ export default function App() {
                       {selectedAgentRun?.status === "awaiting_approval" && (
                         <div className="agent-studio__approval-bar">
                           <span className="agent-studio__approval-label">
-                            ⏸ Agent 请求写入 Wiki，等待审批
+                            ⏸ Agent 请求修改 Wiki（写入 / 编辑），等待审批
                           </span>
                           <div className="agent-studio__approval-actions">
                             <button
@@ -10616,7 +10562,7 @@ export default function App() {
                               disabled={agentActionRunning}
                               onClick={() => void handleApproveAgentWrite()}
                             >
-                              ✅ 批准写入
+                              ✅ 批准
                             </button>
                             <button
                               className="agent-studio__approval-reject"
@@ -10629,6 +10575,60 @@ export default function App() {
                         </div>
                       )}
                     </section>
+                    {/* 调试工具（开发者选项，折叠） */}
+                    <div className="agent-studio__shell">
+                      <button
+                        className="agent-studio__shell-toggle"
+                        onClick={() => setAgentShellOpen(o => !o)}
+                      >
+                        {agentShellOpen ? "▼" : "▶"} 开发者工具：手动 Shell
+                      </button>
+                      {agentShellOpen && (
+                        <div className="agent-studio__shell-body">
+                          <p className="agent-studio__shell-hint">
+                            任务模式中 Agent 会自动调用工具；此处仅用于手动调试命令，不影响 Agent 运行。
+                          </p>
+                          <div className="agent-studio__shell-history">
+                            {agentShellHistory.map(e => (
+                              <div
+                                key={e.id}
+                                className={`agent-studio__shell-entry ${e.result.blocked ? "blocked" : e.result.exit_code === 0 ? "ok" : "err"}`}
+                              >
+                                <div className="agent-studio__shell-prompt">❯ {e.command}</div>
+                                {e.result.blocked ? (
+                                  <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
+                                ) : (
+                                  <pre className="agent-studio__shell-output">
+                                    {e.result.stdout || e.result.stderr || `(exit ${e.result.exit_code})`}
+                                  </pre>
+                                )}
+                                <div className="agent-studio__shell-meta">
+                                  {e.result.executor} · {e.result.policy_action} · {e.result.policy_decision}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="agent-studio__shell-input-row">
+                            <input
+                              type="text"
+                              className="agent-studio__shell-input"
+                              placeholder="PowerShell 命令（Enter 执行）"
+                              value={agentShellCmd}
+                              onChange={ev => setAgentShellCmd(ev.target.value)}
+                              onKeyDown={ev => ev.key === "Enter" && !agentShellRunning && void handleRunShell()}
+                              disabled={agentShellRunning}
+                            />
+                            <button
+                              className="agent-studio__shell-run-btn"
+                              disabled={!agentShellCmd.trim() || agentShellRunning}
+                              onClick={() => void handleRunShell()}
+                            >
+                              {agentShellRunning ? "…" : "运行"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <div className="agent-studio__review-tabs">
                       <button
                         type="button"
