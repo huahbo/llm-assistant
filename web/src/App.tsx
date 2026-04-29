@@ -3077,6 +3077,41 @@ export default function App() {
   const [agentContextOpen, setAgentContextOpen] = useState<boolean>(false);
   const agentShellIdRef = useRef(0);
 
+  // ── 面板拖拽分割 ──────────────────────────────────────────────
+  const [sidebarWidth, setSidebarWidth] = useState(220);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [agentLeftRatio, setAgentLeftRatio] = useState(0.54);
+  const sidebarDragRef = useRef({ active: false, startX: 0, startW: 220 });
+  const agentDragRef = useRef({ active: false, startX: 0, startRatio: 0.54, containerW: 0 });
+  const agentLayoutRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (sidebarDragRef.current.active) {
+        const delta = e.clientX - sidebarDragRef.current.startX;
+        setSidebarWidth(Math.max(160, Math.min(400, sidebarDragRef.current.startW + delta)));
+      }
+      if (agentDragRef.current.active) {
+        const delta = e.clientX - agentDragRef.current.startX;
+        const newLeft = agentDragRef.current.startRatio * agentDragRef.current.containerW + delta;
+        setAgentLeftRatio(Math.max(0.25, Math.min(0.75, newLeft / agentDragRef.current.containerW)));
+      }
+    };
+    const onUp = () => {
+      sidebarDragRef.current.active = false;
+      agentDragRef.current.active = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+  // ─────────────────────────────────────────────────────────────
+
   useEffect(
     () => () => {
       if (askFocusTimerRef.current !== null) {
@@ -7585,12 +7620,15 @@ export default function App() {
       ) : null}
       <div className="app-shell">
       {/* 侧边栏导航 */}
-      <nav className="sidebar">
+      <nav
+        className={`sidebar${sidebarCollapsed ? " sidebar--collapsed" : ""}`}
+        style={{ width: sidebarCollapsed ? 52 : sidebarWidth }}
+      >
         <div className="sidebar__brand">
           <div className="sidebar__brand-logo" aria-hidden="true">
             <img className="sidebar__brand-logo-image" src={appLogo} alt="" />
           </div>
-          <span className="sidebar__brand-name">LLM Wiki</span>
+          {!sidebarCollapsed && <span className="sidebar__brand-name">LLM Wiki</span>}
         </div>
         <div className="sidebar__nav">
           {navGroups.map((group) => (
@@ -7598,19 +7636,20 @@ export default function App() {
               key={group.id}
               className={`sidebar__nav-group${group.isolated ? " sidebar__nav-group--isolated" : ""}`}
             >
-              <header className="sidebar__nav-group-title">{group.title}</header>
+              {!sidebarCollapsed && <header className="sidebar__nav-group-title">{group.title}</header>}
               <ul className="sidebar__nav-group-list">
                 {group.items.map((item) => (
                   <li key={item.id}>
                     <button
                       type="button"
                       className={`sidebar__nav-item${activeModule === item.id ? " sidebar__nav-item--active" : ""}`}
+                      title={sidebarCollapsed ? item.label : undefined}
                       onClick={() => {
                         handleNavModuleSelect(item.id);
                       }}
                     >
                       <span className="sidebar__nav-icon">{item.icon}</span>
-                      <span className="sidebar__nav-label">{item.label}</span>
+                      {!sidebarCollapsed && <span className="sidebar__nav-label">{item.label}</span>}
                     </button>
                   </li>
                 ))}
@@ -7619,14 +7658,36 @@ export default function App() {
           ))}
         </div>
         <div className="sidebar__footer">
-          <div className="sidebar__llm-status">
-            <span
-              className={`sidebar__llm-dot${llmStatus?.available ? " sidebar__llm-dot--ok" : " sidebar__llm-dot--off"}`}
-            />
-            <span className="sidebar__llm-label">{llmModelText}</span>
-          </div>
+          <button
+            type="button"
+            className="sidebar__collapse-btn"
+            title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            onClick={() => setSidebarCollapsed((v) => !v)}
+          >
+            {sidebarCollapsed ? "▶" : "◀"}
+          </button>
+          {!sidebarCollapsed && (
+            <div className="sidebar__llm-status">
+              <span
+                className={`sidebar__llm-dot${llmStatus?.available ? " sidebar__llm-dot--ok" : " sidebar__llm-dot--off"}`}
+              />
+              <span className="sidebar__llm-label">{llmModelText}</span>
+            </div>
+          )}
         </div>
       </nav>
+      {/* 侧边栏 / 主内容 分割拖拽条 */}
+      {!sidebarCollapsed && (
+        <div
+          className="split-handle"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            sidebarDragRef.current = { active: true, startX: e.clientX, startW: sidebarWidth };
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+          }}
+        />
+      )}
 
       {/* 主内容区 */}
       <div className="main-content">
@@ -10164,7 +10225,11 @@ export default function App() {
                     {agentStatusMessage}
                   </p>
                 ) : null}
-                <div className="agent-studio__layout">
+                <div
+                  ref={agentLayoutRef}
+                  className="agent-studio__layout"
+                  style={{ gridTemplateColumns: `minmax(0,${agentLeftRatio}fr) 6px minmax(0,${1 - agentLeftRatio}fr)`, gap: 0 }}
+                >
                   <section className="agent-studio__left">
                     <div className="agent-studio__context">
                       <button
@@ -10463,6 +10528,23 @@ export default function App() {
                       </button>
                     </div>
                   </section>
+                  {/* 左右面板拖拽分割条 */}
+                  <div
+                    className="split-handle"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      const container = agentLayoutRef.current;
+                      if (!container) return;
+                      agentDragRef.current = {
+                        active: true,
+                        startX: e.clientX,
+                        startRatio: agentLeftRatio,
+                        containerW: container.getBoundingClientRect().width,
+                      };
+                      document.body.style.cursor = 'col-resize';
+                      document.body.style.userSelect = 'none';
+                    }}
+                  />
                   <section className="agent-studio__right">
                     <div className="agent-studio__draft-head">
                       <h3 className="agent-studio__title">

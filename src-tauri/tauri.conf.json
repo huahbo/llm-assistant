@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "LLM Wiki",
-        "width": 1480,
-        "height": 940,
+        "width": 1680,
+        "height": 1040,
+        "minWidth": 1100,
+        "minHeight": 700,
         "resizable": true,
         "decorations": false,
         "dragDropEnabled": true
