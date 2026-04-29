@@ -3111,6 +3111,20 @@ export default function App() {
       document.removeEventListener('mouseup', onUp);
     };
   }, []);
+
+  // 窗口激活/失活时切换 CSS class，使顶部 border-top 颜色跟随 DWM 边框变化
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const win = getCurrentWindow();
+    // 初始化：先查询一次当前焦点状态
+    void win.isFocused().then((focused) => {
+      document.documentElement.classList.toggle('window-focused', focused);
+    });
+    const unlisten = win.onFocusChanged(({ payload: focused }) => {
+      document.documentElement.classList.toggle('window-focused', focused);
+    });
+    return () => { void unlisten.then((fn) => fn()); };
+  }, []);
   // ─────────────────────────────────────────────────────────────
 
   useEffect(

@@ -69,13 +69,18 @@ input, select, textarea { font: inherit; }
 .window-titlebar {
   height: 38px;
   background: var(--bg-sidebar);
-  border-top: 1px solid rgba(0,0,0,0.28);
+  border-top: 1px solid rgba(0,0,0,0.15);
   border-bottom: 1px solid var(--border-light);
+  transition: border-top-color 0.1s;
   display: flex;
   align-items: center;
   padding-left: 8px;
   user-select: none;
   flex-shrink: 0;
+}
+
+html.window-focused .window-titlebar {
+  border-top-color: rgba(0,0,0,0.50);
 }
 
 .window-titlebar__drag-region {
