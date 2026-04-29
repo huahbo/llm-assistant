@@ -10551,6 +10551,22 @@ export default function App() {
                       ) : (
                         <p className="agent-studio__empty">任务结果将在此显示。</p>
                       )}
+                      {/* 执行日志：任务运行时工具调用过程 */}
+                      {agentSelectedRunId != null && agentEvents.length > 0 && (
+                        <div className="agent-studio__exec-log">
+                          <div className="agent-studio__exec-log-head">
+                            <span>执行日志</span>
+                            <span className="agent-studio__exec-log-count">{agentEvents.length} 条</span>
+                          </div>
+                          <ul className="agent-studio__exec-log-list">
+                            {[...agentEvents].reverse().map((ev) => (
+                              <li key={ev.id} className={`agent-studio__exec-log-row agent-studio__exec-log-row--${String(ev.level).toLowerCase()}`}>
+                                <span className="agent-studio__exec-log-msg">{ev.message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                       {selectedAgentRun?.status === "awaiting_approval" && (
                         <div className="agent-studio__approval-bar">
                           <span className="agent-studio__approval-label">
