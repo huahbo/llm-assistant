@@ -7588,6 +7588,7 @@ export default function App() {
         >
           <div
             className="window-titlebar__drag-region"
+            data-tauri-drag-region
           >
             <div className="window-titlebar__brand">
               <div className="window-titlebar__logo" aria-hidden="true">
@@ -7598,7 +7599,7 @@ export default function App() {
               </span>
             </div>
           </div>
-          <div className="window-titlebar__drag-spacer" />
+          <div className="window-titlebar__drag-spacer" data-tauri-drag-region />
           <div className="window-titlebar__actions">
             <button
               type="button"

@@ -67,7 +67,7 @@ input, select, textarea { font: inherit; }
 }
 
 .window-titlebar {
-  height: 38px;
+  height: 32px;
   background: var(--bg-sidebar);
   border-top: 1px solid rgba(0,0,0,0.38);
   border-bottom: 1px solid var(--border-light);
@@ -136,11 +136,11 @@ html.window-focused .window-titlebar {
 }
 
 .window-titlebar__action-btn {
-  width: 52px;
+  width: 46px;
   height: 100%;
   border-radius: 0;
   color: var(--text-muted);
-  font-size: 18px;
+  font-size: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -158,7 +158,7 @@ html.window-focused .window-titlebar {
 }
 
 .window-titlebar__action-btn--maximize {
-  font-size: 20px;
+  font-size: 14px;
 }
 
 .window-titlebar__action-glyph {
