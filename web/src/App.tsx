@@ -3102,6 +3102,7 @@ export default function App() {
       agentDragRef.current.active = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      document.body.classList.remove('split-dragging');
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -7685,6 +7686,7 @@ export default function App() {
             sidebarDragRef.current = { active: true, startX: e.clientX, startW: sidebarWidth };
             document.body.style.cursor = 'col-resize';
             document.body.style.userSelect = 'none';
+            document.body.classList.add('split-dragging');
           }}
         />
       )}
@@ -10543,6 +10545,7 @@ export default function App() {
                       };
                       document.body.style.cursor = 'col-resize';
                       document.body.style.userSelect = 'none';
+                      document.body.classList.add('split-dragging');
                     }}
                   />
                   <section className="agent-studio__right">

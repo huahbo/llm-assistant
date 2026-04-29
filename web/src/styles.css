@@ -48,7 +48,8 @@
 
 /* ---------- 重置 ---------- */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg-page); overflow: hidden; }
+html { height: 100%; background: var(--bg-sidebar); overflow: hidden; }
+body { height: 100%; background: var(--bg-page); overflow: hidden; }
 ul { list-style: none; }
 button { cursor: pointer; border: none; background: none; font: inherit; }
 a { color: inherit; text-decoration: none; }
@@ -183,34 +184,33 @@ input, select, textarea { font: inherit; }
    ========================================================= */
 
 .split-handle {
-  width: 6px;
-  min-width: 6px;
+  width: 4px;
+  min-width: 4px;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
   position: relative;
   z-index: 5;
-  transition: background 0.12s;
   align-self: stretch;
 }
 
 .split-handle::after {
   content: '';
   position: absolute;
-  top: 20%;
-  bottom: 20%;
+  top: 25%;
+  bottom: 25%;
   left: 50%;
   transform: translateX(-50%);
   width: 2px;
   border-radius: 2px;
   background: var(--border);
-  transition: background 0.12s, width 0.12s, top 0.12s, bottom 0.12s;
+  transition: background 0.15s, top 0.15s, bottom 0.15s;
 }
 
-.split-handle:hover::after {
-  top: 5%;
-  bottom: 5%;
-  width: 3px;
+.split-handle:hover::after,
+body.split-dragging .split-handle::after {
+  top: 0;
+  bottom: 0;
   background: var(--accent);
 }
 
@@ -4662,6 +4662,12 @@ code {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  /* 覆盖 .panel 的边框与阴影，避免 App 边缘出现黑线 */
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 12px;
+  margin-bottom: 0;
 }
 
 .agent-studio__layout {
@@ -5178,8 +5184,7 @@ code {
 
 .agent-studio__chat-thread {
   flex: 1;
-  min-height: 180px;
-  max-height: 560px;
+  min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -5246,8 +5251,21 @@ code {
   border-top: 1px solid var(--border-light);
   padding-top: 10px;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.agent-studio__composer .dev-panel__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-studio__composer .dev-panel__button--accent {
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 .agent-studio__composer-tools {
