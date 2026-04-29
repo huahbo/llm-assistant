@@ -5181,27 +5181,66 @@ code {
   max-height: 180px;
   overflow-y: auto;
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 
 .agent-studio__exec-log-row {
-  padding: 2px 8px;
+  padding: 6px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-  word-break: break-all;
+  word-break: break-word;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .agent-studio__exec-log-row:last-child { border-bottom: none; }
 
 .agent-studio__exec-log-row--info  { color: var(--text); }
-.agent-studio__exec-log-row--warn  { color: var(--accent-orange, #b45309); background: color-mix(in srgb, #fef3c7 50%, transparent); }
-.agent-studio__exec-log-row--error { color: var(--red, #dc2626); background: color-mix(in srgb, #fee2e2 50%, transparent); }
+.agent-studio__exec-log-row--warn  { color: #b45309; background: color-mix(in srgb, #fef3c7 50%, transparent); }
+.agent-studio__exec-log-row--error { color: var(--error); background: color-mix(in srgb, #fee2e2 50%, transparent); }
 .agent-studio__exec-log-row--awaiting_approval {
-  color: var(--accent-blue, #1d4ed8);
+  color: #1d4ed8;
   background: color-mix(in srgb, #dbeafe 60%, transparent);
   font-weight: 600;
 }
 
 .agent-studio__exec-log-msg { white-space: pre-wrap; }
+
+.agent-studio__exec-log-row-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-studio__exec-log-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.agent-studio__exec-log-side {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.agent-studio__exec-log-detail summary {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.agent-studio__exec-log-detail pre {
+  margin: 4px 0 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .agent-studio__chat-thread {
   flex: 1;

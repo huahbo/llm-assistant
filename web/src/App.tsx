@@ -190,6 +190,16 @@ const agentEventLevelOptions: AgentRunEventLevel[] = ["info", "warn", "error"];
 const agentCompleteStatusOptions: AgentRunStatus[] = ["applied", "failed"];
 type AgentReviewTab = "draft" | "diff" | "citations";
 type AgentFlowMode = "idle" | "playing" | "paused" | "done";
+type AgentExecTimelineItem = {
+  key: string;
+  kind: "tool" | "marker";
+  level: AgentRunEventLevel | "awaiting_approval";
+  title: string;
+  summary: string;
+  detail?: string;
+  createdAt: string;
+  durationMs?: number;
+};
 
 const formatAgentRunStatusLabel = (status: string): string => {
   const normalized = status.trim().toLowerCase();
@@ -235,6 +245,31 @@ const writeAgentActiveSkillKeyToStorage = (skillKey: string): void => {
   } catch {
     // 本地存储异常时静默降级，不阻塞主流程。
   }
+};
+
+const normalizeEventLevel = (level: string): AgentRunEventLevel | "awaiting_approval" => {
+  const normalized = String(level).trim().toLowerCase();
+  if (normalized === "warn" || normalized === "error" || normalized === "awaiting_approval") {
+    return normalized;
+  }
+  return "info";
+};
+
+const parseEventTimestamp = (value: string): number | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const truncateText = (text: string, max = 160): string => {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max)}...`;
 };
 
 const chunkAgentDraftBlock = (block: string, maxLen = 180): string[] => {
@@ -3249,6 +3284,81 @@ export default function App() {
     }
     return "";
   }, [agentEvents, agentSelectedRunId]);
+  const agentExecTimeline = useMemo<AgentExecTimelineItem[]>(() => {
+    if (agentEvents.length === 0) return [];
+    const orderedEvents = [...agentEvents].reverse();
+    const pendingStarts = new Map<
+      string,
+      { created_at: string; toolName: string; title: string; detail: string }
+    >();
+    const timeline: AgentExecTimelineItem[] = [];
+
+    for (const event of orderedEvents) {
+      const message = String(event.message ?? "").trim();
+      if (!message) continue;
+      const startMatched = message.match(/tool_start #(\d+)\s+([a-z_]+):\s*(.*)$/i);
+      if (startMatched) {
+        const key = startMatched[1];
+        const toolName = startMatched[2];
+        const detail = startMatched[3] ?? "";
+        pendingStarts.set(key, {
+          created_at: event.created_at,
+          toolName,
+          title: `#${key} ${toolName}`,
+          detail: detail.trim(),
+        });
+        continue;
+      }
+
+      const endMatched = message.match(/tool_end #(\d+)\s+(.+)$/i);
+      if (endMatched) {
+        const key = endMatched[1];
+        const startInfo = pendingStarts.get(key);
+        if (startInfo) pendingStarts.delete(key);
+        const startMs = startInfo ? parseEventTimestamp(startInfo.created_at) : null;
+        const endMs = parseEventTimestamp(event.created_at);
+        const durationMs = startMs != null && endMs != null ? Math.max(0, endMs - startMs) : undefined;
+        const endDetail = endMatched[2].trim();
+        timeline.push({
+          key: `${event.id}-tool-${key}`,
+          kind: "tool",
+          level: normalizeEventLevel(event.level),
+          title: startInfo?.title ?? `#${key} 工具调用`,
+          summary: startInfo?.detail ? truncateText(startInfo.detail, 110) : truncateText(endDetail, 110),
+          detail: endDetail,
+          createdAt: event.created_at,
+          durationMs,
+        });
+        continue;
+      }
+
+      const normalizedLevel = normalizeEventLevel(event.level);
+      if (normalizedLevel === "awaiting_approval" || message.includes("等待人工确认")) {
+        timeline.push({
+          key: `${event.id}-approval`,
+          kind: "marker",
+          level: "awaiting_approval",
+          title: "等待审批",
+          summary: truncateText(message, 120),
+          createdAt: event.created_at,
+        });
+      }
+    }
+
+    for (const [key, startInfo] of pendingStarts) {
+      timeline.push({
+        key: `pending-${key}-${startInfo.created_at}`,
+        kind: "tool",
+        level: "info",
+        title: startInfo.title,
+        summary: truncateText(startInfo.detail || "工具已启动，等待返回", 120),
+        detail: "工具尚未返回 tool_end 事件。",
+        createdAt: startInfo.created_at,
+      });
+    }
+
+    return timeline;
+  }, [agentEvents]);
 
   const graphNodes = graphData?.nodes ?? [];
   const graphNodeById = useMemo(() => {
@@ -10677,16 +10787,30 @@ export default function App() {
                         <p className="agent-studio__empty">任务结果将在此显示。</p>
                       )}
                       {/* 执行日志：任务运行时工具调用过程 */}
-                      {agentSelectedRunId != null && agentEvents.length > 0 && (
+                      {agentSelectedRunId != null && agentExecTimeline.length > 0 && (
                         <div className="agent-studio__exec-log">
                           <div className="agent-studio__exec-log-head">
-                            <span>执行日志</span>
-                            <span className="agent-studio__exec-log-count">{agentEvents.length} 条</span>
+                            <span>工具时间线</span>
+                            <span className="agent-studio__exec-log-count">{agentExecTimeline.length} 条</span>
                           </div>
                           <ul className="agent-studio__exec-log-list">
-                            {[...agentEvents].reverse().map((ev) => (
-                              <li key={ev.id} className={`agent-studio__exec-log-row agent-studio__exec-log-row--${String(ev.level).toLowerCase()}`}>
-                                <span className="agent-studio__exec-log-msg">{ev.message}</span>
+                            {agentExecTimeline.map((item) => (
+                              <li key={item.key} className={`agent-studio__exec-log-row agent-studio__exec-log-row--${item.level}`}>
+                                <div className="agent-studio__exec-log-row-main">
+                                  <span className="agent-studio__exec-log-title">{item.title}</span>
+                                  <span className="agent-studio__exec-log-side">
+                                    {item.durationMs != null ? `${item.durationMs}ms` : "—"}
+                                    {" · "}
+                                    {formatLintCheckedAt(item.createdAt)}
+                                  </span>
+                                </div>
+                                <span className="agent-studio__exec-log-msg">{item.summary}</span>
+                                {item.detail ? (
+                                  <details className="agent-studio__exec-log-detail">
+                                    <summary>展开详情</summary>
+                                    <pre>{item.detail}</pre>
+                                  </details>
+                                ) : null}
                               </li>
                             ))}
                           </ul>
