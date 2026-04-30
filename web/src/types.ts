@@ -13,10 +13,9 @@ export type ModuleId =
   | "ask"
   | "lint"
   | "graph"
+  | "operations"
   | "settings"
-  | "queue"
   | "research"
-  | "stats"
   | "agent";
 
 export interface ModuleItem {
@@ -198,6 +197,7 @@ export interface AgentRunItem {
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
+  archived_at?: string | null;
 }
 
 export interface AgentRunEventItem {
@@ -629,6 +629,8 @@ export type ShellPolicyDecision = "auto_allow" | "require_approval" | "deny";
 
 export interface ShellPolicyConfig {
   manual_unknown_decision: ShellPolicyDecision;
+  manual_write_decision: ShellPolicyDecision;
+  agent_read_decision: ShellPolicyDecision;
   agent_write_decision: ShellPolicyDecision;
   agent_unknown_decision: ShellPolicyDecision;
 }

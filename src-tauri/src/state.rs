@@ -4517,12 +4517,16 @@ Wiki 页面：\n{}",
     }
 
     /// 列出最近 Agent Runs。
-    pub fn list_agent_runs_impl(&self, limit: Option<i64>) -> Result<Vec<AgentRunItem>, String> {
+    pub fn list_agent_runs_impl(
+        &self,
+        limit: Option<i64>,
+        include_archived: Option<bool>,
+    ) -> Result<Vec<AgentRunItem>, String> {
         let db_path = self
             .outbox_db_path()
             .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
-        let records = db::list_agent_runs(&db_path, safe_limit)?;
+        let records = db::list_agent_runs(&db_path, safe_limit, include_archived.unwrap_or(false))?;
         Ok(records
             .into_iter()
             .map(|item| AgentRunItem {
@@ -4532,6 +4536,7 @@ Wiki 页面：\n{}",
                 created_at: item.created_at,
                 updated_at: item.updated_at,
                 completed_at: item.completed_at,
+                archived_at: item.archived_at,
             })
             .collect())
     }
@@ -4573,6 +4578,42 @@ Wiki 页面：\n{}",
             .outbox_db_path()
             .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
         db::complete_agent_run(&db_path, run_id, normalized_status, &current_timestamp_ms())
+    }
+
+    /// 归档 Agent Run（软删除）。
+    pub fn archive_agent_run_impl(&self, run_id: i64) -> Result<(), String> {
+        {
+            let data = self.inner.lock().expect("状态锁已被污染");
+            if data.pending_agent_writes.contains_key(&run_id) {
+                return Err(format!("run #{} 存在待审批写入，禁止归档", run_id));
+            }
+        }
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        let runs = db::list_agent_runs(&db_path, 500, true)?;
+        let target = runs
+            .into_iter()
+            .find(|item| item.id == run_id)
+            .ok_or_else(|| format!("Agent Run 不存在: {}", run_id))?;
+        let normalized_status = target.status.trim().to_lowercase();
+        if normalized_status == "running" || normalized_status == "reviewing" {
+            return Err(format!("run #{} 正在进行中，禁止归档", run_id));
+        }
+        db::archive_agent_run(
+            &db_path,
+            run_id,
+            Some("manual_archive"),
+            &current_timestamp_ms(),
+        )
+    }
+
+    /// 恢复已归档 Agent Run。
+    pub fn restore_agent_run_impl(&self, run_id: i64) -> Result<(), String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
+        db::restore_agent_run(&db_path, run_id, &current_timestamp_ms())
     }
 
     /// 写入或更新 agent 记忆（H2）。
@@ -13717,7 +13758,7 @@ entities:
             .expect("结束 run 失败");
 
         let runs = state
-            .list_agent_runs_impl(Some(10))
+            .list_agent_runs_impl(Some(10), Some(false))
             .expect("读取 runs 失败");
         assert!(!runs.is_empty());
         assert_eq!(runs[0].id, run_id);

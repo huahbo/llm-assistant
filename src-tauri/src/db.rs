@@ -195,6 +195,7 @@ pub struct AgentRunRecord {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    pub archived_at: Option<String>,
 }
 
 /// Agent Run 事件记录（用于时间线展示）。
@@ -1477,7 +1478,9 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             status       TEXT NOT NULL DEFAULT 'running',
             created_at   TEXT NOT NULL,
             updated_at   TEXT NOT NULL,
-            completed_at TEXT
+            completed_at TEXT,
+            archived_at  TEXT,
+            archived_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS agent_run_events (
@@ -1566,6 +1569,7 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
     ensure_ask_history_quality(conn)?;
     ensure_ask_session_turns_quality(conn)?;
+    ensure_agent_runs_quality(conn)?;
 
     Ok(())
 }
@@ -1719,6 +1723,35 @@ fn ensure_ask_session_turns_quality(conn: &Connection) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+/// Agent run 表质量保障：补齐归档字段。
+fn ensure_agent_runs_quality(conn: &Connection) -> Result<(), String> {
+    let mut has_archived_at = false;
+    let mut has_archived_reason = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(agent_runs)")
+        .map_err(|err| format!("读取 agent_runs 表结构失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("读取 agent_runs 字段失败: {}", err))?;
+    for row in rows {
+        let name = row.map_err(|err| format!("读取 agent_runs 字段失败: {}", err))?;
+        if name == "archived_at" {
+            has_archived_at = true;
+        } else if name == "archived_reason" {
+            has_archived_reason = true;
+        }
+    }
+    if !has_archived_at {
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN archived_at TEXT", [])
+            .map_err(|err| format!("补齐 agent_runs.archived_at 失败: {}", err))?;
+    }
+    if !has_archived_reason {
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN archived_reason TEXT", [])
+            .map_err(|err| format!("补齐 agent_runs.archived_reason 失败: {}", err))?;
+    }
     Ok(())
 }
 
@@ -2402,7 +2435,11 @@ pub fn append_agent_run_event(
 }
 
 /// 按更新时间倒序列出 Agent Runs。
-pub fn list_agent_runs(db_path: &Path, limit: usize) -> Result<Vec<AgentRunRecord>, String> {
+pub fn list_agent_runs(
+    db_path: &Path,
+    limit: usize,
+    include_archived: bool,
+) -> Result<Vec<AgentRunRecord>, String> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -2411,27 +2448,100 @@ pub fn list_agent_runs(db_path: &Path, limit: usize) -> Result<Vec<AgentRunRecor
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, topic, status, created_at, updated_at, completed_at
+            SELECT id, topic, status, created_at, updated_at, completed_at, archived_at
             FROM agent_runs
+            WHERE (?1 = 1 OR archived_at IS NULL)
             ORDER BY CAST(updated_at AS INTEGER) DESC, id DESC
-            LIMIT ?1
+            LIMIT ?2
             "#,
         )
         .map_err(|err| format!("准备查询 agent_runs 失败: {}", err))?;
     let rows = stmt
-        .query_map(params![limit as i64], |row| {
-            Ok(AgentRunRecord {
-                id: row.get(0)?,
-                topic: row.get(1)?,
-                status: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                completed_at: row.get(5)?,
-            })
-        })
+        .query_map(
+            params![if include_archived { 1 } else { 0 }, limit as i64],
+            |row| {
+                Ok(AgentRunRecord {
+                    id: row.get(0)?,
+                    topic: row.get(1)?,
+                    status: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    completed_at: row.get(5)?,
+                    archived_at: row.get(6)?,
+                })
+            },
+        )
         .map_err(|err| format!("执行查询 agent_runs 失败: {}", err))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("读取 agent_runs 失败: {}", err))
+}
+
+/// 归档 Agent Run（软删除）。
+pub fn archive_agent_run(
+    db_path: &Path,
+    run_id: i64,
+    archived_reason: Option<&str>,
+    now: &str,
+) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let reason = archived_reason
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let affected = conn
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET archived_at = ?1,
+                archived_reason = ?2,
+                updated_at = ?1
+            WHERE id = ?3 AND archived_at IS NULL
+            "#,
+            params![now, reason, run_id],
+        )
+        .map_err(|err| format!("归档 agent_runs 失败: {}", err))?;
+    if affected == 0 {
+        return Err(format!("Agent Run 不存在或已归档: {}", run_id));
+    }
+    conn.execute(
+        r#"
+        INSERT INTO agent_run_events (run_id, level, message, created_at)
+        VALUES (?1, 'info', ?2, ?3)
+        "#,
+        params![run_id, "系统状态变更：run 已归档（软删除）", now],
+    )
+    .map_err(|err| format!("写入归档事件失败: {}", err))?;
+    Ok(())
+}
+
+/// 恢复已归档 Agent Run。
+pub fn restore_agent_run(db_path: &Path, run_id: i64, now: &str) -> Result<(), String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let affected = conn
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET archived_at = NULL,
+                archived_reason = NULL,
+                updated_at = ?1
+            WHERE id = ?2 AND archived_at IS NOT NULL
+            "#,
+            params![now, run_id],
+        )
+        .map_err(|err| format!("恢复 agent_runs 失败: {}", err))?;
+    if affected == 0 {
+        return Err(format!("Agent Run 不存在或未归档: {}", run_id));
+    }
+    conn.execute(
+        r#"
+        INSERT INTO agent_run_events (run_id, level, message, created_at)
+        VALUES (?1, 'info', ?2, ?3)
+        "#,
+        params![run_id, "系统状态变更：run 已恢复", now],
+    )
+    .map_err(|err| format!("写入恢复事件失败: {}", err))?;
+    Ok(())
 }
 
 /// 按 id 正序列出指定 Agent Run 的事件。
@@ -4288,7 +4398,7 @@ mod tests {
         append_agent_run_event(&db_path, run_id, "info", "phase-1", "120").expect("写入事件失败");
         complete_agent_run(&db_path, run_id, "applied", "130").expect("结束 run 失败");
 
-        let runs = list_agent_runs(&db_path, 10).expect("查询 runs 失败");
+        let runs = list_agent_runs(&db_path, 10, false).expect("查询 runs 失败");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].id, run_id);
         assert_eq!(runs[0].topic, "Rust Agent H0");
@@ -4341,7 +4451,7 @@ mod tests {
 
         let run_id = start_agent_run(&db_path, "H0 running", "10").expect("创建 run 失败");
         complete_agent_run(&db_path, run_id, "running", "20").expect("更新 run 失败");
-        let runs = list_agent_runs(&db_path, 5).expect("查询 runs 失败");
+        let runs = list_agent_runs(&db_path, 5, false).expect("查询 runs 失败");
         assert_eq!(runs[0].id, run_id);
         assert_eq!(runs[0].status, "running");
         assert!(runs[0].completed_at.is_none());

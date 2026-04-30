@@ -88,6 +88,8 @@ import {
   startAgentRun,
   appendAgentRunEvent,
   listAgentRuns,
+  archiveAgentRun,
+  restoreAgentRun,
   listAgentRunEvents,
   completeAgentRun,
   generateAgentDraft,
@@ -188,6 +190,13 @@ const shellPolicyDecisionOptions: Array<{ value: ShellPolicyDecision; label: str
   { value: "require_approval", label: "需要审批" },
   { value: "deny", label: "直接拒绝" },
 ];
+const defaultShellPolicyConfig: ShellPolicyConfig = {
+  manual_unknown_decision: "auto_allow",
+  manual_write_decision: "auto_allow",
+  agent_read_decision: "auto_allow",
+  agent_write_decision: "require_approval",
+  agent_unknown_decision: "require_approval",
+};
 const shellPolicyProfiles: Array<{
   key: "strict" | "balanced" | "power_user";
   label: string;
@@ -198,6 +207,8 @@ const shellPolicyProfiles: Array<{
     label: "严格",
     config: {
       manual_unknown_decision: "require_approval",
+      manual_write_decision: "require_approval",
+      agent_read_decision: "require_approval",
       agent_write_decision: "deny",
       agent_unknown_decision: "deny",
     },
@@ -205,17 +216,15 @@ const shellPolicyProfiles: Array<{
   {
     key: "balanced",
     label: "平衡",
-    config: {
-      manual_unknown_decision: "auto_allow",
-      agent_write_decision: "require_approval",
-      agent_unknown_decision: "require_approval",
-    },
+    config: defaultShellPolicyConfig,
   },
   {
     key: "power_user",
     label: "高能力",
     config: {
       manual_unknown_decision: "auto_allow",
+      manual_write_decision: "auto_allow",
+      agent_read_decision: "auto_allow",
       agent_write_decision: "auto_allow",
       agent_unknown_decision: "require_approval",
     },
@@ -258,6 +267,16 @@ const formatAgentRunStatusLabel = (status: string): string => {
   if (normalized === "reviewing") return "待审阅";
   if (normalized === "queued") return "排队中";
   return status || "未知状态";
+};
+
+const getAgentRunStatusTone = (status: string): "running" | "reviewing" | "applied" | "failed" | "queued" | "unknown" => {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "running") return "running";
+  if (normalized === "reviewing") return "reviewing";
+  if (normalized === "applied" || normalized === "approved") return "applied";
+  if (normalized === "failed") return "failed";
+  if (normalized === "queued") return "queued";
+  return "unknown";
 };
 
 const extractSkillKeyFromEventMessage = (message: string): string => {
@@ -2872,14 +2891,15 @@ class GraphErrorBoundary extends Component<GraphErrorBoundaryProps, GraphErrorBo
 }
 
 const modules: ModuleItem[] = [
-  { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
-  { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
+  { id: "agent", name: "Agent Studio", description: "Agent run 的最小工作台。" },
   { id: "ask", name: "Ask", description: "基于索引与引用证据的问答入口。" },
+  { id: "wiki", name: "Wiki", description: "Markdown Vault 的页面编辑与浏览。" },
   { id: "lint", name: "Lint", description: "一致性检查、孤儿页与过期结论扫描。" },
   { id: "graph", name: "图谱", description: "Wiki 页面知识图谱可视化。" },
+  { id: "research", name: "研究", description: "多轮检索与研究任务编排。" },
+  { id: "inbox", name: "Inbox", description: "收集资料、待处理输入与任务入口。" },
+  { id: "operations", name: "运行", description: "摄入队列与运行统计。" },
   { id: "settings", name: "Settings", description: "模式、Provider 与本地配置。" },
-  { id: "queue", name: "队列", description: "摄入任务队列。" },
-  { id: "agent", name: "Agent Studio", description: "Agent run 的最小工作台。" },
 ];
 
 type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";
@@ -3128,6 +3148,7 @@ export default function App() {
   // 摄入队列面板状态
   const [ingestQueue, setIngestQueue] = useState<IngestQueueItem[]>([]);
   const [queueEnqueueing, setQueueEnqueueing] = useState(false);
+  const [operationsTab, setOperationsTab] = useState<"queue" | "stats">("queue");
   const [ingestPreviewDialog, setIngestPreviewDialog] = useState<IngestPreview | null>(null);
   const ingestPreviewResolverRef = useRef<((approved: boolean) => void) | null>(null);
   // 统计仪表盘状态
@@ -3195,6 +3216,9 @@ export default function App() {
   const [agentShellHistoryCursor, setAgentShellHistoryCursor] = useState<number>(-1);
   const [agentShellDraftInput, setAgentShellDraftInput] = useState<string>("");
   const [agentToolsSeenCount, setAgentToolsSeenCount] = useState<number>(0);
+  const [agentRunStripOpen, setAgentRunStripOpen] = useState<boolean>(false);
+  const [agentRunManageMode, setAgentRunManageMode] = useState<boolean>(false);
+  const [agentRunMutatingId, setAgentRunMutatingId] = useState<number | null>(null);
   const [agentContextOpen, setAgentContextOpen] = useState<boolean>(false);
   const [agentMemoryPanelOpen, setAgentMemoryPanelOpen] = useState<boolean>(true);
   const [agentSkillPanelOpen, setAgentSkillPanelOpen] = useState<boolean>(false);
@@ -3354,6 +3378,24 @@ export default function App() {
     }
     return selectedAgentDraft.content ?? "";
   }, [selectedAgentDraft, agentReviewTab, agentFlowDraftId, agentFlowRenderedContent]);
+  const agentRunCards = useMemo(() => {
+    return [...agentRuns].sort((left, right) => {
+      const leftTs = Number(left.updated_at || left.created_at || 0);
+      const rightTs = Number(right.updated_at || right.created_at || 0);
+      if (leftTs !== rightTs) {
+        return rightTs - leftTs;
+      }
+      return right.id - left.id;
+    });
+  }, [agentRuns]);
+  const agentArchivedRunCount = useMemo(
+    () => agentRuns.filter((run) => Boolean(run.archived_at)).length,
+    [agentRuns],
+  );
+  const agentVisibleRunCards = useMemo(
+    () => agentRunCards.filter((run) => agentRunManageMode || !run.archived_at),
+    [agentRunCards, agentRunManageMode],
+  );
   const agentFlowProgress = useMemo(() => {
     if (agentFlowChunks.length === 0) {
       return agentFlowMode === "idle" ? 0 : 100;
@@ -3514,7 +3556,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
-    if (activeModule !== "agent" || agentShellPolicyConfig) return;
+    if ((activeModule !== "agent" && activeModule !== "settings") || agentShellPolicyConfig) return;
     let disposed = false;
     void getShellPolicyConfig().then((cfg) => {
       if (disposed || !cfg) return;
@@ -7097,7 +7139,7 @@ export default function App() {
             setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，加入队列...`);
             Promise.all(parsed.accepted.map((p) => enqueueIngest("file", p)))
               .then(() => {
-                setActiveModule("queue");
+                openOperationsModule("queue");
               })
               .catch((err: unknown) => {
                 console.error("拖拽入队失败:", err);
@@ -7146,11 +7188,17 @@ export default function App() {
     }
   };
 
-  const loadAgentRunsData = async (preferredRunId?: number | null) => {
+  const loadAgentRunsData = async (
+    preferredRunId?: number | null,
+    includeArchivedOverride?: boolean,
+  ) => {
     if (!isTauriRuntime()) return;
     setAgentRunsLoading(true);
     try {
-      const runs = await listAgentRuns(AGENT_RUN_LIST_LIMIT);
+      const runs = await listAgentRuns(
+        AGENT_RUN_LIST_LIMIT,
+        includeArchivedOverride ?? agentRunManageMode,
+      );
       setAgentRuns(runs);
       if (runs.length === 0) {
         setAgentSelectedRunId(null);
@@ -7261,6 +7309,13 @@ export default function App() {
     void loadAgentSkillsData();
     // H0 阶段仅在切到 Agent Studio 时刷新，不做后台轮询。
   }, [activeModule]);
+
+  useEffect(() => {
+    if (activeModule !== "agent") {
+      return;
+    }
+    void loadAgentRunsData(agentSelectedRunId, agentRunManageMode);
+  }, [activeModule, agentRunManageMode]);
 
   useEffect(() => {
     writeAgentActiveSkillKeyToStorage(agentActiveSkillKey);
@@ -7395,6 +7450,58 @@ export default function App() {
 
   const handleSelectAgentRunFromChat = (runId: number) => {
     setAgentSelectedRunId(runId);
+  };
+
+  const handleArchiveAgentRun = async (runId: number) => {
+    if (!isTauriRuntime() || agentRunMutatingId != null) {
+      return;
+    }
+    const ok = await askConfirmDialog(
+      `确认归档 run #${runId} 吗？归档后默认列表将隐藏该 run，可在管理模式恢复。`,
+      {
+        title: "归档历史 Run",
+        kind: "warning",
+        okLabel: "归档",
+        cancelLabel: "取消",
+      },
+    );
+    if (!ok) {
+      return;
+    }
+    setAgentRunMutatingId(runId);
+    try {
+      const archived = await archiveAgentRun(runId);
+      if (!archived) {
+        setAgentStatusMessage(`归档 run #${runId} 失败，请检查后端日志。`);
+        return;
+      }
+      setAgentStatusMessage(`已归档 run #${runId}。`);
+      await loadAgentRunsData(agentSelectedRunId, agentRunManageMode);
+      if (agentSelectedRunId != null) {
+        await loadAgentRunEventsData(agentSelectedRunId);
+      }
+    } finally {
+      setAgentRunMutatingId(null);
+    }
+  };
+
+  const handleRestoreAgentRun = async (runId: number) => {
+    if (!isTauriRuntime() || agentRunMutatingId != null) {
+      return;
+    }
+    setAgentRunMutatingId(runId);
+    try {
+      const restored = await restoreAgentRun(runId);
+      if (!restored) {
+        setAgentStatusMessage(`恢复 run #${runId} 失败，请检查后端日志。`);
+        return;
+      }
+      setAgentStatusMessage(`已恢复 run #${runId}。`);
+      await loadAgentRunsData(runId, agentRunManageMode);
+      await loadAgentRunEventsData(runId);
+    } finally {
+      setAgentRunMutatingId(null);
+    }
   };
 
   const handleReplayAgentFlow = () => {
@@ -7713,11 +7820,7 @@ export default function App() {
     decision: ShellPolicyDecision,
   ) => {
     setAgentShellPolicyConfig((prev) => {
-      const base = prev ?? {
-        manual_unknown_decision: "auto_allow" as ShellPolicyDecision,
-        agent_write_decision: "require_approval" as ShellPolicyDecision,
-        agent_unknown_decision: "require_approval" as ShellPolicyDecision,
-      };
+      const base = prev ?? defaultShellPolicyConfig;
       return { ...base, [field]: decision };
     });
     setAgentShellPolicyDirty(true);
@@ -7743,8 +7846,38 @@ export default function App() {
   const applyShellPolicyProfile = (profileKey: "strict" | "balanced" | "power_user") => {
     const profile = shellPolicyProfiles.find((item) => item.key === profileKey);
     if (!profile) return;
-    setAgentShellPolicyConfig(profile.config);
+    setAgentShellPolicyConfig({ ...profile.config });
     setAgentShellPolicyDirty(true);
+  };
+
+  const handleApplyAndSaveShellPolicyProfile = async (profileKey: "strict" | "balanced" | "power_user") => {
+    if (agentShellPolicySaving) return;
+    const profile = shellPolicyProfiles.find((item) => item.key === profileKey);
+    if (!profile) return;
+    setAgentShellPolicySaving(true);
+    try {
+      const saved = await setShellPolicyConfig({ ...profile.config });
+      if (!saved) {
+        setAgentStatusMessage("Shell 策略保存失败，请检查后端日志。");
+        return;
+      }
+      setAgentShellPolicyConfig(saved);
+      setAgentShellPolicyDirty(false);
+      setAgentStatusMessage(`已切换为“${profile.label}”策略。`);
+    } finally {
+      setAgentShellPolicySaving(false);
+    }
+  };
+
+  const handleReloadShellPolicy = async () => {
+    const cfg = await getShellPolicyConfig();
+    if (!cfg) {
+      setAgentStatusMessage("读取 Shell 策略失败，请检查后端日志。");
+      return;
+    }
+    setAgentShellPolicyConfig(cfg);
+    setAgentShellPolicyDirty(false);
+    setAgentStatusMessage("已刷新 Shell 策略。");
   };
 
   const focusAgentShellInput = () => {
@@ -8050,19 +8183,31 @@ export default function App() {
     }
   };
 
-  const handleNavModuleSelect = (moduleId: ModuleId) => {
-    setActiveModule(moduleId);
-    if (moduleId === "stats") {
+  const openOperationsModule = (tab: "queue" | "stats") => {
+    setOperationsTab(tab);
+    setActiveModule("operations");
+    if (tab === "stats") {
       void loadVaultStats();
       return;
     }
+    void listIngestQueue()
+      .then((items) => setIngestQueue(items))
+      .catch(() => {});
+  };
+
+  const handleNavModuleSelect = (moduleId: ModuleId) => {
+    if (moduleId === "operations") {
+      openOperationsModule(operationsTab);
+      return;
+    }
+    setActiveModule(moduleId);
     if (moduleId === "agent") {
       void loadAgentRunsData();
       void loadAgentSkillsData();
     }
   };
 
-  // 侧边栏按“核心 / 运营 / Agent”分组，Agent Studio 独立展示并拉开间距。
+  // 侧边栏按“核心 / 运行 / 系统”分组，运行与系统下沉到底。
   const navGroups: Array<{
     id: string;
     title: string;
@@ -8073,28 +8218,26 @@ export default function App() {
       id: "core",
       title: "核心",
       items: [
-        { id: "inbox", icon: "⊞", label: "概览" },
-        { id: "wiki", icon: "📄", label: "Wiki" },
+        { id: "agent", icon: "🧠", label: "Agent Studio" },
         { id: "ask", icon: "💬", label: "Ask" },
+        { id: "wiki", icon: "📄", label: "Wiki" },
         { id: "lint", icon: "🔍", label: "Lint" },
         { id: "graph", icon: "🕸", label: "图谱" },
-      ],
-    },
-    {
-      id: "ops",
-      title: "运营",
-      items: [
-        { id: "queue", icon: "📦", label: "队列" },
         { id: "research", icon: "🔬", label: "研究" },
-        { id: "stats", icon: "📊", label: "统计" },
-        { id: "settings", icon: "⚙", label: "设置" },
+        { id: "inbox", icon: "⊞", label: "概览" },
       ],
     },
     {
-      id: "agent",
-      title: "Agent",
-      isolated: true,
-      items: [{ id: "agent", icon: "🧠", label: "Agent Studio" }],
+      id: "operations",
+      title: "运行",
+      items: [
+        { id: "operations", icon: "📦", label: "运行" },
+      ],
+    },
+    {
+      id: "system",
+      title: "系统",
+      items: [{ id: "settings", icon: "⚙", label: "设置" }],
     },
   ];
 
@@ -8570,7 +8713,7 @@ export default function App() {
                             setQueueEnqueueing(true);
                             enqueueIngest("url", ingestUrlInput.trim())
                               .then(() => {
-                                setActiveModule("queue");
+                                openOperationsModule("queue");
                               })
                               .catch((err: unknown) => {
                                 console.error("加入队列失败:", err);
@@ -8689,7 +8832,7 @@ export default function App() {
                             setQueueEnqueueing(true);
                             Promise.all(validPaths.map((p) => enqueueIngest("file", p)))
                               .then(() => {
-                                setActiveModule("queue");
+                                openOperationsModule("queue");
                               })
                               .catch((err: unknown) => {
                                 console.error("加入队列失败:", err);
@@ -10597,7 +10740,7 @@ export default function App() {
                       />
                     </div>
                   </div>
-                  <div className="settings-panel__section-title" style={{marginTop: "16px", fontWeight: 600, fontSize: "13px", color: "var(--text-secondary)"}}>本地 Ollama（Embedding 专用）</div>
+                  <div className="settings-panel__section-title">本地 Ollama（Embedding 专用）</div>
                   <div className="settings-panel__fields">
                     <div className="dev-panel__field">
                       <label className="dev-panel__label" htmlFor="embed-ollama-model">Embedding 模型（本地 Ollama）</label>
@@ -10624,25 +10767,6 @@ export default function App() {
                       />
                     </div>
                   </div>
-                  <div className="settings-panel__section-title" style={{marginTop: "16px", fontWeight: 600, fontSize: "13px", color: "var(--text-secondary)"}}>拖拽行为</div>
-                  <div className="settings-panel__fields">
-                    <div className="dev-panel__field">
-                      <label className="dev-panel__label" htmlFor="drop-mode">拖拽行为</label>
-                      <select
-                        id="drop-mode"
-                        className="dev-panel__input"
-                        value={dropMode}
-                        onChange={(event) => {
-                          const mode: DropMode = event.target.value === "queue" ? "queue" : "direct";
-                          setDropMode(mode);
-                          writeDropModeToStorage(mode);
-                        }}
-                      >
-                        <option value="direct">立即摄入</option>
-                        <option value="queue">加入队列</option>
-                      </select>
-                    </div>
-                  </div>
                   <div className="settings-panel__save">
                     <button
                       type="button"
@@ -10660,31 +10784,307 @@ export default function App() {
                   </p>
                 </div>
               </section>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>拖拽行为</h2>
+                  <span className="section-head__hint">全局</span>
+                </div>
+                <div className="settings-panel">
+                  <div className="settings-panel__fields settings-panel__fields--single">
+                    <div className="dev-panel__field">
+                      <label className="dev-panel__label" htmlFor="drop-mode">拖拽行为</label>
+                      <select
+                        id="drop-mode"
+                        className="dev-panel__input"
+                        value={dropMode}
+                        onChange={(event) => {
+                          const mode: DropMode = event.target.value === "queue" ? "queue" : "direct";
+                          setDropMode(mode);
+                          writeDropModeToStorage(mode);
+                        }}
+                      >
+                        <option value="direct">立即摄入</option>
+                        <option value="queue">加入队列</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <section className="panel">
+                <div className="section-head">
+                  <h2>Shell 策略（全局）</h2>
+                  <span className="section-head__hint">独立模块</span>
+                </div>
+                <div className="settings-panel">
+                  <div className="settings-panel__shell-policy agent-studio__shell-policy">
+                    <div className="agent-studio__shell-policy-head">
+                      <strong>命令决策策略</strong>
+                      <div className="settings-panel__shell-policy-actions">
+                        <button
+                          type="button"
+                          className="dev-panel__button"
+                          onClick={() => {
+                            void handleReloadShellPolicy();
+                          }}
+                          disabled={agentShellPolicySaving || !isTauriRuntime()}
+                        >
+                          刷新
+                        </button>
+                        <button
+                          type="button"
+                          className="dev-panel__button dev-panel__button--accent"
+                          disabled={!agentShellPolicyDirty || agentShellPolicySaving || !agentShellPolicyConfig || !isTauriRuntime()}
+                          onClick={() => {
+                            void handleSaveShellPolicy();
+                          }}
+                        >
+                          {agentShellPolicySaving ? "保存中..." : "保存策略"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="agent-studio__shell-policy-presets">
+                      <span>档位：</span>
+                      {shellPolicyProfiles.map((profile) => (
+                        <button
+                          key={`settings-${profile.key}`}
+                          type="button"
+                          className="agent-studio__shell-policy-preset"
+                          disabled={agentShellPolicySaving || !agentShellPolicyConfig || !isTauriRuntime()}
+                          onClick={() => applyShellPolicyProfile(profile.key)}
+                        >
+                          {profile.label}
+                        </button>
+                      ))}
+                    </div>
+                    {agentShellPolicyConfig ? (
+                      <div className="agent-studio__shell-policy-grid">
+                        <label>
+                          <span>manual: unknown</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.manual_unknown_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("manual_unknown_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-manual-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>manual: write</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.manual_write_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("manual_write_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-manual-write-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>agent: read</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.agent_read_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("agent_read_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-agent-read-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>agent: write</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.agent_write_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("agent_write_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-write-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>agent: unknown</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.agent_unknown_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("agent_unknown_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-unknown-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    ) : (
+                      <p className="agent-studio__shell-policy-empty">策略加载中...</p>
+                    )}
+                    <p className="agent-studio__shell-policy-tip">
+                      这是全局策略配置，Agent 工具页中的同名面板会读取同一份配置。
+                    </p>
+                  </div>
+                </div>
+              </section>
               <SearchConfigPanel />
             </>
           )}
-          {/* ---- 摄入队列模块 ---- */}
-          {activeModule === "queue" && (
-            <QueuePanel
-              queue={ingestQueue}
-              onRefresh={() => {
-                listIngestQueue()
-                  .then((items) => setIngestQueue(items))
-                  .catch(() => {});
-              }}
-              onCancel={(id) => {
-                cancelIngestItem(id)
-                  .then(() => listIngestQueue())
-                  .then((items) => setIngestQueue(items))
-                  .catch(() => {});
-              }}
-              onRetry={(id) => {
-                retryIngestItem(id)
-                  .then(() => listIngestQueue())
-                  .then((items) => setIngestQueue(items))
-                  .catch(() => {});
-              }}
-            />
+          {/* ---- 运行模块（队列 + 统计合并） ---- */}
+          {activeModule === "operations" && (
+            <>
+              <div className="module-header">
+                <h1 className="module-header__title">运行</h1>
+                <p className="module-header__sub">任务队列与运行统计</p>
+              </div>
+              <section className="panel operations-module">
+                <div className="operations-tabs">
+                  <button
+                    type="button"
+                    className={`operations-tabs__item${operationsTab === "queue" ? " operations-tabs__item--active" : ""}`}
+                    onClick={() => {
+                      setOperationsTab("queue");
+                      void listIngestQueue()
+                        .then((items) => setIngestQueue(items))
+                        .catch(() => {});
+                    }}
+                  >
+                    任务队列
+                  </button>
+                  <button
+                    type="button"
+                    className={`operations-tabs__item${operationsTab === "stats" ? " operations-tabs__item--active" : ""}`}
+                    onClick={() => {
+                      setOperationsTab("stats");
+                      void loadVaultStats();
+                    }}
+                  >
+                    运行统计
+                  </button>
+                </div>
+                <p className="operations-tabs__hint">
+                  {operationsTab === "queue"
+                    ? "查看摄入任务进度，支持取消与失败重试。"
+                    : "查看知识库规模、近期增长与引用分布。"}
+                </p>
+                <div className="operations-content">
+                {operationsTab === "queue" ? (
+                  <QueuePanel
+                    queue={ingestQueue}
+                    onRefresh={() => {
+                      listIngestQueue()
+                        .then((items) => setIngestQueue(items))
+                        .catch(() => {});
+                    }}
+                    onCancel={(id) => {
+                      cancelIngestItem(id)
+                        .then(() => listIngestQueue())
+                        .then((items) => setIngestQueue(items))
+                        .catch(() => {});
+                    }}
+                    onRetry={(id) => {
+                      retryIngestItem(id)
+                        .then(() => listIngestQueue())
+                        .then((items) => setIngestQueue(items))
+                        .catch(() => {});
+                    }}
+                  />
+                ) : (
+                  <div className="stats-module">
+                    <div className="stats-module__header">
+                      <h2 className="stats-module__title">知识库统计</h2>
+                      <button
+                        className="stats-module__refresh"
+                        onClick={() => void loadVaultStats()}
+                        disabled={vaultStatsLoading}
+                      >
+                        {vaultStatsLoading ? "加载中…" : "刷新"}
+                      </button>
+                    </div>
+                    {vaultStats ? (
+                      <>
+                        <div className="stats-cards">
+                          <div className="stats-card">
+                            <span className="stats-card__value">{vaultStats.total_pages}</span>
+                            <span className="stats-card__label">Wiki 页面</span>
+                          </div>
+                          <div className="stats-card">
+                            <span className="stats-card__value">{vaultStats.pages_last_7_days}</span>
+                            <span className="stats-card__label">近 7 天新增</span>
+                          </div>
+                          <div className="stats-card">
+                            <span className="stats-card__value">{vaultStats.pages_last_30_days}</span>
+                            <span className="stats-card__label">近 30 天新增</span>
+                          </div>
+                          <div className="stats-card stats-card--warn">
+                            <span className="stats-card__value">{vaultStats.orphan_pages}</span>
+                            <span className="stats-card__label">孤立页面</span>
+                          </div>
+                          <div className="stats-card">
+                            <span className="stats-card__value">{vaultStats.total_citations}</span>
+                            <span className="stats-card__label">总引用数</span>
+                          </div>
+                        </div>
+                        {vaultStats.top_cited_pages.length > 0 && (
+                          <div className="stats-section">
+                            <h3 className="stats-section__title">被引用最多的页面</h3>
+                            <ol className="stats-top-list">
+                              {vaultStats.top_cited_pages.map((item) => (
+                                <li key={item.path} className="stats-top-list__item">
+                                  <span className="stats-top-list__rank-badge">{item.citation_count}</span>
+                                  <button
+                                    className="stats-top-list__title"
+                                    onClick={() => {
+                                      setActiveModule("wiki");
+                                    }}
+                                  >
+                                    {item.title}
+                                  </button>
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                        {vaultStats.ingest_source_counts.length > 0 && (
+                          <div className="stats-section">
+                            <h3 className="stats-section__title">摄入来源分布</h3>
+                            <ul className="stats-source-list">
+                              {vaultStats.ingest_source_counts.map((item) => (
+                                <li key={item.source_type} className="stats-source-list__item">
+                                  <span className="stats-source-list__label">
+                                    {formatSourceType(item.source_type)}
+                                  </span>
+                                  <div className="stats-source-bar">
+                                    <div
+                                      className="stats-source-bar__fill"
+                                      style={{
+                                        width: `${Math.min(100, (item.count / Math.max(1, vaultStats.total_pages)) * 100)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="stats-source-list__count">{item.count}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="stats-module__empty">
+                        {vaultStatsLoading ? "正在加载统计数据，请稍候…" : "暂无统计数据。请先完成一次摄入或初始化 Vault。"}
+                      </p>
+                    )}
+                  </div>
+                )}
+                </div>
+              </section>
+            </>
           )}
           {/* ---- Deep Research 模块 ---- */}
           {activeModule === "research" && (
@@ -10699,100 +11099,6 @@ export default function App() {
                   .catch(() => {});
               }}
             />
-          )}
-          {/* ---- 统计仪表盘模块 ---- */}
-          {activeModule === "stats" && (
-            <div className="stats-module">
-              <div className="stats-module__header">
-                <h2 className="stats-module__title">知识库统计</h2>
-                <button
-                  className="stats-module__refresh"
-                  onClick={() => void loadVaultStats()}
-                  disabled={vaultStatsLoading}
-                >
-                  {vaultStatsLoading ? "加载中…" : "刷新"}
-                </button>
-              </div>
-
-              {vaultStats ? (
-                <>
-                  {/* 概览卡片 */}
-                  <div className="stats-cards">
-                    <div className="stats-card">
-                      <span className="stats-card__value">{vaultStats.total_pages}</span>
-                      <span className="stats-card__label">Wiki 页面</span>
-                    </div>
-                    <div className="stats-card">
-                      <span className="stats-card__value">{vaultStats.pages_last_7_days}</span>
-                      <span className="stats-card__label">近 7 天新增</span>
-                    </div>
-                    <div className="stats-card">
-                      <span className="stats-card__value">{vaultStats.pages_last_30_days}</span>
-                      <span className="stats-card__label">近 30 天新增</span>
-                    </div>
-                    <div className="stats-card stats-card--warn">
-                      <span className="stats-card__value">{vaultStats.orphan_pages}</span>
-                      <span className="stats-card__label">孤立页面</span>
-                    </div>
-                    <div className="stats-card">
-                      <span className="stats-card__value">{vaultStats.total_citations}</span>
-                      <span className="stats-card__label">总引用数</span>
-                    </div>
-                  </div>
-
-                  {/* 被引用最多的页面 */}
-                  {vaultStats.top_cited_pages.length > 0 && (
-                    <div className="stats-section">
-                      <h3 className="stats-section__title">被引用最多的页面</h3>
-                      <ol className="stats-top-list">
-                        {vaultStats.top_cited_pages.map((item) => (
-                          <li key={item.path} className="stats-top-list__item">
-                            <span className="stats-top-list__rank-badge">{item.citation_count}</span>
-                            <button
-                              className="stats-top-list__title"
-                              onClick={() => {
-                                setActiveModule("wiki");
-                              }}
-                            >
-                              {item.title}
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
-
-                  {/* 摄入来源分布 */}
-                  {vaultStats.ingest_source_counts.length > 0 && (
-                    <div className="stats-section">
-                      <h3 className="stats-section__title">摄入来源分布</h3>
-                      <ul className="stats-source-list">
-                        {vaultStats.ingest_source_counts.map((item) => (
-                          <li key={item.source_type} className="stats-source-list__item">
-                            <span className="stats-source-list__label">
-                              {formatSourceType(item.source_type)}
-                            </span>
-                            <div className="stats-source-bar">
-                              <div
-                                className="stats-source-bar__fill"
-                                style={{
-                                  width: `${Math.min(100, (item.count / Math.max(1, vaultStats.total_pages)) * 100)}%`,
-                                }}
-                              />
-                            </div>
-                            <span className="stats-source-list__count">{item.count}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <p className="stats-module__empty">
-                  {vaultStatsLoading ? "正在加载统计数据…" : "暂无统计数据，请先初始化 Vault。"}
-                </p>
-              )}
-            </div>
           )}
           {/* ---- Agent Studio 模块（B2：双栏对话 + 草稿审阅） ---- */}
           {activeModule === "agent" && (
@@ -10817,6 +11123,100 @@ export default function App() {
                   style={{ gridTemplateColumns: `minmax(0,${agentLeftRatio}fr) 6px minmax(0,${1 - agentLeftRatio}fr)`, gap: 0 }}
                 >
                   <section className="agent-studio__left">
+                    <div className={`agent-studio__run-strip${agentRunStripOpen ? " agent-studio__run-strip--open" : ""}`}>
+                      <button
+                        type="button"
+                        className="agent-studio__context-toggle agent-studio__run-strip-toggle"
+                        onClick={() => setAgentRunStripOpen((prev) => !prev)}
+                      >
+                        <span>{agentRunStripOpen ? "▼" : "▶"} 历史 Runs</span>
+                        <span className="agent-studio__context-meta">
+                          {agentRunManageMode ? agentRunCards.length : agentVisibleRunCards.length} 条
+                        </span>
+                      </button>
+                      {agentRunStripOpen ? (
+                        <div className="agent-studio__run-strip-body">
+                          <label className="agent-studio__run-strip-manage">
+                            <input
+                              type="checkbox"
+                              checked={agentRunManageMode}
+                              onChange={(event) => setAgentRunManageMode(event.target.checked)}
+                            />
+                            管理模式（显示已归档）
+                          </label>
+                          <p className="agent-studio__run-strip-note">
+                            {agentRunManageMode
+                              ? `当前显示全部 run（含已归档 ${agentArchivedRunCount} 条）`
+                              : `默认隐藏已归档 run（已归档 ${agentArchivedRunCount} 条）`}
+                          </p>
+                          {agentRunsLoading ? (
+                            <p className="agent-studio__run-strip-empty">正在加载...</p>
+                          ) : agentVisibleRunCards.length === 0 ? (
+                            <p className="agent-studio__run-strip-empty">暂无历史 run</p>
+                          ) : (
+                            <div className="agent-studio__run-strip-list">
+                              {agentVisibleRunCards.map((run) => {
+                                const active = run.id === agentSelectedRunId;
+                                const statusTone = getAgentRunStatusTone(String(run.status || ""));
+                                const topic = run.topic?.trim() || `Run #${run.id}`;
+                                return (
+                                  <div
+                                    key={`run-card-${run.id}`}
+                                    className={`agent-studio__run-card${active ? " agent-studio__run-card--active" : ""}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="agent-studio__run-card-main"
+                                      onClick={() => handleSelectAgentRunFromChat(run.id)}
+                                    >
+                                      <span className="agent-studio__run-card-title" title={topic}>
+                                        #{run.id} {topic}
+                                      </span>
+                                      <span className={`agent-studio__run-card-status agent-studio__run-card-status--${statusTone}`}>
+                                        {formatAgentRunStatusLabel(String(run.status || ""))}
+                                      </span>
+                                      {run.archived_at ? (
+                                        <span className="agent-studio__run-card-archived">已归档</span>
+                                      ) : null}
+                                      <time dateTime={run.updated_at || run.created_at}>
+                                        {formatLintCheckedAt(run.updated_at || run.created_at)}
+                                      </time>
+                                    </button>
+                                    <div className="agent-studio__run-card-actions">
+                                      {agentRunManageMode ? (
+                                        run.archived_at ? (
+                                          <button
+                                            type="button"
+                                            className="dev-panel__button"
+                                            disabled={agentRunMutatingId != null}
+                                            onClick={() => {
+                                              void handleRestoreAgentRun(run.id);
+                                            }}
+                                          >
+                                            恢复
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className="dev-panel__button"
+                                            disabled={agentRunMutatingId != null}
+                                            onClick={() => {
+                                              void handleArchiveAgentRun(run.id);
+                                            }}
+                                          >
+                                            归档
+                                          </button>
+                                        )
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="agent-studio__context">
                       <button
                         type="button"
@@ -11592,78 +11992,28 @@ export default function App() {
                           <p className="agent-studio__shell-hint">
                             任务模式中 Agent 会自动调用工具；此处为会话式终端，支持连续命令与目录上下文。
                           </p>
-                          <div className="agent-studio__shell-policy">
+                          <div className="agent-studio__shell-policy agent-studio__shell-policy--compact">
                             <div className="agent-studio__shell-policy-head">
                               <strong>Shell 策略</strong>
-                              <button
-                                type="button"
-                                className="dev-panel__button"
-                                disabled={!agentShellPolicyDirty || agentShellPolicySaving || !agentShellPolicyConfig}
-                                onClick={() => {
-                                  void handleSaveShellPolicy();
-                                }}
-                              >
-                                {agentShellPolicySaving ? "保存中..." : "保存策略"}
-                              </button>
-                            </div>
-                            <div className="agent-studio__shell-policy-presets">
-                              <span>档位：</span>
-                              {shellPolicyProfiles.map((profile) => (
-                                <button
-                                  key={profile.key}
-                                  type="button"
-                                  className="agent-studio__shell-policy-preset"
-                                  disabled={agentShellPolicySaving || !agentShellPolicyConfig}
-                                  onClick={() => applyShellPolicyProfile(profile.key)}
-                                >
-                                  {profile.label}
-                                </button>
-                              ))}
-                            </div>
-                            {agentShellPolicyConfig ? (
-                              <div className="agent-studio__shell-policy-grid">
-                                <label>
-                                  <span>manual: unknown</span>
-                                  <select
-                                    className="dev-panel__input"
-                                    value={agentShellPolicyConfig.manual_unknown_decision}
-                                    onChange={(ev) => handleChangeShellPolicyDecision("manual_unknown_decision", ev.target.value as ShellPolicyDecision)}
+                              <div className="agent-studio__shell-policy-presets">
+                                <span>档位：</span>
+                                {shellPolicyProfiles.map((profile) => (
+                                  <button
+                                    key={profile.key}
+                                    type="button"
+                                    className="agent-studio__shell-policy-preset"
+                                    disabled={agentShellPolicySaving || !agentShellPolicyConfig}
+                                    onClick={() => {
+                                      void handleApplyAndSaveShellPolicyProfile(profile.key);
+                                    }}
                                   >
-                                    {shellPolicyDecisionOptions.map((option) => (
-                                      <option key={`manual-${option.value}`} value={option.value}>{option.label}</option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <label>
-                                  <span>agent: write</span>
-                                  <select
-                                    className="dev-panel__input"
-                                    value={agentShellPolicyConfig.agent_write_decision}
-                                    onChange={(ev) => handleChangeShellPolicyDecision("agent_write_decision", ev.target.value as ShellPolicyDecision)}
-                                  >
-                                    {shellPolicyDecisionOptions.map((option) => (
-                                      <option key={`write-${option.value}`} value={option.value}>{option.label}</option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <label>
-                                  <span>agent: unknown</span>
-                                  <select
-                                    className="dev-panel__input"
-                                    value={agentShellPolicyConfig.agent_unknown_decision}
-                                    onChange={(ev) => handleChangeShellPolicyDecision("agent_unknown_decision", ev.target.value as ShellPolicyDecision)}
-                                  >
-                                    {shellPolicyDecisionOptions.map((option) => (
-                                      <option key={`unknown-${option.value}`} value={option.value}>{option.label}</option>
-                                    ))}
-                                  </select>
-                                </label>
+                                    {profile.label}
+                                  </button>
+                                ))}
                               </div>
-                            ) : (
-                              <p className="agent-studio__shell-policy-empty">策略加载中...</p>
-                            )}
+                            </div>
                             <p className="agent-studio__shell-policy-tip">
-                              建议默认使用“平衡”：手动未知命令放行，Agent 写入与未知命令需审批。
+                              详细策略请到设置页修改；此处仅快速切换档位。
                             </p>
                           </div>
                           <div className="agent-studio__shell-quick">
@@ -12060,63 +12410,60 @@ function QueuePanel({
   }, [onRefresh]);
 
   return (
-    <>
-      <div className="module-header">
-        <h1 className="module-header__title">摄入队列</h1>
-        <p className="module-header__sub">后台摄入任务状态，每 3 秒自动刷新</p>
+    <section className="queue-panel">
+      <div className="section-head">
+        <h2>任务列表</h2>
+        <span className="section-head__hint">每 3 秒自动刷新 · {queue.length} 条任务</span>
       </div>
-      <section className="panel">
-        <div className="section-head">
-          <h2>任务列表</h2>
-          <span className="section-head__hint">{queue.length} 条任务</span>
-        </div>
-        {queue.length === 0 ? (
-          <p className="empty-state">暂无摄入队列任务。请在 Inbox 面板点击"加入队列"。</p>
-        ) : (
-          <div className="queue-list">
-            {queue.map((item) => (
-              <div key={item.id} className="queue-item">
-                <div className="queue-item__main">
-                  <span className={queueStatusBadgeClass[item.status] ?? "queue-badge"}>
-                    {queueStatusLabel[item.status] ?? item.status}
-                  </span>
-                  <span className="queue-item__path" title={item.source_path}>
-                    {item.source_path.split(/[/\\]/).pop() ?? item.source_path}
-                  </span>
-                  <span className="queue-item__type">{item.source_type}</span>
-                  <time className="queue-item__time" dateTime={item.updated_at}>
-                    {item.updated_at.slice(0, 16).replace("T", " ")}
-                  </time>
-                </div>
-                {item.status === "failed" && item.error && (
-                  <p className="queue-item__error">{item.error}</p>
-                )}
-                <div className="queue-item__actions">
-                  {(item.status === "queued" || item.status === "running") && (
-                    <button
-                      type="button"
-                      className="dev-panel__button"
-                      onClick={() => onCancel(item.id)}
-                    >
-                      取消
-                    </button>
-                  )}
-                  {item.status === "failed" && (
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => onRetry(item.id)}
-                    >
-                      重试
-                    </button>
-                  )}
-                </div>
+      {queue.length === 0 ? (
+        <p className="empty-state operations-empty-state">
+          <strong>暂无摄入任务</strong>
+          <span>可在 Wiki 的 Inbox 添加文件，或通过 Agent / 研究流程触发摄入。</span>
+        </p>
+      ) : (
+        <div className="queue-list">
+          {queue.map((item) => (
+            <div key={item.id} className="queue-item">
+              <div className="queue-item__main">
+                <span className={queueStatusBadgeClass[item.status] ?? "queue-badge"}>
+                  {queueStatusLabel[item.status] ?? item.status}
+                </span>
+                <span className="queue-item__path" title={item.source_path}>
+                  {item.source_path.split(/[/\\]/).pop() ?? item.source_path}
+                </span>
+                <span className="queue-item__type">{item.source_type}</span>
+                <time className="queue-item__time" dateTime={item.updated_at}>
+                  {item.updated_at.slice(0, 16).replace("T", " ")}
+                </time>
               </div>
-            ))}
-          </div>
-        )}
-      </section>
-    </>
+              {item.status === "failed" && item.error && (
+                <p className="queue-item__error">{item.error}</p>
+              )}
+              <div className="queue-item__actions">
+                {(item.status === "queued" || item.status === "running") && (
+                  <button
+                    type="button"
+                    className="dev-panel__button"
+                    onClick={() => onCancel(item.id)}
+                  >
+                    取消
+                  </button>
+                )}
+                {item.status === "failed" && (
+                  <button
+                    type="button"
+                    className="dev-panel__button dev-panel__button--accent"
+                    onClick={() => onRetry(item.id)}
+                  >
+                    重试
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

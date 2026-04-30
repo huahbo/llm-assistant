@@ -126,6 +126,12 @@ pub struct ShellPolicyConfig {
     /// `manual` 来源且 action=unknown 时的决策。
     #[serde(default = "default_shell_policy_manual_unknown_decision")]
     pub manual_unknown_decision: ShellPolicyDecision,
+    /// `manual` 来源且 action=write 时的决策。
+    #[serde(default = "default_shell_policy_manual_write_decision")]
+    pub manual_write_decision: ShellPolicyDecision,
+    /// `agent` 来源且 action=read 时的决策。
+    #[serde(default = "default_shell_policy_agent_read_decision")]
+    pub agent_read_decision: ShellPolicyDecision,
     /// `agent` 来源且 action=write 时的决策。
     #[serde(default = "default_shell_policy_agent_write_decision")]
     pub agent_write_decision: ShellPolicyDecision,
@@ -142,6 +148,14 @@ fn default_shell_policy_agent_write_decision() -> ShellPolicyDecision {
     ShellPolicyDecision::RequireApproval
 }
 
+fn default_shell_policy_manual_write_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::AutoAllow
+}
+
+fn default_shell_policy_agent_read_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::AutoAllow
+}
+
 fn default_shell_policy_agent_unknown_decision() -> ShellPolicyDecision {
     ShellPolicyDecision::RequireApproval
 }
@@ -150,6 +164,8 @@ impl Default for ShellPolicyConfig {
     fn default() -> Self {
         Self {
             manual_unknown_decision: default_shell_policy_manual_unknown_decision(),
+            manual_write_decision: default_shell_policy_manual_write_decision(),
+            agent_read_decision: default_shell_policy_agent_read_decision(),
             agent_write_decision: default_shell_policy_agent_write_decision(),
             agent_unknown_decision: default_shell_policy_agent_unknown_decision(),
         }
@@ -620,6 +636,8 @@ pub struct AgentRunItem {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
 }
 
 /// Agent Run 事件项（H0 后端脚手架）。

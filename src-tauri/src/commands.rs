@@ -548,9 +548,10 @@ pub fn append_agent_run_event(
 #[tauri::command]
 pub fn list_agent_runs(
     limit: Option<i64>,
+    include_archived: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<AgentRunItem>, String> {
-    state.list_agent_runs_impl(limit)
+    state.list_agent_runs_impl(limit, include_archived)
 }
 
 /// 列出指定 Agent Run 的事件（H0）。
@@ -571,6 +572,18 @@ pub fn complete_agent_run(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.complete_agent_run_impl(run_id, &status)
+}
+
+/// 归档 Agent Run（软删除）。
+#[tauri::command]
+pub fn archive_agent_run(run_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.archive_agent_run_impl(run_id)
+}
+
+/// 恢复已归档 Agent Run。
+#[tauri::command]
+pub fn restore_agent_run(run_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.restore_agent_run_impl(run_id)
 }
 
 /// 生成 Agent Draft（H1）。

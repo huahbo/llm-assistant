@@ -1525,7 +1525,11 @@ export const createAppendAgentRunEventArgs = (
 });
 
 /** 构造 list_agent_runs 命令参数（用于测试） */
-export const createListAgentRunsArgs = (limit?: number) => ({ limit });
+export const createListAgentRunsArgs = (limit?: number, includeArchived?: boolean) => ({
+  limit,
+  includeArchived,
+  include_archived: includeArchived,
+});
 
 /** 构造 list_agent_run_events 命令参数（用于测试） */
 export const createListAgentRunEventsArgs = (runId: number, limit?: number) => ({
@@ -1730,17 +1734,41 @@ export async function appendAgentRunEvent(
 }
 
 /** 列出 Agent Runs。非 Tauri 环境返回空数组。 */
-export async function listAgentRuns(limit = 50): Promise<AgentRunItem[]> {
+export async function listAgentRuns(limit = 50, includeArchived = false): Promise<AgentRunItem[]> {
   if (!isTauriRuntime()) return [];
   const { invoke } = await import("@tauri-apps/api/core");
   try {
     return await withTimeout(
       invoke<AgentRunItem[]>("list_agent_runs", {
-        ...createListAgentRunsArgs(limit),
+        ...createListAgentRunsArgs(limit, includeArchived),
       }),
     );
   } catch {
     return [];
+  }
+}
+
+/** 归档 Agent Run（软删除）。 */
+export async function archiveAgentRun(runId: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("archive_agent_run", { runId, run_id: runId }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 恢复已归档 Agent Run。 */
+export async function restoreAgentRun(runId: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("restore_agent_run", { runId, run_id: runId }));
+    return true;
+  } catch {
+    return false;
   }
 }
 

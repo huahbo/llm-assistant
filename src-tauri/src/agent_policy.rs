@@ -77,6 +77,14 @@ pub fn classify_shell_policy_with_config(
         "unknown"
     };
 
+    if executor == "agent" && action == "read" {
+        return decision_tuple(
+            action,
+            config.agent_read_decision,
+            "策略命中：agent 来源只读命令",
+        );
+    }
+
     if executor == "agent" && action == "write" {
         return decision_tuple(
             action,
@@ -98,6 +106,14 @@ pub fn classify_shell_policy_with_config(
             action,
             config.manual_unknown_decision,
             "策略命中：manual 来源未知命令",
+        );
+    }
+
+    if executor == "manual" && action == "write" {
+        return decision_tuple(
+            action,
+            config.manual_write_decision,
+            "策略命中：manual 来源写入命令",
         );
     }
 
@@ -251,6 +267,32 @@ mod tests {
             classify_shell_policy_with_config("mkdir test-dir", "agent", &cfg);
         assert_eq!(action, "write");
         assert_eq!(decision, "deny");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn manual_write_can_be_forced_to_approval() {
+        let cfg = ShellPolicyConfig {
+            manual_write_decision: ShellPolicyDecision::RequireApproval,
+            ..ShellPolicyConfig::default()
+        };
+        let (action, decision, reason) =
+            classify_shell_policy_with_config("mkdir test-dir", "manual", &cfg);
+        assert_eq!(action, "write");
+        assert_eq!(decision, "require_approval");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn agent_read_can_be_forced_to_approval() {
+        let cfg = ShellPolicyConfig {
+            agent_read_decision: ShellPolicyDecision::RequireApproval,
+            ..ShellPolicyConfig::default()
+        };
+        let (action, decision, reason) =
+            classify_shell_policy_with_config("Get-Date", "agent", &cfg);
+        assert_eq!(action, "read");
+        assert_eq!(decision, "require_approval");
         assert!(reason.is_some());
     }
 

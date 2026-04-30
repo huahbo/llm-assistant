@@ -92,6 +92,8 @@ fn main() {
             commands::list_agent_runs,
             commands::list_agent_run_events,
             commands::complete_agent_run,
+            commands::archive_agent_run,
+            commands::restore_agent_run,
             commands::generate_agent_draft,
             commands::run_agent_task,
             commands::rewrite_agent_draft,
