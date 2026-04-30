@@ -11,6 +11,27 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
+## 本轮快讯（2026-04-30，Claude 收口）
+
+### H6-P1 Shell 策略扩展
+- `ShellPolicyConfig` 新增 `network_decision` / `script_decision`（默认 `require_approval`）
+- 新增 `ShellPolicyProfile` 枚举与 `from_profile()`：`strict` / `balanced` / `power_user`
+- 分类优先级：`destructive > script > network > read/write/unknown`
+- `NETWORK_COMMANDS` 白名单 16 个（curl/wget/iwr/ping/ssh 等）
+- `is_script_command`：.ps1/.bat/.cmd/.sh 及 `powershell -file` 调用检测
+- Settings UI 新增 network/script 两个策略下拉控件
+- 档位预设 strict/balanced/power_user 同步升级含 network/script 字段
+- cargo test：**233 通过，0 失败**（新增 policy 测试 ×8 + archive/restore 约束测试 ×3）
+- npm run typecheck：零错误
+
+### 自动化测试覆盖（P0/P1 手测项代码验证）
+- `archive_agent_run_rejects_running_status`：running 状态禁归档 ✅
+- `archive_agent_run_rejects_when_pending_write_exists`：pending write 禁归档 ✅
+- `archive_and_restore_agent_run_round_trip`：归档→恢复→幂等约束 ✅
+- `approve_agent_write_full_write_creates_file` / `patch_replaces_content` / `patch_fails_when_old_str_not_found`：审批链路三条路径 ✅（已有）
+
+---
+
 ## 本轮快讯（2026-04-29，Claude 收口）
 
 ### H6-S2 工具链补全
@@ -111,10 +132,10 @@
 
 ---
 
-## 验证基线（2026-04-29）
+## 验证基线（2026-04-30）
 
 ```powershell
-cd src-tauri; cargo test          # 213 通过 ✅
+cd src-tauri; cargo test          # 233 通过 ✅
 cd ../web; npm run typecheck      # 零错误 ✅
 ```
 
@@ -126,11 +147,11 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | commit | 描述 |
 |--------|------|
-| `9e23631` | Reclaim Agent Studio workspace by collapsing non-critical controls |
-| `f4f9708` | fix: agent 聊天框内滚动 + 更新 dev-status 待补任务 |
-| `04128ea` | style: agent 聊天框背景色优化 |
-| `6b482b1` | fix: 最小化 — 向上偏移修正垂直居中 |
-| `4acd166` | fix: 标题栏窗口控制按钮细节对齐 |
+| `5d6355d` | feat(H6-P1): 扩展 Shell 策略 network/script 两个维度 + 档位预设 + 自动化测试 |
+| `44f9029` | chore: ignore opencode.json |
+| `109319c` | chore: 清理 docs/archive 旧路径 |
+| `16b0d2d` | docs: 完善测试规范 + agents.md 引用 |
+| `f1503ac` | test: approve/reject 审批链路自动化测试 |
 
 ---
 
@@ -138,14 +159,14 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 🔴 0 | **H6-S3 软删除与策略收口** | 进行中 | 完成 Windows 手测：验证 run 归档/恢复链路 + 5 维 shell 策略决策均生效 |
-| 🔴 1 | **write_wiki / edit_wiki 端到端验证** | 待用户手测 | 任务模式触发审批 → 批准 → 验证文件写入；拒绝 → 验证无变化 |
-| 🟢 2 | **Agent 运行历史 UI** | 已完成（2026-04-30） | 新增历史 runs 卡片条，可点击切换并查看对应事件流 |
-| 🟢 3 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |
-| 🟢 4 | **工具调用结构化可视化** | 已完成（2026-04-29） | 已支持 `tool_start/tool_end` 配对、耗时显示、详情折叠 |
-| 🟢 5 | **任务续跑 / 错误恢复** | 已完成（2026-04-29，最小闭环） | 新增“继续任务”按钮，基于历史轨迹续跑；后续可再做精细 checkpoint 恢复 |
-| 🟢 6 | **任务模式 vs 草稿模式 UX 清晰度** | 待评估 | 用户是否清楚两个模式的区别？入口是否足够清晰 |
-| 🟢 7 | **run 状态标签可见度** | 待评估 | pending/reviewing/done/failed 状态在 UI 里是否显眼 |
+| 🔴 0 | **write_wiki / edit_wiki 端到端验证** | 待用户手测 | 任务模式触发审批 → 批准 → 验证文件写入；拒绝 → 验证无变化（后端代码已有测试覆盖） |
+| 🟢 1 | **H6-P1 Shell 策略扩展** | 已完成（2026-04-30） | network/script 两个维度 + ShellPolicyProfile + 233 测试全绿 |
+| 🟢 2 | **H6-S3 archive/restore 约束** | 已测试（2026-04-30） | 3 条自动化测试：running 禁归档、pending write 禁归档、归档恢复闭环 |
+| 🟢 3 | **Agent 运行历史 UI** | 已完成（2026-04-30） | 新增历史 runs 卡片条，可点击切换并查看对应事件流 |
+| 🟢 4 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |
+| 🟢 5 | **工具调用结构化可视化** | 已完成（2026-04-29） | 已支持 `tool_start/tool_end` 配对、耗时显示、详情折叠 |
+| 🟡 6 | **H6-P2 审批票据（降低摩擦）** | 未开始 | 作用域 action+cwd+session，TTL 5min，见 h6-shell-max-safety-plan.md P2 |
+| 🟡 7 | **H6-P3 审计落库** | 未开始 | 命令+决策+exit_code 结构化落库，见 h6-shell-max-safety-plan.md P3 |
 
 ---
 
