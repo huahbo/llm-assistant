@@ -158,24 +158,36 @@
 
 1. `docs/dev-status.md` — **当前开发状态**（基线数字、活跃 TODO、最新提交）← **最先读**
 2. `agents.md` — 规范与约束来源（本文件）
-3. `docs/实施过程记录.md` — 详细进度来源（最新条目在最前，读最新 3 条）
-4. `docs/参考项目差距与移植清单.md` — 对标差距与迭代方向
-5. `docs/多Agent通信与交接协议.md` — 通信与交接流程
-6. `docs/交接状态卡.md` — 当前轮次与接力状态快速事实
-7. `docs/completed-log.md` — 已完成功能完整存档（按需查阅，不必全量阅读）
+3. `docs/测试与验证规范.md` — **测试标准**（必须自动化 vs 手测、环境差异、收口检查清单）← **每轮收口前必读**
+4. `docs/实施过程记录.md` — 详细进度来源（最新条目在最前，读最新 3 条）
+5. `docs/参考项目差距与移植清单.md` — 对标差距与迭代方向
+6. `docs/多Agent通信与交接协议.md` — 通信与交接流程
+7. `docs/交接状态卡.md` — 当前轮次与接力状态快速事实
+8. `docs/completed-log.md` — 已完成功能完整存档（按需查阅，不必全量阅读）
 
 **每轮结束时主控 Agent 必须更新 `docs/dev-status.md`**（基线数字、活跃 TODO、最新提交），不再更新 `agents.md §18`。
 
 - **Claude Code / Codex / Gemini 三方每轮开始前必须重读 `docs/参考项目差距与移植清单.md`，确保对齐最新差距与移植优先级。**
-- 基线验证命令（WSL/Linux）：
+
+**Agent 运行环境（影响命令写法）：**
+- Codex → WSL（Linux bash）
+- OpenCode → Windows 本机（PowerShell）
+- Claude Code → Windows 本机（bash/PowerShell 均可）
+
+**测试收口标准（详见 `docs/测试与验证规范.md`）：**
+- 新增逻辑 → 必须在同轮次附带自动化测试（Rust `#[cfg(test)]` / TS `.test.ts`）
+- 无法自动化的场景 → 明确标注"需手测"并给出具体步骤
+- 测试代码在 `#[cfg(test)]` 块内，打包时完全排除，不影响产物
+
+- 基线验证命令（WSL/Linux — Codex 用）：
   ```bash
-  cd src-tauri && cargo check && cargo test
-  cd ../web && npm run typecheck && npm run test -- --run
+  cd src-tauri && cargo test
+  cd ../web && npm run typecheck
   ```
-- 基线验证命令（Windows PowerShell）：
+- 基线验证命令（Windows — OpenCode / Claude Code 用）：
   ```powershell
-  cd src-tauri; cargo check; cargo test
-  cd ../web; npm run typecheck; npm run test -- --run
+  cd src-tauri; cargo test
+  cd ../web; npm run typecheck
   ```
 
 ### 16.5 本机私有配置提交禁令
