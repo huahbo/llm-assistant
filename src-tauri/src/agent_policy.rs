@@ -110,24 +110,41 @@ pub fn classify_shell_policy_with_config(
     };
 
     match (executor, action) {
-        ("agent", "read") => decision_tuple(action, config.agent_read_decision, "策略命中：agent 来源只读命令"),
-        ("agent", "write") => decision_tuple(action, config.agent_write_decision, "策略命中：agent 来源写入命令"),
-        ("agent", _) => decision_tuple(action, config.agent_unknown_decision, "策略命中：agent 来源未知命令"),
-        ("manual", "write") => decision_tuple(action, config.manual_write_decision, "策略命中：manual 来源写入命令"),
-        ("manual", _) if action == "unknown" => decision_tuple(action, config.manual_unknown_decision, "策略命中：manual 来源未知命令"),
+        ("agent", "read")    => decision_tuple(action, config.agent_read_decision,    "策略命中：agent 来源只读命令"),
+        ("agent", "write")   => decision_tuple(action, config.agent_write_decision,   "策略命中：agent 来源写入命令"),
+        ("agent", _)         => decision_tuple(action, config.agent_unknown_decision,  "策略命中：agent 来源未知命令"),
+        ("manual", "write")   => decision_tuple(action, config.manual_write_decision,  "策略命中：manual 来源写入命令"),
+        ("manual", "unknown") => decision_tuple(action, config.manual_unknown_decision, "策略命中：manual 来源未知命令"),
         _ => (action, "auto_allow", None),
     }
 }
 
 fn is_script_command(lower: &str) -> bool {
-    let first = lower.split_whitespace().next().unwrap_or("");
+    let mut tokens = lower.split_whitespace();
+    let first = tokens.next().unwrap_or("");
     let stripped = first.trim_start_matches("./").trim_start_matches(".\\");
     for ext in &[".ps1", ".bat", ".cmd", ".sh"] {
         if stripped.ends_with(ext) {
             return true;
         }
     }
-    lower.contains("-file ") && (lower.contains(".ps1") || lower.contains(".bat"))
+    // `bash script.sh` / `sh script.sh`
+    if first == "bash" || first == "sh" {
+        if let Some(arg) = tokens.next() {
+            if arg.ends_with(".sh") || arg.ends_with(".bash") {
+                return true;
+            }
+        }
+    }
+    // `powershell -File script.ps1` — only flag if the next token after -file is the script
+    if let Some(file_idx) = lower.find("-file ") {
+        let after = lower[file_idx + 6..].trim_start();
+        let filename = after.split_whitespace().next().unwrap_or("");
+        if filename.ends_with(".ps1") || filename.ends_with(".bat") {
+            return true;
+        }
+    }
+    false
 }
 
 fn decision_tuple(

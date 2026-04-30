@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
+﻿import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import appLogo from "./assets/LLM_Wiki.png";
@@ -3509,7 +3509,7 @@ export default function App() {
     }
     let latestAwaitingIndex = -1;
     let latestResolvedIndex = -1;
-    // 后端按事件 id 正序返回，使用索引即可稳定判断“最后一个审批事件”的状态。
+    // 后端按事件 id 正序返回，使用索引即可稳定判断"最后一个审批事件"的状态。
     for (let i = 0; i < agentEvents.length; i += 1) {
       const event = agentEvents[i];
       if (isAwaitingApprovalMarker(event.level, event.message)) {
@@ -4592,7 +4592,7 @@ export default function App() {
     if (!isTauriRuntime() || askSessionManaging) {
       return;
     }
-    const confirmed = await askConfirmDialog(`确认删除会话“${session.title}”？该会话消息将被移除。`, {
+    const confirmed = await askConfirmDialog(`确认删除会话"${session.title}"？该会话消息将被移除。`, {
       title: "删除会话",
       kind: "warning",
       okLabel: "删除",
@@ -7833,7 +7833,7 @@ export default function App() {
   };
 
   const handleSaveShellPolicy = async () => {
-    if (!agentShellPolicyConfig || agentShellPolicySaving) return;
+    if (!agentShellPolicyConfig || agentShellPolicySaving || !isTauriRuntime()) return;
     setAgentShellPolicySaving(true);
     try {
       const saved = await setShellPolicyConfig(agentShellPolicyConfig);
@@ -7857,7 +7857,7 @@ export default function App() {
   };
 
   const handleApplyAndSaveShellPolicyProfile = async (profileKey: "strict" | "balanced" | "power_user") => {
-    if (agentShellPolicySaving) return;
+    if (agentShellPolicySaving || !isTauriRuntime()) return;
     const profile = shellPolicyProfiles.find((item) => item.key === profileKey);
     if (!profile) return;
     setAgentShellPolicySaving(true);
@@ -7869,7 +7869,7 @@ export default function App() {
       }
       setAgentShellPolicyConfig(saved);
       setAgentShellPolicyDirty(false);
-      setAgentStatusMessage(`已切换为“${profile.label}”策略。`);
+      setAgentStatusMessage(`已切换为"${profile.label}"策略。`);
     } finally {
       setAgentShellPolicySaving(false);
     }
@@ -8213,7 +8213,7 @@ export default function App() {
     }
   };
 
-  // 侧边栏按“核心 / 运行 / 系统”分组，运行与系统下沉到底。
+  // 侧边栏按"核心 / 运行 / 系统"分组，运行与系统下沉到底。
   const navGroups: Array<{
     id: string;
     title: string;

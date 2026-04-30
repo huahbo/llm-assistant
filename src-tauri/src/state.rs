@@ -4591,10 +4591,7 @@ Wiki 页面：\n{}",
         let db_path = self
             .outbox_db_path()
             .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
-        let runs = db::list_agent_runs(&db_path, 500, true)?;
-        let target = runs
-            .into_iter()
-            .find(|item| item.id == run_id)
+        let target = db::get_agent_run_by_id(&db_path, run_id)?
             .ok_or_else(|| format!("Agent Run 不存在: {}", run_id))?;
         let normalized_status = target.status.trim().to_lowercase();
         if normalized_status == "running" || normalized_status == "reviewing" {

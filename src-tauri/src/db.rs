@@ -2476,6 +2476,40 @@ pub fn list_agent_runs(
         .map_err(|err| format!("读取 agent_runs 失败: {}", err))
 }
 
+/// 按 ID 查询单条 Agent Run（含已归档）。
+pub fn get_agent_run_by_id(db_path: &Path, run_id: i64) -> Result<Option<AgentRunRecord>, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, topic, status, created_at, updated_at, completed_at, archived_at
+            FROM agent_runs
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 agent_run 失败: {}", err))?;
+    let mut rows = stmt
+        .query_map(params![run_id], |row| {
+            Ok(AgentRunRecord {
+                id: row.get(0)?,
+                topic: row.get(1)?,
+                status: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                completed_at: row.get(5)?,
+                archived_at: row.get(6)?,
+            })
+        })
+        .map_err(|err| format!("执行查询 agent_run 失败: {}", err))?;
+    match rows.next() {
+        Some(Ok(record)) => Ok(Some(record)),
+        Some(Err(err)) => Err(format!("读取 agent_run 失败: {}", err)),
+        None => Ok(None),
+    }
+}
+
 /// 归档 Agent Run（软删除）。
 pub fn archive_agent_run(
     db_path: &Path,
