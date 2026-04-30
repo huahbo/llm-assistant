@@ -25,6 +25,7 @@ llm-web.md
 .claude/
 .codex
 test-llm.md
+opencode.json
 
 # ------------------------------
 # Local test data / assets
