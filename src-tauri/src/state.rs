@@ -5738,6 +5738,62 @@ Wiki 页面：\n{}",
         data.pending_agent_writes.remove(&run_id)
     }
 
+    /// 执行审批写入（write_wiki 全量 or edit_wiki patch），可测试。
+    pub(crate) fn approve_agent_write_impl(&self, run_id: i64) -> Result<String, String> {
+        let pending = self
+            .take_pending_agent_write(run_id)
+            .ok_or_else(|| format!("run #{run_id} 无待审批写入"))?;
+
+        let vault_path = self.vault_path_or_err()?;
+        let target = std::path::PathBuf::from(&pending.resolved_path);
+        crate::agent_policy::validate_agent_write_path(&vault_path, &target)?;
+
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+        let op_desc = if let Some(old_str) = &pending.old_str {
+            let existing =
+                std::fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {e}"))?;
+            if !existing.contains(old_str.as_str()) {
+                return Err(format!(
+                    "文件中未找到待替换内容（old_str 前 80 字符：{}）",
+                    old_str.chars().take(80).collect::<String>()
+                ));
+            }
+            let new_content = existing.replacen(old_str.as_str(), &pending.content, 1);
+            std::fs::write(&target, new_content).map_err(|e| format!("写盘失败: {e}"))?;
+            "编辑"
+        } else {
+            std::fs::write(&target, &pending.content).map_err(|e| format!("写盘失败: {e}"))?;
+            "写入"
+        };
+
+        if let Some(db_path) = self.outbox_db_path() {
+            let ts = current_timestamp_ms();
+            let _ = crate::db::append_agent_run_event(
+                &db_path, run_id, "info",
+                &format!("✅ 审批通过：已{op_desc} {}", pending.resolved_path), &ts,
+            );
+            let _ = crate::db::complete_agent_run(&db_path, run_id, "applied", &ts);
+        }
+        Ok(format!("已{op_desc}: {}", pending.resolved_path))
+    }
+
+    /// 拒绝审批写入，不写盘，可测试。
+    pub(crate) fn reject_agent_write_impl(&self, run_id: i64) -> Result<String, String> {
+        let pending = self
+            .take_pending_agent_write(run_id)
+            .ok_or_else(|| format!("run #{run_id} 无待审批写入"))?;
+        if let Some(db_path) = self.outbox_db_path() {
+            let ts = current_timestamp_ms();
+            let _ = crate::db::append_agent_run_event(
+                &db_path, run_id, "warn",
+                &format!("🚫 审批拒绝：已取消写入 {}", pending.resolved_path), &ts,
+            );
+        }
+        Ok(format!("已取消写入: {}", pending.resolved_path))
+    }
+
     /// 追加 outbox 事件，失败仅记录日志，不中断主流程。
     fn record_outbox_event(&self, event_type: &str, payload: serde_json::Value) {
         let Some(db_path) = self.outbox_db_path() else {
@@ -13935,5 +13991,111 @@ entities:
         assert!(!info.conflict);
         assert!(info.existing_path.is_none());
         assert!(info.existing_preview.is_none());
+    }
+
+    // ── approve/reject agent write 审批链路 ──────────────────────────────
+
+    #[test]
+    fn approve_agent_write_full_write_creates_file() {
+        let vault_dir = make_temp_dir("llm-wiki-approve-write");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        let wiki_dir = vault_dir.join("wiki");
+        let target = wiki_dir.join("test-approve.md");
+        let run_id = 9001_i64;
+
+        state.store_pending_agent_write(
+            run_id,
+            target.to_string_lossy().to_string(),
+            "# 审批写入测试\n\n内容正文。\n".to_string(),
+            None, // write_wiki 全量写入
+        );
+
+        let result = state.approve_agent_write_impl(run_id);
+        assert!(result.is_ok(), "approve 应成功，实际: {result:?}");
+        assert!(target.exists(), "文件应被写入");
+        let content = fs::read_to_string(&target).expect("读文件");
+        assert!(content.contains("审批写入测试"));
+        // 写入后 pending 应被消耗
+        assert!(state.take_pending_agent_write(run_id).is_none());
+    }
+
+    #[test]
+    fn reject_agent_write_does_not_create_file() {
+        let vault_dir = make_temp_dir("llm-wiki-reject-write");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        let target = vault_dir.join("wiki").join("should-not-exist.md");
+        let run_id = 9002_i64;
+
+        state.store_pending_agent_write(
+            run_id,
+            target.to_string_lossy().to_string(),
+            "不应被写入的内容".to_string(),
+            None,
+        );
+
+        let result = state.reject_agent_write_impl(run_id);
+        assert!(result.is_ok(), "reject 应成功，实际: {result:?}");
+        assert!(!target.exists(), "文件不应被创建");
+        assert!(state.take_pending_agent_write(run_id).is_none());
+    }
+
+    #[test]
+    fn approve_agent_write_patch_replaces_content() {
+        let vault_dir = make_temp_dir("llm-wiki-approve-patch");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        let wiki_dir = vault_dir.join("wiki");
+        let target = wiki_dir.join("patch-target.md");
+        fs::write(&target, "# 标题\n\n旧内容段落。\n\n其他部分。\n").expect("初始文件");
+
+        let run_id = 9003_i64;
+        state.store_pending_agent_write(
+            run_id,
+            target.to_string_lossy().to_string(),
+            "新内容段落。".to_string(),
+            Some("旧内容段落。".to_string()), // edit_wiki patch
+        );
+
+        let result = state.approve_agent_write_impl(run_id);
+        assert!(result.is_ok(), "patch approve 应成功: {result:?}");
+        let content = fs::read_to_string(&target).expect("读文件");
+        assert!(content.contains("新内容段落。"), "新内容应存在");
+        assert!(!content.contains("旧内容段落。"), "旧内容应被替换");
+        assert!(content.contains("其他部分。"), "其他内容应保留");
+    }
+
+    #[test]
+    fn approve_agent_write_patch_fails_when_old_str_not_found() {
+        let vault_dir = make_temp_dir("llm-wiki-approve-patch-fail");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        let wiki_dir = vault_dir.join("wiki");
+        let target = wiki_dir.join("patch-fail.md");
+        fs::write(&target, "# 标题\n\n实际内容。\n").expect("初始文件");
+
+        let run_id = 9004_i64;
+        state.store_pending_agent_write(
+            run_id,
+            target.to_string_lossy().to_string(),
+            "替换后内容".to_string(),
+            Some("不存在的旧内容".to_string()),
+        );
+
+        let result = state.approve_agent_write_impl(run_id);
+        assert!(result.is_err(), "old_str 不存在时应返回 Err");
+        assert!(result.unwrap_err().contains("未找到待替换内容"));
+        // 文件内容不应变化
+        let content = fs::read_to_string(&target).expect("读文件");
+        assert!(content.contains("实际内容。"));
     }
 }

@@ -1002,70 +1002,14 @@ pub async fn approve_agent_write(
     run_id: i64,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let pending = state
-        .take_pending_agent_write(run_id)
-        .ok_or_else(|| format!("run #{run_id} 无待审批写入"))?;
-
-    // PathGuard 二次校验（防 TOCTOU）
-    let vault_path = state.vault_path_or_err()?;
-    let target = std::path::PathBuf::from(&pending.resolved_path);
-    crate::agent_policy::validate_agent_write_path(&vault_path, &target)?;
-
-    // 写盘（全量写入 or 精确替换）
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
-    }
-    let op_desc = if let Some(old_str) = &pending.old_str {
-        // edit_wiki：精确替换
-        let existing =
-            std::fs::read_to_string(&target).map_err(|e| format!("读取文件失败: {e}"))?;
-        if !existing.contains(old_str.as_str()) {
-            return Err(format!(
-                "文件中未找到待替换内容（old_str 前 80 字符：{}）",
-                old_str.chars().take(80).collect::<String>()
-            ));
-        }
-        let new_content = existing.replacen(old_str.as_str(), &pending.content, 1);
-        std::fs::write(&target, new_content).map_err(|e| format!("写盘失败: {e}"))?;
-        "编辑"
-    } else {
-        // write_wiki：全量写入
-        std::fs::write(&target, &pending.content).map_err(|e| format!("写盘失败: {e}"))?;
-        "写入"
-    };
-
-    // 记录事件
-    if let Some(db_path) = state.outbox_db_path() {
-        let ts = crate::state::current_timestamp_ms();
-        let _ = crate::db::append_agent_run_event(
-            &db_path,
-            run_id,
-            "info",
-            &format!("✅ 审批通过：已{op_desc} {}", pending.resolved_path),
-            &ts,
-        );
-        let _ = crate::db::complete_agent_run(&db_path, run_id, "applied", &ts);
-    }
-    Ok(format!("已{op_desc}: {}", pending.resolved_path))
+    state.approve_agent_write_impl(run_id)
 }
 
 /// 拒绝 Agent write_wiki 写盘（H6-S2 审批流）。
 #[tauri::command]
-pub async fn reject_agent_write(run_id: i64, state: State<'_, AppState>) -> Result<String, String> {
-    let pending = state
-        .take_pending_agent_write(run_id)
-        .ok_or_else(|| format!("run #{run_id} 无待审批写入"))?;
-
-    if let Some(db_path) = state.outbox_db_path() {
-        let ts = crate::state::current_timestamp_ms();
-        let _ = crate::db::append_agent_run_event(
-            &db_path,
-            run_id,
-            "warn",
-            &format!("🚫 审批拒绝：已取消写入 {}", pending.resolved_path),
-            &ts,
-        );
-        let _ = crate::db::complete_agent_run(&db_path, run_id, "failed", &ts);
-    }
-    Ok(format!("已拒绝: {}", pending.resolved_path))
+pub async fn reject_agent_write(
+    run_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state.reject_agent_write_impl(run_id)
 }
