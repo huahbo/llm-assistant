@@ -10,7 +10,8 @@ pub fn classify_shell_policy(
     classify_shell_policy_with_config(command, executor, &ShellPolicyConfig::default())
 }
 
-/// Shell 命令策略分类（可配置版）。
+/// Shell 命令策略分类（可配置版，P1：新增 network/script 两个维度）。
+/// 分类优先级：destructive > script > network > read/write/unknown。
 /// 返回：(action, decision, block_reason)。
 pub fn classify_shell_policy_with_config(
     command: &str,
@@ -36,6 +37,24 @@ pub fn classify_shell_policy_with_config(
         "stop-computer",
         "restart-computer",
     ];
+    const NETWORK_COMMANDS: &[&str] = &[
+        "curl",
+        "wget",
+        "invoke-webrequest",
+        "iwr",
+        "irm",
+        "invoke-restmethod",
+        "ping",
+        "nslookup",
+        "tracert",
+        "traceroute",
+        "netstat",
+        "ssh",
+        "scp",
+        "sftp",
+        "ftp",
+        "telnet",
+    ];
     const READ_COMMANDS: &[&str] = &[
         "ls", "dir", "pwd", "cd", "cat", "type", "echo", "whoami", "hostname", "date", "get-date",
         "rg", "grep", "find", "git", "cargo", "npm",
@@ -58,6 +77,8 @@ pub fn classify_shell_policy_with_config(
     ];
 
     let lower = command.to_lowercase();
+
+    // 1. destructive — 永远 deny，不可通过 profile 降级
     for pat in DESTRUCTIVE_PATTERNS {
         if lower.contains(pat) {
             return (
@@ -68,7 +89,18 @@ pub fn classify_shell_policy_with_config(
         }
     }
 
+    // 2. script — .ps1/.bat/.cmd/.sh 或 powershell -file
+    if is_script_command(&lower) {
+        return decision_tuple("script", config.script_decision, "策略命中：脚本类命令");
+    }
+
+    // 3. network — curl/wget/Invoke-WebRequest 等
     let first = lower.split_whitespace().next().unwrap_or("");
+    if NETWORK_COMMANDS.contains(&first) {
+        return decision_tuple("network", config.network_decision, "策略命中：网络类命令");
+    }
+
+    // 4. read/write/unknown — 按来源执行器决策
     let action = if READ_COMMANDS.contains(&first) {
         "read"
     } else if WRITE_COMMANDS.contains(&first) {
@@ -77,47 +109,25 @@ pub fn classify_shell_policy_with_config(
         "unknown"
     };
 
-    if executor == "agent" && action == "read" {
-        return decision_tuple(
-            action,
-            config.agent_read_decision,
-            "策略命中：agent 来源只读命令",
-        );
+    match (executor, action) {
+        ("agent", "read") => decision_tuple(action, config.agent_read_decision, "策略命中：agent 来源只读命令"),
+        ("agent", "write") => decision_tuple(action, config.agent_write_decision, "策略命中：agent 来源写入命令"),
+        ("agent", _) => decision_tuple(action, config.agent_unknown_decision, "策略命中：agent 来源未知命令"),
+        ("manual", "write") => decision_tuple(action, config.manual_write_decision, "策略命中：manual 来源写入命令"),
+        ("manual", _) if action == "unknown" => decision_tuple(action, config.manual_unknown_decision, "策略命中：manual 来源未知命令"),
+        _ => (action, "auto_allow", None),
     }
+}
 
-    if executor == "agent" && action == "write" {
-        return decision_tuple(
-            action,
-            config.agent_write_decision,
-            "策略命中：agent 来源写入命令",
-        );
+fn is_script_command(lower: &str) -> bool {
+    let first = lower.split_whitespace().next().unwrap_or("");
+    let stripped = first.trim_start_matches("./").trim_start_matches(".\\");
+    for ext in &[".ps1", ".bat", ".cmd", ".sh"] {
+        if stripped.ends_with(ext) {
+            return true;
+        }
     }
-
-    if executor == "agent" && action == "unknown" {
-        return decision_tuple(
-            action,
-            config.agent_unknown_decision,
-            "策略命中：agent 来源未知命令",
-        );
-    }
-
-    if executor == "manual" && action == "unknown" {
-        return decision_tuple(
-            action,
-            config.manual_unknown_decision,
-            "策略命中：manual 来源未知命令",
-        );
-    }
-
-    if executor == "manual" && action == "write" {
-        return decision_tuple(
-            action,
-            config.manual_write_decision,
-            "策略命中：manual 来源写入命令",
-        );
-    }
-
-    (action, "auto_allow", None)
+    lower.contains("-file ") && (lower.contains(".ps1") || lower.contains(".bat"))
 }
 
 fn decision_tuple(
@@ -344,5 +354,98 @@ mod tests {
         let target = wiki.join("notes.txt");
         let result = validate_agent_write_path(&vault, &target);
         assert!(result.is_err(), "非 md 写路径应拒绝");
+    }
+
+    // ── P1：network / script 分类测试 ─────────────────────────────────────
+
+    #[test]
+    fn network_command_uses_network_decision() {
+        let cfg = ShellPolicyConfig {
+            network_decision: ShellPolicyDecision::RequireApproval,
+            ..ShellPolicyConfig::default()
+        };
+        for cmd in &["curl https://example.com", "wget http://x.com", "iwr http://x.com", "ping 8.8.8.8"] {
+            let (action, decision, reason) = classify_shell_policy_with_config(cmd, "manual", &cfg);
+            assert_eq!(action, "network", "cmd={cmd}");
+            assert_eq!(decision, "require_approval", "cmd={cmd}");
+            assert!(reason.is_some(), "cmd={cmd}");
+        }
+    }
+
+    #[test]
+    fn network_command_auto_allow_on_power_user_profile() {
+        use crate::models::ShellPolicyProfile;
+        let cfg = ShellPolicyConfig::from_profile(ShellPolicyProfile::PowerUser);
+        let (action, decision, _) = classify_shell_policy_with_config("curl https://example.com", "manual", &cfg);
+        assert_eq!(action, "network");
+        assert_eq!(decision, "auto_allow");
+    }
+
+    #[test]
+    fn network_command_deny_on_strict_profile() {
+        use crate::models::ShellPolicyProfile;
+        let cfg = ShellPolicyConfig::from_profile(ShellPolicyProfile::Strict);
+        let (action, decision, reason) = classify_shell_policy_with_config("wget http://x.com", "agent", &cfg);
+        assert_eq!(action, "network");
+        assert_eq!(decision, "deny");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn script_command_ps1_uses_script_decision() {
+        let cfg = ShellPolicyConfig {
+            script_decision: ShellPolicyDecision::RequireApproval,
+            ..ShellPolicyConfig::default()
+        };
+        let (action, decision, reason) = classify_shell_policy_with_config(".\\deploy.ps1", "manual", &cfg);
+        assert_eq!(action, "script");
+        assert_eq!(decision, "require_approval");
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn script_command_bat_uses_script_decision() {
+        let cfg = ShellPolicyConfig::default();
+        let (action, decision, _) = classify_shell_policy_with_config("./build.bat", "agent", &cfg);
+        assert_eq!(action, "script");
+        assert_eq!(decision, "require_approval");
+    }
+
+    #[test]
+    fn script_command_powershell_file_uses_script_decision() {
+        let cfg = ShellPolicyConfig {
+            script_decision: ShellPolicyDecision::Deny,
+            ..ShellPolicyConfig::default()
+        };
+        let (action, decision, _) = classify_shell_policy_with_config("powershell -File myscript.ps1", "manual", &cfg);
+        assert_eq!(action, "script");
+        assert_eq!(decision, "deny");
+    }
+
+    #[test]
+    fn destructive_always_denied_regardless_of_profile() {
+        use crate::models::ShellPolicyProfile;
+        let cfg = ShellPolicyConfig::from_profile(ShellPolicyProfile::PowerUser);
+        let (action, decision, _) = classify_shell_policy_with_config("rm -rf /tmp/x", "manual", &cfg);
+        assert_eq!(action, "destructive");
+        assert_eq!(decision, "deny");
+    }
+
+    #[test]
+    fn profile_strict_denies_agent_write() {
+        use crate::models::ShellPolicyProfile;
+        let cfg = ShellPolicyConfig::from_profile(ShellPolicyProfile::Strict);
+        let (action, decision, _) = classify_shell_policy_with_config("mkdir new-dir", "agent", &cfg);
+        assert_eq!(action, "write");
+        assert_eq!(decision, "deny");
+    }
+
+    #[test]
+    fn profile_power_user_allows_agent_write() {
+        use crate::models::ShellPolicyProfile;
+        let cfg = ShellPolicyConfig::from_profile(ShellPolicyProfile::PowerUser);
+        let (action, decision, _) = classify_shell_policy_with_config("mkdir new-dir", "agent", &cfg);
+        assert_eq!(action, "write");
+        assert_eq!(decision, "auto_allow");
     }
 }

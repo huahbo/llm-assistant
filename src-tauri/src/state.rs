@@ -13993,6 +13993,71 @@ entities:
         assert!(info.existing_preview.is_none());
     }
 
+    // ── archive / restore agent run 约束测试 ─────────────────────────────
+
+    #[test]
+    fn archive_agent_run_rejects_running_status() {
+        let vault_dir = make_temp_dir("llm-wiki-archive-running");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        // start_agent_run_impl 默认 status=running
+        let run_id = state.start_agent_run_impl("running 归档测试").expect("创建 run");
+        let result = state.archive_agent_run_impl(run_id);
+        assert!(result.is_err(), "running 状态应禁止归档");
+        assert!(result.unwrap_err().contains("正在进行中"));
+    }
+
+    #[test]
+    fn archive_agent_run_rejects_when_pending_write_exists() {
+        let vault_dir = make_temp_dir("llm-wiki-archive-pending");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        let run_id = state.start_agent_run_impl("pending 写入归档测试").expect("创建 run");
+        state.complete_agent_run_impl(run_id, "applied").expect("完成 run");
+
+        state.store_pending_agent_write(
+            run_id,
+            vault_dir.join("wiki").join("block.md").to_string_lossy().to_string(),
+            "内容".to_string(),
+            None,
+        );
+
+        let result = state.archive_agent_run_impl(run_id);
+        assert!(result.is_err(), "存在 pending write 时应禁止归档");
+        assert!(result.unwrap_err().contains("待审批写入"));
+    }
+
+    #[test]
+    fn archive_and_restore_agent_run_round_trip() {
+        let vault_dir = make_temp_dir("llm-wiki-archive-restore");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init vault");
+
+        let run_id = state.start_agent_run_impl("归档恢复测试").expect("创建 run");
+        state.complete_agent_run_impl(run_id, "applied").expect("完成 run");
+
+        // 归档
+        let archive_result = state.archive_agent_run_impl(run_id);
+        assert!(archive_result.is_ok(), "done 状态应允许归档: {archive_result:?}");
+
+        // 归档后重复归档应失败
+        let double_archive = state.archive_agent_run_impl(run_id);
+        assert!(double_archive.is_err(), "已归档的 run 不能再次归档");
+
+        // 恢复
+        let restore_result = state.restore_agent_run_impl(run_id);
+        assert!(restore_result.is_ok(), "已归档 run 应可恢复: {restore_result:?}");
+
+        // 恢复后重复恢复应失败
+        let double_restore = state.restore_agent_run_impl(run_id);
+        assert!(double_restore.is_err(), "未归档的 run 不能再次恢复");
+    }
+
     // ── approve/reject agent write 审批链路 ──────────────────────────────
 
     #[test]

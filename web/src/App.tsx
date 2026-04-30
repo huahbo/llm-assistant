@@ -196,6 +196,8 @@ const defaultShellPolicyConfig: ShellPolicyConfig = {
   agent_read_decision: "auto_allow",
   agent_write_decision: "require_approval",
   agent_unknown_decision: "require_approval",
+  network_decision: "require_approval",
+  script_decision: "require_approval",
 };
 const shellPolicyProfiles: Array<{
   key: "strict" | "balanced" | "power_user";
@@ -206,11 +208,13 @@ const shellPolicyProfiles: Array<{
     key: "strict",
     label: "严格",
     config: {
-      manual_unknown_decision: "require_approval",
+      manual_unknown_decision: "deny",
       manual_write_decision: "require_approval",
       agent_read_decision: "require_approval",
       agent_write_decision: "deny",
       agent_unknown_decision: "deny",
+      network_decision: "deny",
+      script_decision: "deny",
     },
   },
   {
@@ -226,7 +230,9 @@ const shellPolicyProfiles: Array<{
       manual_write_decision: "auto_allow",
       agent_read_decision: "auto_allow",
       agent_write_decision: "auto_allow",
-      agent_unknown_decision: "require_approval",
+      agent_unknown_decision: "auto_allow",
+      network_decision: "auto_allow",
+      script_decision: "require_approval",
     },
   },
 ];
@@ -10920,6 +10926,32 @@ export default function App() {
                           >
                             {shellPolicyDecisionOptions.map((option) => (
                               <option key={`settings-unknown-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>network（curl/wget 等）</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.network_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("network_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-network-${option.value}`} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>script（.ps1/.bat/.sh）</span>
+                          <select
+                            className="dev-panel__input"
+                            value={agentShellPolicyConfig.script_decision}
+                            onChange={(ev) => handleChangeShellPolicyDecision("script_decision", ev.target.value as ShellPolicyDecision)}
+                            disabled={!isTauriRuntime()}
+                          >
+                            {shellPolicyDecisionOptions.map((option) => (
+                              <option key={`settings-script-${option.value}`} value={option.value}>{option.label}</option>
                             ))}
                           </select>
                         </label>

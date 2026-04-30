@@ -633,4 +633,8 @@ export interface ShellPolicyConfig {
   agent_read_decision: ShellPolicyDecision;
   agent_write_decision: ShellPolicyDecision;
   agent_unknown_decision: ShellPolicyDecision;
+  network_decision: ShellPolicyDecision;
+  script_decision: ShellPolicyDecision;
 }
+
+export type ShellPolicyProfile = "strict" | "balanced" | "power_user";

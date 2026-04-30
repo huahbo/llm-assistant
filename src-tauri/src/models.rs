@@ -120,7 +120,7 @@ impl ShellPolicyDecision {
     }
 }
 
-/// Shell 策略配置（P0：先暴露核心旋钮，后续迭代细化到 action/resource 维度）。
+/// Shell 策略配置（P1：增加 network/script 两个高风险维度）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellPolicyConfig {
     /// `manual` 来源且 action=unknown 时的决策。
@@ -138,6 +138,12 @@ pub struct ShellPolicyConfig {
     /// `agent` 来源且 action=unknown 时的决策。
     #[serde(default = "default_shell_policy_agent_unknown_decision")]
     pub agent_unknown_decision: ShellPolicyDecision,
+    /// 网络类命令（curl/wget/Invoke-WebRequest 等），不区分来源。
+    #[serde(default = "default_shell_policy_network_decision")]
+    pub network_decision: ShellPolicyDecision,
+    /// 脚本类命令（.ps1/.bat/.cmd/.sh），不区分来源。
+    #[serde(default = "default_shell_policy_script_decision")]
+    pub script_decision: ShellPolicyDecision,
 }
 
 fn default_shell_policy_manual_unknown_decision() -> ShellPolicyDecision {
@@ -160,6 +166,14 @@ fn default_shell_policy_agent_unknown_decision() -> ShellPolicyDecision {
     ShellPolicyDecision::RequireApproval
 }
 
+fn default_shell_policy_network_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::RequireApproval
+}
+
+fn default_shell_policy_script_decision() -> ShellPolicyDecision {
+    ShellPolicyDecision::RequireApproval
+}
+
 impl Default for ShellPolicyConfig {
     fn default() -> Self {
         Self {
@@ -168,6 +182,43 @@ impl Default for ShellPolicyConfig {
             agent_read_decision: default_shell_policy_agent_read_decision(),
             agent_write_decision: default_shell_policy_agent_write_decision(),
             agent_unknown_decision: default_shell_policy_agent_unknown_decision(),
+            network_decision: default_shell_policy_network_decision(),
+            script_decision: default_shell_policy_script_decision(),
+        }
+    }
+}
+
+/// Shell 策略档位（用于前端一键切换）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellPolicyProfile {
+    Strict,
+    Balanced,
+    PowerUser,
+}
+
+impl ShellPolicyConfig {
+    pub fn from_profile(profile: ShellPolicyProfile) -> Self {
+        match profile {
+            ShellPolicyProfile::Strict => Self {
+                manual_unknown_decision: ShellPolicyDecision::Deny,
+                manual_write_decision: ShellPolicyDecision::RequireApproval,
+                agent_read_decision: ShellPolicyDecision::RequireApproval,
+                agent_write_decision: ShellPolicyDecision::Deny,
+                agent_unknown_decision: ShellPolicyDecision::Deny,
+                network_decision: ShellPolicyDecision::Deny,
+                script_decision: ShellPolicyDecision::Deny,
+            },
+            ShellPolicyProfile::Balanced => Self::default(),
+            ShellPolicyProfile::PowerUser => Self {
+                manual_unknown_decision: ShellPolicyDecision::AutoAllow,
+                manual_write_decision: ShellPolicyDecision::AutoAllow,
+                agent_read_decision: ShellPolicyDecision::AutoAllow,
+                agent_write_decision: ShellPolicyDecision::AutoAllow,
+                agent_unknown_decision: ShellPolicyDecision::AutoAllow,
+                network_decision: ShellPolicyDecision::AutoAllow,
+                script_decision: ShellPolicyDecision::RequireApproval,
+            },
         }
     }
 }
