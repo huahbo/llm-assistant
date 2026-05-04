@@ -11,6 +11,16 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
+## 本轮快讯（2026-05-04，Codex 接力）
+
+### H7 Phase 1.4 ShellPolicyContext 已完成
+- Codex 在 Claude 限流后接手 H7 拆分重构，先清理 `App.tsx` 行尾噪声，确认无语义 diff。
+- 新增 `web/src/contexts/ShellPolicyContext.tsx`，迁出 Shell 策略配置、保存、刷新、档位切换与 dirty/saving 状态。
+- `web/src/main.tsx` 已接入 `ShellPolicyProvider`；`App.tsx` 改用 `useShellPolicy()`，Settings 与 Agent 仍共用同一策略数据源。
+- 本轮为前端 Context 串行临界步骤，后端不改，避免与 Claude 已提交的 H7 Phase 0~1.3 改动交叉冲突。
+- 验证：`cd web && npm run typecheck` ✅；`npm run test -- --run` 仍因 WSL Rollup 可选依赖缺失启动失败；`cargo test` 因 WSL 缺 `pkg-config` 未进入业务测试。
+- 下一步：H7 Phase 1.5 `ToastContext`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）

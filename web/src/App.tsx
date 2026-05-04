@@ -4,6 +4,11 @@ import ResearchPanel from "./modules/research/ResearchPanel";
 import SearchConfigPanel from "./modules/lint/SearchConfigPanel";
 import { useVault } from "./contexts/VaultContext";
 import { useMode } from "./contexts/ModeContext";
+import {
+  shellPolicyDecisionOptions,
+  shellPolicyProfiles,
+  useShellPolicy,
+} from "./contexts/ShellPolicyContext";
 export { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { marked } from "marked";
@@ -115,8 +120,6 @@ import {
   createShellSession,
   closeShellSession,
   listenShellStreamChunk,
-  getShellPolicyConfig,
-  setShellPolicyConfig,
   approveAgentWrite,
   rejectAgentWrite,
   type OcrProvider,
@@ -178,7 +181,6 @@ import type {
   ShellHistoryEntry,
   ShellSessionInfo,
   ShellStreamChunk,
-  ShellPolicyConfig,
   ShellPolicyDecision,
   WikiTemplate,
   WikiPageDetail,
@@ -192,57 +194,6 @@ const defaultVaultPath = "vault";
 const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
 const defaultIngestPdfPath = "E:\\llm-wiki\\test.pdf";
 
-const shellPolicyDecisionOptions: Array<{ value: ShellPolicyDecision; label: string }> = [
-  { value: "auto_allow", label: "自动放行" },
-  { value: "require_approval", label: "需要审批" },
-  { value: "deny", label: "直接拒绝" },
-];
-const defaultShellPolicyConfig: ShellPolicyConfig = {
-  manual_unknown_decision: "auto_allow",
-  manual_write_decision: "auto_allow",
-  agent_read_decision: "auto_allow",
-  agent_write_decision: "require_approval",
-  agent_unknown_decision: "require_approval",
-  network_decision: "require_approval",
-  script_decision: "require_approval",
-};
-const shellPolicyProfiles: Array<{
-  key: "strict" | "balanced" | "power_user";
-  label: string;
-  config: ShellPolicyConfig;
-}> = [
-  {
-    key: "strict",
-    label: "严格",
-    config: {
-      manual_unknown_decision: "deny",
-      manual_write_decision: "require_approval",
-      agent_read_decision: "require_approval",
-      agent_write_decision: "deny",
-      agent_unknown_decision: "deny",
-      network_decision: "deny",
-      script_decision: "deny",
-    },
-  },
-  {
-    key: "balanced",
-    label: "平衡",
-    config: defaultShellPolicyConfig,
-  },
-  {
-    key: "power_user",
-    label: "高能力",
-    config: {
-      manual_unknown_decision: "auto_allow",
-      manual_write_decision: "auto_allow",
-      agent_read_decision: "auto_allow",
-      agent_write_decision: "auto_allow",
-      agent_unknown_decision: "auto_allow",
-      network_decision: "auto_allow",
-      script_decision: "require_approval",
-    },
-  },
-];
 const defaultIngestFilePath = "E:\\llm-wiki\\test.docx";
 const defaultIngestFileOcrProvider: OcrProvider = "tesseract";
 const defaultQueryTopKMin = 1;
@@ -3135,9 +3086,18 @@ export default function App() {
   const [agentShellHistory, setAgentShellHistory] = useState<ShellHistoryEntry[]>([]);
   const [agentShellRunning, setAgentShellRunning] = useState<boolean>(false);
   const [agentShellSession, setAgentShellSession] = useState<ShellSessionInfo | null>(null);
-  const [agentShellPolicyConfig, setAgentShellPolicyConfig] = useState<ShellPolicyConfig | null>(null);
-  const [agentShellPolicySaving, setAgentShellPolicySaving] = useState<boolean>(false);
-  const [agentShellPolicyDirty, setAgentShellPolicyDirty] = useState<boolean>(false);
+  const {
+    config: agentShellPolicyConfig,
+    saving: agentShellPolicySaving,
+    dirty: agentShellPolicyDirty,
+    message: shellPolicyStatusMessage,
+    clearMessage: clearShellPolicyStatusMessage,
+    reload: handleReloadShellPolicy,
+    save: handleSaveShellPolicy,
+    applyProfile: applyShellPolicyProfile,
+    applyAndSaveProfile: handleApplyAndSaveShellPolicyProfile,
+    setField: handleChangeShellPolicyDecision,
+  } = useShellPolicy();
   const [agentShellTheme, setAgentShellTheme] = useState<"deep" | "light">("deep");
   const [agentShellHistoryCursor, setAgentShellHistoryCursor] = useState<number>(-1);
   const [agentShellDraftInput, setAgentShellDraftInput] = useState<string>("");
@@ -3483,16 +3443,14 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime()) return;
     if ((activeModule !== "agent" && activeModule !== "settings") || agentShellPolicyConfig) return;
-    let disposed = false;
-    void getShellPolicyConfig().then((cfg) => {
-      if (disposed || !cfg) return;
-      setAgentShellPolicyConfig(cfg);
-      setAgentShellPolicyDirty(false);
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [activeModule, agentShellPolicyConfig]);
+    void handleReloadShellPolicy({ silent: true });
+  }, [activeModule, agentShellPolicyConfig, handleReloadShellPolicy]);
+
+  useEffect(() => {
+    if (!shellPolicyStatusMessage) return;
+    setAgentStatusMessage(shellPolicyStatusMessage);
+    clearShellPolicyStatusMessage();
+  }, [shellPolicyStatusMessage, clearShellPolicyStatusMessage]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -7739,71 +7697,6 @@ export default function App() {
     setAgentToolsSeenCount(0);
     setAgentShellHistoryCursor(-1);
     setAgentShellDraftInput("");
-  };
-
-  const handleChangeShellPolicyDecision = (
-    field: keyof ShellPolicyConfig,
-    decision: ShellPolicyDecision,
-  ) => {
-    setAgentShellPolicyConfig((prev) => {
-      const base = prev ?? defaultShellPolicyConfig;
-      return { ...base, [field]: decision };
-    });
-    setAgentShellPolicyDirty(true);
-  };
-
-  const handleSaveShellPolicy = async () => {
-    if (!agentShellPolicyConfig || agentShellPolicySaving || !isTauriRuntime()) return;
-    setAgentShellPolicySaving(true);
-    try {
-      const saved = await setShellPolicyConfig(agentShellPolicyConfig);
-      if (!saved) {
-        setAgentStatusMessage("Shell 策略保存失败，请检查后端日志。");
-        return;
-      }
-      setAgentShellPolicyConfig(saved);
-      setAgentShellPolicyDirty(false);
-      setAgentStatusMessage("Shell 策略已保存，后续命令将按新策略执行。");
-    } finally {
-      setAgentShellPolicySaving(false);
-    }
-  };
-
-  const applyShellPolicyProfile = (profileKey: "strict" | "balanced" | "power_user") => {
-    const profile = shellPolicyProfiles.find((item) => item.key === profileKey);
-    if (!profile) return;
-    setAgentShellPolicyConfig({ ...profile.config });
-    setAgentShellPolicyDirty(true);
-  };
-
-  const handleApplyAndSaveShellPolicyProfile = async (profileKey: "strict" | "balanced" | "power_user") => {
-    if (agentShellPolicySaving || !isTauriRuntime()) return;
-    const profile = shellPolicyProfiles.find((item) => item.key === profileKey);
-    if (!profile) return;
-    setAgentShellPolicySaving(true);
-    try {
-      const saved = await setShellPolicyConfig({ ...profile.config });
-      if (!saved) {
-        setAgentStatusMessage("Shell 策略保存失败，请检查后端日志。");
-        return;
-      }
-      setAgentShellPolicyConfig(saved);
-      setAgentShellPolicyDirty(false);
-      setAgentStatusMessage(`已切换为"${profile.label}"策略。`);
-    } finally {
-      setAgentShellPolicySaving(false);
-    }
-  };
-
-  const handleReloadShellPolicy = async () => {
-    const cfg = await getShellPolicyConfig();
-    if (!cfg) {
-      setAgentStatusMessage("读取 Shell 策略失败，请检查后端日志。");
-      return;
-    }
-    setAgentShellPolicyConfig(cfg);
-    setAgentShellPolicyDirty(false);
-    setAgentStatusMessage("已刷新 Shell 策略。");
   };
 
   const focusAgentShellInput = () => {

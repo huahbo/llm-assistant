@@ -653,16 +653,16 @@ npm run dev
 ## 5. 进度跟踪（Sonnet 4.6 执行时填写）
 
 ### Phase 0
-- [ ] 0.1 QueuePanel
-- [ ] 0.2 ResearchPanel
-- [ ] 0.3 ResearchDialog
-- [ ] 0.4 SearchConfigPanel
+- [x] 0.1 QueuePanel
+- [x] 0.2 ResearchPanel
+- [x] 0.3 ResearchDialog
+- [x] 0.4 SearchConfigPanel
 
 ### Phase 1
-- [ ] 1.1 RuntimeContext
-- [ ] 1.2 VaultContext
-- [ ] 1.3 ModeContext
-- [ ] 1.4 ShellPolicyContext
+- [x] 1.1 RuntimeContext
+- [x] 1.2 VaultContext
+- [x] 1.3 ModeContext
+- [x] 1.4 ShellPolicyContext
 - [ ] 1.5 ToastContext
 
 ### Phase 2
