@@ -663,7 +663,7 @@ npm run dev
 - [x] 1.2 VaultContext
 - [x] 1.3 ModeContext
 - [x] 1.4 ShellPolicyContext
-- [ ] 1.5 ToastContext
+- [x] 1.5 ToastContext
 
 ### Phase 2
 - [ ] 2.1 Settings

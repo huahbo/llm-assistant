@@ -9,6 +9,7 @@ import {
   shellPolicyProfiles,
   useShellPolicy,
 } from "./contexts/ShellPolicyContext";
+import { useToast } from "./contexts/ToastContext";
 export { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { marked } from "marked";
@@ -2852,7 +2853,7 @@ export default function App() {
   // 折叠的补丁建议分组路径集合，默认全部展开
   const [patchPreviewCollapsedGroups, setPatchPreviewCollapsedGroups] = useState<Set<string>>(new Set());
   const [queryResult, setQueryResult] = useState<QueryAnswerResult | null>(null);
-  const [statusMessage, setStatusMessage] = useState("");
+  const { statusMessage, setStatusMessage, agentStatusMessage, setAgentStatusMessage } = useToast();
   const [switchingMode, setSwitchingMode] = useState<ModeId | null>(null);
   const [devAction, setDevAction] = useState<DevAction | null>(null);
   const [lintRunning, setLintRunning] = useState(false);
@@ -3045,7 +3046,6 @@ export default function App() {
   const [agentEventMessage, setAgentEventMessage] = useState("");
   const [agentCompleteStatus, setAgentCompleteStatus] = useState<AgentRunStatus>("applied");
   const [agentActionRunning, setAgentActionRunning] = useState(false);
-  const [agentStatusMessage, setAgentStatusMessage] = useState("");
   const [agentReviewTab, setAgentReviewTab] = useState<AgentReviewTab>("draft");
   const [agentRightTab, setAgentRightTab] = useState<AgentRightTab>("task");
   const [agentDraftConflictPreview, setAgentDraftConflictPreview] = useState<AgentDraftConflictInfo | null>(null);

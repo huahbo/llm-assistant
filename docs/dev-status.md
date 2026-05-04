@@ -21,6 +21,12 @@
 - 验证：`cd web && npm run typecheck` ✅；`npm run test -- --run` 仍因 WSL Rollup 可选依赖缺失启动失败；`cargo test` 因 WSL 缺 `pkg-config` 未进入业务测试。
 - 下一步：H7 Phase 1.5 `ToastContext`。
 
+### H7 Phase 1.5 ToastContext 已完成
+- 新增 `web/src/contexts/ToastContext.tsx`，将全局提示与 Agent 提示状态从 `App.tsx` 移到统一 Context。
+- `web/src/main.tsx` 已接入 `ToastProvider`；`App.tsx` 改用 `useToast()`，保留现有 `setStatusMessage` / `setAgentStatusMessage` 调用形态，降低本步风险。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：进入 H7 Phase 2，优先拆 `SettingsModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）

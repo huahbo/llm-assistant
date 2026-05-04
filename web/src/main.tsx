@@ -5,6 +5,7 @@ import { RuntimeProvider } from "./contexts/RuntimeContext";
 import { VaultProvider } from "./contexts/VaultContext";
 import { ModeProvider } from "./contexts/ModeContext";
 import { ShellPolicyProvider } from "./contexts/ShellPolicyContext";
+import { ToastProvider } from "./contexts/ToastContext";
 import "./styles.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
@@ -15,7 +16,9 @@ root.render(
       <VaultProvider>
         <ModeProvider>
           <ShellPolicyProvider>
-            <App />
+            <ToastProvider>
+              <App />
+            </ToastProvider>
           </ShellPolicyProvider>
         </ModeProvider>
       </VaultProvider>
