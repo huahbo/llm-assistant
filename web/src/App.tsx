@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, ty
 import QueuePanel from "./modules/operations/QueuePanel";
 import ResearchPanel from "./modules/research/ResearchPanel";
 import SearchConfigPanel from "./modules/lint/SearchConfigPanel";
+import { RuntimeProvider } from "./contexts/RuntimeContext";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import appLogo from "./assets/LLM_Wiki.png";
@@ -8272,6 +8273,7 @@ export default function App() {
   const tauriRuntime = isTauriRuntime();
 
   return (
+    <RuntimeProvider>
     <div className={`app-root${tauriRuntime ? " app-root--tauri" : ""}`}>
       {tauriRuntime ? (
         <header
@@ -12376,6 +12378,7 @@ export default function App() {
       </div>
     </div>
     </div>
+    </RuntimeProvider>
   );
 }
 
