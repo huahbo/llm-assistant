@@ -666,7 +666,7 @@ npm run dev
 - [x] 1.5 ToastContext
 
 ### Phase 2
-- [ ] 2.1 Settings
+- [x] 2.1 Settings
 - [ ] 2.2 Operations
 - [ ] 2.3 Inbox
 - [ ] 2.4 Lint

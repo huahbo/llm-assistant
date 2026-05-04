@@ -27,6 +27,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：进入 H7 Phase 2，优先拆 `SettingsModule`。
 
+### H7 Phase 2.1 SettingsModule 已完成
+- 新增 `web/src/modules/settings/SettingsModule.tsx`，将 Settings 渲染分支从 `App.tsx` 外移。
+- Settings 内部直接消费 `ShellPolicyContext`；LLM Provider 表单与拖拽模式暂以 props 接入，保持行为不变。
+- `App.tsx` 删除 Settings JSX 大块，仅保留 `<SettingsModule />` 路由接线。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.2 `OperationsModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）
