@@ -11,6 +11,34 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
+## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
+
+### H7 App.tsx 拆分重构计划（架构设计稿出炉）
+- 新增 `docs/h7-app-tsx-refactor-plan.md`：完整可执行计划，Sonnet 4.6 接手即可执行
+- 路线：**Context + 模块组件**（不引新依赖：无 Zustand/Redux/Router）
+- 目标：App.tsx 从 13858 行降至 < 500 行，10 模块独立、5 个 Context 收口跨模块状态
+- 阶段划分：Phase 0（4 个内嵌组件外移） → Phase 1（建立 5 个 Context） → Phase 2（9 个模块按风险递增提取） → Phase 3（收口验证）
+- 预计 15-20 个 commit，每个 commit 独立 typecheck + cargo test 验证
+- Sonnet 4.6 限流时可断点续作（计划里有 §5 进度勾选表）
+
+### write_wiki / edit_wiki E2E 状态变更
+- **决策**：跳过用户手测，以已有自动化测试为准
+- 覆盖证据：4 条 Rust 测试已落 `src-tauri/src/state.rs`
+  - `approve_agent_write_full_write_creates_file` ✅
+  - `reject_agent_write_does_not_create_file` ✅
+  - `approve_agent_write_patch_replaces_content` ✅
+  - `approve_agent_write_patch_fails_when_old_str_not_found` ✅
+- 详见 `docs/h7-app-tsx-refactor-plan.md` §0.1
+
+### 代码质量加固（H6-P1 收口后）
+- `db.rs`：新增 `get_agent_run_by_id()`，O(1) 查询替代原 list_agent_runs(500) 全表扫
+- `state.rs`：`archive_agent_run_impl` 改用单行查询
+- `agent_policy.rs`：match 去冗余 guard；`is_script_command` 修 `-file` 误判；新增 `bash xxx.sh` 检测
+- `App.tsx`：`handleSaveShellPolicy` / `handleApplyAndSaveShellPolicyProfile` 补 `isTauriRuntime()` 前置守卫
+- 评分：agent_policy A / db.rs A / state.rs archive A- / App.tsx handlers A-
+
+---
+
 ## 本轮快讯（2026-04-30，Claude 收口）
 
 ### H6-P1 Shell 策略扩展
@@ -147,11 +175,11 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | commit | 描述 |
 |--------|------|
+| `9b5e3a7` | refactor: 代码质量提升至 A — db/policy/state/App 四处加固 |
+| `aa8f9e1` | docs: 更新 dev-status 基线 233 + P1 完成 + TODO 重排 |
 | `5d6355d` | feat(H6-P1): 扩展 Shell 策略 network/script 两个维度 + 档位预设 + 自动化测试 |
 | `44f9029` | chore: ignore opencode.json |
 | `109319c` | chore: 清理 docs/archive 旧路径 |
-| `16b0d2d` | docs: 完善测试规范 + agents.md 引用 |
-| `f1503ac` | test: approve/reject 审批链路自动化测试 |
 
 ---
 
@@ -159,14 +187,15 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 🔴 0 | **write_wiki / edit_wiki 端到端验证** | 待用户手测 | 任务模式触发审批 → 批准 → 验证文件写入；拒绝 → 验证无变化（后端代码已有测试覆盖） |
-| 🟢 1 | **H6-P1 Shell 策略扩展** | 已完成（2026-04-30） | network/script 两个维度 + ShellPolicyProfile + 233 测试全绿 |
-| 🟢 2 | **H6-S3 archive/restore 约束** | 已测试（2026-04-30） | 3 条自动化测试：running 禁归档、pending write 禁归档、归档恢复闭环 |
-| 🟢 3 | **Agent 运行历史 UI** | 已完成（2026-04-30） | 新增历史 runs 卡片条，可点击切换并查看对应事件流 |
-| 🟢 4 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |
-| 🟢 5 | **工具调用结构化可视化** | 已完成（2026-04-29） | 已支持 `tool_start/tool_end` 配对、耗时显示、详情折叠 |
+| 🔴 0 | **H7 App.tsx 拆分重构** | 计划已出，待 Sonnet 4.6 执行 | 按 `docs/h7-app-tsx-refactor-plan.md` Phase 0→3 增量执行；15-20 个 commit |
+| 🟢 1 | **write_wiki / edit_wiki E2E** | 自动化覆盖（用户决定跳过手测） | `state.rs` 4 条测试已覆盖，详见 h7 计划 §0.1 |
+| 🟢 2 | **H6-P1 Shell 策略扩展 + 代码加固** | 已完成（2026-04-30） | network/script + Profile + 233 测试 + db/policy/state/App 四处加固 |
+| 🟢 3 | **H6-S3 archive/restore 约束** | 已测试（2026-04-30） | 3 条自动化测试：running 禁归档、pending write 禁归档、归档恢复闭环 |
+| 🟢 4 | **Agent 运行历史 UI** | 已完成（2026-04-30） | 新增历史 runs 卡片条，可点击切换并查看对应事件流 |
+| 🟢 5 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |
 | 🟡 6 | **H6-P2 审批票据（降低摩擦）** | 未开始 | 作用域 action+cwd+session，TTL 5min，见 h6-shell-max-safety-plan.md P2 |
 | 🟡 7 | **H6-P3 审计落库** | 未开始 | 命令+决策+exit_code 结构化落库，见 h6-shell-max-safety-plan.md P3 |
+| 🟡 8 | **styles.css / tauri-client.ts 拆分** | 未开始 | 在 H7 之后做，避免一次拆太多文件 |
 
 ---
 
