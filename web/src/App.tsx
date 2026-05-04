@@ -3,6 +3,7 @@ import QueuePanel from "./modules/operations/QueuePanel";
 import ResearchPanel from "./modules/research/ResearchPanel";
 import SearchConfigPanel from "./modules/lint/SearchConfigPanel";
 import { useVault } from "./contexts/VaultContext";
+import { useMode } from "./contexts/ModeContext";
 export { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { marked } from "marked";
@@ -3068,8 +3069,8 @@ export default function App() {
   const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
   // 聚合模式开关（大图时按 group 折叠超节点）
   const [graphAggregateMode, setGraphAggregateMode] = useState(false);
-  // 当前激活的导航模块
-  const [activeModule, setActiveModule] = useState<ModuleId>("inbox");
+  // 当前激活的导航模块（来自 ModeContext）
+  const { activeModule, navigateTo: setActiveModule } = useMode();
   // 摄入队列面板状态
   const [ingestQueue, setIngestQueue] = useState<IngestQueueItem[]>([]);
   const [queueEnqueueing, setQueueEnqueueing] = useState(false);
