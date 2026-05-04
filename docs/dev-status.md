@@ -34,6 +34,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.2 `OperationsModule`。
 
+### H7 Phase 2.2 OperationsModule 已完成
+- 新增 `web/src/modules/operations/OperationsModule.tsx`，将“运行”模块（队列 + 统计）从 `App.tsx` 外移。
+- 继续复用已提取的 `QueuePanel`，队列刷新/取消/重试与统计加载通过 props 接入。
+- `App.tsx` 仅保留 `<OperationsModule />` 路由接线。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.3 `InboxModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）

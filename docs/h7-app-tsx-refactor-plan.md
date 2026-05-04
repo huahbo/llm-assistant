@@ -667,7 +667,7 @@ npm run dev
 
 ### Phase 2
 - [x] 2.1 Settings
-- [ ] 2.2 Operations
+- [x] 2.2 Operations
 - [ ] 2.3 Inbox
 - [ ] 2.4 Lint
 - [ ] 2.5 Wiki
