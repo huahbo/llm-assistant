@@ -2,7 +2,9 @@ import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, ty
 import QueuePanel from "./modules/operations/QueuePanel";
 import ResearchPanel from "./modules/research/ResearchPanel";
 import SearchConfigPanel from "./modules/lint/SearchConfigPanel";
-import { RuntimeProvider } from "./contexts/RuntimeContext";
+import { useVault } from "./contexts/VaultContext";
+export { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
+import { mergeRecentVaultPaths, readRecentVaultPathsFromStorage, writeRecentVaultPathsToStorage, normalizeRecentVaultPaths, RECENT_VAULT_PATHS_STORAGE_KEY } from "./vault-utils";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import appLogo from "./assets/LLM_Wiki.png";
@@ -245,7 +247,6 @@ const defaultIngestFileOcrProvider: OcrProvider = "tesseract";
 const defaultQueryTopKMin = 1;
 const defaultQueryTopKMax = 8;
 const defaultQueryTopK = 3;
-const RECENT_VAULT_PATHS_MAX = 8;
 const ASK_SESSION_LIST_MAX = 80;
 const ASK_SESSION_SEARCH_LIMIT = 80;
 const AGENT_RUN_LIST_LIMIT = 50;
@@ -460,7 +461,7 @@ export type TemplateInitPreview = {
   files: string[];
 };
 
-export const RECENT_VAULT_PATHS_STORAGE_KEY = "llm_wiki_recent_vault_paths_v1";
+// RECENT_VAULT_PATHS_STORAGE_KEY 已移到 vault-utils.ts，由顶部 re-export
 
 // 简单的字符串哈希（用于编辑基线校验和）
 export const simpleHash = (str: string): string => {
@@ -516,60 +517,8 @@ export const buildTemplateInitPreview = (template: WikiTemplate): TemplateInitPr
   };
 };
 
-export const normalizeRecentVaultPaths = (paths: string[]): string[] => {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-  for (const rawPath of paths) {
-    const path = rawPath.trim();
-    if (!path) {
-      continue;
-    }
-    const key = path.replace(/\\/g, "/").toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    normalized.push(path);
-  }
-  return normalized;
-};
-
-export const mergeRecentVaultPaths = (nextPath: string, existing: string[]): string[] =>
-  normalizeRecentVaultPaths([nextPath, ...existing]).slice(0, RECENT_VAULT_PATHS_MAX);
-
-export const readRecentVaultPathsFromStorage = (): string[] => {
-  try {
-    const storage = globalThis.localStorage;
-    if (!storage) {
-      return [];
-    }
-    const rawValue = storage.getItem(RECENT_VAULT_PATHS_STORAGE_KEY);
-    if (!rawValue) {
-      return [];
-    }
-    const parsed = JSON.parse(rawValue);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return normalizeRecentVaultPaths(parsed.filter((item): item is string => typeof item === "string"))
-      .slice(0, RECENT_VAULT_PATHS_MAX);
-  } catch {
-    return [];
-  }
-};
-
-export const writeRecentVaultPathsToStorage = (paths: string[]): void => {
-  try {
-    const storage = globalThis.localStorage;
-    if (!storage) {
-      return;
-    }
-    const normalized = normalizeRecentVaultPaths(paths).slice(0, RECENT_VAULT_PATHS_MAX);
-    storage.setItem(RECENT_VAULT_PATHS_STORAGE_KEY, JSON.stringify(normalized));
-  } catch (err) {
-    console.warn("[llm-wiki] recentVaultPaths 持久化失败:", err);
-  }
-};
+// normalizeRecentVaultPaths / mergeRecentVaultPaths / readRecentVaultPathsFromStorage / writeRecentVaultPathsToStorage
+// 已移到 vault-utils.ts，由顶部 re-export
 
 /**
  * 解析窗口拖拽文件路径：保留受支持扩展名并去重，返回被忽略条目用于提示。
@@ -2956,13 +2905,7 @@ export default function App() {
   const [devAction, setDevAction] = useState<DevAction | null>(null);
   const [lintRunning, setLintRunning] = useState(false);
   const [queryRunning, setQueryRunning] = useState(false);
-  const [vaultPath, setVaultPath] = useState(defaultVaultPath);
-  const [recentVaultPaths, setRecentVaultPaths] = useState<string[]>(() =>
-    readRecentVaultPathsFromStorage(),
-  );
-  useEffect(() => {
-    writeRecentVaultPathsToStorage(recentVaultPaths);
-  }, [recentVaultPaths]);
+  const { vaultPath, recentVaultPaths, setVaultPath, setRecentVaultPaths } = useVault();
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("general");
   const selectedTemplate = useMemo<WikiTemplate>(() => {
     try {
@@ -8273,7 +8216,6 @@ export default function App() {
   const tauriRuntime = isTauriRuntime();
 
   return (
-    <RuntimeProvider>
     <div className={`app-root${tauriRuntime ? " app-root--tauri" : ""}`}>
       {tauriRuntime ? (
         <header
@@ -12378,7 +12320,6 @@ export default function App() {
       </div>
     </div>
     </div>
-    </RuntimeProvider>
   );
 }
 
