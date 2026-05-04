@@ -490,7 +490,7 @@ Commit：`refactor(web): 抽取 ToastContext，统一 status message 通道`
 ```
 源 line: 9690-10051 (~361 行)
 目标: modules/lint/LintModule.tsx
-+ modules/lint/LintPatchPanel.tsx (lint patch preview/apply 卡片单独提)
++ modules/lint/LintPatchPanel.tsx (可选二拆；本轮先整体收进 LintModule)
 依赖: Phase 0.4 已提取的 SearchConfigPanel
 状态: ~15 个 lint* 系列
 风险: 中 — patch 流程逻辑较绕
@@ -669,7 +669,7 @@ npm run dev
 - [x] 2.1 Settings
 - [x] 2.2 Operations
 - [x] 2.3 Inbox
-- [ ] 2.4 Lint
+- [x] 2.4 Lint
 - [ ] 2.5 Wiki
 - [ ] 2.6 Ask
 - [ ] 2.7 Graph

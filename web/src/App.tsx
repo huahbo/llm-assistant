@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import InboxModule from "./modules/inbox/InboxModule";
+import LintModule from "./modules/lint/LintModule";
 import OperationsModule from "./modules/operations/OperationsModule";
 import ResearchPanel from "./modules/research/ResearchPanel";
 import SettingsModule from "./modules/settings/SettingsModule";
@@ -532,13 +533,6 @@ const answerStrategyLabels: Record<string, string> = {
   rule: "规则回退",
   llm_synthesis: "LLM 合成",
   rule_fallback: "规则回退",
-};
-
-const lintSeverityFilterLabels: Record<LintSeverityFilter, string> = {
-  all: "全部",
-  error: "错误",
-  warning: "警告",
-  info: "信息",
 };
 
 // getResearchStatusLabel / getResearchStatusColor 已移到 modules/research/ResearchPanel.tsx
@@ -6169,6 +6163,7 @@ export default function App() {
   );
   // 过滤后的问题按路径分组
   const groupedLintIssues = groupLintIssuesByPath(filteredLintIssues);
+  const groupedLintPatchPreviewItems = groupPatchPreviewItemsByPath(lintPatchPreviewItems);
   const lintHasSeverityHit = lintSeverityFilteredIssues.length > 0;
   const lintHasCodeHit = lintCodeFilteredIssues.length > 0;
   const lintHasPathHit = lintPathFilteredIssues.length > 0;
@@ -6974,6 +6969,23 @@ export default function App() {
     } finally {
       setLintPatchBatchApplying(false);
     }
+  };
+
+  const handleCreateLintTargetPage = async (targetTitle: string) => {
+    try {
+      setStatusMessage(`正在创建页面：${targetTitle}...`);
+      await saveWikiPage(targetTitle, `# ${targetTitle}\n`);
+      setStatusMessage(`页面 ${targetTitle} 创建成功！`);
+      await refreshAppData();
+    } catch (error) {
+      console.error("创建页面失败:", error);
+      setStatusMessage("页面创建失败，请重试。");
+    }
+  };
+
+  const handleOpenLintPatchPage = async (path: string) => {
+    setActiveModule("wiki");
+    await handleOpenWikiPage(path);
   };
 
   useEffect(() => {
@@ -9127,364 +9139,44 @@ export default function App() {
 
           {/* ---- Lint 模块 ---- */}
           {activeModule === "lint" && (
-            <>
-              <div className="module-header">
-                <h1 className="module-header__title">Lint</h1>
-                <p className="module-header__sub">一致性检查、孤儿页与过期结论扫描</p>
-              </div>
-              <section className="panel">
-                <div className="section-head">
-                  <h2>Lint 面板</h2>
-                  <span className="section-head__hint">
-                    {lintReport
-                      ? `${formatLintCheckedAt(lintReport.checked_at)} · ${lintReport.issues.length} 个问题`
-                      : "尚未运行"}
-                  </span>
-                </div>
-                <div className="dev-panel__actions" style={{ marginBottom: "16px" }}>
-                  <button
-                    type="button"
-                    className="dev-panel__button dev-panel__button--accent"
-                    onClick={() => void handleRunLint()}
-                    disabled={lintRunning}
-                  >
-                    {lintRunning ? "运行中..." : "运行 Lint"}
-                  </button>
-                  <button
-                    type="button"
-                    className="dev-panel__button"
-                    onClick={handleClearLintFilters}
-                    disabled={!lintFilterStateLoaded}
-                  >
-                    清空筛选
-                  </button>
-                  <button
-                    type="button"
-                    className="dev-panel__button dev-panel__button--accent"
-                    onClick={() => void handlePreviewLintPatches()}
-                    disabled={!isTauriRuntime() || lintPatchPreviewLoading || !lintReport}
-                  >
-                    {lintPatchPreviewLoading ? "生成中..." : "生成补丁建议"}
-                  </button>
-                </div>
-                {lintReport ? (
-                  <div className="lint-stats-row">
-                    <span className="lint-stat lint-stat--error">错误 {lintSeverityStats.error}</span>
-                    <span className="lint-stat lint-stat--warning">警告 {lintSeverityStats.warning}</span>
-                    <span className="lint-stat lint-stat--info">信息 {lintSeverityStats.info}</span>
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)", alignSelf: "center" }}>
-                      {lintReport.summary}
-                    </span>
-                  </div>
-                ) : null}
-                {lintReport ? (
-                  <div className="lint-severity-tabs">
-                    {(["all", "error", "warning", "info"] as LintSeverityFilter[]).map((severity) => {
-                      const count =
-                        severity === "all" ? lintIssues.length
-                        : severity === "error" ? lintSeverityStats.error
-                        : severity === "warning" ? lintSeverityStats.warning
-                        : lintSeverityStats.info;
-                      return (
-                        <button
-                          key={severity}
-                          type="button"
-                          className={`lint-severity-tab${lintSeverityFilter === severity ? " lint-severity-tab--active" : ""}`}
-                          onClick={() => setLintSeverityFilter(severity)}
-                        >
-                          {lintSeverityFilterLabels[severity]} ({count})
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <div className="lint-filter-row">
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="lint-code-keyword">code 关键词</label>
-                    <input
-                      id="lint-code-keyword"
-                      className="dev-panel__input"
-                      type="text"
-                      value={lintCodeKeyword}
-                      onChange={(event) => setLintCodeKeyword(event.target.value)}
-                      placeholder="按 code 筛选"
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="lint-path-keyword">path 关键词</label>
-                    <input
-                      id="lint-path-keyword"
-                      className="dev-panel__input"
-                      type="text"
-                      value={lintPathKeyword}
-                      onChange={(event) => setLintPathKeyword(event.target.value)}
-                      placeholder="按 path 筛选"
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="lint-suggestion-keyword">suggestion 关键词</label>
-                    <input
-                      id="lint-suggestion-keyword"
-                      className="dev-panel__input"
-                      type="text"
-                      value={lintSuggestionKeyword}
-                      onChange={(event) => setLintSuggestionKeyword(event.target.value)}
-                      placeholder="按 suggestion 筛选"
-                      spellCheck={false}
-                    />
-                  </div>
-                </div>
-                {lintReport ? (
-                  filteredLintIssues.length ? (
-                    <div className="lint-issue-list">
-                      {groupedLintIssues.map((group) => {
-                        const isCollapsed = lintCollapsedGroups.has(group.path);
-                        return (
-                          <div key={group.path} className="lint-group">
-                            {/* 分组标题行：路径 + 问题数 + 折叠切换 */}
-                            <button
-                              type="button"
-                              className="lint-group__header"
-                              onClick={() =>
-                                setLintCollapsedGroups((prev) => {
-                                  const next = new Set(prev);
-                                  if (isCollapsed) {
-                                    next.delete(group.path);
-                                  } else {
-                                    next.add(group.path);
-                                  }
-                                  return next;
-                                })
-                              }
-                            >
-                              <span className="lint-group__arrow">{isCollapsed ? "▸" : "▾"}</span>
-                              <code className="lint-group__path">{group.path}</code>
-                              <span className="lint-group__count">{group.issues.length} 个问题</span>
-                            </button>
-                            {!isCollapsed && (
-                              <div className="lint-group__body">
-                                {group.issues.map((issue) => {
-                                  const severity = normalizeLintSeverity(issue.severity);
-                                  return (
-                                    <article
-                                      key={`${issue.code}-${issue.path ?? "global"}`}
-                                      className={`lint-issue lint-issue--${severity}`}
-                                    >
-                                      <div className="lint-issue__head">
-                                        <div className="lint-issue__code">{issue.code}</div>
-                                        <span className={`pill pill--lint pill--lint-${severity}`}>{severity}</span>
-                                      </div>
-                                      <p className="lint-issue__message">{issue.message}</p>
-                                      {issue.code === "BROKEN_WIKILINK" ? (
-                                        <div className="lint-issue__action">
-                                          <p>
-                                            页面 <strong>{issue.path}</strong> 引用了不存在的页面 <strong>{issue.target_page || "未知页面"}</strong>
-                                          </p>
-                                          <button
-                                            type="button"
-                                            onClick={async () => {
-                                              try {
-                                                const targetTitle = issue.target_page || "新页面";
-                                                setStatusMessage(`正在创建页面：${targetTitle}...`);
-                                                // 使用 target_page 作为新页面的标题
-                                                await saveWikiPage(
-                                                  targetTitle,
-                                                  `# ${targetTitle}\n`
-                                                );
-                                                setStatusMessage(`页面 ${targetTitle} 创建成功！`);
-                                                await refreshAppData();
-                                              } catch (err) {
-                                                console.error("创建页面失败:", err);
-                                                setStatusMessage("页面创建失败，请重试。");
-                                              }
-                                            }}
-                                          >
-                                            创建 {issue.target_page ? `[${issue.target_page}]` : "页面"}
-                                          </button>
-                                        </div>
-                                      ) : (
-                                        <div className="lint-issue__field">
-                                          <span>建议</span>
-                                          <p className="lint-issue__suggestion">{issue.suggestion}</p>
-                                        </div>
-                                      )}
-                                    </article>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="empty-state">{lintFilterEmptyText}</p>
-                  )
-                ) : (
-                  <p className="empty-state">
-                    {isTauriRuntime()
-                      ? "尚未运行 Lint。点击按钮后会在此展示报告摘要、检查时间和问题列表。"
-                      : "浏览器预览模式下不连接后端，无法生成真实 lint 报告。"}
-                  </p>
-                )}
-              </section>
-
-              <section className="panel">
-                <div className="section-head">
-                  <h2>最近补丁记录</h2>
-                  <span className="section-head__hint">
-                    {recentLintPatchEvents.length ? `最近 ${recentLintPatchEvents.length} 条` : "暂无记录"}
-                  </span>
-                </div>
-                {recentLintPatchEvents.length ? (
-                  <div className="lint-patch-events">
-                    {recentLintPatchEvents.map((event) => (
-                      <article
-                        key={`${event.issue_code}-${event.path ?? "global"}-${event.created_at}`}
-                        className="lint-patch-event"
-                      >
-                        <div className="lint-patch-event__head">
-                          <span className="lint-patch-event__code">{event.issue_code}</span>
-                          <span className={`pill ${event.applied ? "pill--ok" : "pill--danger"}`}>
-                            {event.applied ? "已应用" : "未应用"}
-                          </span>
-                          <time dateTime={event.created_at}>{formatLintCheckedAt(event.created_at)}</time>
-                        </div>
-                        <div className="lint-issue__field">
-                          <span>path</span>
-                          <code>{event.path ?? "全局"}</code>
-                        </div>
-                        <div className="lint-issue__field">
-                          <span>message</span>
-                          <p>{event.message || "无"}</p>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-state">
-                    {isTauriRuntime()
-                      ? "尚无补丁应用记录。应用补丁后会在这里显示最近历史。"
-                      : "浏览器预览模式下不加载补丁应用记录。"}
-                  </p>
-                )}
-              </section>
-
-              <section className="panel">
-                <div className="section-head">
-                  <h2>补丁建议</h2>
-                  <span className="section-head__hint">
-                    {lintPatchPreviewItems.length ? `${lintPatchPreviewItems.length} 项` : "暂无建议"}
-                  </span>
-                </div>
-                <div className="dev-panel__actions" style={{ marginBottom: "12px" }}>
-                  <button
-                    type="button"
-                    className="dev-panel__button dev-panel__button--accent"
-                    onClick={() => void handleApplyLintPatchesBatch()}
-                    disabled={!isTauriRuntime() || lintPatchBatchApplying || lintPatchPreviewItems.length === 0}
-                  >
-                    {lintPatchBatchApplying ? "批量应用中..." : "批量应用可应用项"}
-                  </button>
-                  {lintPatchBatchSummary ? (
-                    <span className="pill pill--ok">
-                      {lintPatchBatchSummary.summary?.trim() ||
-                        `成功 ${lintPatchBatchSummary.success_count} · 失败 ${lintPatchBatchSummary.failure_count} · 跳过 ${lintPatchBatchSummary.skipped_count}`}
-                    </span>
-                  ) : null}
-                </div>
-                {lintPatchPreviewError ? <p className="runtime-status">{lintPatchPreviewError}</p> : null}
-                {lintPatchPreviewItems.length ? (
-                  <div className="lint-issue-list">
-                    {groupPatchPreviewItemsByPath(lintPatchPreviewItems).map((group) => {
-                      const isCollapsed = patchPreviewCollapsedGroups.has(group.path);
-                      return (
-                        <div key={group.path} className="lint-group">
-                          {/* 分组标题行：路径 + 补丁数 + 折叠切换 */}
-                          <button
-                            type="button"
-                            className="lint-group__header"
-                            onClick={() =>
-                              setPatchPreviewCollapsedGroups((prev) => {
-                                const next = new Set(prev);
-                                if (isCollapsed) {
-                                  next.delete(group.path);
-                                } else {
-                                  next.add(group.path);
-                                }
-                                return next;
-                              })
-                            }
-                          >
-                            <span className="lint-group__arrow">{isCollapsed ? "▸" : "▾"}</span>
-                            <code className="lint-group__path">{group.path}</code>
-                            <span className="lint-group__count">{group.items.length} 个建议</span>
-                          </button>
-                          {!isCollapsed && (
-                            <div className="lint-group__body">
-                              {group.items.map((item) => (
-                                <article key={`${item.issue_code}-${item.path ?? "global"}`} className="lint-issue">
-                                  <div className="lint-issue__head">
-                                    <div className="lint-issue__code">{item.issue_code}</div>
-                                    <span className="pill pill--lint pill--lint-info">suggestion</span>
-                                  </div>
-                                  <p className="lint-issue__message">{item.title}</p>
-                                  <div className="lint-issue__field">
-                                    <span>建议动作</span>
-                                    <p className="lint-issue__suggestion">{item.proposed_action}</p>
-                                  </div>
-                                  <div className="lint-issue__field">
-                                    <span>路径</span>
-                                    <code>{item.path ?? "全局"}</code>
-                                  </div>
-                                  <div className="lint-issue__field">
-                                    <span>补丁预览</span>
-                                    <pre className="wiki-preview__content">{item.patch_preview}</pre>
-                                  </div>
-                                  <div className="lint-issue__actions">
-                                    <button
-                                      type="button"
-                                      className="dev-panel__button dev-panel__button--accent"
-                                      onClick={() => void handleApplyLintPatch(item)}
-                                      disabled={!isTauriRuntime() || lintPatchApplyingKey !== null}
-                                    >
-                                      {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
-                                        ? "应用中..."
-                                        : "应用建议"}
-                                    </button>
-                                    {/* 当补丁建议有关联路径时，显示打开页面按钮 */}
-                                    {item.path != null && (
-                                      <button
-                                        type="button"
-                                        className="dev-panel__button"
-                                        onClick={() => {
-                                          setActiveModule("wiki");
-                                          void handleOpenWikiPage(item.path!);
-                                        }}
-                                      >
-                                        打开页面
-                                      </button>
-                                    )}
-                                  </div>
-                                </article>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : lintPatchPreviewLoading ? (
-                  <p className="runtime-hint">正在生成补丁建议...</p>
-                ) : (
-                  <p className="empty-state">
-                    {lintReport ? '点击\u201c生成补丁建议\u201d后在此查看候选补丁预览。' : "请先运行 Lint，再生成补丁建议。"}
-                  </p>
-                )}
-              </section>
-            </>
+            <LintModule
+              isTauri={isTauriRuntime()}
+              lintReport={lintReport}
+              lintRunning={lintRunning}
+              lintIssuesCount={lintIssues.length}
+              lintSeverityStats={lintSeverityStats}
+              lintSeverityFilter={lintSeverityFilter}
+              setLintSeverityFilter={setLintSeverityFilter}
+              lintCodeKeyword={lintCodeKeyword}
+              setLintCodeKeyword={setLintCodeKeyword}
+              lintPathKeyword={lintPathKeyword}
+              setLintPathKeyword={setLintPathKeyword}
+              lintSuggestionKeyword={lintSuggestionKeyword}
+              setLintSuggestionKeyword={setLintSuggestionKeyword}
+              filteredLintIssuesCount={filteredLintIssues.length}
+              groupedLintIssues={groupedLintIssues}
+              lintCollapsedGroups={lintCollapsedGroups}
+              setLintCollapsedGroups={setLintCollapsedGroups}
+              lintFilterEmptyText={lintFilterEmptyText}
+              lintFilterStateLoaded={lintFilterStateLoaded}
+              recentLintPatchEvents={recentLintPatchEvents}
+              lintPatchPreviewLoading={lintPatchPreviewLoading}
+              lintPatchPreviewItems={lintPatchPreviewItems}
+              groupedLintPatchPreviewItems={groupedLintPatchPreviewItems}
+              lintPatchPreviewError={lintPatchPreviewError}
+              lintPatchApplyingKey={lintPatchApplyingKey}
+              lintPatchBatchApplying={lintPatchBatchApplying}
+              lintPatchBatchSummary={lintPatchBatchSummary}
+              patchPreviewCollapsedGroups={patchPreviewCollapsedGroups}
+              setPatchPreviewCollapsedGroups={setPatchPreviewCollapsedGroups}
+              onRunLint={handleRunLint}
+              onClearLintFilters={handleClearLintFilters}
+              onPreviewLintPatches={handlePreviewLintPatches}
+              onApplyLintPatch={handleApplyLintPatch}
+              onApplyLintPatchesBatch={handleApplyLintPatchesBatch}
+              onCreateBrokenWikiLinkPage={handleCreateLintTargetPage}
+              onOpenPatchPage={handleOpenLintPatchPage}
+            />
           )}
 
           {/* ---- 图谱模块 ---- */}

@@ -48,6 +48,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.4 `LintModule`。
 
+### H7 Phase 2.4 LintModule 已完成
+- 新增 `web/src/modules/lint/LintModule.tsx`，将 Lint 面板、最近补丁记录、补丁建议三块视图从 `App.tsx` 外移。
+- 当前仍由 `App.tsx` 持有 lint 报告、筛选条件、补丁预览与应用状态；`LintModule` 仅通过 props 接入，避免本步同时迁移状态归属。
+- 补充 `handleCreateLintTargetPage` / `handleOpenLintPatchPage` 两个桥接 handler，保持断链页面创建与“打开页面”跳转行为不变。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.5 `WikiModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）
