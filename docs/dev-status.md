@@ -41,6 +41,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.3 `InboxModule`。
 
+### H7 Phase 2.3 InboxModule 已完成
+- 新增 `web/src/modules/inbox/InboxModule.tsx`，将概览首页（运行模式、Vault 操作、摄入卡片、剪藏扩展、最近日志）从 `App.tsx` 外移。
+- 本步只迁移渲染边界，摄入状态、模板初始化状态、模式切换与日志数据仍由 `App.tsx` 持有并通过 props 接入。
+- `App.tsx` 仅保留 `<InboxModule />` 路由接线与队列/文件选择的桥接 handler。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.4 `LintModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）
