@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, ty
 import InboxModule from "./modules/inbox/InboxModule";
 import AskModule from "./modules/ask/AskModule";
 import AgentMemoryPanel from "./modules/agent/AgentMemoryPanel";
+import AgentRunHistory from "./modules/agent/AgentRunHistory";
 import AgentSkillsPanel from "./modules/agent/AgentSkillsPanel";
 import AgentStudio from "./modules/agent/AgentStudio";
 import LintModule from "./modules/lint/LintModule";
@@ -8783,100 +8784,28 @@ export default function App() {
                   style={{ gridTemplateColumns: `minmax(0,${agentLeftRatio}fr) 6px minmax(0,${1 - agentLeftRatio}fr)`, gap: 0 }}
                 >
                   <section className="agent-studio__left">
-                    <div className={`agent-studio__run-strip${agentRunStripOpen ? " agent-studio__run-strip--open" : ""}`}>
-                      <button
-                        type="button"
-                        className="agent-studio__context-toggle agent-studio__run-strip-toggle"
-                        onClick={() => setAgentRunStripOpen((prev) => !prev)}
-                      >
-                        <span>{agentRunStripOpen ? "▼" : "▶"} 历史 Runs</span>
-                        <span className="agent-studio__context-meta">
-                          {agentRunManageMode ? agentRunCards.length : agentVisibleRunCards.length} 条
-                        </span>
-                      </button>
-                      {agentRunStripOpen ? (
-                        <div className="agent-studio__run-strip-body">
-                          <label className="agent-studio__run-strip-manage">
-                            <input
-                              type="checkbox"
-                              checked={agentRunManageMode}
-                              onChange={(event) => setAgentRunManageMode(event.target.checked)}
-                            />
-                            管理模式（显示已归档）
-                          </label>
-                          <p className="agent-studio__run-strip-note">
-                            {agentRunManageMode
-                              ? `当前显示全部 run（含已归档 ${agentArchivedRunCount} 条）`
-                              : `默认隐藏已归档 run（已归档 ${agentArchivedRunCount} 条）`}
-                          </p>
-                          {agentRunsLoading ? (
-                            <p className="agent-studio__run-strip-empty">正在加载...</p>
-                          ) : agentVisibleRunCards.length === 0 ? (
-                            <p className="agent-studio__run-strip-empty">暂无历史 run</p>
-                          ) : (
-                            <div className="agent-studio__run-strip-list">
-                              {agentVisibleRunCards.map((run) => {
-                                const active = run.id === agentSelectedRunId;
-                                const statusTone = getAgentRunStatusTone(String(run.status || ""));
-                                const topic = run.topic?.trim() || `Run #${run.id}`;
-                                return (
-                                  <div
-                                    key={`run-card-${run.id}`}
-                                    className={`agent-studio__run-card${active ? " agent-studio__run-card--active" : ""}`}
-                                  >
-                                    <button
-                                      type="button"
-                                      className="agent-studio__run-card-main"
-                                      onClick={() => handleSelectAgentRunFromChat(run.id)}
-                                    >
-                                      <span className="agent-studio__run-card-title" title={topic}>
-                                        #{run.id} {topic}
-                                      </span>
-                                      <span className={`agent-studio__run-card-status agent-studio__run-card-status--${statusTone}`}>
-                                        {formatAgentRunStatusLabel(String(run.status || ""))}
-                                      </span>
-                                      {run.archived_at ? (
-                                        <span className="agent-studio__run-card-archived">已归档</span>
-                                      ) : null}
-                                      <time dateTime={run.updated_at || run.created_at}>
-                                        {formatLintCheckedAt(run.updated_at || run.created_at)}
-                                      </time>
-                                    </button>
-                                    <div className="agent-studio__run-card-actions">
-                                      {agentRunManageMode ? (
-                                        run.archived_at ? (
-                                          <button
-                                            type="button"
-                                            className="dev-panel__button"
-                                            disabled={agentRunMutatingId != null}
-                                            onClick={() => {
-                                              void handleRestoreAgentRun(run.id);
-                                            }}
-                                          >
-                                            恢复
-                                          </button>
-                                        ) : (
-                                          <button
-                                            type="button"
-                                            className="dev-panel__button"
-                                            disabled={agentRunMutatingId != null}
-                                            onClick={() => {
-                                              void handleArchiveAgentRun(run.id);
-                                            }}
-                                          >
-                                            归档
-                                          </button>
-                                        )
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
+                    <AgentRunHistory
+                      runStripOpen={agentRunStripOpen}
+                      setRunStripOpen={setAgentRunStripOpen}
+                      runManageMode={agentRunManageMode}
+                      setRunManageMode={setAgentRunManageMode}
+                      runCards={agentRunCards}
+                      visibleRunCards={agentVisibleRunCards}
+                      archivedRunCount={agentArchivedRunCount}
+                      runsLoading={agentRunsLoading}
+                      selectedRunId={agentSelectedRunId}
+                      runMutatingId={agentRunMutatingId}
+                      onSelectRun={handleSelectAgentRunFromChat}
+                      onArchiveRun={(runId) => {
+                        void handleArchiveAgentRun(runId);
+                      }}
+                      onRestoreRun={(runId) => {
+                        void handleRestoreAgentRun(runId);
+                      }}
+                      formatTime={formatLintCheckedAt}
+                      formatStatusLabel={formatAgentRunStatusLabel}
+                      getStatusTone={getAgentRunStatusTone}
+                    />
                     <div className="agent-studio__context">
                       <button
                         type="button"

@@ -13,10 +13,11 @@
 
 ## 本轮快讯（2026-05-07，Codex 接力）
 
-### H7 Phase 2.9.2 AgentSkillsPanel 已完成
-- 新增 `web/src/modules/agent/AgentSkillsPanel.tsx`，把 `agent_skill*` 系列状态与 handler 抽到独立组件。
-- `App.tsx` 的 Agent 上下文技能区块已改为组件接线，现阶段行为保持不变。
-- 下一步：H7 Phase 2.9.3 `AgentRunHistory`。
+### H7 Phase 2.9.3 AgentRunHistory 已完成
+- 新增 `web/src/modules/agent/AgentRunHistory.tsx`，将 Agent 左侧“历史 Runs”卡片条从 `App.tsx` 抽离为独立组件。
+- `web/src/App.tsx` 已替换为 `<AgentRunHistory />` 接线，归档/恢复、状态展示与时间格式化行为保持不变。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.9.4 `AgentToolsPane`。
 
 ## 本轮快讯（2026-05-04，Codex 接力）
 
@@ -94,7 +95,7 @@
 - 新增 `web/src/modules/agent/AgentMemoryPanel.tsx`，将“记忆上下文”面板从 Agent 主体 JSX 中抽离，保留状态与 handler 在 `App.tsx` 持有。
 - `App.tsx` 的 Agent 分支改为 `<AgentStudio /> + <AgentMemoryPanel />` 组合，减少单文件嵌套层级并为后续 `Skills / RunHistory / Tools` 拆分做边界准备。
 - 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.9.3 `AgentRunHistory`。
+- 下一步：H7 Phase 2.9.4 `AgentToolsPane`。
 
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
