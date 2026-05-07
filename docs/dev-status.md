@@ -62,6 +62,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.6 `AskModule`。
 
+### H7 Phase 2.6 AskModule 已完成
+- 新增 `web/src/modules/ask/AskModule.tsx`，将 Ask 模块（会话列表、消息区、检索调试区、底部输入区）从 `App.tsx` 外移。
+- 当前仍由 `App.tsx` 持有 Ask 的会话状态、流式查询状态、历史记录与保存逻辑；`AskModule` 通过 props 接线，保持原有交互行为。
+- 内联“停止查询”逻辑收敛为 `handleCancelQuery`，并作为回调传入模块，避免在 JSX 内嵌副作用逻辑。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.7 `GraphModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）

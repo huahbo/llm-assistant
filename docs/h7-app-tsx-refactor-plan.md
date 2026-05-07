@@ -671,7 +671,7 @@ npm run dev
 - [x] 2.3 Inbox
 - [x] 2.4 Lint
 - [x] 2.5 Wiki
-- [ ] 2.6 Ask
+- [x] 2.6 Ask
 - [ ] 2.7 Graph
 - [ ] 2.8 Research
 - [ ] 2.9.1 Agent 骨架 + Memory
