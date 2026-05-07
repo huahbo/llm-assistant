@@ -1,18 +1,20 @@
+import { useState, useEffect, useCallback } from "react";
 import QueuePanel from "./QueuePanel";
-import type { IngestQueueItem, ModuleId, VaultStats } from "../../types";
+import type { ModuleId, VaultStats } from "../../types";
+import {
+  isTauriRuntime,
+  listIngestQueue,
+  cancelIngestItem,
+  retryIngestItem,
+  getVaultStats,
+} from "../../tauri-client";
+import { useMode } from "../../contexts/ModeContext";
 
 type OperationsTab = "queue" | "stats";
 
 type OperationsModuleProps = {
-  operationsTab: OperationsTab;
-  setOperationsTab: (tab: OperationsTab) => void;
-  ingestQueue: IngestQueueItem[];
-  refreshQueue: () => Promise<void> | void;
-  cancelQueueItem: (id: number) => Promise<void> | void;
-  retryQueueItem: (id: number) => Promise<void> | void;
-  vaultStats: VaultStats | null;
-  vaultStatsLoading: boolean;
-  loadVaultStats: () => Promise<void> | void;
+  /** When App.tsx navigates here after enqueueing, it can request a specific tab. */
+  requestedTab?: OperationsTab;
   navigateTo: (id: ModuleId) => void;
 };
 
@@ -27,17 +29,81 @@ const formatSourceType = (sourceType: string): string => {
 };
 
 export default function OperationsModule({
-  operationsTab,
-  setOperationsTab,
-  ingestQueue,
-  refreshQueue,
-  cancelQueueItem,
-  retryQueueItem,
-  vaultStats,
-  vaultStatsLoading,
-  loadVaultStats,
+  requestedTab,
   navigateTo,
 }: OperationsModuleProps) {
+  const { activeModule } = useMode();
+  const isActive = activeModule === "operations";
+
+  const [operationsTab, setOperationsTab] = useState<OperationsTab>(requestedTab ?? "queue");
+  const [ingestQueue, setIngestQueue] = useState<
+    import("../../types").IngestQueueItem[]
+  >([]);
+  const [vaultStats, setVaultStats] = useState<VaultStats | null>(null);
+  const [vaultStatsLoading, setVaultStatsLoading] = useState(false);
+
+  // When App.tsx changes requestedTab (e.g. after enqueueing), honour it.
+  useEffect(() => {
+    if (requestedTab !== undefined) {
+      setOperationsTab(requestedTab);
+    }
+  }, [requestedTab]);
+
+  const refreshQueue = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const items = await listIngestQueue();
+      setIngestQueue(items);
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
+  const cancelQueueItem = useCallback(async (id: number) => {
+    if (!isTauriRuntime()) return;
+    try {
+      await cancelIngestItem(id);
+      const items = await listIngestQueue();
+      setIngestQueue(items);
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
+  const retryQueueItem = useCallback(async (id: number) => {
+    if (!isTauriRuntime()) return;
+    try {
+      await retryIngestItem(id);
+      const items = await listIngestQueue();
+      setIngestQueue(items);
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
+  const loadVaultStats = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    setVaultStatsLoading(true);
+    try {
+      const stats = await getVaultStats();
+      setVaultStats(stats);
+    } catch {
+      setVaultStats(null);
+    } finally {
+      setVaultStatsLoading(false);
+    }
+  }, []);
+
+  // When the module becomes active, load data for the current tab.
+  useEffect(() => {
+    if (!isActive) return;
+    if (operationsTab === "queue") {
+      void refreshQueue();
+    } else {
+      void loadVaultStats();
+    }
+  }, [isActive]); // intentionally only trigger on activation change
+
   return (
     <>
       <div className="module-header">

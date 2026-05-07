@@ -65,9 +65,6 @@ import {
   get_outbox_events,
   enqueueIngest,
   getPageEmbeddingPairs,
-  listIngestQueue,
-  cancelIngestItem,
-  retryIngestItem,
   setBackendMode,
   setQueryTopK as persistQueryTopK,
   formatLlmStatusSummary,
@@ -91,7 +88,6 @@ import {
   listenResearchStreamChunk,
   approveResearchQueries,
   getClipServerStatus,
-  getVaultStats,
   startAgentRun,
   appendAgentRunEvent,
   listAgentRuns,
@@ -140,7 +136,6 @@ import type {
   AskSessionSearchHitItem,
   AskSessionTurnItem,
   BackendAppMode,
-  IngestQueueItem,
   KnowledgeGraphData,
   KnowledgeGraphLink,
   KnowledgeGraphNode,
@@ -158,7 +153,6 @@ import type {
   ResearchTaskStatus,
   SearchConfig,
   IngestPreview,
-  VaultStats,
   ShellResult,
   ShellHistoryEntry,
   ShellSessionInfo,
@@ -2882,14 +2876,11 @@ export default function App() {
   // 当前激活的导航模块（来自 ModeContext）
   const { activeModule, navigateTo: setActiveModule } = useMode();
   // 摄入队列面板状态
-  const [ingestQueue, setIngestQueue] = useState<IngestQueueItem[]>([]);
   const [queueEnqueueing, setQueueEnqueueing] = useState(false);
-  const [operationsTab, setOperationsTab] = useState<"queue" | "stats">("queue");
+  // requestedOperationsTab: App 导航到 operations 时请求的 tab（由 OperationsModule 消费后保持自管）
+  const [requestedOperationsTab, setRequestedOperationsTab] = useState<"queue" | "stats" | undefined>(undefined);
   const [ingestPreviewDialog, setIngestPreviewDialog] = useState<IngestPreview | null>(null);
   const ingestPreviewResolverRef = useRef<((approved: boolean) => void) | null>(null);
-  // 统计仪表盘状态
-  const [vaultStats, setVaultStats] = useState<VaultStats | null>(null);
-  const [vaultStatsLoading, setVaultStatsLoading] = useState(false);
   // Agent Studio（H0）状态
   const [agentRuns, setAgentRuns] = useState<AgentRunItem[]>([]);
   const [agentRunsLoading, setAgentRunsLoading] = useState(false);
@@ -4778,19 +4769,6 @@ export default function App() {
     };
   }, []);
 
-  const loadVaultStats = async () => {
-    if (!isTauriRuntime()) return;
-    setVaultStatsLoading(true);
-    try {
-      const stats = await getVaultStats();
-      setVaultStats(stats);
-    } catch {
-      setVaultStats(null);
-    } finally {
-      setVaultStatsLoading(false);
-    }
-  };
-
   const loadAgentRunsData = async (
     preferredRunId?: number | null,
     includeArchivedOverride?: boolean,
@@ -5722,22 +5700,11 @@ export default function App() {
   };
 
   const openOperationsModule = (tab: "queue" | "stats") => {
-    setOperationsTab(tab);
+    setRequestedOperationsTab(tab);
     setActiveModule("operations");
-    if (tab === "stats") {
-      void loadVaultStats();
-      return;
-    }
-    void listIngestQueue()
-      .then((items) => setIngestQueue(items))
-      .catch(() => {});
   };
 
   const handleNavModuleSelect = (moduleId: ModuleId) => {
-    if (moduleId === "operations") {
-      openOperationsModule(operationsTab);
-      return;
-    }
     setActiveModule(moduleId);
     if (moduleId === "agent") {
       void loadAgentRunsData();
@@ -6222,29 +6189,7 @@ export default function App() {
           {/* ---- 运行模块（队列 + 统计合并） ---- */}
           {activeModule === "operations" && (
             <OperationsModule
-              operationsTab={operationsTab}
-              setOperationsTab={setOperationsTab}
-              ingestQueue={ingestQueue}
-              refreshQueue={() =>
-                listIngestQueue()
-                  .then((items) => setIngestQueue(items))
-                  .catch(() => {})
-              }
-              cancelQueueItem={(id) =>
-                cancelIngestItem(id)
-                  .then(() => listIngestQueue())
-                  .then((items) => setIngestQueue(items))
-                  .catch(() => {})
-              }
-              retryQueueItem={(id) =>
-                retryIngestItem(id)
-                  .then(() => listIngestQueue())
-                  .then((items) => setIngestQueue(items))
-                  .catch(() => {})
-              }
-              vaultStats={vaultStats}
-              vaultStatsLoading={vaultStatsLoading}
-              loadVaultStats={loadVaultStats}
+              requestedTab={requestedOperationsTab}
               navigateTo={setActiveModule}
             />
           )}
