@@ -1,6 +1,8 @@
 import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import InboxModule from "./modules/inbox/InboxModule";
 import AskModule from "./modules/ask/AskModule";
+import AgentMemoryPanel from "./modules/agent/AgentMemoryPanel";
+import AgentStudio from "./modules/agent/AgentStudio";
 import LintModule from "./modules/lint/LintModule";
 import OperationsModule from "./modules/operations/OperationsModule";
 import ResearchModule from "./modules/research/ResearchModule";
@@ -8769,21 +8771,11 @@ export default function App() {
           )}
           {/* ---- Agent Studio 模块（B2：双栏对话 + 草稿审阅） ---- */}
           {activeModule === "agent" && (
-            <>
-              <div className="module-header">
-                <h1 className="module-header__title">Agent Studio</h1>
-                <p className="module-header__sub">
-                  左侧对话驱动，右侧草稿预览与审批写盘
-                </p>
-              </div>
-              <section className={`panel agent-studio agent-studio--b2${agentDebugPanelOpen ? " agent-studio--debug-open" : ""}`}>
-                {agentStatusMessage ? (
-                  <p
-                    className={`agent-studio__status agent-studio__status--${getAgentStatusTone(agentStatusMessage)}`}
-                  >
-                    {agentStatusMessage}
-                  </p>
-                ) : null}
+            <AgentStudio
+              statusMessage={agentStatusMessage}
+              statusTone={getAgentStatusTone(agentStatusMessage)}
+              debugPanelOpen={agentDebugPanelOpen}
+            >
                 <div
                   ref={agentLayoutRef}
                   className="agent-studio__layout"
@@ -8897,89 +8889,22 @@ export default function App() {
                       </button>
                       {agentContextOpen ? (
                         <div className="agent-studio__context-body">
-                          <section className="agent-studio__context-section">
-                            <button
-                              type="button"
-                              className="agent-studio__section-toggle"
-                              onClick={() => setAgentMemoryPanelOpen((prev) => !prev)}
-                            >
-                              <span>{agentMemoryPanelOpen ? "▼" : "▶"} 记忆上下文</span>
-                              <span className="agent-studio__section-meta">{agentMemories.length} 条</span>
-                            </button>
-                            {agentMemoryPanelOpen ? (
-                              <div className="agent-studio__section-body">
-                                <div className="agent-studio__memory-chipbar">
-                                  <div className="agent-studio__memory-chipbar-list">
-                                    {agentMemoriesLoading ? (
-                                      <span className="agent-studio__memory-chip-placeholder">加载中...</span>
-                                    ) : agentMemories.length === 0 ? (
-                                      <span className="agent-studio__memory-chip-placeholder">暂无记忆</span>
-                                    ) : (
-                                      agentMemories.map((mem) => (
-                                        <span
-                                          key={mem.id}
-                                          className="agent-studio__memory-chip"
-                                          title={`${mem.memory_key}: ${mem.memory_value}`}
-                                        >
-                                          <strong>{mem.memory_key}</strong>
-                                          <span>{mem.memory_value}</span>
-                                          <button
-                                            type="button"
-                                            className="agent-studio__memory-chip-remove"
-                                            disabled={agentActionRunning || !isTauriRuntime()}
-                                            onClick={() => void handleDeleteAgentMemory(mem.id)}
-                                            aria-label={`删除记忆 ${mem.memory_key}`}
-                                          >
-                                            ×
-                                          </button>
-                                        </span>
-                                      ))
-                                    )}
-                                    <button
-                                      type="button"
-                                      className="agent-studio__memory-chip-add"
-                                      disabled={agentActionRunning || !isTauriRuntime()}
-                                      onClick={() => setAgentMemoryComposerOpen((prev) => !prev)}
-                                    >
-                                      {agentMemoryComposerOpen ? "收起" : "+ 添加"}
-                                    </button>
-                                  </div>
-                                </div>
-                                {agentMemoryComposerOpen ? (
-                                  <div className="agent-studio__memory-inline-form">
-                                    <div className="agent-studio__memory-inline-form-row">
-                                      <input
-                                        type="text"
-                                        className="dev-panel__input"
-                                        placeholder="键（可选）"
-                                        value={agentMemoryKeyInput}
-                                        onChange={(e) => setAgentMemoryKeyInput(e.target.value)}
-                                      />
-                                      <input
-                                        type="text"
-                                        className="dev-panel__input"
-                                        placeholder="记忆内容"
-                                        value={agentMemoryValueInput}
-                                        onChange={(e) => setAgentMemoryValueInput(e.target.value)}
-                                      />
-                                    </div>
-                                    <button
-                                      type="button"
-                                      className="dev-panel__button"
-                                      disabled={
-                                        agentActionRunning
-                                        || !agentMemoryValueInput.trim()
-                                        || !isTauriRuntime()
-                                      }
-                                      onClick={() => void handleUpsertAgentMemory()}
-                                    >
-                                      保存记忆
-                                    </button>
-                                  </div>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </section>
+                          <AgentMemoryPanel
+                            panelOpen={agentMemoryPanelOpen}
+                            onTogglePanel={() => setAgentMemoryPanelOpen((prev) => !prev)}
+                            memories={agentMemories}
+                            memoriesLoading={agentMemoriesLoading}
+                            actionRunning={agentActionRunning}
+                            isTauri={isTauriRuntime()}
+                            onDeleteMemory={handleDeleteAgentMemory}
+                            composerOpen={agentMemoryComposerOpen}
+                            onToggleComposer={() => setAgentMemoryComposerOpen((prev) => !prev)}
+                            memoryKeyInput={agentMemoryKeyInput}
+                            setMemoryKeyInput={setAgentMemoryKeyInput}
+                            memoryValueInput={agentMemoryValueInput}
+                            setMemoryValueInput={setAgentMemoryValueInput}
+                            onUpsertMemory={handleUpsertAgentMemory}
+                          />
                           <section className="agent-studio__context-section">
                             <button
                               type="button"
@@ -9901,8 +9826,7 @@ export default function App() {
                     </section>
                   </div>
                 ) : null}
-              </section>
-            </>
+            </AgentStudio>
           )}
         </div>
         {/* 审批前确认弹窗（H1） */}

@@ -82,6 +82,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.9.1 `Agent Studio` 骨架提取。
 
+### H7 Phase 2.9.1 AgentStudio 骨架 + MemoryPanel 已完成
+- 新增 `web/src/modules/agent/AgentStudio.tsx`，将 Agent Studio 模块头部与外层容器从 `App.tsx` 外移为骨架组件。
+- 新增 `web/src/modules/agent/AgentMemoryPanel.tsx`，将“记忆上下文”面板从 Agent 主体 JSX 中抽离，保留状态与 handler 在 `App.tsx` 持有。
+- `App.tsx` 的 Agent 分支改为 `<AgentStudio /> + <AgentMemoryPanel />` 组合，减少单文件嵌套层级并为后续 `Skills / RunHistory / Tools` 拆分做边界准备。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.9.2 `AgentSkillsPanel`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）
