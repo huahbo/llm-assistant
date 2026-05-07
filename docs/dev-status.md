@@ -69,6 +69,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.7 `GraphModule`。
 
+### H7 Phase 2.7 GraphModule 已完成
+- 新增 `web/src/modules/graph/GraphModule.tsx`，将图谱模块（工具栏、ForceGraph2D 画布、洞察侧栏、节点详情）从 `App.tsx` 外移。
+- 通过 props 传递图谱状态、派生数据与交互 handler；新增 `handleResetGraphFilters` 统一替代原 JSX 内联 reset 逻辑，减少视图层副作用散布。
+- 本轮通过并行子代理完成图谱依赖扫描与模块实现，主线负责验收与收口，未改后端代码。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.8 `Research` 收口。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）

@@ -672,7 +672,7 @@ npm run dev
 - [x] 2.4 Lint
 - [x] 2.5 Wiki
 - [x] 2.6 Ask
-- [ ] 2.7 Graph
+- [x] 2.7 Graph
 - [ ] 2.8 Research
 - [ ] 2.9.1 Agent 骨架 + Memory
 - [ ] 2.9.2 Agent Skills
