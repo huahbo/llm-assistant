@@ -4,6 +4,7 @@ import LintModule from "./modules/lint/LintModule";
 import OperationsModule from "./modules/operations/OperationsModule";
 import ResearchPanel from "./modules/research/ResearchPanel";
 import SettingsModule from "./modules/settings/SettingsModule";
+import WikiModule from "./modules/wiki/WikiModule";
 import { useVault } from "./contexts/VaultContext";
 import { useMode } from "./contexts/ModeContext";
 import {
@@ -6273,6 +6274,44 @@ export default function App() {
     wikiActivePagePath
     && sortedWikiPages.some((page) => isSameWikiPagePath(page.path, wikiActivePagePath)),
   );
+  const handleOpenNewWikiPageModal = () => {
+    setShowNewPageModal(true);
+    setNewPageResult(null);
+    setNewPageTopic("");
+  };
+  const handleCloseNewWikiPageModal = () => {
+    setShowNewPageModal(false);
+  };
+  const handleUseNewWikiPageResult = () => {
+    if (!newPageResult) {
+      return;
+    }
+    setShowNewPageModal(false);
+    setWikiKeyword(newPageResult.title);
+  };
+  const handleClearWikiActiveTags = () => {
+    setWikiActiveTags(new Set());
+  };
+  const handleToggleWikiActiveTag = (tagName: string) => {
+    setWikiActiveTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tagName)) {
+        next.delete(tagName);
+      } else {
+        next.add(tagName);
+      }
+      return next;
+    });
+  };
+  const renderWikiTree = () => renderWikiTreeNodes(wikiTreeNodes);
+  const isWikiPageSummaryExpanded = (pagePath: string) =>
+    wikiExpandedPaths.some((path) => isSameWikiPagePath(path, pagePath));
+  const highlightWikiText = (text: string) =>
+    buildWikiHighlightSegments(text, wikiHighlightKeywords);
+  const isWikiPageActive = (pagePath: string) =>
+    isSameWikiPagePath(pagePath, wikiActivePagePath);
+  const isWikiPageDetailActive = (pagePath: string) =>
+    Boolean(wikiPageDetail && isSameWikiPagePath(pagePath, wikiPageDetail.path));
   function confirmDiscardWikiPreview(reason: "close" | "switch") {
     if (!wikiHasUnsavedChanges) {
       return true;
@@ -8380,299 +8419,51 @@ export default function App() {
           )}
           {/* ---- Wiki 模块 ---- */}
           {activeModule === "wiki" && (
-            <>
-              <div className="module-header">
-                <h1 className="module-header__title">Wiki</h1>
-                <p className="module-header__sub">浏览、搜索和查看 Markdown Vault 页面</p>
-              </div>
-              <section className="panel">
-                <div className="section-head">
-                  <h2>Wiki 页面</h2>
-                  <span className="section-head__hint">
-                    {sortedWikiPages.length ? `${sortedWikiPages.length} 页 · ${wikiSortModeLabels[wikiSortMode]}` : "暂无页面"}
-                  </span>
-                </div>
-                <div className="dev-panel">
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="wiki-keyword">关键字</label>
-                    <input
-                      id="wiki-keyword"
-                      className="dev-panel__input"
-                      type="text"
-                      value={wikiKeyword}
-                      onChange={(event) => setWikiKeyword(event.target.value)}
-                      onKeyDown={handleWikiKeywordKeyDown}
-                      placeholder="按标题、摘要、路径搜索"
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className="dev-panel__field">
-                    <label className="dev-panel__label" htmlFor="wiki-sort-mode">排序</label>
-                    <select
-                      id="wiki-sort-mode"
-                      className="dev-panel__input"
-                      value={wikiSortMode}
-                      onChange={(event) => setWikiSortMode(event.target.value as WikiSortMode)}
-                    >
-                      <option value="updated_desc">{wikiSortModeLabels.updated_desc}</option>
-                      <option value="updated_asc">{wikiSortModeLabels.updated_asc}</option>
-                      <option value="title_asc">{wikiSortModeLabels.title_asc}</option>
-                    </select>
-                  </div>
-                  <div className="dev-panel__actions">
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      onClick={() => void handleSearchWikiPages()}
-                      disabled={!isTauriRuntime() || wikiSearching}
-                    >
-                      {wikiSearching ? "搜索中..." : "搜索 Wiki"}
-                    </button>
-                    <button
-                      type="button"
-                      className="dev-panel__button"
-                      onClick={() => void handleResetWikiPages()}
-                      disabled={wikiSearching}
-                    >
-                      恢复最近
-                    </button>
-                    <button
-                      type="button"
-                      className="wiki-new-btn"
-                      onClick={() => { setShowNewPageModal(true); setNewPageResult(null); setNewPageTopic(""); }}
-                      title="AI 辅助新建 Wiki 页面"
-                    >
-                      + AI 新建
-                    </button>
-                  </div>
-                </div>
-                {/* AI 新建页面弹窗 */}
-                {showNewPageModal && (
-                  <div className="new-page-modal-backdrop" onClick={() => setShowNewPageModal(false)}>
-                    <div className="new-page-modal" onClick={(e) => e.stopPropagation()}>
-                      <h3 className="new-page-modal__title">AI 辅助新建 Wiki 页面</h3>
-                      <p className="new-page-modal__hint">
-                        输入主题，AI 将参考现有知识库生成结构化初稿。
-                      </p>
-                      <input
-                        className="new-page-modal__input"
-                        type="text"
-                        placeholder="例如：量子纠缠、黑洞蒸发、Rust 生命周期…"
-                        value={newPageTopic}
-                        onChange={(e) => setNewPageTopic(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") void handleCreatePageWithAi(); }}
-                        disabled={newPageCreating}
-                        autoFocus
-                      />
-                      {newPageResult && (
-                        <div className="new-page-modal__result">
-                          <p className="new-page-modal__result-title">✅ 已创建：{newPageResult.title}</p>
-                          <pre className="new-page-modal__preview">{newPageResult.content_preview}</pre>
-                        </div>
-                      )}
-                      <div className="new-page-modal__actions">
-                        <button
-                          className="new-page-modal__btn new-page-modal__btn--primary"
-                          onClick={() => void handleCreatePageWithAi()}
-                          disabled={newPageCreating || !newPageTopic.trim()}
-                        >
-                          {newPageCreating ? "AI 生成中…" : "生成页面"}
-                        </button>
-                        {newPageResult && (
-                          <button
-                            className="new-page-modal__btn"
-                            onClick={() => {
-                              setShowNewPageModal(false);
-                              setActiveModule("wiki");
-                              setWikiKeyword(newPageResult.title);
-                            }}
-                          >
-                            查看页面
-                          </button>
-                        )}
-                        <button className="new-page-modal__btn" onClick={() => setShowNewPageModal(false)}>
-                          关闭
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {allWikiTags.length > 0 ? (
-                  <div className="wiki-tag-bar">
-                    <button
-                      type="button"
-                      className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
-                      onClick={() => {
-                        // 清空所有已选标签（显示全部）
-                        setWikiActiveTags(new Set());
-                      }}
-                    >
-                      全部
-                    </button>
-                    {allWikiTags.map((tag) => (
-                      <button
-                        key={tag.name}
-                        type="button"
-                        className={`wiki-tag-chip ${wikiActiveTags.has(tag.name) ? "wiki-tag-chip--active" : ""}`}
-                        onClick={() =>
-                          setWikiActiveTags((prev) => {
-                            // 切换当前标签的激活状态
-                            const next = new Set(prev);
-                            if (next.has(tag.name)) {
-                              next.delete(tag.name);
-                            } else {
-                              next.add(tag.name);
-                            }
-                            return next;
-                          })
-                        }
-                      >
-                        {/* 标签名及其页面计数，计数使用淡色 span 包裹 */}
-                        {tag.name} <span className="wiki-tag-chip__count">({tag.count})</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {displayedWikiPages.length ? (
-                  <div className="wiki-layout">
-                    <aside className="wiki-layout__tree">
-                      <div className="wiki-tree__head">
-                        <div className="wiki-tree__head-title">
-                          <h3>Vault 文件树</h3>
-                          <span>{displayedWikiPages.length} 页</span>
-                        </div>
-                        <div className="wiki-tree__head-actions">
-                          <button
-                            type="button"
-                            className="wiki-tree__action-btn"
-                            onClick={expandAllWikiFolders}
-                            title="全部展开"
-                          >
-                            展开全部
-                          </button>
-                          <button
-                            type="button"
-                            className="wiki-tree__action-btn"
-                            onClick={collapseAllWikiFolders}
-                            title="全部收起"
-                          >
-                            收起全部
-                          </button>
-                        </div>
-                      </div>
-                      <div className="wiki-tree__body">
-                        {renderWikiTreeNodes(wikiTreeNodes)}
-                      </div>
-                    </aside>
-                    <div className="wiki-layout__list">
-                      <div className="ask-result__citations">
-                        {displayedWikiPages.map((page) => {
-                          const isActiveCard = isSameWikiPagePath(page.path, wikiActivePagePath);
-                          const isDetailForCard = Boolean(
-                            wikiPageDetail && isSameWikiPagePath(page.path, wikiPageDetail.path),
-                          );
-                          const isSummaryExpanded = wikiExpandedPaths.some((path) =>
-                            isSameWikiPagePath(path, page.path),
-                          );
-                          const canToggleSummary = page.summary.trim().split('\n').length > wikiSummaryPreviewLines;
-                          const summaryDisplay = buildWikiSummaryDisplay(page.summary, isSummaryExpanded);
-                          const summarySegments = buildWikiHighlightSegments(
-                            summaryDisplay.text,
-                            wikiHighlightKeywords,
-                          );
-                          const titleSegments = buildWikiHighlightSegments(
-                            page.title,
-                            wikiHighlightKeywords,
-                          );
-
-                          return (
-                            <article key={page.path} className="ask-citation">
-                              <div className="ask-citation__top">
-                                <code>
-                                  {titleSegments.map((segment, index) =>
-                                    segment.matched ? (
-                                      <mark key={`${page.path}-title-${index}`} className="wiki-summary__mark">
-                                        {segment.text}
-                                      </mark>
-                                    ) : (
-                                      <span key={`${page.path}-title-${index}`}>{segment.text}</span>
-                                    ),
-                                  )}
-                                </code>
-                                <span>{formatLintCheckedAt(page.updated_at)}</span>
-                              </div>
-                              <div className="wiki-summary">
-                                <p className="wiki-summary__text">
-                                  {summarySegments.map((segment, index) =>
-                                    segment.matched ? (
-                                      <mark key={`${page.path}-summary-${index}`} className="wiki-summary__mark">
-                                        {segment.text}
-                                      </mark>
-                                    ) : (
-                                      <span key={`${page.path}-summary-${index}`}>{segment.text}</span>
-                                    ),
-                                  )}
-                                </p>
-                                {canToggleSummary ? (
-                                  <button
-                                    type="button"
-                                    className="dev-panel__button wiki-summary__toggle"
-                                    onClick={() => handleToggleWikiSummary(page.path)}
-                                  >
-                                    {isSummaryExpanded ? "收起摘要" : "展开摘要"}
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div className="wiki-card__footer">
-                                <code>{resolveDisplayPath(page)}</code>
-                                <button
-                                  type="button"
-                                  className="dev-panel__button wiki-card__button"
-                                  onClick={() => {
-                                    if (isActiveCard && !wikiPageDetailLoading) {
-                                      handleCloseWikiPreview();
-                                      return;
-                                    }
-                                    void handleOpenWikiPage(page.path);
-                                  }}
-                                  disabled={!isTauriRuntime() || wikiPageDetailLoading}
-                                >
-                                  {isActiveCard && isDetailForCard ? "收起内容" : "查看内容"}
-                                </button>
-                              </div>
-                              {isActiveCard ? (
-                                wikiPageDetailLoading ? (
-                                  <p className="runtime-hint wiki-inline-status">正在读取页面内容...</p>
-                                ) : wikiPageDetailError ? (
-                                  <p className="runtime-status wiki-inline-status">{wikiPageDetailError}</p>
-                                ) : isDetailForCard ? (
-                                  <div className="wiki-inline-preview">{renderWikiPreview()}</div>
-                                ) : null
-                              ) : null}
-                            </article>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="empty-state">
-                    {isTauriRuntime()
-                      ? "当前没有可展示的 wiki 页面。先执行示例摄入或保存 Query 结果。"
-                      : "浏览器预览模式下不加载后端 wiki 页面列表。"}
-                  </p>
-                )}
-                {!isActiveWikiDetailInList && wikiActivePagePath ? (
-                  wikiPageDetailLoading ? (
-                    <p className="runtime-hint wiki-inline-status">正在读取页面内容...</p>
-                  ) : wikiPageDetailError ? (
-                    <p className="runtime-status wiki-inline-status">{wikiPageDetailError}</p>
-                  ) : wikiPageDetail ? (
-                    <div className="wiki-inline-preview wiki-inline-preview--floating">{renderWikiPreview()}</div>
-                  ) : null
-                ) : null}
-              </section>
-            </>
+            <WikiModule
+              isTauri={isTauriRuntime()}
+              sortedWikiPages={sortedWikiPages}
+              wikiSortMode={wikiSortMode}
+              wikiSortModeLabels={wikiSortModeLabels}
+              onWikiSortModeChange={setWikiSortMode}
+              wikiKeyword={wikiKeyword}
+              onWikiKeywordChange={setWikiKeyword}
+              onWikiKeywordKeyDown={handleWikiKeywordKeyDown}
+              wikiSearching={wikiSearching}
+              onSearchWikiPages={handleSearchWikiPages}
+              onResetWikiPages={handleResetWikiPages}
+              showNewPageModal={showNewPageModal}
+              onOpenNewPageModal={handleOpenNewWikiPageModal}
+              onCloseNewPageModal={handleCloseNewWikiPageModal}
+              newPageTopic={newPageTopic}
+              onNewPageTopicChange={setNewPageTopic}
+              newPageCreating={newPageCreating}
+              onCreatePageWithAi={handleCreatePageWithAi}
+              newPageResult={newPageResult}
+              onUseNewPageResult={handleUseNewWikiPageResult}
+              allWikiTags={allWikiTags}
+              wikiActiveTags={wikiActiveTags}
+              onClearWikiActiveTags={handleClearWikiActiveTags}
+              onToggleWikiTag={handleToggleWikiActiveTag}
+              displayedWikiPages={displayedWikiPages}
+              onExpandAllWikiFolders={expandAllWikiFolders}
+              onCollapseAllWikiFolders={collapseAllWikiFolders}
+              renderWikiTree={renderWikiTree}
+              wikiActivePagePath={wikiActivePagePath}
+              wikiPageDetail={wikiPageDetail}
+              isPageSummaryExpanded={isWikiPageSummaryExpanded}
+              wikiSummaryPreviewLines={wikiSummaryPreviewLines}
+              buildWikiSummaryDisplay={buildWikiSummaryDisplay}
+              highlightWikiText={highlightWikiText}
+              isPageActive={isWikiPageActive}
+              isPageDetailActive={isWikiPageDetailActive}
+              onToggleWikiSummary={handleToggleWikiSummary}
+              wikiPageDetailLoading={wikiPageDetailLoading}
+              onCloseWikiPreview={handleCloseWikiPreview}
+              onOpenWikiPage={handleOpenWikiPage}
+              wikiPageDetailError={wikiPageDetailError}
+              renderWikiPreview={renderWikiPreview}
+              isActiveWikiDetailInList={isActiveWikiDetailInList}
+            />
           )}
 
           {/* ---- Ask 模块 ---- */}

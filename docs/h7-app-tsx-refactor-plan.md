@@ -670,7 +670,7 @@ npm run dev
 - [x] 2.2 Operations
 - [x] 2.3 Inbox
 - [x] 2.4 Lint
-- [ ] 2.5 Wiki
+- [x] 2.5 Wiki
 - [ ] 2.6 Ask
 - [ ] 2.7 Graph
 - [ ] 2.8 Research

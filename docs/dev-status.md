@@ -55,6 +55,13 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.5 `WikiModule`。
 
+### H7 Phase 2.5 WikiModule 已完成
+- 新增 `web/src/modules/wiki/WikiModule.tsx`，将 Wiki 模块列表页（搜索/排序、标签过滤、文件树、卡片预览入口、AI 新建弹窗）从 `App.tsx` 外移。
+- 当前仍由 `App.tsx` 持有 Wiki 详情预览、编辑、历史版本、frontmatter 与 citations 状态；`WikiModule` 通过 props + render callback 接入，先稳定边界再做后续纵向收口。
+- 补充 Wiki 模块桥接回调（新建弹窗开关、标签切换、卡片状态判断、文件树渲染回调）以保持行为一致。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.6 `AskModule`。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）
