@@ -1,69 +1,43 @@
+import { useEffect, useState } from "react";
 import SearchConfigPanel from "../lint/SearchConfigPanel";
 import {
   shellPolicyDecisionOptions,
   shellPolicyProfiles,
   useShellPolicy,
 } from "../../contexts/ShellPolicyContext";
-import { isTauriRuntime } from "../../tauri-client";
+import { useToast } from "../../contexts/ToastContext";
+import {
+  fetchLlmConfig,
+  getLlmProviderPresets,
+  isTauriRuntime,
+  saveLlmConfig,
+} from "../../tauri-client";
+import {
+  buildCloudProviderPresetConfig,
+  cloudProviderPresets,
+  defaultCloudBaseUrl,
+  defaultCloudModel,
+  defaultCloudProviderName,
+  resolveNextActiveProvider,
+} from "../../App";
+import type { DropMode } from "../../App";
 import type { LlmProviderConfig, ShellPolicyDecision } from "../../types";
 
-type DropMode = "direct" | "queue";
+type CloudProviderPresetId = "deepseek" | "glm" | "minimax";
 
 type SettingsModuleProps = {
-  llmConfig: LlmProviderConfig | null;
-  defaultCloudModel: string;
-  defaultCloudProviderName: string;
-  defaultCloudBaseUrl: string;
-  selectedPreset: string;
-  llmPresets: [string, string, string][];
-  onPresetChange: (presetName: string) => void;
-  llmConfigActiveProvider: "cloud" | "ollama";
-  setLlmConfigActiveProvider: (provider: "cloud" | "ollama") => void;
-  llmConfigCloudProviderName: string;
-  setLlmConfigCloudProviderName: (value: string) => void;
-  llmConfigCloudApiKey: string;
-  setLlmConfigCloudApiKey: (value: string) => void;
-  llmConfigCloudBaseUrl: string;
-  setLlmConfigCloudBaseUrl: (value: string) => void;
-  llmConfigCloudModel: string;
-  setLlmConfigCloudModel: (value: string) => void;
-  llmConfigEmbedModel: string;
-  setLlmConfigEmbedModel: (value: string) => void;
-  llmConfigEmbedBaseUrl: string;
-  setLlmConfigEmbedBaseUrl: (value: string) => void;
-  llmConfigSaving: boolean;
-  onSaveLlmConfig: () => void | Promise<void>;
+  onRefreshAppData: () => Promise<void>;
   dropMode: DropMode;
   onDropModeChange: (mode: DropMode) => void;
 };
 
 export default function SettingsModule({
-  llmConfig,
-  defaultCloudModel,
-  defaultCloudProviderName,
-  defaultCloudBaseUrl,
-  selectedPreset,
-  llmPresets,
-  onPresetChange,
-  llmConfigActiveProvider,
-  setLlmConfigActiveProvider,
-  llmConfigCloudProviderName,
-  setLlmConfigCloudProviderName,
-  llmConfigCloudApiKey,
-  setLlmConfigCloudApiKey,
-  llmConfigCloudBaseUrl,
-  setLlmConfigCloudBaseUrl,
-  llmConfigCloudModel,
-  setLlmConfigCloudModel,
-  llmConfigEmbedModel,
-  setLlmConfigEmbedModel,
-  llmConfigEmbedBaseUrl,
-  setLlmConfigEmbedBaseUrl,
-  llmConfigSaving,
-  onSaveLlmConfig,
+  onRefreshAppData,
   dropMode,
   onDropModeChange,
 }: SettingsModuleProps) {
+  const { setStatusMessage } = useToast();
+
   const {
     config: agentShellPolicyConfig,
     saving: agentShellPolicySaving,
@@ -73,6 +47,128 @@ export default function SettingsModule({
     applyProfile: applyShellPolicyProfile,
     setField: handleChangeShellPolicyDecision,
   } = useShellPolicy();
+
+  // LLM Provider 配置状态
+  const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
+  const [llmPresets, setLlmPresets] = useState<[string, string, string][]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<string>("Custom");
+  const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
+  const [llmConfigCloudBaseUrl, setLlmConfigCloudBaseUrl] = useState("");
+  const [llmConfigCloudModel, setLlmConfigCloudModel] = useState("");
+  const [llmConfigCloudProviderName, setLlmConfigCloudProviderName] = useState("");
+  const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState<"cloud" | "ollama">("ollama");
+  const [llmConfigOllamaModel, setLlmConfigOllamaModel] = useState("");
+  const [llmConfigOllamaBaseUrl, setLlmConfigOllamaBaseUrl] = useState("");
+  const [llmConfigEmbedModel, setLlmConfigEmbedModel] = useState("nomic-embed-text:latest");
+  const [llmConfigEmbedBaseUrl, setLlmConfigEmbedBaseUrl] = useState("");
+  const [llmConfigSaving, setLlmConfigSaving] = useState(false);
+
+  // 挂载时加载 LLM 配置
+  useEffect(() => {
+    void (async () => {
+      const llmConfigResult = await fetchLlmConfig();
+      if (llmConfigResult) {
+        setLlmConfig(llmConfigResult);
+        setLlmConfigCloudApiKey(llmConfigResult.cloud_api_key);
+        setLlmConfigCloudBaseUrl(llmConfigResult.cloud_base_url);
+        setLlmConfigCloudModel(llmConfigResult.cloud_model);
+        setLlmConfigCloudProviderName(llmConfigResult.cloud_provider_name);
+        setLlmConfigActiveProvider(
+          llmConfigResult.active_provider === "cloud" ? "cloud" : "ollama",
+        );
+        setLlmConfigOllamaModel(llmConfigResult.ollama_model ?? "");
+        setLlmConfigOllamaBaseUrl(llmConfigResult.ollama_base_url ?? "");
+        setLlmConfigEmbedModel(llmConfigResult.embed_ollama_model || "nomic-embed-text:latest");
+        setLlmConfigEmbedBaseUrl(llmConfigResult.embed_ollama_base_url ?? "");
+      }
+    })();
+  }, []);
+
+  // 挂载时加载 Provider 预设列表
+  useEffect(() => {
+    void (async () => {
+      const presets = await getLlmProviderPresets();
+      setLlmPresets(presets);
+    })();
+  }, []);
+
+  const handlePresetChange = (presetName: string) => {
+    setSelectedPreset(presetName);
+    if (presetName !== "Custom") {
+      const preset = llmPresets.find((p) => p[0] === presetName);
+      if (preset) {
+        setLlmConfigCloudProviderName(preset[0]);
+        setLlmConfigCloudBaseUrl(preset[1]);
+        setLlmConfigCloudModel(preset[2]);
+      }
+    }
+  };
+
+  const handleSaveLlmConfig = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法保存 LLM 配置。");
+      return;
+    }
+
+    setLlmConfigSaving(true);
+    setStatusMessage("");
+
+    try {
+      const providerDecision = resolveNextActiveProvider(llmConfigActiveProvider, llmConfigCloudApiKey);
+      const nextConfig: LlmProviderConfig = {
+        active_provider: providerDecision.activeProvider,
+        cloud_api_key: llmConfigCloudApiKey.trim(),
+        cloud_base_url: llmConfigCloudBaseUrl.trim(),
+        cloud_model: llmConfigCloudModel.trim(),
+        cloud_provider_name: llmConfigCloudProviderName.trim(),
+        ollama_model: llmConfigOllamaModel.trim(),
+        ollama_base_url: llmConfigOllamaBaseUrl.trim(),
+        embed_ollama_model: llmConfigEmbedModel.trim(),
+        embed_ollama_base_url: llmConfigEmbedBaseUrl.trim(),
+      };
+
+      const result = await saveLlmConfig(nextConfig);
+      if (!result) {
+        setStatusMessage("当前环境不支持保存 LLM 配置。");
+        return;
+      }
+      setLlmConfig(result);
+      setLlmConfigCloudApiKey(result.cloud_api_key);
+      setLlmConfigCloudBaseUrl(result.cloud_base_url);
+      setLlmConfigCloudModel(result.cloud_model);
+      setLlmConfigCloudProviderName(result.cloud_provider_name);
+      setLlmConfigActiveProvider(result.active_provider === "cloud" ? "cloud" : "ollama");
+      // 刷新 LLM 状态显示（Provider 可能已切换）
+      await onRefreshAppData();
+      const savedMessage =
+        result.active_provider === "cloud"
+          ? `LLM 配置已保存（Preset: ${selectedPreset}），当前使用 ${result.cloud_provider_name || "云端 Provider"}（${result.cloud_model || defaultCloudModel}）。`
+          : "LLM 配置已保存，当前使用本地 Ollama。";
+      setStatusMessage(
+        providerDecision.fallbackMessage
+          ? `${providerDecision.fallbackMessage} ${savedMessage}`
+          : savedMessage,
+      );
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`保存 LLM 配置失败：${message}`);
+    } finally {
+      setLlmConfigSaving(false);
+    }
+  };
+
+  const handleApplyCloudPreset = (presetId: CloudProviderPresetId) => {
+    const presetConfig = buildCloudProviderPresetConfig(
+      presetId,
+      llmConfigActiveProvider,
+      llmConfigCloudApiKey,
+    );
+    setLlmConfigCloudProviderName(presetConfig.cloud_provider_name);
+    setLlmConfigCloudBaseUrl(presetConfig.cloud_base_url);
+    setLlmConfigCloudModel(presetConfig.cloud_model);
+    setStatusMessage(`已填充 ${cloudProviderPresets[presetId].name} 预设。`);
+  };
 
   return (
     <>
@@ -104,7 +200,7 @@ export default function SettingsModule({
               id="preset-select"
               className="dev-panel__input"
               value={selectedPreset}
-              onChange={(event) => onPresetChange(event.target.value)}
+              onChange={(event) => handlePresetChange(event.target.value)}
             >
               <option value="Custom">Custom (自定义)</option>
               {llmPresets.map(([name]) => (
@@ -208,7 +304,7 @@ export default function SettingsModule({
             <button
               type="button"
               className="dev-panel__button dev-panel__button--accent"
-              onClick={() => void onSaveLlmConfig()}
+              onClick={() => void handleSaveLlmConfig()}
               disabled={!isTauriRuntime() || llmConfigSaving}
             >
               {llmConfigSaving ? "保存中..." : "保存 LLM 配置"}

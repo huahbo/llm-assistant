@@ -31,7 +31,6 @@ import {
   getAppOverview,
   fetchDefaultPaths,
   fetchLlmStatus,
-  fetchLlmConfig,
   fetchOcrConfig,
   fetchQuerySettings,
   fetchRecentLogs,
@@ -44,7 +43,6 @@ import {
   deleteAskSession,
   fetchRecentWikiPages,
   fetchWikiPageDetail,
-  getLlmProviderPresets,
   initVault,
   ingestFile,
   previewIngestFile,
@@ -55,7 +53,6 @@ import {
   queryAskSession,
   cancelAskSession,
   clearAskHistory,
-  saveLlmConfig,
   saveAskHistory,
   saveOcrConfig,
   getKnowledgeGraph,
@@ -2852,22 +2849,6 @@ export default function App() {
   const askFocusTimerRef = useRef<number | null>(null);
   // Wiki 模块通过 ref 暴露 openPage 方法，供跨模块调用
   const wikiModuleRef = useRef<WikiModuleHandle | null>(null);
-  // LLM Provider 配置（Settings 面板）
-  const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
-  const [llmPresets, setLlmPresets] = useState<[string, string, string][]>([]);
-  const [selectedPreset, setSelectedPreset] = useState<string>("Custom");
-  const [llmConfigCloudApiKey, setLlmConfigCloudApiKey] = useState("");
-  const [llmConfigCloudBaseUrl, setLlmConfigCloudBaseUrl] = useState("");
-  const [llmConfigCloudModel, setLlmConfigCloudModel] = useState("");
-  const [llmConfigCloudProviderName, setLlmConfigCloudProviderName] = useState("");
-  const [llmConfigActiveProvider, setLlmConfigActiveProvider] = useState<"cloud" | "ollama">(
-    "ollama",
-  );
-  const [llmConfigOllamaModel, setLlmConfigOllamaModel] = useState("");
-  const [llmConfigOllamaBaseUrl, setLlmConfigOllamaBaseUrl] = useState("");
-  const [llmConfigEmbedModel, setLlmConfigEmbedModel] = useState("nomic-embed-text:latest");
-  const [llmConfigEmbedBaseUrl, setLlmConfigEmbedBaseUrl] = useState("");
-  const [llmConfigSaving, setLlmConfigSaving] = useState(false);
   const [ingestDragActive, setIngestDragActive] = useState(false);
   const [outboxLastId, setOutboxLastId] = useState(0);
   const [outboxInitialized, setOutboxInitialized] = useState(false);
@@ -3455,7 +3436,6 @@ export default function App() {
         data,
         defaultPaths,
         querySettings,
-        llmConfigResult,
         backendOcrProvider,
         dbAskHistory,
         dbAskSessions,
@@ -3464,7 +3444,6 @@ export default function App() {
           loadAppData(),
           fetchDefaultPaths(),
           fetchQuerySettings(),
-          fetchLlmConfig(),
           fetchOcrConfig(),
           fetchAskHistory(QUERY_HISTORY_MAX),
           listAskSessions(ASK_SESSION_LIST_MAX),
@@ -3484,20 +3463,6 @@ export default function App() {
           setQueryTopK(querySettings.top_k);
           setQueryTopKMin(querySettings.min_top_k);
           setQueryTopKMax(querySettings.max_top_k);
-        }
-        if (llmConfigResult) {
-          setLlmConfig(llmConfigResult);
-          setLlmConfigCloudApiKey(llmConfigResult.cloud_api_key);
-          setLlmConfigCloudBaseUrl(llmConfigResult.cloud_base_url);
-          setLlmConfigCloudModel(llmConfigResult.cloud_model);
-          setLlmConfigCloudProviderName(llmConfigResult.cloud_provider_name);
-          setLlmConfigActiveProvider(
-            llmConfigResult.active_provider === "cloud" ? "cloud" : "ollama",
-          );
-          setLlmConfigOllamaModel(llmConfigResult.ollama_model ?? "");
-          setLlmConfigOllamaBaseUrl(llmConfigResult.ollama_base_url ?? "");
-          setLlmConfigEmbedModel(llmConfigResult.embed_ollama_model || "nomic-embed-text:latest");
-          setLlmConfigEmbedBaseUrl(llmConfigResult.embed_ollama_base_url ?? "");
         }
 
         // 优先级：后端配置 > localStorage；后端有值时覆盖本地状态并同步到 localStorage。
@@ -3546,25 +3511,6 @@ export default function App() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    void (async () => {
-      const presets = await getLlmProviderPresets();
-      setLlmPresets(presets);
-    })();
-  }, []);
-
-  const handlePresetChange = (presetName: string) => {
-    setSelectedPreset(presetName);
-    if (presetName !== "Custom") {
-      const preset = llmPresets.find((p) => p[0] === presetName);
-      if (preset) {
-        setLlmConfigCloudProviderName(preset[0]);
-        setLlmConfigCloudBaseUrl(preset[1]);
-        setLlmConfigCloudModel(preset[2]);
-      }
-    }
-  };
 
   const refreshAppData = async (_options?: { includeGraph?: boolean }) => {
     const data = await loadAppData();
@@ -4506,72 +4452,6 @@ export default function App() {
     setAskHistoryKeyword("");
     writeQueryHistoryItemsToStorage([], QUERY_HISTORY_MAX);
     setStatusMessage(backendCleared ? "Ask 历史已清空。" : "本地历史已清空（后端清理失败）。");
-  };
-
-  const handleSaveLlmConfig = async () => {
-    if (!isTauriRuntime()) {
-      setStatusMessage("浏览器预览模式下无法保存 LLM 配置。");
-      return;
-    }
-
-    setLlmConfigSaving(true);
-    setStatusMessage("");
-
-    try {
-      const providerDecision = resolveNextActiveProvider(llmConfigActiveProvider, llmConfigCloudApiKey);
-      const nextConfig: LlmProviderConfig = {
-        active_provider: providerDecision.activeProvider,
-        cloud_api_key: llmConfigCloudApiKey.trim(),
-        cloud_base_url: llmConfigCloudBaseUrl.trim(),
-        cloud_model: llmConfigCloudModel.trim(),
-        cloud_provider_name: llmConfigCloudProviderName.trim(),
-        ollama_model: llmConfigOllamaModel.trim(),
-        ollama_base_url: llmConfigOllamaBaseUrl.trim(),
-        embed_ollama_model: llmConfigEmbedModel.trim(),
-        embed_ollama_base_url: llmConfigEmbedBaseUrl.trim(),
-      };
-
-      const result = await saveLlmConfig(nextConfig);
-      if (!result) {
-        setStatusMessage("当前环境不支持保存 LLM 配置。");
-        return;
-      }
-      setLlmConfig(result);
-      setLlmConfigCloudApiKey(result.cloud_api_key);
-      setLlmConfigCloudBaseUrl(result.cloud_base_url);
-      setLlmConfigCloudModel(result.cloud_model);
-      setLlmConfigCloudProviderName(result.cloud_provider_name);
-      setLlmConfigActiveProvider(result.active_provider === "cloud" ? "cloud" : "ollama");
-      // 刷新 LLM 状态显示（Provider 可能已切换）
-      await refreshAppData();
-      const savedMessage =
-        result.active_provider === "cloud"
-          ? `LLM 配置已保存（Preset: ${selectedPreset}），当前使用 ${result.cloud_provider_name || "云端 Provider"}（${result.cloud_model || defaultCloudModel}）。`
-          : "LLM 配置已保存，当前使用本地 Ollama。";
-      setStatusMessage(
-        providerDecision.fallbackMessage
-          ? `${providerDecision.fallbackMessage} ${savedMessage}`
-          : savedMessage,
-      );
-    } catch (error) {
-      console.error(error);
-      const message = error instanceof Error ? error.message : String(error);
-      setStatusMessage(`保存 LLM 配置失败：${message}`);
-    } finally {
-      setLlmConfigSaving(false);
-    }
-  };
-
-  const handleApplyCloudPreset = (presetId: CloudProviderPresetId) => {
-    const presetConfig = buildCloudProviderPresetConfig(
-      presetId,
-      llmConfigActiveProvider,
-      llmConfigCloudApiKey,
-    );
-    setLlmConfigCloudProviderName(presetConfig.cloud_provider_name);
-    setLlmConfigCloudBaseUrl(presetConfig.cloud_base_url);
-    setLlmConfigCloudModel(presetConfig.cloud_model);
-    setStatusMessage(`已填充 ${cloudProviderPresets[presetId].name} 预设。`);
   };
 
   const handleSaveQuerySettings = async () => {
@@ -6156,29 +6036,7 @@ export default function App() {
           {/* ---- Settings 模块 ---- */}
           {activeModule === "settings" && (
             <SettingsModule
-              llmConfig={llmConfig}
-              defaultCloudModel={defaultCloudModel}
-              defaultCloudProviderName={defaultCloudProviderName}
-              defaultCloudBaseUrl={defaultCloudBaseUrl}
-              selectedPreset={selectedPreset}
-              llmPresets={llmPresets}
-              onPresetChange={handlePresetChange}
-              llmConfigActiveProvider={llmConfigActiveProvider}
-              setLlmConfigActiveProvider={setLlmConfigActiveProvider}
-              llmConfigCloudProviderName={llmConfigCloudProviderName}
-              setLlmConfigCloudProviderName={setLlmConfigCloudProviderName}
-              llmConfigCloudApiKey={llmConfigCloudApiKey}
-              setLlmConfigCloudApiKey={setLlmConfigCloudApiKey}
-              llmConfigCloudBaseUrl={llmConfigCloudBaseUrl}
-              setLlmConfigCloudBaseUrl={setLlmConfigCloudBaseUrl}
-              llmConfigCloudModel={llmConfigCloudModel}
-              setLlmConfigCloudModel={setLlmConfigCloudModel}
-              llmConfigEmbedModel={llmConfigEmbedModel}
-              setLlmConfigEmbedModel={setLlmConfigEmbedModel}
-              llmConfigEmbedBaseUrl={llmConfigEmbedBaseUrl}
-              setLlmConfigEmbedBaseUrl={setLlmConfigEmbedBaseUrl}
-              llmConfigSaving={llmConfigSaving}
-              onSaveLlmConfig={handleSaveLlmConfig}
+              onRefreshAppData={refreshAppData}
               dropMode={dropMode}
               onDropModeChange={(mode) => {
                 setDropMode(mode);
