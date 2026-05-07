@@ -1,5 +1,26 @@
+import { useState, useEffect, useMemo } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { formatLintCheckedAt, normalizeLintSeverity, type LintSeverityFilter } from "../../lint-utils";
+import { useToast } from "../../contexts/ToastContext";
+import {
+  filterLintIssuesBySeverity,
+  filterLintIssuesByCode,
+  filterLintIssuesByPath,
+  filterLintIssuesBySuggestion,
+  formatLintCheckedAt,
+  normalizeLintSeverity,
+  readLintFilterState,
+  resolveLintSeverityStats,
+  writeLintFilterState,
+  type LintSeverityFilter,
+} from "../../lint-utils";
+import {
+  isTauriRuntime,
+  runLint,
+  previewLintPatches,
+  applyLintPatch,
+  applyLintPatchesBatch,
+  fetchRecentLintPatchEvents,
+} from "../../tauri-client";
 import type {
   LintIssue,
   LintPatchBatchResult,
@@ -19,41 +40,36 @@ type LintPatchPreviewGroup = {
   items: LintPatchPreviewItem[];
 };
 
+const groupLintIssuesByPath = (issues: LintIssue[]): LintIssueGroup[] => {
+  const map = new Map<string, LintIssue[]>();
+  for (const issue of issues) {
+    const key = issue.path ?? "全局";
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(issue);
+    } else {
+      map.set(key, [issue]);
+    }
+  }
+  return Array.from(map.entries()).map(([path, items]) => ({ path, issues: items }));
+};
+
+const groupPatchPreviewItemsByPath = (items: LintPatchPreviewItem[]): LintPatchPreviewGroup[] => {
+  const map = new Map<string, LintPatchPreviewItem[]>();
+  for (const item of items) {
+    const key = item.path ?? "全局";
+    const existing = map.get(key);
+    if (existing) {
+      existing.push(item);
+    } else {
+      map.set(key, [item]);
+    }
+  }
+  return Array.from(map.entries()).map(([path, its]) => ({ path, items: its }));
+};
+
 type LintModuleProps = {
-  isTauri: boolean;
-  lintReport: LintReport | null;
-  lintRunning: boolean;
-  lintIssuesCount: number;
-  lintSeverityStats: LintSeverityStats;
-  lintSeverityFilter: LintSeverityFilter;
-  setLintSeverityFilter: (filter: LintSeverityFilter) => void;
-  lintCodeKeyword: string;
-  setLintCodeKeyword: (value: string) => void;
-  lintPathKeyword: string;
-  setLintPathKeyword: (value: string) => void;
-  lintSuggestionKeyword: string;
-  setLintSuggestionKeyword: (value: string) => void;
-  filteredLintIssuesCount: number;
-  groupedLintIssues: LintIssueGroup[];
-  lintCollapsedGroups: Set<string>;
-  setLintCollapsedGroups: Dispatch<SetStateAction<Set<string>>>;
-  lintFilterEmptyText: string;
-  lintFilterStateLoaded: boolean;
-  recentLintPatchEvents: LintPatchEvent[];
-  lintPatchPreviewLoading: boolean;
-  lintPatchPreviewItems: LintPatchPreviewItem[];
-  groupedLintPatchPreviewItems: LintPatchPreviewGroup[];
-  lintPatchPreviewError: string;
-  lintPatchApplyingKey: string | null;
-  lintPatchBatchApplying: boolean;
-  lintPatchBatchSummary: LintPatchBatchResult | null;
-  patchPreviewCollapsedGroups: Set<string>;
-  setPatchPreviewCollapsedGroups: Dispatch<SetStateAction<Set<string>>>;
-  onRunLint: () => void | Promise<boolean>;
-  onClearLintFilters: () => void;
-  onPreviewLintPatches: () => void | Promise<void>;
-  onApplyLintPatch: (item: LintPatchPreviewItem) => void | Promise<void>;
-  onApplyLintPatchesBatch: () => void | Promise<void>;
+  onRefreshAppData: () => Promise<void>;
   onCreateBrokenWikiLinkPage: (targetTitle: string) => void | Promise<void>;
   onOpenPatchPage: (path: string) => void | Promise<void>;
 };
@@ -66,43 +82,272 @@ const lintSeverityFilterLabels: Record<LintSeverityFilter, string> = {
 };
 
 export default function LintModule({
-  isTauri,
-  lintReport,
-  lintRunning,
-  lintIssuesCount,
-  lintSeverityStats,
-  lintSeverityFilter,
-  setLintSeverityFilter,
-  lintCodeKeyword,
-  setLintCodeKeyword,
-  lintPathKeyword,
-  setLintPathKeyword,
-  lintSuggestionKeyword,
-  setLintSuggestionKeyword,
-  filteredLintIssuesCount,
-  groupedLintIssues,
-  lintCollapsedGroups,
-  setLintCollapsedGroups,
-  lintFilterEmptyText,
-  lintFilterStateLoaded,
-  recentLintPatchEvents,
-  lintPatchPreviewLoading,
-  lintPatchPreviewItems,
-  groupedLintPatchPreviewItems,
-  lintPatchPreviewError,
-  lintPatchApplyingKey,
-  lintPatchBatchApplying,
-  lintPatchBatchSummary,
-  patchPreviewCollapsedGroups,
-  setPatchPreviewCollapsedGroups,
-  onRunLint,
-  onClearLintFilters,
-  onPreviewLintPatches,
-  onApplyLintPatch,
-  onApplyLintPatchesBatch,
+  onRefreshAppData,
   onCreateBrokenWikiLinkPage,
   onOpenPatchPage,
 }: LintModuleProps) {
+  const { setStatusMessage } = useToast();
+
+  // ---- lint-local state ----
+  const [lintReport, setLintReport] = useState<LintReport | null>(null);
+  const [lintRunning, setLintRunning] = useState(false);
+  const [lintSeverityFilter, setLintSeverityFilter] = useState<LintSeverityFilter>("all");
+  const [lintCodeKeyword, setLintCodeKeyword] = useState("");
+  const [lintPathKeyword, setLintPathKeyword] = useState("");
+  const [lintSuggestionKeyword, setLintSuggestionKeyword] = useState("");
+  const [lintFilterStateLoaded, setLintFilterStateLoaded] = useState(false);
+  const [lintPatchPreviewLoading, setLintPatchPreviewLoading] = useState(false);
+  const [lintPatchPreviewItems, setLintPatchPreviewItems] = useState<LintPatchPreviewItem[]>([]);
+  const [lintPatchPreviewError, setLintPatchPreviewError] = useState("");
+  const [lintPatchApplyingKey, setLintPatchApplyingKey] = useState<string | null>(null);
+  const [lintPatchBatchApplying, setLintPatchBatchApplying] = useState(false);
+  const [lintPatchBatchSummary, setLintPatchBatchSummary] = useState<LintPatchBatchResult | null>(null);
+  const [recentLintPatchEvents, setRecentLintPatchEvents] = useState<LintPatchEvent[]>([]);
+  const [lintCollapsedGroups, setLintCollapsedGroups] = useState<Set<string>>(new Set());
+  const [patchPreviewCollapsedGroups, setPatchPreviewCollapsedGroups] = useState<Set<string>>(new Set());
+
+  // ---- on mount: load filter state + recent events ----
+  useEffect(() => {
+    void (async () => {
+      const events = await fetchRecentLintPatchEvents();
+      setRecentLintPatchEvents(events);
+
+      const filterState = readLintFilterState();
+      setLintSeverityFilter(filterState.severity);
+      setLintCodeKeyword(filterState.codeKeyword);
+      setLintPathKeyword(filterState.pathKeyword);
+      setLintSuggestionKeyword(filterState.suggestionKeyword);
+      setLintFilterStateLoaded(true);
+    })();
+  }, []);
+
+  // ---- persist filter state to localStorage whenever it changes ----
+  useEffect(() => {
+    if (!lintFilterStateLoaded) {
+      return;
+    }
+    writeLintFilterState({
+      severity: lintSeverityFilter,
+      codeKeyword: lintCodeKeyword,
+      pathKeyword: lintPathKeyword,
+      suggestionKeyword: lintSuggestionKeyword,
+    });
+  }, [lintCodeKeyword, lintFilterStateLoaded, lintPathKeyword, lintSeverityFilter, lintSuggestionKeyword]);
+
+  // ---- derived/computed values ----
+  const lintSeverityStats = resolveLintSeverityStats(lintReport);
+  const lintIssues = lintReport?.issues ?? [];
+  const lintIssuesCount = lintIssues.length;
+  const lintCodeKeywordNormalized = lintCodeKeyword.trim();
+  const lintPathKeywordNormalized = lintPathKeyword.trim();
+  const lintSuggestionKeywordNormalized = lintSuggestionKeyword.trim();
+  const lintSeverityFilteredIssues = filterLintIssuesBySeverity(lintIssues, lintSeverityFilter);
+  const lintCodeFilteredIssues = filterLintIssuesByCode(lintIssues, lintCodeKeywordNormalized);
+  const lintPathFilteredIssues = filterLintIssuesByPath(lintIssues, lintPathKeywordNormalized);
+  const lintSuggestionFilteredIssues = filterLintIssuesBySuggestion(lintIssues, lintSuggestionKeywordNormalized);
+  const filteredLintIssues = filterLintIssuesBySuggestion(
+    filterLintIssuesByPath(
+      filterLintIssuesByCode(lintSeverityFilteredIssues, lintCodeKeywordNormalized),
+      lintPathKeywordNormalized,
+    ),
+    lintSuggestionKeywordNormalized,
+  );
+  const filteredLintIssuesCount = filteredLintIssues.length;
+  const groupedLintIssues = useMemo(() => groupLintIssuesByPath(filteredLintIssues), [filteredLintIssues]);
+  const groupedLintPatchPreviewItems = useMemo(
+    () => groupPatchPreviewItemsByPath(lintPatchPreviewItems),
+    [lintPatchPreviewItems],
+  );
+  const lintHasSeverityHit = lintSeverityFilteredIssues.length > 0;
+  const lintHasCodeHit = lintCodeFilteredIssues.length > 0;
+  const lintHasPathHit = lintPathFilteredIssues.length > 0;
+  const lintHasSuggestionHit = lintSuggestionFilteredIssues.length > 0;
+  const lintEmptyFilterLabels = [
+    !lintHasSeverityHit ? "严重级别" : null,
+    !lintHasCodeHit ? "code 关键词" : null,
+    !lintHasPathHit ? "path 关键词" : null,
+    !lintHasSuggestionHit ? "suggestion 关键词" : null,
+  ].filter(Boolean) as string[];
+  const lintFilterEmptyText =
+    lintIssues.length === 0
+      ? "本次 lint 检查未发现问题。"
+      : lintEmptyFilterLabels.length === 1
+        ? `当前筛选的${lintEmptyFilterLabels[0]}没有命中任何问题。`
+        : lintEmptyFilterLabels.length > 1
+          ? `当前筛选的${lintEmptyFilterLabels.join("、")}组合后没有命中任何问题。`
+          : "当前筛选条件没有命中任何问题。";
+
+  // ---- handlers ----
+  const refreshRecentLintPatchEvents = async () => {
+    const events = await fetchRecentLintPatchEvents();
+    setRecentLintPatchEvents(events);
+  };
+
+  const handleRunLint = async (): Promise<boolean> => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法运行 Lint。");
+      return false;
+    }
+
+    setLintRunning(true);
+    setLintPatchPreviewItems([]);
+    setLintPatchPreviewError("");
+    setStatusMessage("");
+
+    try {
+      const report = await runLint();
+      if (!report) {
+        setStatusMessage("当前环境不支持运行 Lint。");
+        return false;
+      }
+
+      setLintReport(report);
+      await onRefreshAppData();
+      setStatusMessage(`Lint 已完成：${report.summary}`);
+      return true;
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`Lint 运行失败：${message}`);
+      return false;
+    } finally {
+      setLintRunning(false);
+    }
+  };
+
+  const handleClearLintFilters = () => {
+    setLintSeverityFilter("all");
+    setLintCodeKeyword("");
+    setLintPathKeyword("");
+    setLintSuggestionKeyword("");
+  };
+
+  const handlePreviewLintPatches = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法生成补丁建议。");
+      return;
+    }
+    if (!lintReport) {
+      setStatusMessage("请先运行 Lint，再生成补丁建议。");
+      return;
+    }
+
+    setLintPatchPreviewLoading(true);
+    setLintPatchPreviewError("");
+    setStatusMessage("");
+
+    try {
+      const items = await previewLintPatches();
+      if (!items) {
+        setStatusMessage("当前环境不支持生成补丁建议。");
+        setLintPatchPreviewItems([]);
+        setLintPatchBatchSummary(null);
+        return;
+      }
+
+      setLintPatchPreviewItems(items);
+      setLintPatchBatchSummary(null);
+      setStatusMessage(`补丁建议已生成：${items.length} 项。`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setLintPatchPreviewError(`生成补丁建议失败：${message}`);
+      setLintPatchPreviewItems([]);
+      setLintPatchBatchSummary(null);
+    } finally {
+      setLintPatchPreviewLoading(false);
+    }
+  };
+
+  const handleApplyLintPatch = async (item: LintPatchPreviewItem) => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法应用补丁建议。");
+      return;
+    }
+
+    const patchKey = `${item.issue_code}-${item.path ?? "global"}`;
+    setLintPatchApplyingKey(patchKey);
+    setStatusMessage("");
+
+    try {
+      const result = await applyLintPatch(item);
+      if (!result) {
+        setStatusMessage("当前环境不支持应用补丁建议。");
+        return;
+      }
+
+      await refreshRecentLintPatchEvents();
+      const lintRefreshed = await handleRunLint();
+      if (!lintRefreshed) {
+        return;
+      }
+
+      const resultMessage = result.message?.trim();
+      if (result.applied === false) {
+        setStatusMessage(
+          resultMessage
+            ? `补丁建议已处理（无实际改动）：${resultMessage}`
+            : `补丁建议已处理（无实际改动）：${item.issue_code}。`,
+        );
+      } else {
+        setStatusMessage(
+          resultMessage
+            ? `补丁建议已应用：${resultMessage}`
+            : `补丁建议已应用：${item.issue_code}。已刷新概览、日志和 Lint。`,
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`应用建议失败：${message}`);
+    } finally {
+      setLintPatchApplyingKey(null);
+    }
+  };
+
+  const handleApplyLintPatchesBatch = async () => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法批量应用补丁建议。");
+      return;
+    }
+
+    if (!lintPatchPreviewItems.length) {
+      setStatusMessage("当前没有可批量应用的补丁建议。");
+      return;
+    }
+
+    setLintPatchBatchApplying(true);
+    setStatusMessage("");
+
+    try {
+      const result = await applyLintPatchesBatch(lintPatchPreviewItems);
+      if (!result) {
+        setStatusMessage("当前环境不支持批量应用补丁建议。");
+        return;
+      }
+
+      setLintPatchBatchSummary(result);
+      await refreshRecentLintPatchEvents();
+      const lintRefreshed = await handleRunLint();
+      if (!lintRefreshed) {
+        return;
+      }
+
+      const summaryText =
+        result.summary?.trim() ||
+        `成功 ${result.success_count}，失败 ${result.failure_count}，跳过 ${result.skipped_count}。`;
+      setStatusMessage(`批量应用已完成：${summaryText}`);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`批量应用失败：${message}`);
+    } finally {
+      setLintPatchBatchApplying(false);
+    }
+  };
+
+  const isTauri = isTauriRuntime();
+
   return (
     <>
       <div className="module-header">
@@ -122,7 +367,7 @@ export default function LintModule({
           <button
             type="button"
             className="dev-panel__button dev-panel__button--accent"
-            onClick={() => void onRunLint()}
+            onClick={() => void handleRunLint()}
             disabled={lintRunning}
           >
             {lintRunning ? "运行中..." : "运行 Lint"}
@@ -130,7 +375,7 @@ export default function LintModule({
           <button
             type="button"
             className="dev-panel__button"
-            onClick={onClearLintFilters}
+            onClick={handleClearLintFilters}
             disabled={!lintFilterStateLoaded}
           >
             清空筛选
@@ -138,7 +383,7 @@ export default function LintModule({
           <button
             type="button"
             className="dev-panel__button dev-panel__button--accent"
-            onClick={() => void onPreviewLintPatches()}
+            onClick={() => void handlePreviewLintPatches()}
             disabled={!isTauri || lintPatchPreviewLoading || !lintReport}
           >
             {lintPatchPreviewLoading ? "生成中..." : "生成补丁建议"}
@@ -345,7 +590,7 @@ export default function LintModule({
           <button
             type="button"
             className="dev-panel__button dev-panel__button--accent"
-            onClick={() => void onApplyLintPatchesBatch()}
+            onClick={() => void handleApplyLintPatchesBatch()}
             disabled={!isTauri || lintPatchBatchApplying || lintPatchPreviewItems.length === 0}
           >
             {lintPatchBatchApplying ? "批量应用中..." : "批量应用可应用项"}
@@ -409,7 +654,7 @@ export default function LintModule({
                             <button
                               type="button"
                               className="dev-panel__button dev-panel__button--accent"
-                              onClick={() => void onApplyLintPatch(item)}
+                              onClick={() => void handleApplyLintPatch(item)}
                               disabled={!isTauri || lintPatchApplyingKey !== null}
                             >
                               {lintPatchApplyingKey === `${item.issue_code}-${item.path ?? "global"}`
@@ -438,7 +683,7 @@ export default function LintModule({
           <p className="runtime-hint">正在生成补丁建议...</p>
         ) : (
           <p className="empty-state">
-            {lintReport ? '点击“生成补丁建议”后在此查看候选补丁预览。' : "请先运行 Lint，再生成补丁建议。"}
+            {lintReport ? '点击"生成补丁建议"后在此查看候选补丁预览。' : "请先运行 Lint，再生成补丁建议。"}
           </p>
         )}
       </section>
