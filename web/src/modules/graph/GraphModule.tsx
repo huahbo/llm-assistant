@@ -1,6 +1,74 @@
-import { Suspense, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
-import type { KnowledgeGraphData, KnowledgeGraphNode, ModuleId } from "../../types";
-import type { GraphInsightKind, GraphTraversalDirection, GraphViewMode } from "../../App";
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { KnowledgeGraphData, KnowledgeGraphLink, KnowledgeGraphNode, ModuleId } from "../../types";
+import { useMode } from "../../contexts/ModeContext";
+import { useToast } from "../../contexts/ToastContext";
+import {
+  getKnowledgeGraph,
+  getKnowledgeSubgraph,
+  getPageEmbeddingPairs,
+} from "../../tauri-client";
+import {
+  AggregatedEdge,
+  AggregatedNode,
+  buildAggregatedGraphData,
+  buildGraphInsights,
+  buildGraphLocalData,
+  buildGraphVisibleData,
+  clampGraphInsightBridgeMinGroups,
+  clampGraphInsightSparseDensity,
+  clampGraphInsightSurprisingConfidence,
+  clampGraphInsightSurprisingJaccard,
+  clampGraphLocalDepth,
+  DEFAULT_GRAPH_INSIGHT_CONFIG,
+  GRAPH_AGGREGATE_THRESHOLD,
+  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MAX,
+  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MIN,
+  GRAPH_INSIGHT_SPARSE_DENSITY_MAX,
+  GRAPH_INSIGHT_SPARSE_DENSITY_MIN,
+  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MAX,
+  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MIN,
+  GRAPH_INSIGHT_SURPRISING_JACCARD_MAX,
+  GRAPH_INSIGHT_SURPRISING_JACCARD_MIN,
+  GRAPH_LOCAL_BACKEND_MAX_LINKS,
+  GRAPH_LOCAL_BACKEND_MAX_NODES,
+  GRAPH_LOCAL_DEPTH_MAX,
+  GRAPH_LOCAL_DEPTH_MIN,
+  type GraphInsightConfig,
+  type GraphInsightItem,
+  type GraphInsightKind,
+  type GraphNormalizedEdge,
+  type GraphTraversalDirection,
+  type GraphViewMode,
+  isSameWikiPagePath,
+  isGraphTraversalDirection,
+  readGraphInsightBridgeMinGroupsFromStorage,
+  readGraphInsightSparseDensityFromStorage,
+  readGraphInsightSurprisingConfidenceFromStorage,
+  readGraphInsightSurprisingJaccardFromStorage,
+  readGraphLocalDepthFromStorage,
+  readGraphLocalDirectionFromStorage,
+  readGraphViewModeFromStorage,
+  resolveGraphNodePagePath,
+  shouldUseBackendSubgraph,
+  writeGraphInsightBridgeMinGroupsToStorage,
+  writeGraphInsightSparseDensityToStorage,
+  writeGraphInsightSurprisingConfidenceToStorage,
+  writeGraphInsightSurprisingJaccardToStorage,
+  writeGraphLocalDepthToStorage,
+  writeGraphLocalDirectionToStorage,
+  writeGraphViewModeToStorage,
+} from "../../App";
+
+const graphInsightKindLabels: Record<GraphInsightKind, string> = {
+  "isolated-node": "孤立页",
+  "sparse-group": "稀疏分组",
+  "bridge-node": "桥接节点",
+  "surprising-link": "异常连接",
+};
+
+const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type GraphLikeNode = KnowledgeGraphNode & {
   isAggregate?: boolean;
@@ -20,188 +88,748 @@ type GraphLikeData = {
   links: GraphLikeLink[];
 };
 
-type GraphInsightItem = {
-  kind: GraphInsightKind;
-  title: string;
-  description: string;
-  evidence: string[];
-  suggestion: string;
-};
-
 type GraphMetrics = {
   inDegree: Map<string, number>;
   outDegree: Map<string, number>;
   totalDegree: Map<string, number>;
   orphanCount: number;
+  adjacency: Map<string, Set<string>>;
 };
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function groupColor(group: string): string {
+  const palette = [
+    "#4a9eff", "#ff7043", "#66bb6a", "#ab47bc",
+    "#ffa726", "#26c6da", "#ec407a", "#8d6e63",
+  ];
+  let hash = 0;
+  for (let i = 0; i < group.length; i++) {
+    hash = group.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return palette[Math.abs(hash) % palette.length];
+}
+
+const GRAPH_STRUCTURAL_PAGE_NAMES = new Set(["index", "log", "overview"]);
+
+const resolveGraphNodeLeafName = (id: string) =>
+  id
+    .trim()
+    .replaceAll("\\", "/")
+    .split("/")
+    .pop()
+    ?.replace(/\.md$/i, "")
+    .toLowerCase() ?? "";
+
+function resolveGraphLinkNodeId(
+  endpoint: string | KnowledgeGraphNode | null | undefined,
+): string {
+  if (!endpoint) return "";
+  if (typeof endpoint === "string") return endpoint;
+  return resolveGraphNodePagePath(endpoint) ?? "";
+}
+
+// ─── GraphErrorBoundary ───────────────────────────────────────────────────────
+
+type GraphErrorBoundaryProps = { children: React.ReactNode };
+type GraphErrorBoundaryState = { hasError: boolean; message: string };
+
+class GraphErrorBoundary extends Component<GraphErrorBoundaryProps, GraphErrorBoundaryState> {
+  override state: GraphErrorBoundaryState = { hasError: false, message: "" };
+
+  static getDerivedStateFromError(error: unknown): GraphErrorBoundaryState {
+    const message = error instanceof Error ? error.message : String(error);
+    return { hasError: true, message: message.trim() };
+  }
+
+  override componentDidCatch(error: unknown) {
+    console.error("图谱渲染异常:", error);
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <div className="graph-module__empty">
+          <p>{this.state.message ? `图谱渲染失败：${this.state.message}` : "图谱渲染失败。"}</p>
+          <p>请先检查图谱依赖是否安装完整，或切换模块后重试。</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 type GraphModuleProps = {
-  ForceGraph2D: React.ComponentType<Record<string, unknown>>;
-  GraphErrorBoundary: React.ComponentType<{ children: React.ReactNode }>;
-  graphInsightKindLabels: Record<GraphInsightKind, string>;
-  graphViewMode: GraphViewMode;
-  graphSearchInputRef: RefObject<HTMLInputElement>;
-  graphSearchQuery: string;
-  setGraphSearchQuery: Dispatch<SetStateAction<string>>;
-  graphGroupFilter: string;
-  setGraphGroupFilter: Dispatch<SetStateAction<string>>;
-  graphGroupOptions: string[];
-  graphLocalDepth: number;
-  graphSelectedNode: KnowledgeGraphNode | null;
-  graphLocalDirection: GraphTraversalDirection;
-  graphShowOrphans: boolean;
-  setGraphShowOrphans: Dispatch<SetStateAction<boolean>>;
-  graphNeighborOnly: boolean;
-  setGraphNeighborOnly: Dispatch<SetStateAction<boolean>>;
-  graphVisibleData: KnowledgeGraphData | null;
-  graphLayoutFrozen: boolean;
-  graphRenderData: GraphLikeData | null;
-  graphAggregateMode: boolean;
-  GRAPH_AGGREGATE_THRESHOLD: number;
-  graphLocalSubgraphTruncated: boolean;
-  graphNodes: KnowledgeGraphNode[];
-  graphNormalizedLinks: GraphLikeLink[];
-  graphVisibleOrphanCount: number;
-  graphMetrics: GraphMetrics;
-  graphShouldUseBackendSubgraph: boolean;
-  graphLocalSubgraphLoading: boolean;
-  graphLocalSubgraphError: string;
-  graphContainerRef: RefObject<HTMLDivElement>;
-  graphLoading: boolean;
-  graphError: string;
-  graphData: KnowledgeGraphData | null;
-  graphRef: MutableRefObject<any>;
-  graphDimensions: { width: number; height: number };
-  groupColor: (group: string) => string;
-  graphSelectedNodeId: string;
-  isSameWikiPagePath: (left: string, right: string) => boolean;
-  graphSearchHits: Set<string>;
-  resolveGraphNodePagePath: (node: Partial<KnowledgeGraphNode> | null | undefined) => string;
-  setActiveModule: (moduleId: ModuleId) => void;
   handleOpenWikiPage: (path: string) => void | Promise<void>;
-  handleGraphNodeClick: (node: object) => void;
-  graphSearchableNodes: Array<{ id: string; label: string; group?: string }>;
-  graphSelectedAggregateId: string;
-  setGraphAggregateMode: Dispatch<SetStateAction<boolean>>;
-  handleGraphViewModeChange: (mode: GraphViewMode) => void;
-  GRAPH_LOCAL_DEPTH_MIN: number;
-  GRAPH_LOCAL_DEPTH_MAX: number;
-  handleGraphLocalDepthChange: (depth: number) => void;
-  handleGraphLocalDirectionChange: (direction: string) => void;
-  handleGraphZoomToFit: () => void;
-  handleToggleGraphLayoutFreeze: () => void;
-  handleExportGraphJson: () => void;
-  handleResetGraphFilters: () => void;
-  handleGraphInsightSparseDensityChange: (value: number) => void;
-  graphInsightSparseDensity: number;
-  GRAPH_INSIGHT_SPARSE_DENSITY_MIN: number;
-  GRAPH_INSIGHT_SPARSE_DENSITY_MAX: number;
-  handleGraphInsightBridgeMinGroupsChange: (value: number) => void;
-  graphInsightBridgeMinGroups: number;
-  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MIN: number;
-  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MAX: number;
-  handleGraphInsightSurprisingJaccardChange: (value: number) => void;
-  graphInsightSurprisingJaccard: number;
-  GRAPH_INSIGHT_SURPRISING_JACCARD_MIN: number;
-  GRAPH_INSIGHT_SURPRISING_JACCARD_MAX: number;
-  handleGraphInsightSurprisingConfidenceChange: (value: number) => void;
-  graphInsightSurprisingConfidence: number;
-  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MIN: number;
-  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MAX: number;
-  graphInsights: GraphInsightItem[];
-  handleApplyGraphInsight: (insight: GraphInsightItem) => void;
-  graphSelectedAggregateNode: { id: string; label: string } | null;
-  graphSelectedAggregateMembers: Array<{ id: string; label: string; group?: string }>;
-  handleExpandSelectedAggregateNode: () => void;
-  handleExitAggregateMode: () => void;
-  handleOpenAggregateMemberPage: (path: string) => void | Promise<void>;
-  handleOpenSelectedGraphNode: () => void | Promise<void>;
-  graphSelectedNeighbors: Array<{ id: string; label: string; group?: string }>;
 };
 
-export default function GraphModule({
-  ForceGraph2D,
-  GraphErrorBoundary,
-  graphInsightKindLabels,
-  graphViewMode,
-  graphSearchInputRef,
-  graphSearchQuery,
-  setGraphSearchQuery,
-  graphGroupFilter,
-  setGraphGroupFilter,
-  graphGroupOptions,
-  graphLocalDepth,
-  graphSelectedNode,
-  graphLocalDirection,
-  graphShowOrphans,
-  setGraphShowOrphans,
-  graphNeighborOnly,
-  setGraphNeighborOnly,
-  graphVisibleData,
-  graphLayoutFrozen,
-  graphRenderData,
-  graphAggregateMode,
-  GRAPH_AGGREGATE_THRESHOLD,
-  graphLocalSubgraphTruncated,
-  graphNodes,
-  graphNormalizedLinks,
-  graphVisibleOrphanCount,
-  graphMetrics,
-  graphShouldUseBackendSubgraph,
-  graphLocalSubgraphLoading,
-  graphLocalSubgraphError,
-  graphContainerRef,
-  graphLoading,
-  graphError,
-  graphData,
-  graphRef,
-  graphDimensions,
-  groupColor,
-  graphSelectedNodeId,
-  isSameWikiPagePath,
-  graphSearchHits,
-  resolveGraphNodePagePath,
-  setActiveModule,
-  handleOpenWikiPage,
-  handleGraphNodeClick,
-  graphSearchableNodes,
-  graphSelectedAggregateId,
-  setGraphAggregateMode,
-  handleGraphViewModeChange,
-  GRAPH_LOCAL_DEPTH_MIN,
-  GRAPH_LOCAL_DEPTH_MAX,
-  handleGraphLocalDepthChange,
-  handleGraphLocalDirectionChange,
-  handleGraphZoomToFit,
-  handleToggleGraphLayoutFreeze,
-  handleExportGraphJson,
-  handleResetGraphFilters,
-  handleGraphInsightSparseDensityChange,
-  graphInsightSparseDensity,
-  GRAPH_INSIGHT_SPARSE_DENSITY_MIN,
-  GRAPH_INSIGHT_SPARSE_DENSITY_MAX,
-  handleGraphInsightBridgeMinGroupsChange,
-  graphInsightBridgeMinGroups,
-  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MIN,
-  GRAPH_INSIGHT_BRIDGE_MIN_GROUPS_MAX,
-  handleGraphInsightSurprisingJaccardChange,
-  graphInsightSurprisingJaccard,
-  GRAPH_INSIGHT_SURPRISING_JACCARD_MIN,
-  GRAPH_INSIGHT_SURPRISING_JACCARD_MAX,
-  handleGraphInsightSurprisingConfidenceChange,
-  graphInsightSurprisingConfidence,
-  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MIN,
-  GRAPH_INSIGHT_SURPRISING_CONFIDENCE_MAX,
-  graphInsights,
-  handleApplyGraphInsight,
-  graphSelectedAggregateNode,
-  graphSelectedAggregateMembers,
-  handleExpandSelectedAggregateNode,
-  handleExitAggregateMode,
-  handleOpenAggregateMemberPage,
-  handleOpenSelectedGraphNode,
-  graphSelectedNeighbors,
-}: GraphModuleProps) {
+// ─── GraphModule ──────────────────────────────────────────────────────────────
+
+export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
+  const { activeModule, navigateTo: setActiveModule } = useMode();
+  const { setStatusMessage } = useToast();
+
+  // ── State ──────────────────────────────────────────────────────────────────
+
+  const [graphEmbeddingSim, setGraphEmbeddingSim] = useState<Record<string, number> | undefined>(undefined);
+  const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState("");
+  const [graphLocalSubgraphData, setGraphLocalSubgraphData] = useState<KnowledgeGraphData | null>(null);
+  const [graphLocalSubgraphLoading, setGraphLocalSubgraphLoading] = useState(false);
+  const [graphLocalSubgraphError, setGraphLocalSubgraphError] = useState("");
+  const [graphLocalSubgraphTruncated, setGraphLocalSubgraphTruncated] = useState(false);
+  const [graphSelectedNodeId, setGraphSelectedNodeId] = useState("");
+  const [graphSelectedAggregateId, setGraphSelectedAggregateId] = useState("");
+  const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>(() => readGraphViewModeFromStorage());
+  const [graphLocalDepth, setGraphLocalDepth] = useState(() => readGraphLocalDepthFromStorage());
+  const [graphLocalDirection, setGraphLocalDirection] = useState<GraphTraversalDirection>(
+    () => readGraphLocalDirectionFromStorage(),
+  );
+  const [graphInsightSparseDensity, setGraphInsightSparseDensity] = useState(() =>
+    readGraphInsightSparseDensityFromStorage(),
+  );
+  const [graphInsightBridgeMinGroups, setGraphInsightBridgeMinGroups] = useState(() =>
+    readGraphInsightBridgeMinGroupsFromStorage(),
+  );
+  const [graphInsightSurprisingJaccard, setGraphInsightSurprisingJaccard] = useState(() =>
+    readGraphInsightSurprisingJaccardFromStorage(),
+  );
+  const [graphInsightSurprisingConfidence, setGraphInsightSurprisingConfidence] = useState(() =>
+    readGraphInsightSurprisingConfidenceFromStorage(),
+  );
+  const [graphGroupFilter, setGraphGroupFilter] = useState("__all__");
+  const [graphShowOrphans, setGraphShowOrphans] = useState(true);
+  const [graphNeighborOnly, setGraphNeighborOnly] = useState(false);
+  const [graphLayoutFrozen, setGraphLayoutFrozen] = useState(false);
+  const [graphSearchQuery, setGraphSearchQuery] = useState("");
+  const [graphDimensions, setGraphDimensions] = useState({ width: 800, height: 600 });
+  const [graphAggregateMode, setGraphAggregateMode] = useState(false);
+
+  const graphContainerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<any>(null);
+  const graphSearchInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Data loading ───────────────────────────────────────────────────────────
+
+  async function refreshGraphData() {
+    if (activeModule !== "graph") return;
+    setGraphLoading(true);
+    setGraphError("");
+    try {
+      const data = await getKnowledgeGraph();
+      setGraphData(data);
+    } catch (err) {
+      console.error("图谱加载失败:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setGraphData(null);
+      setGraphError(`图谱加载失败：${message}`);
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+  // Reload graph when switching to this module
+  useEffect(() => {
+    void refreshGraphData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeModule]);
+
+  // ── Derived state ──────────────────────────────────────────────────────────
+
+  const graphNodes = graphData?.nodes ?? [];
+
+  const graphNodeById = useMemo(() => {
+    const map = new Map<string, KnowledgeGraphNode>();
+    for (const node of graphNodes) {
+      map.set(node.id, node);
+    }
+    return map;
+  }, [graphNodes]);
+
+  const graphNormalizedLinks = useMemo(() => {
+    if (!graphData) return [] as Array<{ sourceId: string; targetId: string }>;
+    const normalized: Array<{ sourceId: string; targetId: string }> = [];
+    for (const link of graphData.links ?? []) {
+      const edge = link as KnowledgeGraphLink;
+      const sourceId = resolveGraphLinkNodeId(
+        edge.source as string | KnowledgeGraphNode | null | undefined,
+      );
+      const targetId = resolveGraphLinkNodeId(
+        edge.target as string | KnowledgeGraphNode | null | undefined,
+      );
+      if (!sourceId || !targetId) continue;
+      normalized.push({ sourceId, targetId });
+    }
+    return normalized;
+  }, [graphData]);
+
+  const graphMetrics = useMemo<GraphMetrics>(() => {
+    const inDegree = new Map<string, number>();
+    const outDegree = new Map<string, number>();
+    const totalDegree = new Map<string, number>();
+    const adjacency = new Map<string, Set<string>>();
+
+    for (const node of graphNodes) {
+      inDegree.set(node.id, 0);
+      outDegree.set(node.id, 0);
+      totalDegree.set(node.id, 0);
+      adjacency.set(node.id, new Set());
+    }
+
+    for (const edge of graphNormalizedLinks) {
+      outDegree.set(edge.sourceId, (outDegree.get(edge.sourceId) ?? 0) + 1);
+      inDegree.set(edge.targetId, (inDegree.get(edge.targetId) ?? 0) + 1);
+      totalDegree.set(edge.sourceId, (totalDegree.get(edge.sourceId) ?? 0) + 1);
+      totalDegree.set(edge.targetId, (totalDegree.get(edge.targetId) ?? 0) + 1);
+
+      if (!adjacency.has(edge.sourceId)) adjacency.set(edge.sourceId, new Set());
+      if (!adjacency.has(edge.targetId)) adjacency.set(edge.targetId, new Set());
+      adjacency.get(edge.sourceId)?.add(edge.targetId);
+      adjacency.get(edge.targetId)?.add(edge.sourceId);
+    }
+
+    const orphanCount = graphNodes.filter((node) => (totalDegree.get(node.id) ?? 0) === 0).length;
+    return { inDegree, outDegree, totalDegree, adjacency, orphanCount };
+  }, [graphNodes, graphNormalizedLinks]);
+
+  const graphGroupOptions = useMemo(() => {
+    const groups = new Set<string>();
+    for (const node of graphNodes) {
+      const group = node.group?.trim() ?? "";
+      if (group) groups.add(group);
+    }
+    return Array.from(groups).sort((l, r) => l.localeCompare(r, "zh-CN"));
+  }, [graphNodes]);
+
+  const graphShouldUseBackendSubgraph = useMemo(
+    () =>
+      shouldUseBackendSubgraph({
+        viewMode: graphViewMode,
+        selectedNodeId: graphSelectedNodeId,
+        totalNodes: graphNodes.length,
+        totalLinks: graphNormalizedLinks.length,
+      }),
+    [graphNormalizedLinks, graphNodes.length, graphSelectedNodeId, graphViewMode],
+  );
+
+  const graphVisibleData = useMemo<KnowledgeGraphData | null>(() => {
+    if (!graphData) return null;
+    const baseVisible = buildGraphVisibleData({
+      nodes: graphNodes,
+      edges: graphNormalizedLinks,
+      totalDegree: graphMetrics.totalDegree,
+      groupFilter: graphGroupFilter,
+      showOrphans: graphShowOrphans,
+      neighborOnly: graphNeighborOnly,
+      selectedNodeId: graphSelectedNodeId,
+    });
+    if (graphViewMode === "local" && graphShouldUseBackendSubgraph && graphLocalSubgraphData) {
+      return buildGraphVisibleData({
+        nodes: graphLocalSubgraphData.nodes,
+        edges: graphLocalSubgraphData.links
+          .map((link) => ({
+            sourceId: resolveGraphLinkNodeId(link.source as string | KnowledgeGraphNode | null | undefined),
+            targetId: resolveGraphLinkNodeId(link.target as string | KnowledgeGraphNode | null | undefined),
+          }))
+          .filter((edge) => edge.sourceId && edge.targetId),
+        totalDegree: graphMetrics.totalDegree,
+        groupFilter: graphGroupFilter,
+        showOrphans: graphShowOrphans,
+        neighborOnly: graphNeighborOnly,
+        selectedNodeId: graphSelectedNodeId,
+      });
+    }
+    if (graphViewMode === "local") {
+      return buildGraphLocalData({
+        nodes: baseVisible.nodes,
+        edges: baseVisible.links
+          .map((link) => ({
+            sourceId: resolveGraphLinkNodeId(link.source as string | KnowledgeGraphNode | null | undefined),
+            targetId: resolveGraphLinkNodeId(link.target as string | KnowledgeGraphNode | null | undefined),
+          }))
+          .filter((edge) => edge.sourceId && edge.targetId),
+        selectedNodeId: graphSelectedNodeId,
+        maxDepth: graphLocalDepth,
+        direction: graphLocalDirection,
+      });
+    }
+    return baseVisible;
+  }, [
+    graphData,
+    graphGroupFilter,
+    graphLocalDepth,
+    graphLocalDirection,
+    graphLocalSubgraphData,
+    graphMetrics.totalDegree,
+    graphNeighborOnly,
+    graphNodes,
+    graphNormalizedLinks,
+    graphSelectedNodeId,
+    graphShouldUseBackendSubgraph,
+    graphViewMode,
+    graphShowOrphans,
+  ]);
+
+  const graphSelectedNode = useMemo(() => {
+    if (!graphSelectedNodeId) return null;
+    return graphNodeById.get(graphSelectedNodeId) ?? null;
+  }, [graphNodeById, graphSelectedNodeId]);
+
+  const graphSelectedNeighbors = useMemo(() => {
+    if (!graphSelectedNode) return [] as KnowledgeGraphNode[];
+    const adjacency = graphMetrics.adjacency.get(graphSelectedNode.id);
+    if (!adjacency || adjacency.size === 0) return [] as KnowledgeGraphNode[];
+    return Array.from(adjacency)
+      .map((neighborId) => graphNodeById.get(neighborId))
+      .filter((node): node is KnowledgeGraphNode => Boolean(node))
+      .sort((l, r) => l.label.localeCompare(r.label, "zh-CN"));
+  }, [graphMetrics.adjacency, graphNodeById, graphSelectedNode]);
+
+  const graphVisibleOrphanCount = useMemo(() => {
+    if (!graphVisibleData) return 0;
+    return graphVisibleData.nodes.filter((node) => (graphMetrics.totalDegree.get(node.id) ?? 0) === 0).length;
+  }, [graphMetrics.totalDegree, graphVisibleData]);
+
+  const aggregatedGraphData = useMemo<{
+    nodes: AggregatedNode[];
+    links: AggregatedEdge[];
+  } | null>(() => {
+    if (!graphAggregateMode || !graphVisibleData) return null;
+    if (graphVisibleData.nodes.length <= GRAPH_AGGREGATE_THRESHOLD) return null;
+    const normalizedForAgg: GraphNormalizedEdge[] = graphVisibleData.links.map((link) => {
+      const srcId = typeof link.source === "string" ? link.source : (link.source as KnowledgeGraphNode).id;
+      const tgtId = typeof link.target === "string" ? link.target : (link.target as KnowledgeGraphNode).id;
+      return { sourceId: srcId, targetId: tgtId };
+    });
+    return buildAggregatedGraphData(graphVisibleData.nodes, normalizedForAgg);
+  }, [graphAggregateMode, graphVisibleData]);
+
+  const graphRenderData = useMemo<{
+    nodes: Array<KnowledgeGraphNode | AggregatedNode>;
+    links: Array<KnowledgeGraphLink | AggregatedEdge>;
+  } | null>(() => {
+    if (!graphVisibleData) return null;
+    if (aggregatedGraphData) {
+      return { nodes: aggregatedGraphData.nodes, links: aggregatedGraphData.links };
+    }
+    return graphVisibleData;
+  }, [aggregatedGraphData, graphVisibleData]);
+
+  const graphSearchableNodes = useMemo<Array<KnowledgeGraphNode | AggregatedNode>>(() => {
+    if (!graphRenderData) return [];
+    return graphRenderData.nodes;
+  }, [graphRenderData]);
+
+  const graphSelectedAggregateNode = useMemo(() => {
+    if (!graphSelectedAggregateId || !aggregatedGraphData) return null;
+    return (
+      aggregatedGraphData.nodes.find(
+        (node) => node.isAggregate && node.id === graphSelectedAggregateId,
+      ) ?? null
+    );
+  }, [aggregatedGraphData, graphSelectedAggregateId]);
+
+  const graphSelectedAggregateMembers = useMemo(() => {
+    if (!graphSelectedAggregateNode || !graphVisibleData) return [] as KnowledgeGraphNode[];
+    return graphVisibleData.nodes
+      .filter((node) => (node.group ?? "") === graphSelectedAggregateNode.id)
+      .sort((l, r) => l.label.localeCompare(r.label, "zh-CN"));
+  }, [graphSelectedAggregateNode, graphVisibleData]);
+
+  const graphSearchHits = useMemo(() => {
+    const query = graphSearchQuery.trim().toLowerCase();
+    if (!query) return new Set<string>();
+    const hits = new Set<string>();
+    for (const node of graphSearchableNodes) {
+      if (
+        (node.label || "").toLowerCase().includes(query) ||
+        (node.id || "").toLowerCase().includes(query)
+      ) {
+        hits.add(node.id);
+      }
+    }
+    return hits;
+  }, [graphSearchQuery, graphSearchableNodes]);
+
+  const graphVisibleNormalizedEdges = useMemo<GraphNormalizedEdge[]>(() => {
+    if (!graphVisibleData) return [];
+    return graphVisibleData.links
+      .map((link) => ({
+        sourceId: resolveGraphLinkNodeId(link.source as string | KnowledgeGraphNode | null | undefined),
+        targetId: resolveGraphLinkNodeId(link.target as string | KnowledgeGraphNode | null | undefined),
+      }))
+      .filter((edge) => edge.sourceId && edge.targetId);
+  }, [graphVisibleData]);
+
+  const graphInsightConfig = useMemo<GraphInsightConfig>(
+    () => ({
+      ...DEFAULT_GRAPH_INSIGHT_CONFIG,
+      sparseDensityThreshold: clampGraphInsightSparseDensity(graphInsightSparseDensity),
+      bridgeMinGroups: clampGraphInsightBridgeMinGroups(graphInsightBridgeMinGroups),
+      surprisingMaxJaccard: clampGraphInsightSurprisingJaccard(graphInsightSurprisingJaccard),
+      surprisingMinConfidence: clampGraphInsightSurprisingConfidence(graphInsightSurprisingConfidence),
+    }),
+    [
+      graphInsightBridgeMinGroups,
+      graphInsightSparseDensity,
+      graphInsightSurprisingConfidence,
+      graphInsightSurprisingJaccard,
+    ],
+  );
+
+  const graphInsights = useMemo<GraphInsightItem[]>(() => {
+    if (!graphVisibleData) return [];
+    return buildGraphInsights(graphVisibleData.nodes, graphVisibleNormalizedEdges, 8, graphInsightConfig, graphEmbeddingSim);
+  }, [graphEmbeddingSim, graphInsightConfig, graphVisibleData, graphVisibleNormalizedEdges]);
+
+  // ── Effects ────────────────────────────────────────────────────────────────
+
+  // Backend subgraph for large local graphs
+  useEffect(() => {
+    if (
+      activeModule !== "graph" ||
+      !graphShouldUseBackendSubgraph ||
+      !graphSelectedNodeId ||
+      graphViewMode !== "local"
+    ) {
+      setGraphLocalSubgraphData(null);
+      setGraphLocalSubgraphLoading(false);
+      setGraphLocalSubgraphError("");
+      setGraphLocalSubgraphTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setGraphLocalSubgraphLoading(true);
+      setGraphLocalSubgraphError("");
+      try {
+        const subgraph = await getKnowledgeSubgraph({
+          centerPagePath: graphSelectedNodeId,
+          hop: graphLocalDepth,
+          direction: graphLocalDirection,
+          limitNodes: GRAPH_LOCAL_BACKEND_MAX_NODES,
+          limitLinks: GRAPH_LOCAL_BACKEND_MAX_LINKS,
+        });
+        if (cancelled) return;
+        if (!subgraph) {
+          setGraphLocalSubgraphData(null);
+          setGraphLocalSubgraphTruncated(false);
+          setGraphLocalSubgraphError("后端未返回子图数据，已回退前端计算。");
+          return;
+        }
+        setGraphLocalSubgraphData({ nodes: subgraph.nodes, links: subgraph.links });
+        setGraphLocalSubgraphTruncated(Boolean(subgraph.meta?.truncated));
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setGraphLocalSubgraphData(null);
+        setGraphLocalSubgraphTruncated(false);
+        setGraphLocalSubgraphError(`后端子图计算失败：${message}。已回退前端计算。`);
+      } finally {
+        if (!cancelled) setGraphLocalSubgraphLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [
+    activeModule,
+    graphLocalDepth,
+    graphLocalDirection,
+    graphSelectedNodeId,
+    graphShouldUseBackendSubgraph,
+    graphViewMode,
+  ]);
+
+  // Container resize observer
+  useEffect(() => {
+    const updateSize = () => {
+      if (graphContainerRef.current) {
+        setGraphDimensions({
+          width: graphContainerRef.current.clientWidth || 800,
+          height: graphContainerRef.current.clientHeight || 600,
+        });
+      }
+    };
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, [activeModule]);
+
+  // Deselect node if it disappears from visible data
+  useEffect(() => {
+    if (!graphSelectedNodeId || !graphVisibleData) return;
+    const exists = graphVisibleData.nodes.some((node) =>
+      isSameWikiPagePath(node.id, graphSelectedNodeId),
+    );
+    if (!exists) {
+      setGraphSelectedNodeId("");
+      setGraphNeighborOnly(false);
+    }
+  }, [graphSelectedNodeId, graphVisibleData]);
+
+  // Reset group filter if group disappears
+  useEffect(() => {
+    if (graphGroupFilter === "__all__" || graphGroupFilter === "__ungrouped__") return;
+    if (!graphGroupOptions.includes(graphGroupFilter)) {
+      setGraphGroupFilter("__all__");
+    }
+  }, [graphGroupFilter, graphGroupOptions]);
+
+  // Persist view settings to localStorage
+  useEffect(() => { writeGraphViewModeToStorage(graphViewMode); }, [graphViewMode]);
+  useEffect(() => { writeGraphLocalDepthToStorage(graphLocalDepth); }, [graphLocalDepth]);
+  useEffect(() => { writeGraphLocalDirectionToStorage(graphLocalDirection); }, [graphLocalDirection]);
+  useEffect(() => { writeGraphInsightSparseDensityToStorage(graphInsightSparseDensity); }, [graphInsightSparseDensity]);
+  useEffect(() => { writeGraphInsightBridgeMinGroupsToStorage(graphInsightBridgeMinGroups); }, [graphInsightBridgeMinGroups]);
+  useEffect(() => { writeGraphInsightSurprisingJaccardToStorage(graphInsightSurprisingJaccard); }, [graphInsightSurprisingJaccard]);
+  useEffect(() => { writeGraphInsightSurprisingConfidenceToStorage(graphInsightSurprisingConfidence); }, [graphInsightSurprisingConfidence]);
+
+  // Ctrl+F to focus search box when graph tab is active
+  useEffect(() => {
+    if (activeModule !== "graph") return;
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        graphSearchInputRef.current?.focus();
+        graphSearchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeModule]);
+
+  // Auto-disable aggregate mode when node count drops below threshold
+  useEffect(() => {
+    if ((graphVisibleData?.nodes.length ?? 0) <= GRAPH_AGGREGATE_THRESHOLD && graphAggregateMode) {
+      setGraphAggregateMode(false);
+    }
+  }, [graphAggregateMode, graphVisibleData?.nodes.length]);
+
+  // Clear aggregate selection when aggregate mode is off or the node disappears
+  useEffect(() => {
+    if (!graphAggregateMode) {
+      if (graphSelectedAggregateId) setGraphSelectedAggregateId("");
+      return;
+    }
+    if (!graphSelectedAggregateId || !aggregatedGraphData) return;
+    const exists = aggregatedGraphData.nodes.some(
+      (node) => node.isAggregate && node.id === graphSelectedAggregateId,
+    );
+    if (!exists) setGraphSelectedAggregateId("");
+  }, [aggregatedGraphData, graphAggregateMode, graphSelectedAggregateId]);
+
+  // Layout freeze / unfreeze effect
+  useEffect(() => {
+    if (!graphRef.current) return;
+    if (graphLayoutFrozen) {
+      graphRef.current.pauseAnimation?.();
+      return;
+    }
+    graphRef.current.resumeAnimation?.();
+    graphRef.current.d3ReheatSimulation?.();
+  }, [graphLayoutFrozen, graphRenderData?.links.length, graphRenderData?.nodes.length]);
+
+  // Async embedding similarity (silent degradation)
+  useEffect(() => {
+    if (!graphVisibleData) return;
+    const paths = graphVisibleData.nodes.map((n) => n.id);
+    if (paths.length === 0) return;
+    let cancelled = false;
+    getPageEmbeddingPairs(paths)
+      .then((result) => {
+        if (!cancelled) {
+          setGraphEmbeddingSim(Object.keys(result).length > 0 ? result : undefined);
+        }
+      })
+      .catch(() => {
+        // Silent degradation: keep lexical distance when embeddings unavailable
+      });
+    return () => { cancelled = true; };
+  }, [graphVisibleData]);
+
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  const handleGraphNodeClick = (node: object) => {
+    const graphNode = node as any;
+    if (graphNode?.isAggregate) {
+      setGraphSelectedNodeId("");
+      setGraphSelectedAggregateId(graphNode.id);
+      setGraphNeighborOnly(false);
+      setStatusMessage(`已选中聚合节点「${graphNode.label || graphNode.id}」，可在右侧展开成员页。`);
+      return;
+    }
+    const pagePath = resolveGraphNodePagePath(graphNode);
+    if (!pagePath) {
+      setStatusMessage("图谱节点数据异常，无法选中。");
+      return;
+    }
+    setGraphSelectedNodeId(pagePath);
+    setGraphSelectedAggregateId("");
+    if (graphRef.current && typeof graphNode.x === "number" && typeof graphNode.y === "number") {
+      graphRef.current.centerAt(graphNode.x, graphNode.y, 400);
+      graphRef.current.zoom(2.0, 400);
+    }
+  };
+
+  const handleExportGraphJson = () => {
+    if (!graphRenderData) return;
+    const normalizedPayload = {
+      exported_at: new Date().toISOString(),
+      view_mode: graphViewMode,
+      aggregate_mode: Boolean(aggregatedGraphData),
+      nodes: graphRenderData.nodes.map((node) => {
+        const n = node as KnowledgeGraphNode & AggregatedNode;
+        return {
+          id: n.id,
+          label: n.label,
+          group: n.group ?? "",
+          is_aggregate: Boolean(n.isAggregate),
+          count: n.isAggregate ? (n.count ?? 1) : 1,
+        };
+      }),
+      links: graphRenderData.links
+        .map((link) => {
+          const edge = link as KnowledgeGraphLink & AggregatedEdge;
+          const sourceId = resolveGraphLinkNodeId(edge.source as string | KnowledgeGraphNode | null | undefined);
+          const targetId = resolveGraphLinkNodeId(edge.target as string | KnowledgeGraphNode | null | undefined);
+          if (!sourceId || !targetId) return null;
+          return { source: sourceId, target: targetId, weight: edge.weight ?? 1 };
+        })
+        .filter((edge): edge is { source: string; target: string; weight: number } => Boolean(edge)),
+    };
+    const json = JSON.stringify(normalizedPayload, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `llm-wiki-graph-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleOpenSelectedGraphNode = async () => {
+    if (!graphSelectedNode) return;
+    setActiveModule("wiki" as ModuleId);
+    await handleOpenWikiPage(graphSelectedNode.id);
+  };
+
+  const handleOpenAggregateMemberPage = async (memberPath: string) => {
+    if (!memberPath.trim()) return;
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+    setGraphSelectedNodeId(memberPath);
+    setActiveModule("wiki" as ModuleId);
+    await handleOpenWikiPage(memberPath);
+  };
+
+  const handleExpandSelectedAggregateNode = () => {
+    if (!graphSelectedAggregateNode) return;
+    const targetGroup = graphSelectedAggregateNode.id;
+    const nextSelected = graphSelectedAggregateMembers[0]?.id ?? "";
+    setGraphAggregateMode(false);
+    setGraphGroupFilter(targetGroup);
+    setGraphNeighborOnly(false);
+    setGraphSelectedAggregateId("");
+    if (nextSelected) {
+      setGraphSelectedNodeId(nextSelected);
+      setStatusMessage(`已切回明细模式，分组「${targetGroup}」包含 ${graphSelectedAggregateMembers.length} 个页面。`);
+    } else {
+      setStatusMessage(`已切回明细模式，但分组「${targetGroup}」暂无可展示页面。`);
+    }
+  };
+
+  const handleExitAggregateMode = () => {
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+    setStatusMessage("已切回明细模式。");
+  };
+
+  const handleApplyGraphInsight = (insight: GraphInsightItem) => {
+    if (insight.group) setGraphGroupFilter(insight.group);
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+    setGraphSearchQuery("");
+    if (insight.nodeIds.length === 0) {
+      setStatusMessage(`已定位洞察：${insight.title}`);
+      return;
+    }
+    const targetNodeId = insight.nodeIds[0];
+    setGraphSelectedNodeId(targetNodeId);
+    setGraphNeighborOnly(insight.kind === "bridge-node" || insight.kind === "surprising-link");
+    if (insight.kind === "surprising-link" && insight.nodeIds.length > 1) {
+      const pairedNodeId = insight.nodeIds[1];
+      const pairedLabel = graphNodeById.get(pairedNodeId)?.label || resolveGraphNodeLeafName(pairedNodeId);
+      setStatusMessage(`已定位洞察：${insight.title}（配对节点：${pairedLabel}）`);
+      return;
+    }
+    setStatusMessage(`已定位洞察：${insight.title}`);
+  };
+
+  const handleGraphZoomToFit = () => {
+    graphRef.current?.zoomToFit?.(350, 40);
+  };
+
+  const handleGraphViewModeChange = (mode: GraphViewMode) => {
+    setGraphViewMode(mode);
+    if (mode === "global") return;
+    if (!graphSelectedNodeId) {
+      setStatusMessage("已切换为 Local 图模式，请先点击一个节点作为中心。");
+    }
+  };
+
+  const handleGraphLocalDepthChange = (value: number) => {
+    setGraphLocalDepth(clampGraphLocalDepth(value));
+  };
+
+  const handleGraphLocalDirectionChange = (value: string) => {
+    if (!isGraphTraversalDirection(value)) return;
+    setGraphLocalDirection(value);
+  };
+
+  const handleGraphInsightSparseDensityChange = (value: number) => {
+    setGraphInsightSparseDensity(clampGraphInsightSparseDensity(value));
+  };
+
+  const handleGraphInsightBridgeMinGroupsChange = (value: number) => {
+    setGraphInsightBridgeMinGroups(clampGraphInsightBridgeMinGroups(value));
+  };
+
+  const handleGraphInsightSurprisingJaccardChange = (value: number) => {
+    setGraphInsightSurprisingJaccard(clampGraphInsightSurprisingJaccard(value));
+  };
+
+  const handleGraphInsightSurprisingConfidenceChange = (value: number) => {
+    setGraphInsightSurprisingConfidence(clampGraphInsightSurprisingConfidence(value));
+  };
+
+  const handleToggleGraphLayoutFreeze = () => {
+    setGraphLayoutFrozen((prev) => !prev);
+  };
+
+  const handleResetGraphFilters = () => {
+    setGraphViewMode("global");
+    setGraphLocalDepth(1);
+    setGraphLocalDirection("both");
+    setGraphLocalSubgraphData(null);
+    setGraphLocalSubgraphLoading(false);
+    setGraphLocalSubgraphError("");
+    setGraphLocalSubgraphTruncated(false);
+    setGraphGroupFilter("__all__");
+    setGraphShowOrphans(true);
+    setGraphNeighborOnly(false);
+    setGraphInsightSparseDensity(DEFAULT_GRAPH_INSIGHT_CONFIG.sparseDensityThreshold);
+    setGraphInsightBridgeMinGroups(DEFAULT_GRAPH_INSIGHT_CONFIG.bridgeMinGroups);
+    setGraphInsightSurprisingJaccard(DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMaxJaccard);
+    setGraphInsightSurprisingConfidence(DEFAULT_GRAPH_INSIGHT_CONFIG.surprisingMinConfidence);
+    setGraphLayoutFrozen(false);
+    setGraphAggregateMode(false);
+    setGraphSelectedAggregateId("");
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
     <>
       <div className="module-header">
@@ -459,7 +1087,7 @@ export default function GraphModule({
                       graphRef.current.__lastNodeClickId = n.id;
                       if (now - last < 400 && lastId === n.id && !n.isAggregate) {
                         const pagePath = resolveGraphNodePagePath(n);
-                        if (pagePath) { setActiveModule("wiki"); void handleOpenWikiPage(pagePath); }
+                        if (pagePath) { setActiveModule("wiki" as ModuleId); void handleOpenWikiPage(pagePath); }
                         return;
                       }
                       handleGraphNodeClick(node);
