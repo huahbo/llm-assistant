@@ -76,6 +76,12 @@
 - 验证：`cd web && npm run typecheck` ✅
 - 下一步：H7 Phase 2.8 `Research` 收口。
 
+### H7 Phase 2.8 Research 收口已完成
+- 新增 `web/src/modules/research/ResearchModule.tsx` 作为研究模块包装层，承接 `App.tsx` 的 research 分支。
+- `App.tsx` 移除 research 分支内联回调，改为复用 `handleOpenResearchWikiPage`，将 Research 入口保持在模块边界内。
+- 验证：`cd web && npm run typecheck` ✅
+- 下一步：H7 Phase 2.9.1 `Agent Studio` 骨架提取。
+
 ## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
 
 ### H7 App.tsx 拆分重构计划（架构设计稿出炉）

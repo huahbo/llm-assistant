@@ -3,7 +3,7 @@ import InboxModule from "./modules/inbox/InboxModule";
 import AskModule from "./modules/ask/AskModule";
 import LintModule from "./modules/lint/LintModule";
 import OperationsModule from "./modules/operations/OperationsModule";
-import ResearchPanel from "./modules/research/ResearchPanel";
+import ResearchModule from "./modules/research/ResearchModule";
 import SettingsModule from "./modules/settings/SettingsModule";
 import WikiModule from "./modules/wiki/WikiModule";
 import GraphModule from "./modules/graph/GraphModule";
@@ -8107,6 +8107,16 @@ export default function App() {
     }
   };
 
+  const handleOpenResearchWikiPage = (path: string) => {
+    fetchWikiPageDetail(path)
+      .then((detail) => {
+        if (detail) {
+          setActiveModule("wiki");
+        }
+      })
+      .catch(() => {});
+  };
+
   // 侧边栏按"核心 / 运行 / 系统"分组，运行与系统下沉到底。
   const navGroups: Array<{
     id: string;
@@ -8755,17 +8765,7 @@ export default function App() {
           )}
           {/* ---- Deep Research 模块 ---- */}
           {activeModule === "research" && (
-            <ResearchPanel
-              onOpenWikiPage={(path) => {
-                fetchWikiPageDetail(path)
-                  .then((detail) => {
-                    if (detail) {
-                      setActiveModule("wiki");
-                    }
-                  })
-                  .catch(() => {});
-              }}
-            />
+            <ResearchModule onOpenWikiPage={handleOpenResearchWikiPage} />
           )}
           {/* ---- Agent Studio 模块（B2：双栏对话 + 草稿审阅） ---- */}
           {activeModule === "agent" && (

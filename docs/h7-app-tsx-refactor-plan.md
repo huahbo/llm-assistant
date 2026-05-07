@@ -673,7 +673,7 @@ npm run dev
 - [x] 2.5 Wiki
 - [x] 2.6 Ask
 - [x] 2.7 Graph
-- [ ] 2.8 Research
+- [x] 2.8 Research
 - [ ] 2.9.1 Agent 骨架 + Memory
 - [ ] 2.9.2 Agent Skills
 - [ ] 2.9.3 Agent RunHistory
