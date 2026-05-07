@@ -13,11 +13,11 @@
 
 ## 本轮快讯（2026-05-07，Codex 接力）
 
-### H7 Phase 2.9.3 AgentRunHistory 已完成
-- 新增 `web/src/modules/agent/AgentRunHistory.tsx`，将 Agent 左侧“历史 Runs”卡片条从 `App.tsx` 抽离为独立组件。
-- `web/src/App.tsx` 已替换为 `<AgentRunHistory />` 接线，归档/恢复、状态展示与时间格式化行为保持不变。
+### H7 Phase 2.9.4 AgentToolsPane 已完成
+- 新增 `web/src/modules/agent/AgentToolsPane.tsx`，将 Agent 工具页（Shell 工作区、策略档位、快捷命令、历史与输入区）从 `App.tsx` 抽离为独立组件。
+- `web/src/App.tsx` 的 `agentRightTab === "tools"` 分支已替换为 `<AgentToolsPane />` 接线，行为保持不变。
 - 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.9.4 `AgentToolsPane`。
+- 下一步：H7 Phase 2.9.5 `AgentChatPane + AgentReviewPane`。
 
 ## 本轮快讯（2026-05-04，Codex 接力）
 

@@ -582,6 +582,8 @@ Commit: refactor(web): 抽取 AgentRunHistory（含归档管理）
 Commit: refactor(web): 抽取 AgentToolsPane（Shell 抽屉 + 档位）
 ```
 
+- 完成记录：`web/src/modules/agent/AgentToolsPane.tsx` 已新增，`App.tsx` tools 分支已替换为组件接线；Shell 策略档位、快捷命令、历史与输入行为保持不变，下一步进入 Step 2.9.5。
+
 ##### Step 2.9.5 — AgentChatPane + AgentReviewPane
 
 ```
@@ -681,7 +683,7 @@ npm run dev
 - [x] 2.9.1 Agent 骨架 + Memory
 - [x] 2.9.2 Agent Skills
 - [x] 2.9.3 Agent RunHistory
-- [ ] 2.9.4 Agent Tools
+- [x] 2.9.4 Agent Tools
 - [ ] 2.9.5 Agent Chat + Review
 - [ ] 2.9.6 Agent hooks（可选）
 
