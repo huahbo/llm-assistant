@@ -563,6 +563,8 @@ Commit: refactor(web): 抽取 Agent Studio 骨架 + AgentMemoryPanel
 Commit: refactor(web): 抽取 AgentSkillsPanel
 ```
 
+- 完成记录：`web/src/modules/agent/AgentSkillsPanel.tsx` 已新增，Agent 上下文技能区块已改为组件接线；行为保持不变，下一步进入 Step 2.9.3。
+
 ##### Step 2.9.3 — AgentRunHistory
 
 ```
@@ -675,7 +677,7 @@ npm run dev
 - [x] 2.7 Graph
 - [x] 2.8 Research
 - [x] 2.9.1 Agent 骨架 + Memory
-- [ ] 2.9.2 Agent Skills
+- [x] 2.9.2 Agent Skills
 - [ ] 2.9.3 Agent RunHistory
 - [ ] 2.9.4 Agent Tools
 - [ ] 2.9.5 Agent Chat + Review

@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, type KeyboardEvent as ReactKeyboardEvent, ty
 import InboxModule from "./modules/inbox/InboxModule";
 import AskModule from "./modules/ask/AskModule";
 import AgentMemoryPanel from "./modules/agent/AgentMemoryPanel";
+import AgentSkillsPanel from "./modules/agent/AgentSkillsPanel";
 import AgentStudio from "./modules/agent/AgentStudio";
 import LintModule from "./modules/lint/LintModule";
 import OperationsModule from "./modules/operations/OperationsModule";
@@ -8905,131 +8906,25 @@ export default function App() {
                             setMemoryValueInput={setAgentMemoryValueInput}
                             onUpsertMemory={handleUpsertAgentMemory}
                           />
-                          <section className="agent-studio__context-section">
-                            <button
-                              type="button"
-                              className="agent-studio__section-toggle"
-                              onClick={() => setAgentSkillPanelOpen((prev) => !prev)}
-                            >
-                              <span>{agentSkillPanelOpen ? "▼" : "▶"} 技能模板</span>
-                              <span className="agent-studio__section-meta">
-                                {agentSkills.length} 个
-                              </span>
-                            </button>
-                            {agentSkillPanelOpen ? (
-                              <div className="agent-studio__section-body">
-                                <div className="agent-studio__skills">
-                                  <div className="agent-studio__skills-head">
-                                    <div className="agent-studio__skills-head-main">
-                                      <select
-                                        className="dev-panel__input agent-studio__skill-active-select"
-                                        value={agentActiveSkillKey}
-                                        onChange={(event) => setAgentActiveSkillKey(event.target.value)}
-                                        disabled={agentSkillsLoading || agentSkills.length === 0}
-                                        title="选择本次生成生效的技能模板"
-                                      >
-                                        <option value="">不使用技能模板</option>
-                                        {agentSkills.map((skill) => (
-                                          <option key={`active-skill-${skill.id}`} value={skill.skill_key}>
-                                            {skill.skill_key} (v{skill.version})
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      className="agent-studio__memory-chip-add"
-                                      disabled={agentActionRunning || !isTauriRuntime()}
-                                      onClick={() => setAgentSkillComposerOpen((prev) => !prev)}
-                                    >
-                                      {agentSkillComposerOpen ? "收起" : "+ 新建"}
-                                    </button>
-                                  </div>
-                                  {agentSkillComposerOpen ? (
-                                    <div className="agent-studio__skill-form">
-                                      <input
-                                        type="text"
-                                        className="dev-panel__input"
-                                        placeholder="技能键（如：writer）"
-                                        value={agentSkillKeyInput}
-                                        onChange={(e) => setAgentSkillKeyInput(e.target.value)}
-                                      />
-                                      <textarea
-                                        className="dev-panel__input"
-                                        placeholder="模板提示词（将用于后续技能化编排）"
-                                        value={agentSkillPromptInput}
-                                        onChange={(e) => setAgentSkillPromptInput(e.target.value)}
-                                        rows={3}
-                                      />
-                                      <p className="agent-studio__skill-form-hint">
-                                        同名技能键会覆盖并递增版本；如需并存请使用不同技能键。
-                                      </p>
-                                      <button
-                                        type="button"
-                                        className="dev-panel__button"
-                                        disabled={
-                                          agentActionRunning
-                                          || !agentSkillKeyInput.trim()
-                                          || !agentSkillPromptInput.trim()
-                                          || !isTauriRuntime()
-                                        }
-                                        onClick={() => void handleUpsertAgentSkill()}
-                                      >
-                                        保存技能
-                                      </button>
-                                    </div>
-                                  ) : null}
-                                  {agentSkillsLoading ? (
-                                    <p className="agent-studio__empty">技能模板加载中...</p>
-                                  ) : agentSkills.length === 0 ? (
-                                    <p className="agent-studio__empty">暂无技能模板，可先创建 writer/reviewer 等角色提示。</p>
-                                  ) : (
-                                    <>
-                                      <p className="agent-studio__skill-active-hint">
-                                        当前生效：<strong>{agentActiveSkillKey || "不使用技能模板"}</strong>
-                                      </p>
-                                      <ul className="agent-studio__skill-list">
-                                      {agentSkills.map((skill) => (
-                                        <li
-                                          key={skill.id}
-                                          className={`agent-studio__skill-item${agentActiveSkillKey === skill.skill_key ? " agent-studio__skill-item--active" : ""}`}
-                                        >
-                                          <div className="agent-studio__skill-main">
-                                            <button
-                                              type="button"
-                                              className="agent-studio__skill-select"
-                                              onClick={() => setAgentActiveSkillKey(skill.skill_key)}
-                                            >
-                                              <strong>{skill.skill_key}</strong>
-                                              {agentActiveSkillKey === skill.skill_key ? (
-                                                <span className="agent-studio__skill-badge">生效中</span>
-                                              ) : null}
-                                            </button>
-                                            <span>v{skill.version}</span>
-                                          </div>
-                                          <p title={skill.prompt_template}>{skill.prompt_template}</p>
-                                          <div className="agent-studio__skill-actions">
-                                            <time dateTime={skill.updated_at}>
-                                              {formatLintCheckedAt(skill.updated_at)}
-                                            </time>
-                                            <button
-                                              type="button"
-                                              className="dev-panel__button"
-                                              disabled={agentActionRunning || !isTauriRuntime()}
-                                              onClick={() => void handleDeleteAgentSkill(skill.id, skill.skill_key)}
-                                            >
-                                              删除
-                                            </button>
-                                          </div>
-                                        </li>
-                                      ))}
-                                      </ul>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            ) : null}
-                          </section>
+                          <AgentSkillsPanel
+                            panelOpen={agentSkillPanelOpen}
+                            onTogglePanel={() => setAgentSkillPanelOpen((prev) => !prev)}
+                            skills={agentSkills}
+                            skillsLoading={agentSkillsLoading}
+                            actionRunning={agentActionRunning}
+                            isTauri={isTauriRuntime()}
+                            activeSkillKey={agentActiveSkillKey}
+                            setActiveSkillKey={setAgentActiveSkillKey}
+                            composerOpen={agentSkillComposerOpen}
+                            onToggleComposer={() => setAgentSkillComposerOpen((prev) => !prev)}
+                            skillKeyInput={agentSkillKeyInput}
+                            setSkillKeyInput={setAgentSkillKeyInput}
+                            skillPromptInput={agentSkillPromptInput}
+                            setSkillPromptInput={setAgentSkillPromptInput}
+                            onUpsertSkill={handleUpsertAgentSkill}
+                            onDeleteSkill={handleDeleteAgentSkill}
+                            formatTimestamp={formatLintCheckedAt}
+                          />
                         </div>
                       ) : null}
                     </div>
