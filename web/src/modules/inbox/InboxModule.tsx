@@ -30,7 +30,8 @@ import {
   setBackendMode,
   type OcrProvider,
 } from "../../tauri-client";
-import { formatPdfIngestErrorMessage, isOcrProvider, readOcrProviderFromStorage, writeOcrProviderToStorage, buildTemplateInitPreview, parseDroppedIngestPaths } from "../../App";
+import { formatPdfIngestErrorMessage, buildTemplateInitPreview, parseDroppedIngestPaths } from "../../ingest-utils";
+import { isOcrProvider, readOcrProviderFromStorage, writeOcrProviderToStorage } from "../../ask-utils";
 import { useToast } from "../../contexts/ToastContext";
 import { useMode } from "../../contexts/ModeContext";
 import { useVault } from "../../contexts/VaultContext";
@@ -45,7 +46,8 @@ import type {
   ModuleId,
   WikiTemplate,
 } from "../../types";
-import type { DropMode, TemplateInitPreview } from "../../App";
+import type { DropMode } from "../../ask-utils";
+import type { TemplateInitPreview } from "../../ingest-utils";
 
 // ---- local type aliases ----
 type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";

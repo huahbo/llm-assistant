@@ -39,8 +39,6 @@ import {
   filterAskSessions,
   formatAskHistoryCreatedAt,
   formatAskSessionSearchSnippet,
-  formatQueryAnswerStrategyLabel,
-  formatQuerySearchStrategyLabel,
   normalizeQueryHistoryItems,
   readQueryHistoryItemsFromStorage,
   readAskSearchDebugVisibleFromStorage,
@@ -50,7 +48,8 @@ import {
   buildAskSessionExportMarkdown,
   parseQueryProgressPayload,
   QUERY_HISTORY_MAX,
-} from "../../App";
+} from "../../ask-utils";
+import { formatQueryAnswerStrategyLabel, formatQuerySearchStrategyLabel } from "../../llm-utils";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 

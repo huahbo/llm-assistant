@@ -39,7 +39,6 @@ import {
   type GraphNormalizedEdge,
   type GraphTraversalDirection,
   type GraphViewMode,
-  isSameWikiPagePath,
   isGraphTraversalDirection,
   readGraphInsightBridgeMinGroupsFromStorage,
   readGraphInsightSparseDensityFromStorage,
@@ -57,7 +56,8 @@ import {
   writeGraphLocalDepthToStorage,
   writeGraphLocalDirectionToStorage,
   writeGraphViewModeToStorage,
-} from "../../App";
+} from "../../graph-utils";
+import { isSameWikiPagePath } from "../../wiki-utils";
 
 const graphInsightKindLabels: Record<GraphInsightKind, string> = {
   "isolated-node": "孤立页",

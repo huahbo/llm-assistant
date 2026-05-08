@@ -48,7 +48,7 @@ import {
   resolveWikiAutocompleteMatch,
   type WikiSortMode,
   type WikiTreeNode,
-} from "../../App";
+} from "../../wiki-utils";
 import type {
   NewPageResult,
   WikiPageDetail,

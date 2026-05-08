@@ -19,8 +19,8 @@ import {
   defaultCloudModel,
   defaultCloudProviderName,
   resolveNextActiveProvider,
-} from "../../App";
-import type { DropMode } from "../../App";
+} from "../../llm-utils";
+import type { DropMode } from "../../ask-utils";
 import type { LlmProviderConfig, ShellPolicyDecision } from "../../types";
 
 type CloudProviderPresetId = "deepseek" | "glm" | "minimax";
