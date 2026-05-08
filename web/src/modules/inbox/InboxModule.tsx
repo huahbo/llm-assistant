@@ -1,19 +1,54 @@
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { formatLogLevel } from "../../app-formatters";
 import { formatLintCheckedAt } from "../../lint-utils";
-import type { OcrProvider } from "../../tauri-client";
+import { formatBackendMode } from "../../app-formatters";
+import {
+  fetchDefaultPaths,
+  fetchOcrConfig,
+  saveOcrConfig,
+  getClipServerStatus,
+  get_outbox_events,
+  enqueueIngest,
+  previewIngestFile,
+  applyIngestPreview,
+  ingestFile,
+  initVault,
+  initVaultWithTemplate,
+  isTauriRuntime,
+  listenProgress,
+  pickFiles,
+  pickFolder,
+  pickSaveFile,
+  setBackendMode,
+  type OcrProvider,
+} from "../../tauri-client";
+import { formatPdfIngestErrorMessage, isOcrProvider, readOcrProviderFromStorage, writeOcrProviderToStorage, buildTemplateInitPreview, parseDroppedIngestPaths } from "../../App";
+import { useToast } from "../../contexts/ToastContext";
+import { useMode } from "../../contexts/ModeContext";
+import { useVault } from "../../contexts/VaultContext";
+import { mergeRecentVaultPaths } from "../../vault-utils";
+import { templates, getTemplate } from "../../templates";
 import type {
   AppOverview,
+  BackendAppMode,
+  IngestPreview,
   LogEntry,
   ModeId,
+  ModuleId,
   WikiTemplate,
 } from "../../types";
+import type { DropMode, TemplateInitPreview } from "../../App";
 
+// ---- local type aliases ----
 type DevAction = "init_vault" | "ingest_markdown" | "ingest_pdf" | "ingest_file" | "ingest_url";
-
-type TemplateInitPreview = {
-  dirs: string[];
-  files: string[];
-};
 
 type ModeOption = {
   id: ModeId;
@@ -21,109 +56,657 @@ type ModeOption = {
   isActive: boolean;
 };
 
-type InboxModuleProps = {
+// ---- constants ----
+const defaultVaultPath = "vault";
+const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
+const defaultIngestFilePath = "E:\\llm-wiki\\test.docx";
+const CLIP_SERVER_PORT = 19827;
+
+const ocrProviderLabels: Record<OcrProvider, string> = {
+  tesseract: "tesseract（本地默认）",
+  paddle: "paddle（高精度）",
+};
+
+const modeIdToBackendMode: Record<ModeId, BackendAppMode> = {
+  hybrid: "Hybrid",
+  "strict-local": "StrictLocal",
+};
+
+const backendModeToModeId: Record<BackendAppMode, ModeId> = {
+  Hybrid: "hybrid",
+  StrictLocal: "strict-local",
+};
+
+const modeIdLabels: Record<ModeId, string> = {
+  hybrid: "Hybrid（自由模式）",
+  "strict-local": "Strict Local（仅本地）",
+};
+
+const modeIdDescriptions: Record<ModeId, string> = {
+  hybrid: "允许本地与云 Provider 按任务路由，适合常规工作流。",
+  "strict-local": "只允许本地 Ollama，自动拦截云调用与外部模型请求。",
+};
+
+// ---- prop types ----
+export type InboxModuleProps = {
   overview: AppOverview | null;
   pagesCount: number;
-  ingesting: boolean;
-  supportedModesText: string;
-  currentModeLabel: string;
-  currentModeBadge: string;
-  currentModeDescription: string;
-  modeOptions: ModeOption[];
-  switchingMode: ModeId | null;
+  logs: LogEntry[];
+  dropMode: DropMode;
+  onRefreshAppData: () => Promise<void>;
+  navigateTo: (id: ModuleId) => void;
   llmAvailabilityText: string;
   llmModelText: string;
   llmAddressText: string;
   llmHintText: string;
-  isTauri: boolean;
-  onModeSelect: (modeId: ModeId) => void | Promise<void>;
-  vaultPath: string;
-  setVaultPath: (path: string) => void;
-  pickVaultFolder: () => void | Promise<void>;
-  selectedTemplateId: string;
-  setSelectedTemplateId: (id: string) => void;
-  templates: WikiTemplate[];
-  selectedTemplate: WikiTemplate;
-  templateInitPreview: TemplateInitPreview;
-  devAction: DevAction | null;
-  onDemoIngest: () => void | Promise<void>;
-  onInitVault: () => void | Promise<void>;
-  recentVaultPaths: string[];
-  clearRecentVaultPaths: () => void;
-  selectRecentVaultPath: (path: string) => void;
-  ingestUrlInput: string;
-  setIngestUrlInput: (value: string) => void;
-  onUrlIngest: () => void | Promise<void>;
-  queueEnqueueing: boolean;
-  enqueueUrl: (url: string) => void | Promise<void>;
-  ingestFilePickedPaths: string[];
-  ingestFilePath: string;
-  setIngestFilePath: (value: string) => void;
-  clearIngestFilePickedPaths: () => void;
-  pickIngestFiles: () => void | Promise<void>;
-  defaultIngestFilePath: string;
-  ingestFileOcrProvider: OcrProvider;
-  ocrProviderLabels: Record<OcrProvider, string>;
-  setIngestFileOcrProvider: (provider: OcrProvider) => void | Promise<void>;
-  onFileIngest: () => void | Promise<void>;
-  enqueueFiles: (paths: string[]) => void | Promise<void>;
-  clipServerOnline: boolean | null;
-  clipServerPort: number;
-  logs: LogEntry[];
 };
 
-export default function InboxModule({
-  overview,
-  pagesCount,
-  ingesting,
-  supportedModesText,
-  currentModeLabel,
-  currentModeBadge,
-  currentModeDescription,
-  modeOptions,
-  switchingMode,
-  llmAvailabilityText,
-  llmModelText,
-  llmAddressText,
-  llmHintText,
-  isTauri,
-  onModeSelect,
-  vaultPath,
-  setVaultPath,
-  pickVaultFolder,
-  selectedTemplateId,
-  setSelectedTemplateId,
-  templates,
-  selectedTemplate,
-  templateInitPreview,
-  devAction,
-  onDemoIngest,
-  onInitVault,
-  recentVaultPaths,
-  clearRecentVaultPaths,
-  selectRecentVaultPath,
-  ingestUrlInput,
-  setIngestUrlInput,
-  onUrlIngest,
-  queueEnqueueing,
-  enqueueUrl,
-  ingestFilePickedPaths,
-  ingestFilePath,
-  setIngestFilePath,
-  clearIngestFilePickedPaths,
-  pickIngestFiles,
-  defaultIngestFilePath,
-  ingestFileOcrProvider,
-  ocrProviderLabels,
-  setIngestFileOcrProvider,
-  onFileIngest,
-  enqueueFiles,
-  clipServerOnline,
-  clipServerPort,
-  logs,
-}: InboxModuleProps) {
+// Imperative handle exposed to App.tsx for drag-drop integration
+export type InboxModuleHandle = {
+  handleDroppedFiles: (paths: string[]) => void;
+};
+
+const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function InboxModule(
+  {
+    overview,
+    pagesCount,
+    logs,
+    dropMode,
+    onRefreshAppData,
+    navigateTo,
+    llmAvailabilityText,
+    llmModelText,
+    llmAddressText,
+    llmHintText,
+  },
+  ref,
+) {
+  const { setStatusMessage } = useToast();
+  const { activeModule } = useMode();
+  const { vaultPath, setVaultPath, recentVaultPaths, setRecentVaultPaths } = useVault();
+
+  // ---- state ----
+  const [switchingMode, setSwitchingMode] = useState<ModeId | null>(null);
+  const [devAction, setDevAction] = useState<DevAction | null>(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("general");
+  const selectedTemplate = useMemo<WikiTemplate>(() => {
+    try {
+      return getTemplate(selectedTemplateId);
+    } catch {
+      return templates[0];
+    }
+  }, [selectedTemplateId]);
+  const templateInitPreview = useMemo<TemplateInitPreview>(
+    () => buildTemplateInitPreview(selectedTemplate),
+    [selectedTemplate],
+  );
+
+  const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
+  const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
+  const [ingestFilePickedPaths, setIngestFilePickedPaths] = useState<string[]>([]);
+  const [ingestFileOcrProvider, setIngestFileOcrProvider] = useState<OcrProvider>(
+    () => readOcrProviderFromStorage(),
+  );
+  const [ingestUrlInput, setIngestUrlInput] = useState("");
+  const [clipServerOnline, setClipServerOnline] = useState<boolean | null>(null);
+  const [ingestDragActive, setIngestDragActive] = useState(false);
+  const [outboxLastId, setOutboxLastId] = useState(0);
+  const [outboxInitialized, setOutboxInitialized] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const [queueEnqueueing, setQueueEnqueueing] = useState(false);
+  const [ingestPreviewDialog, setIngestPreviewDialog] = useState<IngestPreview | null>(null);
+  const ingestPreviewResolverRef = useRef<((approved: boolean) => void) | null>(null);
+
+  // ---- effects: data loading ----
+
+  // Check clip server status on mount
+  useEffect(() => {
+    getClipServerStatus()
+      .then((s) => setClipServerOnline(s === "running"))
+      .catch(() => setClipServerOnline(false));
+  }, []);
+
+  // Load default paths
+  useEffect(() => {
+    fetchDefaultPaths()
+      .then((paths) => {
+        if (paths) {
+          setIngestSourcePath(paths.ingest_source_path);
+        }
+      })
+      .catch(() => {
+        // fallback to defaults
+      });
+  }, []);
+
+  // Load OCR config from backend
+  useEffect(() => {
+    fetchOcrConfig()
+      .then((provider) => {
+        if (provider && isOcrProvider(provider)) {
+          setIngestFileOcrProvider(provider);
+          writeOcrProviderToStorage(provider);
+        }
+      })
+      .catch(() => {
+        // fallback to localStorage value
+      });
+  }, []);
+
+  // Fast-forward outboxLastId on mount to skip historical events
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const events = await get_outbox_events({ last_id: 0 });
+        if (events && events.length > 0) {
+          const maxId = events.reduce((max, e) => Math.max(max, e.id), 0);
+          setOutboxLastId(maxId);
+        }
+      } catch (err) {
+        console.error("初始化 outbox 快进失败:", err);
+      }
+      setOutboxInitialized(true);
+    };
+    void init();
+  }, []);
+
+  // Outbox polling
+  useEffect(() => {
+    if (!outboxInitialized) return;
+    let timerId: ReturnType<typeof globalThis.setInterval> | null = null;
+    let polling = false;
+
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const events = await get_outbox_events({ last_id: outboxLastId });
+        if (events && events.length > 0) {
+          let shouldRefresh = false;
+          let newIngesting = ingesting;
+          let maxId = outboxLastId;
+
+          for (const event of events) {
+            maxId = Math.max(maxId, event.id);
+            const type = event.event_type;
+            if (
+              type === "ingest_completed" ||
+              type === "ingest_failed" ||
+              type === "wiki_page_deleted" ||
+              type === "wiki_page_renamed" ||
+              type === "query_saved_to_wiki"
+            ) {
+              shouldRefresh = true;
+            }
+            if (type === "ingest_started") {
+              newIngesting = true;
+            } else if (type === "ingest_completed" || type === "ingest_failed") {
+              newIngesting = false;
+            }
+          }
+
+          if (shouldRefresh) {
+            void onRefreshAppData();
+          }
+          if (newIngesting !== ingesting) {
+            setIngesting(newIngesting);
+          }
+          if (maxId > outboxLastId) {
+            setOutboxLastId(maxId);
+          }
+        }
+      } catch (err) {
+        console.error("Outbox 轮询失败:", err);
+      } finally {
+        polling = false;
+      }
+    };
+
+    timerId = globalThis.setInterval(poll, 3000);
+    return () => {
+      if (timerId) globalThis.clearInterval(timerId);
+    };
+  }, [activeModule, outboxLastId, ingesting, outboxInitialized, onRefreshAppData]);
+
+  // Drag-drop handler
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/webview")
+      .then(async ({ getCurrentWebview }) => {
+        if (disposed) return;
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setIngestDragActive(true);
+            return;
+          }
+          if (event.payload.type === "leave") {
+            setIngestDragActive(false);
+            return;
+          }
+          setIngestDragActive(false);
+          if (event.payload.type !== "drop") return;
+          if (devAction === "ingest_file" || ingesting) {
+            setStatusMessage("当前正在摄入中，已忽略本次拖拽文件。");
+            return;
+          }
+          const parsed = parseDroppedIngestPaths(event.payload.paths);
+          if (parsed.accepted.length === 0) {
+            setStatusMessage("未检测到可摄入文件（支持 md/pdf/docx/pptx/txt/图片）。");
+            return;
+          }
+          const ignoredMsg = parsed.rejected.length > 0 ? `，忽略 ${parsed.rejected.length} 项` : "";
+          const duplicateMsg = parsed.duplicateCount > 0 ? `，去重 ${parsed.duplicateCount} 项` : "";
+          if (dropMode === "queue") {
+            setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，加入队列...`);
+            Promise.all(parsed.accepted.map((p) => enqueueIngest("file", p)))
+              .then(() => {
+                navigateTo("operations");
+              })
+              .catch((err: unknown) => {
+                console.error("拖拽入队失败:", err);
+                setStatusMessage("拖拽入队失败，请检查后端日志。");
+              });
+          } else {
+            navigateTo("inbox");
+            setIngestFilePickedPaths(parsed.accepted);
+            setIngestFilePath(parsed.accepted[0] ?? "");
+            setStatusMessage(`已接收拖拽文件 ${parsed.accepted.length} 项${ignoredMsg}${duplicateMsg}，开始摄入...`);
+            void runIngestFilePaths(parsed.accepted, "drag", true);
+          }
+        });
+      })
+      .catch((error) => {
+        console.warn("注册拖拽摄入监听失败。", error);
+      });
+
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devAction, dropMode, ingestFileOcrProvider, ingesting]);
+
+  // Cleanup preview resolver on unmount
+  useEffect(() => {
+    return () => {
+      if (ingestPreviewResolverRef.current) {
+        ingestPreviewResolverRef.current(false);
+        ingestPreviewResolverRef.current = null;
+      }
+    };
+  }, []);
+
+  // ---- handlers ----
+
+  const requestIngestPreviewApproval = useCallback((preview: IngestPreview) => {
+    return new Promise<boolean>((resolve) => {
+      ingestPreviewResolverRef.current = resolve;
+      setIngestPreviewDialog(preview);
+    });
+  }, []);
+
+  const closeIngestPreviewDialog = useCallback((approved: boolean) => {
+    const resolver = ingestPreviewResolverRef.current;
+    ingestPreviewResolverRef.current = null;
+    setIngestPreviewDialog(null);
+    if (resolver) {
+      resolver(approved);
+    }
+  }, []);
+
+  const handleModeSelect = async (modeId: ModeId) => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法切换运行模式。");
+      return;
+    }
+    if (!overview) return;
+    const nextMode = modeIdToBackendMode[modeId];
+    if (overview.mode === nextMode) return;
+    setSwitchingMode(modeId);
+    setStatusMessage("");
+    try {
+      const result = await setBackendMode(nextMode);
+      if (!result) {
+        setStatusMessage("当前环境不支持运行模式切换。");
+        return;
+      }
+      await onRefreshAppData();
+      setStatusMessage(`已切换到 ${formatBackendMode(result.current_mode)}。`);
+    } catch (error) {
+      console.error(error);
+      setStatusMessage("模式切换失败，请稍后重试。");
+    } finally {
+      setSwitchingMode(null);
+    }
+  };
+
+  const handleInitVault = async () => {
+    setStatusMessage("收到初始化请求，正在调用后端...");
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法初始化 Vault。");
+      return;
+    }
+    const nextVaultPath = vaultPath.trim() || defaultVaultPath;
+    setDevAction("init_vault");
+    setStatusMessage("");
+    try {
+      let result;
+      if (selectedTemplate.id === "general") {
+        result = await initVault(nextVaultPath);
+      } else {
+        result = await initVaultWithTemplate(
+          nextVaultPath,
+          selectedTemplate.schema,
+          selectedTemplate.purpose,
+          selectedTemplate.extraDirs,
+        );
+      }
+      if (!result) {
+        setStatusMessage("当前环境不支持 Vault 初始化。");
+        return;
+      }
+      await onRefreshAppData();
+      const mergedRecent = mergeRecentVaultPaths(result.vault_path || nextVaultPath, recentVaultPaths);
+      setRecentVaultPaths(mergedRecent);
+      const createdCount = result.created_paths?.length ?? 0;
+      setStatusMessage(
+        `${result.message || `Vault 已初始化：${result.vault_path}`}\n模板：${selectedTemplate.name} · 创建 ${createdCount} 项`,
+      );
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`Vault 初始化失败：${message}`);
+    } finally {
+      setDevAction(null);
+    }
+  };
+
+  const handleDemoIngest = async () => {
+    setStatusMessage("收到摄入请求，正在调用后端...");
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法执行示例摄入。");
+      return;
+    }
+    const nextSourcePath = ingestSourcePath.trim() || defaultIngestSourcePath;
+    setDevAction("ingest_markdown");
+    setStatusMessage("摄入中...");
+    let unlisten: (() => void) | null = null;
+    try {
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行摄入流程。", error);
+      }
+      setStatusMessage("分析中，等待审核确认...");
+      const preview = await previewIngestFile("markdown", nextSourcePath);
+      if (!preview) {
+        setStatusMessage("当前环境不支持摄入预览。");
+        return;
+      }
+      const approved = await requestIngestPreviewApproval(preview);
+      if (!approved) {
+        setStatusMessage("已取消摄入。");
+        return;
+      }
+      setStatusMessage("写入中...");
+      const result = await applyIngestPreview(preview.preview_id);
+      if (!result) {
+        setStatusMessage("当前环境不支持示例摄入。");
+        return;
+      }
+      await onRefreshAppData();
+      const entitiesMsg =
+        result.entities && result.entities.length > 0
+          ? `\n提取实体：${result.entities.join("、")}`
+          : "";
+      const updatedMsg =
+        result.updated_pages && result.updated_pages.length > 0
+          ? `\n更新相关页面：${result.updated_pages.length} 个`
+          : "";
+      setStatusMessage(
+        `${result.message || `已处理 ${result.source_path}`}${entitiesMsg}${updatedMsg}`,
+      );
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`示例摄入失败：${message}`);
+    } finally {
+      if (unlisten) unlisten();
+      setIngesting(false);
+      setDevAction(null);
+    }
+  };
+
+  const handleUrlIngest = async () => {
+    setStatusMessage("收到 URL 摄入请求，正在调用后端...");
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法执行 URL 摄入。");
+      return;
+    }
+    const trimmedUrl = ingestUrlInput.trim();
+    if (!trimmedUrl) {
+      setStatusMessage("请输入有效的 URL。");
+      return;
+    }
+    setDevAction("ingest_url");
+    setStatusMessage("摄入中...");
+    let unlisten: (() => void) | null = null;
+    try {
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行 URL 摄入流程。", error);
+      }
+      setStatusMessage("分析中，等待审核确认...");
+      const preview = await previewIngestFile("url", trimmedUrl);
+      if (!preview) {
+        setStatusMessage("当前环境不支持摄入预览。");
+        return;
+      }
+      const approved = await requestIngestPreviewApproval(preview);
+      if (!approved) {
+        setStatusMessage("已取消摄入。");
+        return;
+      }
+      setStatusMessage("写入中...");
+      const result = await applyIngestPreview(preview.preview_id);
+      if (!result) {
+        setStatusMessage("当前环境不支持 URL 摄入。");
+        return;
+      }
+      await onRefreshAppData();
+      const entitiesMsg =
+        result.entities && result.entities.length > 0
+          ? `\n提取实体：${result.entities.join("、")}`
+          : "";
+      const updatedMsg =
+        result.updated_pages && result.updated_pages.length > 0
+          ? `\n更新相关页面：${result.updated_pages.length} 个`
+          : "";
+      setStatusMessage(
+        `${result.message || `已处理 ${trimmedUrl}`}${entitiesMsg}${updatedMsg}`,
+      );
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`URL 摄入失败：${message}`);
+    } finally {
+      if (unlisten) unlisten();
+      setIngesting(false);
+      setDevAction(null);
+    }
+  };
+
+  const runIngestFilePaths = async (
+    pathsToIngest: string[],
+    sourceLabel: "manual" | "drag",
+    previewBeforeApply = false,
+  ) => {
+    if (!isTauriRuntime()) {
+      setStatusMessage("浏览器预览模式下无法执行通用文件摄入。");
+      return;
+    }
+    if (pathsToIngest.length === 0) {
+      setStatusMessage("请选择或输入要摄入的文件路径（支持 md/pdf/docx/pptx/txt/图片）。");
+      return;
+    }
+    setDevAction("ingest_file");
+    setStatusMessage(sourceLabel === "drag" ? "检测到拖拽文件，摄入中..." : "摄入中...");
+    let unlisten: (() => void) | null = null;
+    try {
+      try {
+        unlisten = await listenProgress("ingest_progress", (payload) => {
+          setStatusMessage(payload.message);
+        });
+      } catch (error) {
+        console.warn("订阅 ingest 进度事件失败，继续执行通用文件摄入流程。", error);
+      }
+      let successCount = 0;
+      for (const filePath of pathsToIngest) {
+        const fileName = filePath.split(/[/\\]/).pop() ?? filePath;
+        let result: Awaited<ReturnType<typeof ingestFile>>;
+        if (previewBeforeApply) {
+          setStatusMessage(`分析中 (${successCount + 1}/${pathsToIngest.length})：${fileName}`);
+          const preview = await previewIngestFile("file", filePath, ingestFileOcrProvider);
+          if (!preview) {
+            setStatusMessage("当前环境不支持摄入预览。");
+            return;
+          }
+          const approved = await requestIngestPreviewApproval(preview);
+          if (!approved) {
+            setStatusMessage("已取消摄入。");
+            return;
+          }
+          setStatusMessage(`写入中 (${successCount + 1}/${pathsToIngest.length})：${fileName}`);
+          result = await applyIngestPreview(preview.preview_id);
+        } else {
+          setStatusMessage(`摄入中 (${successCount + 1}/${pathsToIngest.length})：${fileName}`);
+          result = await ingestFile(filePath, ingestFileOcrProvider);
+        }
+        if (!result) {
+          setStatusMessage("当前环境不支持通用文件摄入。");
+          return;
+        }
+        await onRefreshAppData();
+        const entitiesMsg =
+          result.entities && result.entities.length > 0
+            ? `\n提取实体：${result.entities.join("、")}`
+            : "";
+        const updatedMsg =
+          result.updated_pages && result.updated_pages.length > 0
+            ? `\n更新相关页面：${result.updated_pages.length} 个`
+            : "";
+        if (pathsToIngest.length === 1) {
+          setStatusMessage(`${result.message || `已处理 ${filePath}`}${entitiesMsg}${updatedMsg}`);
+        }
+        successCount++;
+      }
+      if (pathsToIngest.length > 1) {
+        setStatusMessage(`摄入完成：${successCount}/${pathsToIngest.length} 个文件。`);
+      }
+      setIngestFilePickedPaths([]);
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      const singleFilePath = pathsToIngest.length === 1 ? pathsToIngest[0] : "";
+      const isSinglePdf = singleFilePath.toLowerCase().endsWith(".pdf");
+      if (isSinglePdf && message.toLowerCase().includes("pdf")) {
+        setStatusMessage(formatPdfIngestErrorMessage(message));
+        return;
+      }
+      const normalizedMessage = message.toLowerCase();
+      const isTesseractLanguageMissing =
+        normalizedMessage.includes("缺少可用语言包")
+        || normalizedMessage.includes("chi_sim")
+        || normalizedMessage.includes("traineddata")
+        || normalizedMessage.includes("failed loading language");
+      if (isTesseractLanguageMissing) {
+        setStatusMessage(
+          "Tesseract 已安装，但缺少语言包（chi_sim/eng）。请安装语言包，或在 OCR 下拉切换到 PaddleOCR。",
+        );
+        return;
+      }
+      const isPrimaryProviderMissing =
+        ingestFileOcrProvider === "paddle"
+          ? (
+            message.includes("未检测到 paddleocr 命令")
+            || (normalizedMessage.includes("is not recognized") && normalizedMessage.includes("paddleocr"))
+          )
+          : (
+            message.includes("未检测到 tesseract 命令")
+            || (normalizedMessage.includes("is not recognized") && normalizedMessage.includes("tesseract"))
+          );
+      if (isPrimaryProviderMissing) {
+        const guide =
+          ingestFileOcrProvider === "paddle"
+            ? "PaddleOCR 未安装，请运行：pip install paddleocr paddlepaddle"
+            : "Tesseract 未安装，请从 https://github.com/UB-Mannheim/tesseract/wiki 下载安装后加入 PATH";
+        setStatusMessage(`OCR 工具未找到：${guide}`);
+        return;
+      }
+      setStatusMessage(`通用文件摄入失败：${message}`);
+    } finally {
+      if (unlisten) unlisten();
+      if (ingestPreviewResolverRef.current) {
+        ingestPreviewResolverRef.current(false);
+        ingestPreviewResolverRef.current = null;
+      }
+      setIngestPreviewDialog(null);
+      setIngesting(false);
+      setDevAction(null);
+    }
+  };
+
+  const handleFileIngest = async () => {
+    setStatusMessage("收到通用文件摄入请求，正在调用后端...");
+    const pathsToIngest =
+      ingestFilePickedPaths.length > 0
+        ? ingestFilePickedPaths
+        : [ingestFilePath.trim()].filter(Boolean);
+    await runIngestFilePaths(pathsToIngest, "manual", true);
+  };
+
+  // Expose imperative handle for parent (App.tsx drag integration)
+  useImperativeHandle(ref, () => ({
+    handleDroppedFiles(paths: string[]) {
+      setIngestFilePickedPaths(paths);
+      setIngestFilePath(paths[0] ?? "");
+      void runIngestFilePaths(paths, "drag", true);
+    },
+  }));
+
+  // Computed values for mode display
+  const supportedModesText = overview
+    ? overview.supported_modes.map(formatBackendMode).join(" / ")
+    : "浏览器预览";
+  const currentModeLabel = overview ? formatBackendMode(overview.mode) : "Browser Preview";
+  const currentModeBadge = overview ? backendModeToModeId[overview.mode] : "—";
+  const currentModeDescription = overview
+    ? modeIdDescriptions[backendModeToModeId[overview.mode]]
+    : "浏览器预览模式下不可切换运行策略。";
+  const modeOptions: ModeOption[] = (["hybrid", "strict-local"] as ModeId[]).map((modeId) => ({
+    id: modeId,
+    label: modeIdLabels[modeId],
+    isActive: Boolean(overview && backendModeToModeId[overview.mode] === modeId),
+  }));
+
+  const isTauri = isTauriRuntime();
+
   return (
     <>
+      {ingestDragActive ? (
+        <div className="status-bar status-bar--dragging">
+          <span>释放鼠标即可开始摄入（支持 md/pdf/docx/pptx/txt/图片）。</span>
+        </div>
+      ) : null}
+
       <div className="module-header">
         <h1 className="module-header__title">概览</h1>
         <p className="module-header__sub">应用状态、Vault 操作与最近日志</p>
@@ -171,7 +754,7 @@ export default function InboxModule({
                 key={mode.id}
                 type="button"
                 className={`mode-option${mode.isActive ? " mode-option--active" : ""}`}
-                onClick={() => void onModeSelect(mode.id)}
+                onClick={() => void handleModeSelect(mode.id)}
                 disabled={!isTauri || !overview || switchingMode !== null}
               >
                 <span className="mode-option__name">
@@ -232,7 +815,11 @@ export default function InboxModule({
                 <button
                   type="button"
                   className="dev-panel__button path-pick-btn"
-                  onClick={() => void pickVaultFolder()}
+                  onClick={() =>
+                    pickFolder().then((path) => {
+                      if (path) setVaultPath(path);
+                    })
+                  }
                   disabled={!isTauri}
                   title="选择文件夹"
                 >
@@ -258,7 +845,7 @@ export default function InboxModule({
             <button
               type="button"
               className="dev-panel__button dev-panel__vault-action"
-              onClick={() => void onDemoIngest()}
+              onClick={() => void handleDemoIngest()}
               disabled={!isTauri || devAction !== null}
               title="用内置示例文件测试摄入流程"
             >
@@ -267,7 +854,7 @@ export default function InboxModule({
             <button
               type="button"
               className="dev-panel__button dev-panel__vault-action"
-              onClick={() => void onInitVault()}
+              onClick={() => void handleInitVault()}
               disabled={!isTauri || devAction !== null}
             >
               {devAction === "init_vault" ? "初始化中..." : "初始化 Vault"}
@@ -281,7 +868,7 @@ export default function InboxModule({
                 <button
                   type="button"
                   className="dev-panel__button recent-vaults__clear"
-                  onClick={clearRecentVaultPaths}
+                  onClick={() => setRecentVaultPaths([])}
                 >
                   清空
                 </button>
@@ -293,7 +880,7 @@ export default function InboxModule({
                     type="button"
                     className="recent-vaults__item"
                     title={path}
-                    onClick={() => selectRecentVaultPath(path)}
+                    onClick={() => setVaultPath(path)}
                   >
                     {path}
                   </button>
@@ -359,7 +946,7 @@ export default function InboxModule({
                 <button
                   type="button"
                   className="dev-panel__button dev-panel__button--accent"
-                  onClick={() => void onUrlIngest()}
+                  onClick={() => void handleUrlIngest()}
                   disabled={!isTauri || devAction !== null}
                 >
                   {devAction === "ingest_url" ? "摄入中..." : "URL 摄入"}
@@ -370,7 +957,17 @@ export default function InboxModule({
                   disabled={!isTauri || queueEnqueueing || !ingestUrlInput.trim()}
                   onClick={() => {
                     if (!ingestUrlInput.trim()) return;
-                    void enqueueUrl(ingestUrlInput.trim());
+                    setQueueEnqueueing(true);
+                    enqueueIngest("url", ingestUrlInput.trim())
+                      .then(() => {
+                        navigateTo("operations");
+                      })
+                      .catch((error: unknown) => {
+                        console.error("加入队列失败:", error);
+                      })
+                      .finally(() => {
+                        setQueueEnqueueing(false);
+                      });
                   }}
                 >
                   {queueEnqueueing ? "入队中..." : "加入队列"}
@@ -392,7 +989,7 @@ export default function InboxModule({
                     value={ingestFilePickedPaths.length > 0 ? "" : ingestFilePath}
                     onChange={(event) => {
                       setIngestFilePath(event.target.value);
-                      clearIngestFilePickedPaths();
+                      setIngestFilePickedPaths([]);
                     }}
                     placeholder={
                       ingestFilePickedPaths.length > 0
@@ -405,7 +1002,22 @@ export default function InboxModule({
                   <button
                     type="button"
                     className="dev-panel__button path-pick-btn"
-                    onClick={() => void pickIngestFiles()}
+                    onClick={() =>
+                      pickFiles({
+                        multiple: true,
+                        filters: [
+                          {
+                            name: "支持的文件",
+                            extensions: ["md", "txt", "pdf", "docx", "pptx", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff"],
+                          },
+                        ],
+                      }).then((paths) => {
+                        if (paths && paths.length > 0) {
+                          setIngestFilePickedPaths(paths);
+                          setIngestFilePath("");
+                        }
+                      })
+                    }
                     disabled={!isTauri}
                     title="选择文件（支持多选）"
                   >
@@ -419,7 +1031,7 @@ export default function InboxModule({
                       <button
                         type="button"
                         className="dev-panel__button picked-files__clear"
-                        onClick={clearIngestFilePickedPaths}
+                        onClick={() => setIngestFilePickedPaths([])}
                       >
                         清除
                       </button>
@@ -449,7 +1061,9 @@ export default function InboxModule({
                   onChange={(event) => {
                     const provider: OcrProvider =
                       event.target.value === "paddle" ? "paddle" : "tesseract";
-                    void setIngestFileOcrProvider(provider);
+                    setIngestFileOcrProvider(provider);
+                    writeOcrProviderToStorage(provider);
+                    void saveOcrConfig(provider);
                   }}
                 >
                   <option value="tesseract">{ocrProviderLabels.tesseract}</option>
@@ -460,7 +1074,7 @@ export default function InboxModule({
                 <button
                   type="button"
                   className="dev-panel__button dev-panel__button--accent"
-                  onClick={() => void onFileIngest()}
+                  onClick={() => void handleFileIngest()}
                   disabled={!isTauri || devAction !== null}
                 >
                   {devAction === "ingest_file" ? "摄入中..." : "文件摄入"}
@@ -480,7 +1094,17 @@ export default function InboxModule({
                         : [ingestFilePath.trim()];
                     const validPaths = paths.filter(Boolean);
                     if (validPaths.length === 0) return;
-                    void enqueueFiles(validPaths);
+                    setQueueEnqueueing(true);
+                    Promise.all(validPaths.map((path) => enqueueIngest("file", path)))
+                      .then(() => {
+                        navigateTo("operations");
+                      })
+                      .catch((error: unknown) => {
+                        console.error("加入队列失败:", error);
+                      })
+                      .finally(() => {
+                        setQueueEnqueueing(false);
+                      });
                   }}
                 >
                   {queueEnqueueing ? "入队中..." : "加入队列"}
@@ -519,7 +1143,7 @@ export default function InboxModule({
           >
             {clipServerOnline === false
               ? "⚠ 服务未启动"
-              : `● 服务运行中 :${clipServerPort}`}
+              : `● 服务运行中 :${CLIP_SERVER_PORT}`}
           </span>
         </div>
         <p
@@ -551,7 +1175,7 @@ export default function InboxModule({
           </ol>
         </div>
         <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--color-text-3, #888)" }}>
-          ℹ️ 确保应用保持运行，扩展通过 HTTP 与本应用通信（端口 {clipServerPort}）
+          ℹ️ 确保应用保持运行，扩展通过 HTTP 与本应用通信（端口 {CLIP_SERVER_PORT}）
         </p>
       </section>
 
@@ -583,6 +1207,86 @@ export default function InboxModule({
           </p>
         )}
       </section>
+
+      {ingestPreviewDialog ? (
+        <div
+          className="ingest-preview-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="摄入分析卡"
+          onClick={() => closeIngestPreviewDialog(false)}
+        >
+          <div className="ingest-preview-modal__panel" onClick={(event) => event.stopPropagation()}>
+            <div className="ingest-preview-modal__head">
+              <div>
+                <h3>摄入分析卡</h3>
+                <p>确认后写入 Wiki 与索引</p>
+              </div>
+              <button
+                type="button"
+                className="dev-panel__button"
+                onClick={() => closeIngestPreviewDialog(false)}
+              >
+                取消
+              </button>
+            </div>
+            <div className="ingest-preview-modal__source">
+              <span>来源文件</span>
+              <code>{ingestPreviewDialog.source_path}</code>
+            </div>
+            <div className="ingest-preview-modal__section">
+              <h4>摘要</h4>
+              <pre>{ingestPreviewDialog.summary?.trim() || "（未生成摘要）"}</pre>
+            </div>
+            <div className="ingest-preview-modal__columns">
+              <section className="ingest-preview-modal__section">
+                <h4>提取实体（{ingestPreviewDialog.entities.length}）</h4>
+                {ingestPreviewDialog.entities.length > 0 ? (
+                  <ul>
+                    {ingestPreviewDialog.entities.map((entity) => (
+                      <li key={entity}>{entity}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="ingest-preview-modal__empty">暂无实体</p>
+                )}
+              </section>
+              <section className="ingest-preview-modal__section">
+                <h4>拟更新页面（{ingestPreviewDialog.updated_pages.length}）</h4>
+                {ingestPreviewDialog.updated_pages.length > 0 ? (
+                  <ul>
+                    {ingestPreviewDialog.updated_pages.map((pagePath) => (
+                      <li key={pagePath}>
+                        <code>{pagePath}</code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="ingest-preview-modal__empty">无关联页面更新</p>
+                )}
+              </section>
+            </div>
+            <div className="ingest-preview-modal__actions">
+              <button
+                type="button"
+                className="dev-panel__button"
+                onClick={() => closeIngestPreviewDialog(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="dev-panel__button dev-panel__button--accent"
+                onClick={() => closeIngestPreviewDialog(true)}
+              >
+                确认写入
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
-}
+});
+
+export default InboxModule;
