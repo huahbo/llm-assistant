@@ -6,6 +6,8 @@
 use async_trait::async_trait;
 use serde::Serialize;
 
+use super::types::{ChatCompletion, ChatMessage, StreamEvent, ToolSchema};
+
 /// LLM 服务错误类型
 ///
 /// 封装与 LLM 服务交互过程中可能出现的各种错误情况。
@@ -96,6 +98,26 @@ pub trait LlmProvider: Send + Sync {
     /// - `Ok(false)`: 服务不可用
     /// - `Err(LlmError)`: 检查过程中出错
     async fn health_check(&self) -> Result<bool, LlmError>;
+
+    /// 多轮对话流式补全（H8 ReAct agent 核心接口）
+    ///
+    /// 支持 OpenAI function_calling 协议，通过 `on_event` 回调分发流式事件。
+    /// 不支持工具调用的 Provider（如 Ollama）可提供降级实现。
+    async fn chat_stream(
+        &self,
+        _messages: &[ChatMessage],
+        _tools: &[ToolSchema],
+        _on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatCompletion, LlmError> {
+        Err(LlmError::InvalidResponse(
+            "此 Provider 尚未实现 chat_stream".to_string(),
+        ))
+    }
+
+    /// 是否原生支持 function_calling / tool use
+    fn supports_tools(&self) -> bool {
+        false
+    }
 
     /// 获取服务的基础地址（用于状态显示）
     fn base_url(&self) -> &str {

@@ -11,8 +11,12 @@
 pub mod ollama;
 pub mod openai;
 pub mod provider;
+pub mod types;
 
 // 重导出常用类型，方便外部使用
 pub use ollama::{OllamaConfig, OllamaProvider};
 pub use openai::{OpenAiConfig, OpenAiProvider, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL};
 pub use provider::{LlmError, LlmProvider};
+pub use types::{
+    ChatCompletion, ChatMessage, FinishReason, StreamEvent, ToolCall, ToolCallFunction, ToolSchema,
+};
