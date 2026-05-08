@@ -48,3 +48,9 @@ Thumbs.db
 *.log
 refer-rust-code/
 refer-rust-daerwen-agent/
+
+# ------------------------------
+# AI tool config / cache
+# ------------------------------
+.deepseek/
+$null
