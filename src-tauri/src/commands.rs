@@ -8,9 +8,9 @@ use crate::models::{
     LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
     LlmStatus, LogEntry, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
     PageQuickLint, QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem,
-    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, ShellPolicyConfig, ShellResult,
-    ShellSessionInfo, VaultInitResult, VaultStats, WikiPageCitationItem, WikiPageDetail,
-    WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
+    SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, ShellAuditEvent, ShellPolicyConfig,
+    ShellResult, ShellSessionInfo, VaultInitResult, VaultStats, WikiPageCitationItem,
+    WikiPageDetail, WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
 };
 use crate::state::AppState;
 
@@ -1012,4 +1012,32 @@ pub async fn reject_agent_write(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     state.reject_agent_write_impl(run_id)
+}
+
+/// 用户主动确认并执行被拦截的 Shell 命令（H6-P2 简化版）。
+#[tauri::command]
+pub async fn approve_and_run_shell(
+    command: String,
+    timeout_ms: Option<u64>,
+    session_id: Option<String>,
+    stream_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ShellResult, String> {
+    state
+        .approve_and_run_shell_impl(
+            command,
+            timeout_ms.unwrap_or(30_000),
+            session_id,
+            stream_id,
+        )
+        .await
+}
+
+/// 读取 Shell 审计日志（H6-P3）。
+#[tauri::command]
+pub fn list_shell_audit_events(
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ShellAuditEvent>, String> {
+    state.list_shell_audit_events_impl(limit.unwrap_or(100))
 }

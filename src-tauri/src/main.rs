@@ -134,6 +134,8 @@ fn main() {
             commands::run_shell,
             commands::approve_agent_write,
             commands::reject_agent_write,
+            commands::approve_and_run_shell,
+            commands::list_shell_audit_events,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");
