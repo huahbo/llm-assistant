@@ -28,9 +28,9 @@ use crate::{
         LintReport, LintSeverityStats, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
         ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem, ProgressPayload,
         QueryAnswerResult, QueryAskOptions, QueryCitation, QuerySearchDebug, QuerySearchRouteDebug,
-        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, ShellPolicyConfig, ShellResult,
-        VaultInitResult, WikiPageCitationItem, WikiPageDetail, WikiPageFrontmatter,
-        WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
+        QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult, ShellAuditEvent,
+        ShellPolicyConfig, ShellResult, VaultInitResult, WikiPageCitationItem, WikiPageDetail,
+        WikiPageFrontmatter, WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
     },
     search::reciprocal_rank_fusion,
     vault,
@@ -5924,46 +5924,50 @@ Wiki 页面：\n{}",
     /// 启动队列 worker（tauri 异步运行时串行消费）。
     /// 通过 tauri::AppHandle 获取托管的 AppState，避免另建独立实例。
     pub fn start_queue_worker(handle: tauri::AppHandle) {
+        const MAX_RETRIES: i64 = 3;
+
         tauri::async_runtime::spawn(async move {
-            // 启动时重置上次崩溃遗留的 running 任务
+            // 启动时重置上次崩溃遗留的 running 任务，并将可重试的 failed 任务重入队列
             {
                 let state = handle.state::<AppState>();
                 if let Some(db_path) = state.outbox_db_path() {
                     if let Ok(conn) = rusqlite::Connection::open(&db_path) {
                         let now = current_timestamp_ms();
                         let _ = db::db_reset_stale_running(&conn, &now);
+                        let _ = db::db_requeue_restartable_items(&conn, MAX_RETRIES, &now);
                     }
                 }
             }
             loop {
                 let state = handle.state::<AppState>();
 
-                // 取下一条 queued item
-                let next = {
+                // 原子性认领下一条 queued item（queued → running）
+                let claimed = {
                     let Some(db_path) = state.outbox_db_path() else {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         continue;
                     };
                     let conn = match rusqlite::Connection::open(&db_path) {
                         Ok(c) => c,
                         Err(_) => {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             continue;
                         }
                     };
-                    match db::db_get_next_queued_item(&conn) {
+                    let now = current_timestamp_ms();
+                    match db::db_claim_next_ingest_queue_item(&conn, &now) {
                         Ok(item) => item,
                         Err(_) => {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             continue;
                         }
                     }
                 };
 
-                let item = match next {
+                let item = match claimed {
                     Some(i) => i,
                     None => {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         continue;
                     }
                 };
@@ -5972,18 +5976,6 @@ Wiki 页面：\n{}",
                 let source_type = item.source_type.clone();
                 let source_path = item.source_path.clone();
 
-                // 更新 status -> running
-                {
-                    let Some(db_path) = state.outbox_db_path() else {
-                        continue;
-                    };
-                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                        let now = current_timestamp_ms();
-                        let _ = db::db_update_ingest_queue_status(
-                            &conn, item_id, "running", None, &now,
-                        );
-                    }
-                }
                 state.record_outbox_event(
                     "ingest_queue_started",
                     serde_json::json!({ "id": item_id, "source_type": source_type, "source_path": source_path }),
@@ -6007,9 +5999,7 @@ Wiki 页面：\n{}",
                     Ok(_) => {
                         if let Some(db_path) = state.outbox_db_path() {
                             if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                                let _ = db::db_update_ingest_queue_status(
-                                    &conn, item_id, "done", None, &now,
-                                );
+                                let _ = db::db_mark_ingest_queue_item_done(&conn, item_id, &now);
                             }
                         }
                         state.record_outbox_event(
@@ -6020,12 +6010,8 @@ Wiki 页面：\n{}",
                     Err(err) => {
                         if let Some(db_path) = state.outbox_db_path() {
                             if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                                let _ = db::db_update_ingest_queue_status(
-                                    &conn,
-                                    item_id,
-                                    "failed",
-                                    Some(err.as_str()),
-                                    &now,
+                                let _ = db::db_mark_ingest_queue_item_failed(
+                                    &conn, item_id, err.as_str(), &now,
                                 );
                             }
                         }
@@ -6036,7 +6022,7 @@ Wiki 页面：\n{}",
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
     }
@@ -6188,7 +6174,25 @@ Wiki 页面：\n{}",
         let (policy_action, policy_decision, block_reason) =
             classify_shell_policy_with_config(&command, &executor, &shell_policy_config);
         let cwd = self.resolve_shell_cwd(session_id.as_deref())?;
+        let audit_db_path = self.outbox_db_path();
         if let Some(reason) = block_reason {
+            if let Some(ref db_path) = audit_db_path {
+                let audit = ShellAuditEvent {
+                    id: 0,
+                    command: raw_command.clone(),
+                    working_dir: cwd.to_string_lossy().to_string(),
+                    policy_action: policy_action.to_string(),
+                    policy_decision: policy_decision.to_string(),
+                    executor: executor.clone(),
+                    blocked: true,
+                    blocked_reason: Some(reason.clone()),
+                    exit_code: None,
+                    latency_ms: None,
+                    session_id: session_id.clone(),
+                    created_at: current_timestamp_ms(),
+                };
+                let _ = db::insert_shell_audit_event(db_path, &audit);
+            }
             return Ok(ShellResult {
                 command: raw_command,
                 stdout: String::new(),
@@ -6219,6 +6223,7 @@ Wiki 页面：\n{}",
                 executor,
             });
         }
+        let exec_start = std::time::Instant::now();
         #[cfg(target_os = "windows")]
         let mut child = tokio::process::Command::new("powershell");
         #[cfg(target_os = "windows")]
@@ -6352,11 +6357,30 @@ Wiki 页面：\n{}",
             true,
         );
         self.update_shell_cwd(session_id.as_deref(), cwd.clone());
+        let elapsed_ms = exec_start.elapsed().as_millis() as i64;
+        let final_exit_code = exit_code.unwrap_or(-1);
+        if let Some(ref db_path) = audit_db_path {
+            let audit = ShellAuditEvent {
+                id: 0,
+                command: raw_command.clone(),
+                working_dir: cwd.to_string_lossy().to_string(),
+                policy_action: policy_action.to_string(),
+                policy_decision: policy_decision.to_string(),
+                executor: executor.clone(),
+                blocked: false,
+                blocked_reason: None,
+                exit_code: Some(final_exit_code),
+                latency_ms: Some(elapsed_ms),
+                session_id: session_id.clone(),
+                created_at: current_timestamp_ms(),
+            };
+            let _ = db::insert_shell_audit_event(db_path, &audit);
+        }
         Ok(ShellResult {
             command: raw_command,
             stdout,
             stderr,
-            exit_code: exit_code.unwrap_or(-1),
+            exit_code: final_exit_code,
             working_dir: cwd.to_string_lossy().to_string(),
             blocked: false,
             blocked_reason: None,
@@ -6406,6 +6430,214 @@ Wiki 页面：\n{}",
             .expect("shell_sessions lock")
             .remove(session_id.trim())
             .is_some()
+    }
+
+    /// 用户主动确认并执行被拦截的命令（H6-P2 简化版）。
+    /// 跳过策略判定，直接以 "manual_approved" 身份执行，审计记录标注 approved_by_user。
+    pub async fn approve_and_run_shell_impl(
+        &self,
+        command: String,
+        timeout_ms: u64,
+        session_id: Option<String>,
+        stream_id: Option<String>,
+    ) -> Result<ShellResult, String> {
+        let raw_command = command.trim().to_string();
+        if raw_command.is_empty() {
+            return Err("命令不能为空".to_string());
+        }
+        let executor = "manual_approved".to_string();
+        // 规范化命令（保留与 run_shell_impl 相同的处理）。
+        let normalized = normalize_shell_command_for_executor(&raw_command, &executor);
+        let cwd = self.resolve_shell_cwd(session_id.as_deref())?;
+        let audit_db_path = self.outbox_db_path();
+
+        // cd 内建命令
+        if let Some(target) = parse_cd_target(&raw_command) {
+            let resolved = resolve_cd_target(&cwd, &target)?;
+            self.update_shell_cwd(session_id.as_deref(), resolved.clone());
+            if let Some(ref db_path) = audit_db_path {
+                let audit = ShellAuditEvent {
+                    id: 0,
+                    command: raw_command.clone(),
+                    working_dir: resolved.to_string_lossy().to_string(),
+                    policy_action: "builtin_cd".to_string(),
+                    policy_decision: "approved_by_user".to_string(),
+                    executor: executor.clone(),
+                    blocked: false,
+                    blocked_reason: None,
+                    exit_code: Some(0),
+                    latency_ms: Some(0),
+                    session_id: session_id.clone(),
+                    created_at: current_timestamp_ms(),
+                };
+                let _ = db::insert_shell_audit_event(db_path, &audit);
+            }
+            return Ok(ShellResult {
+                command: raw_command,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+                working_dir: resolved.to_string_lossy().to_string(),
+                blocked: false,
+                blocked_reason: None,
+                policy_action: "builtin_cd".to_string(),
+                policy_decision: "approved_by_user".to_string(),
+                executor,
+            });
+        }
+
+        let exec_start = std::time::Instant::now();
+        #[cfg(target_os = "windows")]
+        let mut child = tokio::process::Command::new("powershell");
+        #[cfg(target_os = "windows")]
+        child.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[System.Text.UTF8Encoding]::new($false); {}",
+                normalized
+            ),
+        ]);
+        #[cfg(not(target_os = "windows"))]
+        let mut child = tokio::process::Command::new("bash");
+        #[cfg(not(target_os = "windows"))]
+        child.arg("-c").arg(&normalized);
+        let mut child = child
+            .current_dir(&cwd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("执行失败: {e}"))?;
+        let timeout = std::time::Duration::from_millis(timeout_ms.min(120_000));
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut stdout_closed = false;
+        let mut stderr_closed = false;
+        let mut exit_code: Option<i32> = None;
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        let mut stdout_reader = child.stdout.take().map(BufReader::new);
+        let mut stderr_reader = child.stderr.take().map(BufReader::new);
+
+        loop {
+            if tokio::time::Instant::now() >= deadline && exit_code.is_none() {
+                let _ = child.kill().await;
+                self.emit_shell_stream_chunk(
+                    stream_id.as_deref(),
+                    session_id.as_deref(),
+                    "命令执行超时，已中止。",
+                    "system",
+                    true,
+                );
+                return Err(format!("超时（{timeout_ms}ms）"));
+            }
+            tokio::select! {
+                line = async {
+                    if let Some(reader) = &mut stdout_reader {
+                        let mut buf = Vec::new();
+                        reader.read_until(b'\n', &mut buf).await.map(|size| {
+                            if size == 0 { None } else { Some(buf) }
+                        })
+                    } else {
+                        Ok(None)
+                    }
+                }, if !stdout_closed => {
+                    match line {
+                        Ok(Some(raw)) => {
+                            let text = decode_shell_output_chunk(&raw);
+                            stdout.push_str(&text);
+                            if !text.ends_with('\n') { stdout.push('\n'); }
+                            self.emit_shell_stream_chunk(stream_id.as_deref(), session_id.as_deref(), &text, "stdout", false);
+                        }
+                        Ok(None) => { stdout_closed = true; }
+                        Err(e) => {
+                            stderr.push_str(&format!("读取 stdout 失败: {e}\n"));
+                            stdout_closed = true;
+                        }
+                    }
+                }
+                line = async {
+                    if let Some(reader) = &mut stderr_reader {
+                        let mut buf = Vec::new();
+                        reader.read_until(b'\n', &mut buf).await.map(|size| {
+                            if size == 0 { None } else { Some(buf) }
+                        })
+                    } else {
+                        Ok(None)
+                    }
+                }, if !stderr_closed => {
+                    match line {
+                        Ok(Some(raw)) => {
+                            let text = decode_shell_output_chunk(&raw);
+                            stderr.push_str(&text);
+                            if !text.ends_with('\n') { stderr.push('\n'); }
+                            self.emit_shell_stream_chunk(stream_id.as_deref(), session_id.as_deref(), &text, "stderr", false);
+                        }
+                        Ok(None) => { stderr_closed = true; }
+                        Err(e) => {
+                            stderr.push_str(&format!("读取 stderr 失败: {e}\n"));
+                            stderr_closed = true;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(18)) => {}
+            }
+            if exit_code.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => { exit_code = Some(status.code().unwrap_or(-1)); }
+                    Ok(None) => {}
+                    Err(e) => return Err(format!("执行失败: {e}")),
+                }
+            }
+            if stdout_closed && stderr_closed && exit_code.is_some() {
+                break;
+            }
+        }
+        self.emit_shell_stream_chunk(stream_id.as_deref(), session_id.as_deref(), "", "system", true);
+        self.update_shell_cwd(session_id.as_deref(), cwd.clone());
+        let elapsed_ms = exec_start.elapsed().as_millis() as i64;
+        let final_exit_code = exit_code.unwrap_or(-1);
+        if let Some(ref db_path) = audit_db_path {
+            let audit = ShellAuditEvent {
+                id: 0,
+                command: raw_command.clone(),
+                working_dir: cwd.to_string_lossy().to_string(),
+                policy_action: "approved".to_string(),
+                policy_decision: "approved_by_user".to_string(),
+                executor: executor.clone(),
+                blocked: false,
+                blocked_reason: None,
+                exit_code: Some(final_exit_code),
+                latency_ms: Some(elapsed_ms),
+                session_id: session_id.clone(),
+                created_at: current_timestamp_ms(),
+            };
+            let _ = db::insert_shell_audit_event(db_path, &audit);
+        }
+        Ok(ShellResult {
+            command: raw_command,
+            stdout,
+            stderr,
+            exit_code: final_exit_code,
+            working_dir: cwd.to_string_lossy().to_string(),
+            blocked: false,
+            blocked_reason: None,
+            policy_action: "approved".to_string(),
+            policy_decision: "approved_by_user".to_string(),
+            executor,
+        })
+    }
+
+    /// 读取 Shell 审计日志（H6-P3）。
+    pub fn list_shell_audit_events_impl(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ShellAuditEvent>, String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "请先初始化 Vault".to_string())?;
+        db::list_shell_audit_events(&db_path, limit)
     }
 
     fn resolve_shell_cwd(&self, session_id: Option<&str>) -> Result<PathBuf, String> {

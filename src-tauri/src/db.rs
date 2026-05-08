@@ -1536,6 +1536,24 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_agent_skills_updated_at
             ON agent_skills(updated_at, id);
+
+        CREATE TABLE IF NOT EXISTS shell_audit_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            command         TEXT NOT NULL,
+            working_dir     TEXT NOT NULL DEFAULT '',
+            policy_action   TEXT NOT NULL,
+            policy_decision TEXT NOT NULL,
+            executor        TEXT NOT NULL,
+            blocked         INTEGER NOT NULL DEFAULT 0,
+            blocked_reason  TEXT,
+            exit_code       INTEGER,
+            latency_ms      INTEGER,
+            session_id      TEXT,
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_shell_audit_created
+            ON shell_audit_events(created_at DESC);
         "#,
     )
     .map_err(|err| format!("初始化数据库结构失败: {}", err))?;
@@ -1570,6 +1588,7 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
     ensure_ask_history_quality(conn)?;
     ensure_ask_session_turns_quality(conn)?;
     ensure_agent_runs_quality(conn)?;
+    ensure_ingest_queue_quality(conn)?;
 
     Ok(())
 }
@@ -1751,6 +1770,44 @@ fn ensure_agent_runs_quality(conn: &Connection) -> Result<(), String> {
     if !has_archived_reason {
         conn.execute("ALTER TABLE agent_runs ADD COLUMN archived_reason TEXT", [])
             .map_err(|err| format!("补齐 agent_runs.archived_reason 失败: {}", err))?;
+    }
+    Ok(())
+}
+
+/// ingest_queue_items 表质量保障：补齐 started_at / completed_at / retry_count 字段。
+fn ensure_ingest_queue_quality(conn: &Connection) -> Result<(), String> {
+    let mut has_started_at = false;
+    let mut has_completed_at = false;
+    let mut has_retry_count = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(ingest_queue_items)")
+        .map_err(|err| format!("读取 ingest_queue_items 表结构失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("读取 ingest_queue_items 字段失败: {}", err))?;
+    for row in rows {
+        let name = row.map_err(|err| format!("读取 ingest_queue_items 字段失败: {}", err))?;
+        match name.as_str() {
+            "started_at" => has_started_at = true,
+            "completed_at" => has_completed_at = true,
+            "retry_count" => has_retry_count = true,
+            _ => {}
+        }
+    }
+    if !has_started_at {
+        conn.execute("ALTER TABLE ingest_queue_items ADD COLUMN started_at TEXT", [])
+            .map_err(|err| format!("补齐 ingest_queue_items.started_at 失败: {}", err))?;
+    }
+    if !has_completed_at {
+        conn.execute("ALTER TABLE ingest_queue_items ADD COLUMN completed_at TEXT", [])
+            .map_err(|err| format!("补齐 ingest_queue_items.completed_at 失败: {}", err))?;
+    }
+    if !has_retry_count {
+        conn.execute(
+            "ALTER TABLE ingest_queue_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|err| format!("补齐 ingest_queue_items.retry_count 失败: {}", err))?;
     }
     Ok(())
 }
@@ -3177,7 +3234,8 @@ pub fn db_list_ingest_queue(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, source_type, source_path, status, error, created_at, updated_at
+            SELECT id, source_type, source_path, status, error, created_at, updated_at,
+                   started_at, completed_at, COALESCE(retry_count, 0)
             FROM ingest_queue_items
             ORDER BY created_at DESC
             "#,
@@ -3193,6 +3251,9 @@ pub fn db_list_ingest_queue(
                 error: row.get(4)?,
                 created_at: row.get(5)?,
                 updated_at: row.get(6)?,
+                started_at: row.get(7)?,
+                completed_at: row.get(8)?,
+                retry_count: row.get(9)?,
             })
         })
         .map_err(|err| format!("查询 ingest_queue_items 失败: {}", err))?;
@@ -3207,7 +3268,8 @@ pub fn db_get_next_queued_item(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, source_type, source_path, status, error, created_at, updated_at
+            SELECT id, source_type, source_path, status, error, created_at, updated_at,
+                   started_at, completed_at, COALESCE(retry_count, 0)
             FROM ingest_queue_items
             WHERE status = 'queued'
             ORDER BY created_at ASC, id ASC
@@ -3224,12 +3286,114 @@ pub fn db_get_next_queued_item(
             error: row.get(4)?,
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
+            started_at: row.get(7)?,
+            completed_at: row.get(8)?,
+            retry_count: row.get(9)?,
         })
     }) {
         Ok(item) => Ok(Some(item)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(err) => Err(format!("查询 ingest_queue_items 失败: {}", err)),
     }
+}
+
+/// 原子性认领下一个待处理 item（queued → running），返回被认领的 item。
+pub fn db_claim_next_ingest_queue_item(
+    conn: &Connection,
+    now: &str,
+) -> Result<Option<crate::models::IngestQueueItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            UPDATE ingest_queue_items
+            SET status = 'running', started_at = ?1, updated_at = ?1
+            WHERE id = (
+                SELECT id FROM ingest_queue_items
+                WHERE status = 'queued'
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+            )
+            RETURNING id, source_type, source_path, status, error, created_at, updated_at,
+                      started_at, completed_at, COALESCE(retry_count, 0)
+            "#,
+        )
+        .map_err(|err| format!("准备认领 ingest_queue_items 失败: {}", err))?;
+    match stmt.query_row(params![now], |row| {
+        Ok(crate::models::IngestQueueItem {
+            id: row.get(0)?,
+            source_type: row.get(1)?,
+            source_path: row.get(2)?,
+            status: row.get(3)?,
+            error: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            started_at: row.get(7)?,
+            completed_at: row.get(8)?,
+            retry_count: row.get(9)?,
+        })
+    }) {
+        Ok(item) => Ok(Some(item)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(format!("认领 ingest_queue_items 失败: {}", err)),
+    }
+}
+
+/// 标记 ingest item 处理完成（running → done）。
+pub fn db_mark_ingest_queue_item_done(
+    conn: &Connection,
+    id: i64,
+    completed_at: &str,
+) -> Result<(), String> {
+    conn.execute(
+        r#"
+        UPDATE ingest_queue_items
+        SET status = 'done', completed_at = ?1, updated_at = ?1
+        WHERE id = ?2
+        "#,
+        params![completed_at, id],
+    )
+    .map_err(|err| format!("标记 ingest_queue_items done 失败: {}", err))?;
+    Ok(())
+}
+
+/// 标记 ingest item 处理失败（running → failed），递增 retry_count。
+pub fn db_mark_ingest_queue_item_failed(
+    conn: &Connection,
+    id: i64,
+    error: &str,
+    completed_at: &str,
+) -> Result<(), String> {
+    conn.execute(
+        r#"
+        UPDATE ingest_queue_items
+        SET status = 'failed', error = ?1, completed_at = ?2, updated_at = ?2,
+            retry_count = COALESCE(retry_count, 0) + 1
+        WHERE id = ?3
+        "#,
+        params![error, completed_at, id],
+    )
+    .map_err(|err| format!("标记 ingest_queue_items failed 失败: {}", err))?;
+    Ok(())
+}
+
+/// 将 retry_count < max_retries 的 failed item 重置为 queued（app 重启时调用），返回影响行数。
+pub fn db_requeue_restartable_items(
+    conn: &Connection,
+    max_retries: i64,
+    now: &str,
+) -> Result<i64, String> {
+    let affected = conn
+        .execute(
+            r#"
+            UPDATE ingest_queue_items
+            SET status = 'queued', error = NULL, started_at = NULL, completed_at = NULL,
+                updated_at = ?1
+            WHERE status = 'failed' AND COALESCE(retry_count, 0) < ?2
+            "#,
+            params![now, max_retries],
+        )
+        .map_err(|err| format!("重置可重试 ingest_queue_items 失败: {}", err))?;
+    Ok(affected as i64)
 }
 
 /// 更新 ingest_queue_items 的 status + error + updated_at。
@@ -3625,6 +3789,85 @@ pub fn get_vault_stats_from_db(
         top_cited_pages,
         ingest_source_counts,
     })
+}
+
+// ─── Shell 审计日志（H6-P3） ───────────────────────────────────────────────────
+
+/// 写入一条 Shell 审计事件，返回新行 id。
+pub fn insert_shell_audit_event(
+    db_path: &Path,
+    event: &crate::models::ShellAuditEvent,
+) -> Result<i64, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    conn.execute(
+        r#"
+        INSERT INTO shell_audit_events (
+            command, working_dir, policy_action, policy_decision,
+            executor, blocked, blocked_reason, exit_code, latency_ms,
+            session_id, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+        params![
+            event.command,
+            event.working_dir,
+            event.policy_action,
+            event.policy_decision,
+            event.executor,
+            if event.blocked { 1_i64 } else { 0_i64 },
+            event.blocked_reason,
+            event.exit_code,
+            event.latency_ms,
+            event.session_id,
+            event.created_at,
+        ],
+    )
+    .map_err(|err| format!("写入 shell_audit_events 失败: {}", err))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 读取最近的 Shell 审计事件（按创建时间倒序）。
+pub fn list_shell_audit_events(
+    db_path: &Path,
+    limit: i64,
+) -> Result<Vec<crate::models::ShellAuditEvent>, String> {
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, command, working_dir, policy_action, policy_decision,
+                   executor, blocked, blocked_reason, exit_code, latency_ms,
+                   session_id, created_at
+            FROM shell_audit_events
+            ORDER BY id DESC
+            LIMIT ?1
+            "#,
+        )
+        .map_err(|err| format!("准备查询 shell_audit_events 失败: {}", err))?;
+    let rows = stmt
+        .query_map(params![limit], |row| {
+            Ok(crate::models::ShellAuditEvent {
+                id: row.get(0)?,
+                command: row.get(1)?,
+                working_dir: row.get(2)?,
+                policy_action: row.get(3)?,
+                policy_decision: row.get(4)?,
+                executor: row.get(5)?,
+                blocked: row.get::<_, i64>(6)? != 0,
+                blocked_reason: row.get(7)?,
+                exit_code: row.get(8)?,
+                latency_ms: row.get(9)?,
+                session_id: row.get(10)?,
+                created_at: row.get(11)?,
+            })
+        })
+        .map_err(|err| format!("读取 shell_audit_events 失败: {}", err))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("读取 shell_audit_events 结果失败: {}", err))
 }
 
 #[cfg(test)]

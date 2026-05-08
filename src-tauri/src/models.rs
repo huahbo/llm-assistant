@@ -945,6 +945,11 @@ pub struct IngestQueueItem {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    pub retry_count: i64,
 }
 
 /// Deep Research 任务状态（Display/FromStr 供序列化使用，枚举供类型安全扩展）。
@@ -1098,6 +1103,23 @@ pub struct ShellResult {
     pub policy_action: String,
     pub policy_decision: String,
     pub executor: String,
+}
+
+/// Shell 审计事件（H6-P3：每次命令执行均落库）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellAuditEvent {
+    pub id: i64,
+    pub command: String,
+    pub working_dir: String,
+    pub policy_action: String,
+    pub policy_decision: String,
+    pub executor: String,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+    pub exit_code: Option<i32>,
+    pub latency_ms: Option<i64>,
+    pub session_id: Option<String>,
+    pub created_at: String,
 }
 
 /// Shell 会话元信息（H6-S3：会话型终端）。
