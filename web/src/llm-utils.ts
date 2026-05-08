@@ -2,7 +2,7 @@
 
 export const defaultCloudProviderName = "DeepSeek";
 export const defaultCloudBaseUrl = "https://api.deepseek.com/v1";
-export const defaultCloudModel = "deepseek-chat";
+export const defaultCloudModel = "deepseek-v4-flash";
 
 type CloudProviderPresetId = "deepseek" | "glm" | "minimax";
 
@@ -19,7 +19,7 @@ export const cloudProviderPresets: Record<
     name: "DeepSeek",
     providerName: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-chat",
+    model: "deepseek-v4-flash",
   },
   glm: {
     name: "GLM",

@@ -32,7 +32,7 @@ impl ProviderPreset {
     pub fn get_defaults(&self) -> (&str, &str) {
         match self {
             ProviderPreset::OpenAI => ("https://api.openai.com/v1", "gpt-4o-mini"),
-            ProviderPreset::DeepSeek => ("https://api.deepseek.com", "deepseek-chat"),
+            ProviderPreset::DeepSeek => ("https://api.deepseek.com", "deepseek-v4-flash"),
             ProviderPreset::Moonshot => ("https://api.moonshot.cn/v1", "moonshot-v1-8k"),
             ProviderPreset::Custom => (DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL),
         }
@@ -44,7 +44,7 @@ impl ProviderPreset {
 pub struct OpenAiConfig {
     /// 云端 API Key
     pub api_key: String,
-    /// 使用的模型名称，如 "gpt-4o-mini", "deepseek-chat"
+    /// 使用的模型名称，如 "gpt-4o-mini", "deepseek-v4-flash"
     pub model: String,
     /// API 基础地址，默认为 https://api.openai.com/v1（可替换为兼容端点）
     pub base_url: String,

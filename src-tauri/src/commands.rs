@@ -174,7 +174,7 @@ pub fn get_llm_provider_presets() -> Vec<(String, String, String)> {
         (
             "DeepSeek".to_string(),
             "https://api.deepseek.com".to_string(),
-            "deepseek-chat".to_string(),
+            "deepseek-v4-flash".to_string(),
         ),
         (
             "Moonshot".to_string(),
