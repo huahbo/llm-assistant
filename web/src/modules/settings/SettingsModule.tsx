@@ -4,6 +4,7 @@ import {
   shellPolicyDecisionOptions,
   shellPolicyProfiles,
   useShellPolicy,
+  getActiveProfileKey,
 } from "../../contexts/ShellPolicyContext";
 import { useToast } from "../../contexts/ToastContext";
 import {
@@ -47,6 +48,7 @@ export default function SettingsModule({
     applyProfile: applyShellPolicyProfile,
     setField: handleChangeShellPolicyDecision,
   } = useShellPolicy();
+  const activeProfileKey = getActiveProfileKey(agentShellPolicyConfig);
 
   // LLM Provider 配置状态
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null);
@@ -380,7 +382,7 @@ export default function SettingsModule({
                 <button
                   key={`settings-${profile.key}`}
                   type="button"
-                  className="agent-studio__shell-policy-preset"
+                  className={`agent-studio__shell-policy-preset${activeProfileKey === profile.key ? " agent-studio__shell-policy-preset--active" : ""}`}
                   disabled={agentShellPolicySaving || !agentShellPolicyConfig || !isTauriRuntime()}
                   onClick={() => applyShellPolicyProfile(profile.key)}
                 >

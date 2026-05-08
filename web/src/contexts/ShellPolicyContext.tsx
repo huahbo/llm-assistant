@@ -71,6 +71,15 @@ type ShellPolicyValue = {
   setField: (field: keyof ShellPolicyConfig, decision: ShellPolicyDecision) => void;
 };
 
+export function getActiveProfileKey(config: ShellPolicyConfig | null): ShellPolicyProfileKey | null {
+  if (!config) return null;
+  const keys = Object.keys(config) as (keyof ShellPolicyConfig)[];
+  for (const profile of shellPolicyProfiles) {
+    if (keys.every((k) => config[k] === profile.config[k])) return profile.key;
+  }
+  return null;
+}
+
 const ShellPolicyContext = createContext<ShellPolicyValue | null>(null);
 
 export function ShellPolicyProvider({ children }: { children: ReactNode }) {

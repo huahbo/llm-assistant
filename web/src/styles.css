@@ -5332,6 +5332,13 @@ code {
   background: var(--bg-card);
 }
 
+.agent-studio__shell-policy-preset--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-card));
+  font-weight: 500;
+}
+
 .agent-studio__shell-policy-tip {
   margin: 0;
   font-size: 11px;
@@ -5382,6 +5389,12 @@ code {
   border-color: #3b4e73;
   background: #0b162b;
   color: #c8d5ea;
+}
+
+.agent-studio__tools-workspace--deep .agent-studio__shell-policy-preset--active {
+  border-color: #5b8dee;
+  color: #5b8dee;
+  background: rgba(91, 141, 238, 0.14);
 }
 
 .agent-studio__shell-quick {

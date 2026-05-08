@@ -1,6 +1,6 @@
 import type { MutableRefObject } from "react";
-import type { ShellPolicyProfileKey } from "../../contexts/ShellPolicyContext";
-import type { ShellHistoryEntry, ShellSessionInfo } from "../../types";
+import { type ShellPolicyProfileKey, getActiveProfileKey } from "../../contexts/ShellPolicyContext";
+import type { ShellPolicyConfig, ShellHistoryEntry, ShellSessionInfo } from "../../types";
 
 type ShellPolicyProfileItem = {
   key: ShellPolicyProfileKey;
@@ -22,7 +22,7 @@ type AgentToolsPaneProps = {
   handleClearShellHistory: () => void;
   shellPolicyProfiles: ShellPolicyProfileItem[];
   agentShellPolicySaving: boolean;
-  agentShellPolicyConfig: object | null;
+  agentShellPolicyConfig: ShellPolicyConfig | null;
   handleApplyAndSaveShellPolicyProfile: (profileKey: ShellPolicyProfileKey) => Promise<void>;
   agentShellQuickCommands: readonly AgentShellQuickCommandItem[];
   handleApplyShellCommand: (command: string, runImmediately?: boolean) => void;
@@ -60,6 +60,7 @@ export default function AgentToolsPane({
   handleShellHistoryNav,
   handleRunShell,
 }: AgentToolsPaneProps) {
+  const activeProfileKey = getActiveProfileKey(agentShellPolicyConfig);
   return (
     <section className={`agent-studio__tools-workspace agent-studio__tools-workspace--${agentShellTheme}`}>
       <div className="agent-studio__tools-head">
@@ -97,7 +98,7 @@ export default function AgentToolsPane({
               <button
                 key={profile.key}
                 type="button"
-                className="agent-studio__shell-policy-preset"
+                className={`agent-studio__shell-policy-preset${activeProfileKey === profile.key ? " agent-studio__shell-policy-preset--active" : ""}`}
                 disabled={agentShellPolicySaving || !agentShellPolicyConfig}
                 onClick={() => {
                   void handleApplyAndSaveShellPolicyProfile(profile.key);
