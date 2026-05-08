@@ -22,11 +22,13 @@ export default function QueuePanel({
   onRefresh,
   onCancel,
   onRetry,
+  onDelete,
 }: {
   queue: IngestQueueItem[];
   onRefresh: () => void;
   onCancel: (id: number) => void;
   onRetry: (id: number) => void;
+  onDelete: (id: number) => void;
 }) {
   useEffect(() => {
     onRefresh();
@@ -77,12 +79,32 @@ export default function QueuePanel({
                   </button>
                 )}
                 {item.status === "failed" && (
+                  <>
+                    <button
+                      type="button"
+                      className="dev-panel__button dev-panel__button--accent"
+                      onClick={() => onRetry(item.id)}
+                    >
+                      重试
+                    </button>
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      onClick={() => onDelete(item.id)}
+                      title="永久删除该记录"
+                    >
+                      删除
+                    </button>
+                  </>
+                )}
+                {(item.status === "done" || item.status === "cancelled") && (
                   <button
                     type="button"
-                    className="dev-panel__button dev-panel__button--accent"
-                    onClick={() => onRetry(item.id)}
+                    className="dev-panel__button"
+                    onClick={() => onDelete(item.id)}
+                    title="从列表中移除"
                   >
-                    重试
+                    移除
                   </button>
                 )}
               </div>

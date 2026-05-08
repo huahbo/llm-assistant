@@ -1699,6 +1699,11 @@ export async function retryIngestItem(id: number): Promise<void> {
   return invoke<void>("retry_ingest_item", { id });
 }
 
+export async function deleteIngestItem(id: number): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<void>("delete_ingest_item", { id });
+}
+
 /** 启动 Agent Run（H0 脚手架）。后端返回 run_id。 */
 export async function startAgentRun(topic: string): Promise<number | null> {
   if (!isTauriRuntime()) return null;

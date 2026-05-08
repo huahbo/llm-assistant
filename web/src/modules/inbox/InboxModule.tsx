@@ -60,8 +60,6 @@ type ModeOption = {
 
 // ---- constants ----
 const defaultVaultPath = "vault";
-const defaultIngestSourcePath = "E:\\llm-wiki\\test-llm.md";
-const defaultIngestFilePath = "E:\\llm-wiki\\test.docx";
 const CLIP_SERVER_PORT = 19827;
 
 const ocrProviderLabels: Record<OcrProvider, string> = {
@@ -143,8 +141,8 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
     [selectedTemplate],
   );
 
-  const [ingestSourcePath, setIngestSourcePath] = useState(defaultIngestSourcePath);
-  const [ingestFilePath, setIngestFilePath] = useState(defaultIngestFilePath);
+  const [ingestSourcePath, setIngestSourcePath] = useState("");
+  const [ingestFilePath, setIngestFilePath] = useState("");
   const [ingestFilePickedPaths, setIngestFilePickedPaths] = useState<string[]>([]);
   const [ingestFileOcrProvider, setIngestFileOcrProvider] = useState<OcrProvider>(
     () => readOcrProviderFromStorage(),
@@ -432,7 +430,7 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
       setStatusMessage("浏览器预览模式下无法执行示例摄入。");
       return;
     }
-    const nextSourcePath = ingestSourcePath.trim() || defaultIngestSourcePath;
+    const nextSourcePath = ingestSourcePath.trim();
     setDevAction("ingest_markdown");
     setStatusMessage("摄入中...");
     let unlisten: (() => void) | null = null;
@@ -996,7 +994,7 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
                     placeholder={
                       ingestFilePickedPaths.length > 0
                         ? `已选 ${ingestFilePickedPaths.length} 个文件`
-                        : defaultIngestFilePath
+                        : "输入文件路径，或点击右侧按钮选择"
                     }
                     disabled={ingestFilePickedPaths.length > 0}
                     spellCheck={false}

@@ -116,6 +116,7 @@ fn main() {
             commands::list_ingest_queue,
             commands::cancel_ingest_item,
             commands::retry_ingest_item,
+            commands::delete_ingest_item,
             commands::get_page_embedding_similarities,
             commands::start_research,
             commands::list_research_tasks,

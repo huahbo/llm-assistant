@@ -1627,7 +1627,8 @@ impl AppState {
             "正在向量化（本地 Ollama）...",
         );
         let embed_provider = self.get_embed_provider();
-        let embed_content: String = source_content.chars().take(4096).collect();
+        // nomic-embed-text 上限 8192 token；中文约 2-3 token/字，2000 字 ≈ 5000 token，安全边界
+        let embed_content: String = source_content.chars().take(2000).collect();
         match embed_provider.embed(&embed_content).await {
             Ok(embedding) => {
                 if let Err(err) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
@@ -5877,6 +5878,16 @@ Wiki 页面：\n{}",
             rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
         let now = current_timestamp_ms();
         db::db_update_ingest_queue_status(&conn, id, "queued", None, &now)
+    }
+
+    /// 永久删除一条 failed/cancelled/done 的 ingest 队列记录。
+    pub fn delete_ingest_item(&self, id: i64) -> Result<(), String> {
+        let db_path = self
+            .outbox_db_path()
+            .ok_or_else(|| "Vault 未初始化".to_string())?;
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
+        db::db_delete_ingest_queue_item(&conn, id)
     }
 
     /// 计算给定页面路径列表中所有存在 embedding 的页面对的余弦相似度。

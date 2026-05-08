@@ -3416,6 +3416,20 @@ pub fn db_update_ingest_queue_status(
     Ok(())
 }
 
+/// 永久删除一条 ingest 队列记录（仅允许 failed / cancelled 状态）。
+pub fn db_delete_ingest_queue_item(conn: &Connection, id: i64) -> Result<(), String> {
+    let affected = conn
+        .execute(
+            "DELETE FROM ingest_queue_items WHERE id = ?1 AND status IN ('failed', 'cancelled', 'done')",
+            params![id],
+        )
+        .map_err(|e| format!("删除 ingest_queue_items 失败: {}", e))?;
+    if affected == 0 {
+        return Err("任务不存在或状态不允许删除（仅 failed/cancelled/done 可删）".to_string());
+    }
+    Ok(())
+}
+
 /// 把所有 running → queued（启动恢复用），返回影响行数。
 pub fn db_reset_stale_running(conn: &Connection, now: &str) -> Result<usize, String> {
     let affected = conn

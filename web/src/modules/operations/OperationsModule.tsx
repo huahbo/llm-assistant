@@ -6,6 +6,7 @@ import {
   listIngestQueue,
   cancelIngestItem,
   retryIngestItem,
+  deleteIngestItem,
   getVaultStats,
 } from "../../tauri-client";
 import { useMode } from "../../contexts/ModeContext";
@@ -74,6 +75,17 @@ export default function OperationsModule({
     if (!isTauriRuntime()) return;
     try {
       await retryIngestItem(id);
+      const items = await listIngestQueue();
+      setIngestQueue(items);
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
+  const deleteQueueItem = useCallback(async (id: number) => {
+    if (!isTauriRuntime()) return;
+    try {
+      await deleteIngestItem(id);
       const items = await listIngestQueue();
       setIngestQueue(items);
     } catch {
@@ -150,6 +162,9 @@ export default function OperationsModule({
               }}
               onRetry={(id) => {
                 void retryQueueItem(id);
+              }}
+              onDelete={(id) => {
+                void deleteQueueItem(id);
               }}
             />
           ) : (
