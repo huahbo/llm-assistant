@@ -33,6 +33,7 @@ import {
   deleteAgentSkill,
   runAgentTask,
   runShell,
+  approveAndRunShell,
   createShellSession,
   closeShellSession,
   listenShellStreamChunk,
@@ -1407,6 +1408,34 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
     await runShellCommand(agentShellCmd);
   };
 
+  const handleApproveShellCommand = async (command: string) => {
+    if (agentShellRunning || !agentShellSession) return;
+    const streamId = `approve-${Date.now()}`;
+    const sessionId = agentShellSession.session_id;
+    const entry: ShellHistoryEntry = {
+      id: Date.now(),
+      command,
+      result: { command, stdout: "", stderr: "", exit_code: 0, working_dir: "", blocked: false, blocked_reason: null, policy_action: "approved", policy_decision: "approved_by_user", executor: "manual" },
+      ts: Date.now(),
+      running: true,
+      live_stdout: "",
+      live_stderr: "",
+      stream_id: streamId,
+      session_id: sessionId,
+    };
+    setAgentShellHistory((prev) => [...prev, entry]);
+    setAgentShellRunning(true);
+    try {
+      const result = await approveAndRunShell(command, undefined, sessionId, streamId);
+      if (!result) return;
+      setAgentShellHistory((prev) =>
+        prev.map((e) => (e.stream_id === streamId ? { ...e, result, running: false } : e))
+      );
+    } finally {
+      setAgentShellRunning(false);
+    }
+  };
+
   const executeAgentTask = async (instructionInput: string, statusLabel: string): Promise<boolean> => {
     if (agentSelectedRunId == null) {
       setAgentStatusMessage("请先选择一个 run。");
@@ -2233,6 +2262,7 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
                   setAgentShellHistoryCursor={setAgentShellHistoryCursor}
                   handleShellHistoryNav={handleShellHistoryNav}
                   handleRunShell={handleRunShell}
+                  handleApproveShellCommand={handleApproveShellCommand}
                 />
               ) : null}
             </div>

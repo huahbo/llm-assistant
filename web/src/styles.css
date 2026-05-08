@@ -5548,8 +5548,31 @@ code {
 }
 
 .agent-studio__shell-blocked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--warning-strong, #ad6200);
   font-size: 12px;
+}
+
+.agent-studio__shell-approve-btn {
+  border: 1px solid var(--warning-strong, #ad6200);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--warning-strong, #ad6200);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.agent-studio__shell-approve-btn:hover {
+  background: color-mix(in srgb, var(--warning-strong, #ad6200) 10%, transparent);
+}
+
+.agent-studio__tools-workspace--deep .agent-studio__shell-approve-btn {
+  border-color: #e8a45a;
+  color: #e8a45a;
 }
 
 .agent-studio__shell-meta {

@@ -48,6 +48,7 @@ import type {
   VaultInitResult,
   VaultStats,
   NewPageResult,
+  ShellAuditEvent,
   ShellResult,
   ShellSessionInfo,
   ShellStreamChunk,
@@ -2255,6 +2256,28 @@ export async function runShell(
     invoke<ShellResult>("run_shell", { command, timeoutMs, source, sessionId, streamId }),
     (timeoutMs ?? 30_000) + 5_000
   );
+}
+
+/** 用户主动审批并执行被 require_approval 拦截的命令（H6-P2）。 */
+export async function approveAndRunShell(
+  command: string,
+  timeoutMs?: number,
+  sessionId?: string | null,
+  streamId?: string | null,
+): Promise<ShellResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(
+    invoke<ShellResult>("approve_and_run_shell", { command, timeoutMs, sessionId, streamId }),
+    (timeoutMs ?? 30_000) + 5_000
+  );
+}
+
+/** 读取 Shell 审计日志（H6-P3）。 */
+export async function listShellAuditEvents(limit?: number): Promise<ShellAuditEvent[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ShellAuditEvent[]>("list_shell_audit_events", { limit });
 }
 
 /** 创建 Shell 会话（会话内 cwd 持久化）。 */

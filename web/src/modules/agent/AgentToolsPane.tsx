@@ -35,6 +35,7 @@ type AgentToolsPaneProps = {
   setAgentShellHistoryCursor: (value: number) => void;
   handleShellHistoryNav: (direction: "prev" | "next") => void;
   handleRunShell: () => Promise<void>;
+  handleApproveShellCommand: (command: string) => Promise<void>;
 };
 
 export default function AgentToolsPane({
@@ -59,6 +60,7 @@ export default function AgentToolsPane({
   setAgentShellHistoryCursor,
   handleShellHistoryNav,
   handleRunShell,
+  handleApproveShellCommand,
 }: AgentToolsPaneProps) {
   const activeProfileKey = getActiveProfileKey(agentShellPolicyConfig);
   return (
@@ -161,7 +163,19 @@ export default function AgentToolsPane({
                 </div>
               </div>
               {e.result.blocked ? (
-                <div className="agent-studio__shell-blocked">⛔ {e.result.blocked_reason}</div>
+                <div className="agent-studio__shell-blocked">
+                  <span>⛔ {e.result.blocked_reason}</span>
+                  {e.result.policy_decision === "require_approval" && (
+                    <button
+                      type="button"
+                      className="agent-studio__shell-approve-btn"
+                      disabled={agentShellRunning}
+                      onClick={() => { void handleApproveShellCommand(e.command); }}
+                    >
+                      审批执行
+                    </button>
+                  )}
+                </div>
               ) : (
                 <pre className="agent-studio__shell-output">
                   {(e.running

@@ -556,6 +556,24 @@ export interface IngestQueueItem {
   error?: string;
   created_at: string;
   updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  retry_count?: number;
+}
+
+export interface ShellAuditEvent {
+  id: number;
+  command: string;
+  working_dir: string;
+  policy_action: string;
+  policy_decision: string;
+  executor: string;
+  blocked: boolean;
+  blocked_reason: string | null;
+  exit_code: number | null;
+  latency_ms: number | null;
+  session_id: string | null;
+  created_at: string;
 }
 
 export interface CitedPageStat {
