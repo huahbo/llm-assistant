@@ -769,15 +769,15 @@ export interface ChatStreamingMessage {
 ## 7. 进度勾选表
 
 ### Phase C1 — 基础设施（2 天）
-- [ ] C1.1 LlmProvider trait 升级 + 类型定义
-- [ ] C1.2 OpenAI/DeepSeek chat_stream 实现
-- [ ] C1.3 Ollama chat_stream + 版本探测
-- [ ] C1.4 DB schema + CRUD + 内置工具种子
+- [x] C1.1 LlmProvider trait 升级 + 类型定义
+- [x] C1.2 OpenAI/DeepSeek chat_stream 实现
+- [x] C1.3 Ollama chat_stream + 版本探测
+- [x] C1.4 DB schema + CRUD + 内置工具种子
 
 ### Phase C2 — 后端引擎（2 天）
-- [ ] C2.1 工具执行分发器
-- [ ] C2.2 ReAct 主循环 + 流式 emit
-- [ ] C2.3 Tauri 命令注册
+- [x] C2.1 工具执行分发器
+- [x] C2.2 ReAct 主循环 + 流式 emit
+- [x] C2.3 Tauri 命令注册
 
 ### Phase C3 — 前端 UI（2 天）
 - [ ] C3.1 类型 + tauri-client

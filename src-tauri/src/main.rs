@@ -138,6 +138,14 @@ fn main() {
             commands::reject_agent_write,
             commands::approve_and_run_shell,
             commands::list_shell_audit_events,
+            agent_chat::commands::create_conversation,
+            agent_chat::commands::list_conversations,
+            agent_chat::commands::rename_conversation,
+            agent_chat::commands::archive_conversation,
+            agent_chat::commands::delete_conversation,
+            agent_chat::commands::list_chat_messages,
+            agent_chat::commands::send_chat_message,
+            agent_chat::commands::cancel_chat_message,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

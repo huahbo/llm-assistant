@@ -73,6 +73,9 @@ pub struct AppState {
     ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
     /// Shell 会话缓存（session_id -> 会话状态）。
     shell_sessions: Mutex<std::collections::HashMap<String, ShellSessionState>>,
+    /// agent_chat 取消令牌（conversation_id -> CancelToken）
+    chat_cancellations:
+        Mutex<std::collections::HashMap<i64, crate::agent_chat::runtime::CancelToken>>,
 }
 
 /// 状态快照。
@@ -172,6 +175,7 @@ impl AppState {
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
+            chat_cancellations: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -257,6 +261,7 @@ impl AppState {
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
+            chat_cancellations: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -5479,6 +5484,38 @@ Wiki 页面：\n{}",
             answer_strategy,
             search_debug,
         })
+    }
+
+    /// 注册 agent_chat 取消令牌（conversation_id -> token）
+    pub fn store_chat_cancel_token(
+        &self,
+        conv_id: i64,
+        token: crate::agent_chat::runtime::CancelToken,
+    ) {
+        self.chat_cancellations
+            .lock()
+            .expect("chat_cancellations 锁已被污染")
+            .insert(conv_id, token);
+    }
+
+    /// 触发取消并移除令牌
+    pub fn cancel_chat_token(&self, conv_id: i64) {
+        use std::sync::atomic::Ordering;
+        let mut map = self
+            .chat_cancellations
+            .lock()
+            .expect("chat_cancellations 锁已被污染");
+        if let Some(token) = map.remove(&conv_id) {
+            token.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 移除已完成的取消令牌
+    pub fn remove_chat_cancel_token(&self, conv_id: i64) {
+        self.chat_cancellations
+            .lock()
+            .expect("chat_cancellations 锁已被污染")
+            .remove(&conv_id);
     }
 
     /// 取消正在进行的会话查询（软取消：停止 emit chunk）
@@ -13075,6 +13112,7 @@ entities:
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
+            chat_cancellations: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

@@ -210,11 +210,12 @@ pub fn rename_conversation(db_path: &Path, id: i64, title: &str, now: &str) -> R
     Ok(())
 }
 
-pub fn archive_conversation(db_path: &Path, id: i64, now: &str) -> Result<(), String> {
+pub fn archive_conversation(db_path: &Path, id: i64, archived: bool, now: &str) -> Result<(), String> {
     let conn = open_conn(db_path)?;
+    let val: i64 = if archived { 1 } else { 0 };
     conn.execute(
-        "UPDATE agent_conversations SET archived = 1, updated_at = ?1 WHERE id = ?2",
-        params![now, id],
+        "UPDATE agent_conversations SET archived = ?1, updated_at = ?2 WHERE id = ?3",
+        params![val, now, id],
     )
     .map_err(|e| format!("归档会话失败: {}", e))?;
     Ok(())
@@ -397,7 +398,7 @@ mod tests {
     fn test_archive_excluded_from_default_list() {
         let (_f, path) = setup_db();
         let id = create_conversation(&path, "Old Chat", None, None, None, "2026-01-01").unwrap();
-        archive_conversation(&path, id, "2026-01-02").unwrap();
+        archive_conversation(&path, id, true, "2026-01-02").unwrap();
         let default_list = list_conversations(&path, false).unwrap();
         assert!(default_list.is_empty());
         let all_list = list_conversations(&path, true).unwrap();
