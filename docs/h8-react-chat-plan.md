@@ -790,7 +790,7 @@ export interface ChatStreamingMessage {
 - [x] C4.3 会话管理 UI 完善
 
 ### Phase C5 — 收尾（1 天）
-- [ ] C5.1 写操作审批集成
+- [x] C5.1 写操作审批集成
 - [ ] C5.2 取消 + 错误处理 + 手测验收
 
 ---

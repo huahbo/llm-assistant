@@ -36,6 +36,7 @@ type Action =
       conversationId: number;
       messageId: number;
       callId: string;
+      pendingId: number;
     }
   | {
       type: "MESSAGE_DONE";
@@ -134,7 +135,7 @@ function reducer(state: State, action: Action): State {
       if (!prev) return state;
       const segments = prev.segments.map((s) => {
         if (s.kind === "tool" && s.call_id === action.callId) {
-          return { ...s, status: "awaiting_approval" as const };
+          return { ...s, status: "awaiting_approval" as const, pending_id: action.pendingId };
         }
         return s;
       });
@@ -306,6 +307,7 @@ export function useChatStream(conversationId: number | null) {
             conversationId: p.conversation_id,
             messageId: p.message_id,
             callId: p.call_id,
+            pendingId: p.pending_id,
           });
         },
       );

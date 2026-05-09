@@ -76,6 +76,10 @@ pub struct AppState {
     /// agent_chat 取消令牌（conversation_id -> CancelToken）
     chat_cancellations:
         Mutex<std::collections::HashMap<i64, crate::agent_chat::runtime::CancelToken>>,
+    /// agent_chat 写操作审批 channel（pending_id -> oneshot::Sender<Result<String,String>>）
+    chat_write_approvals: Mutex<
+        std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Result<String, String>>>,
+    >,
 }
 
 /// 状态快照。
@@ -176,6 +180,7 @@ impl AppState {
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
+            chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -262,6 +267,7 @@ impl AppState {
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
+            chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -5516,6 +5522,47 @@ Wiki 页面：\n{}",
             .lock()
             .expect("chat_cancellations 锁已被污染")
             .remove(&conv_id);
+    }
+
+    /// 注册写审批 channel（pending_id → oneshot Sender）
+    pub fn register_chat_write_approval(
+        &self,
+        pending_id: i64,
+        tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+    ) {
+        self.chat_write_approvals
+            .lock()
+            .expect("chat_write_approvals 锁已被污染")
+            .insert(pending_id, tx);
+    }
+
+    /// 批准 chat 写操作：执行写盘并通知等待的 ReAct 循环
+    pub fn approve_chat_write(&self, pending_id: i64) -> Result<(), String> {
+        let result = self.approve_agent_write_impl(pending_id);
+        let msg = result.unwrap_or_else(|e| format!("写操作失败: {e}"));
+        let tx = self
+            .chat_write_approvals
+            .lock()
+            .expect("chat_write_approvals 锁已被污染")
+            .remove(&pending_id);
+        if let Some(tx) = tx {
+            let _ = tx.send(Ok(msg));
+        }
+        Ok(())
+    }
+
+    /// 拒绝 chat 写操作：不写盘并通知等待的 ReAct 循环
+    pub fn reject_chat_write(&self, pending_id: i64) -> Result<(), String> {
+        let _ = self.reject_agent_write_impl(pending_id);
+        let tx = self
+            .chat_write_approvals
+            .lock()
+            .expect("chat_write_approvals 锁已被污染")
+            .remove(&pending_id);
+        if let Some(tx) = tx {
+            let _ = tx.send(Err("用户拒绝写操作".to_string()));
+        }
+        Ok(())
     }
 
     /// 取消正在进行的会话查询（软取消：停止 emit chunk）
@@ -13113,6 +13160,7 @@ entities:
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
+            chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

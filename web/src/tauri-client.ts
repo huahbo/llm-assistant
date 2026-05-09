@@ -2477,3 +2477,23 @@ export async function deleteConversation(conversationId: number): Promise<void> 
     // ignore
   }
 }
+
+export async function approveChatWrite(pendingId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("approve_chat_write", { pendingId }), 30_000);
+  } catch {
+    // ignore
+  }
+}
+
+export async function rejectChatWrite(pendingId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("reject_chat_write", { pendingId }), 10_000);
+  } catch {
+    // ignore
+  }
+}

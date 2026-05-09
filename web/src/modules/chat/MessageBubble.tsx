@@ -41,6 +41,7 @@ export default function MessageBubble({ role, content, segments, streaming }: Pr
                 args={seg.args}
                 result={seg.result}
                 status={seg.status}
+                pendingId={seg.pending_id}
               />
             );
           }

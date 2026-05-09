@@ -696,6 +696,7 @@ export type ChatStreamSegment =
       args: Record<string, unknown>;
       result?: { ok: boolean; preview: string; latency_ms: number };
       status: "running" | "ok" | "err" | "awaiting_approval";
+      pending_id?: number;
     }
   | { kind: "error"; message: string };
 

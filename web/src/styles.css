@@ -6887,3 +6887,44 @@ code {
   opacity: 0.6;
   font-style: italic;
 }
+
+/* Tool call approval UI (C5.1) */
+.chat-tool-card__approval {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+}
+
+.chat-tool-card__approval-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-tool-card__btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-tool-card__btn--approve {
+  background: var(--accent, #3b82f6);
+  color: white;
+}
+
+.chat-tool-card__btn--approve:hover {
+  background: var(--accent-hover, #2563eb);
+}
+
+.chat-tool-card__btn--reject {
+  background: var(--color-error, #ef4444);
+  color: white;
+}
+
+.chat-tool-card__btn--reject:hover {
+  background: #dc2626;
+}

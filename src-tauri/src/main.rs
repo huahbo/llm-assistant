@@ -146,6 +146,8 @@ fn main() {
             agent_chat::commands::list_chat_messages,
             agent_chat::commands::send_chat_message,
             agent_chat::commands::cancel_chat_message,
+            agent_chat::commands::approve_chat_write,
+            agent_chat::commands::reject_chat_write,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

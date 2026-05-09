@@ -177,7 +177,7 @@ pub async fn process_message_turn(
                     }
                     let result = tools::execute_tool_call(state, conv_id, call).await?;
 
-                    if let Some(pending_id) = result.awaiting_approval {
+                    let tool_result_content = if let Some(pending_id) = result.awaiting_approval {
                         let _ = app_handle.emit(
                             "chat_awaiting_approval",
                             json!({
@@ -187,20 +187,37 @@ pub async fn process_message_turn(
                                 "pending_id": pending_id,
                             }),
                         );
-                        return Ok(message_id);
-                    }
+                        // 创建 oneshot channel，挂起循环等待用户审批
+                        let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+                        state.register_chat_write_approval(pending_id, tx);
+
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(600),
+                            rx,
+                        )
+                        .await
+                        {
+                            Ok(Ok(Ok(msg))) => msg,
+                            Ok(Ok(Err(reason))) => format!("写操作被拒绝: {reason}"),
+                            Ok(Err(_)) => "审批 channel 关闭".to_string(),
+                            Err(_) => "审批超时（10分钟）".to_string(),
+                        }
+                    } else {
+                        result.content
+                    };
 
                     // 持久化工具结果
                     let now3 = current_timestamp_ms();
                     chat_db::append_message(
                         &db_path, conv_id, "tool",
-                        Some(&result.content),
+                        Some(&tool_result_content),
                         None,
                         Some(&result.call_id),
                         Some(&call.function.name),
                         &now3,
                     )?;
 
+                    let preview: String = tool_result_content.chars().take(200).collect();
                     let _ = app_handle.emit(
                         "chat_tool_result",
                         json!({
@@ -208,7 +225,7 @@ pub async fn process_message_turn(
                             "message_id": message_id,
                             "call_id": result.call_id,
                             "ok": true,
-                            "content_preview": result.display_preview,
+                            "content_preview": preview,
                             "latency_ms": result.latency_ms,
                         }),
                     );

@@ -121,6 +121,22 @@ pub async fn cancel_chat_message(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn approve_chat_write(
+    pending_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.approve_chat_write(pending_id)
+}
+
+#[tauri::command]
+pub async fn reject_chat_write(
+    pending_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.reject_chat_write(pending_id)
+}
+
 // ── 内部：system prompt 构建 ───────────────────────────────────────────────────
 
 fn build_system_prompt(
