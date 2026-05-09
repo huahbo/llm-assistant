@@ -785,7 +785,7 @@ export interface ChatStreamingMessage {
 - [x] C3.3 模块路由 + 导航集成
 
 ### Phase C4 — 上下文集成（1.5 天）
-- [ ] C4.1 自动标题生成
+- [x] C4.1 自动标题生成
 - [ ] C4.2 Skill 模板 + 记忆注入
 - [ ] C4.3 会话管理 UI 完善
 

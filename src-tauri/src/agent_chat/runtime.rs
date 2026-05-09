@@ -9,8 +9,10 @@ use std::sync::Arc;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
+use std::path::PathBuf;
+
 use crate::agent_chat::{db as chat_db, tools};
-use crate::llm::types::{ChatMessage, FinishReason, StreamEvent};
+use crate::llm::{types::{ChatMessage, FinishReason, StreamEvent}, LlmProvider};
 use crate::state::{current_timestamp_ms, AppState};
 
 /// 取消令牌（AtomicBool 为 true 时中止当前循环）
@@ -41,6 +43,19 @@ pub async fn process_message_turn(
     // 1. 持久化 user message
     let now = current_timestamp_ms();
     chat_db::append_message(&db_path, conv_id, "user", Some(&user_message), None, None, None, &now)?;
+
+    // 首条消息时异步生成标题
+    let existing = chat_db::list_messages(&db_path, conv_id)?;
+    if existing.len() == 1 {
+        if let Some(p) = state.get_llm_provider() {
+            let app2 = app_handle.clone();
+            let msg = user_message.clone();
+            let db = db_path.clone();
+            tokio::spawn(async move {
+                generate_title_async(p, &app2, conv_id, msg, &db).await;
+            });
+        }
+    }
 
     let max_iter: u32 = 8;
     let mut iter: u32 = 0;
@@ -249,6 +264,34 @@ fn db_msg_to_chat_msg(msg: &crate::agent_chat::db::Message) -> Result<ChatMessag
         tool_call_id: msg.tool_call_id.clone(),
         name: msg.tool_name.clone(),
     })
+}
+
+// ── 自动标题生成 ───────────────────────────────────────────────────────────────
+
+async fn generate_title_async(
+    provider: std::sync::Arc<dyn LlmProvider>,
+    app_handle: &AppHandle,
+    conv_id: i64,
+    user_message: String,
+    db_path: &PathBuf,
+) {
+    let prompt = format!(
+        "请用 4-12 个字概括以下用户问题作为对话标题，只输出标题文字：\n{}",
+        user_message.chars().take(200).collect::<String>()
+    );
+    let Ok(title) = provider.complete(&prompt).await else {
+        return;
+    };
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return;
+    }
+    let now = current_timestamp_ms();
+    let _ = chat_db::rename_conversation(db_path, conv_id, &title, &now);
+    let _ = app_handle.emit(
+        "chat_title_updated",
+        json!({ "conversation_id": conv_id, "title": title }),
+    );
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

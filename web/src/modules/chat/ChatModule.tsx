@@ -5,6 +5,7 @@ import {
   createConversation,
   renameConversation,
   deleteConversation,
+  isTauriRuntime,
 } from "../../tauri-client";
 import { useChatStream } from "./hooks/useChatStream";
 import ConversationList from "./ConversationList";
@@ -24,6 +25,21 @@ export default function ChatModule() {
 
   useEffect(() => {
     void loadConversations();
+  }, []);
+
+  // 监听后端自动生成的标题更新事件
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | null = null;
+    const setup = async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlisten = await listen<{ conversation_id: number; title: string }>(
+        "chat_title_updated",
+        () => { void loadConversations(); },
+      );
+    };
+    void setup();
+    return () => { if (unlisten) unlisten(); };
   }, []);
 
   const handleNew = async () => {
