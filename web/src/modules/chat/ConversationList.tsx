@@ -13,15 +13,27 @@ interface Props {
   onToggleArchived: () => void;
 }
 
-function relativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
+function formatConvTime(dateStr: string): string {
+  // updated_at 来自 current_timestamp_ms()，是纯数字毫秒时间戳字符串
+  const ms = /^\d{10,}$/.test(dateStr) ? Number(dateStr) : new Date(dateStr).getTime();
+  const date = new Date(ms);
+  if (isNaN(date.getTime())) return "-";
+
+  const diff = Date.now() - date.getTime();
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "刚刚";
   if (mins < 60) return `${mins}分钟前`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}小时前`;
   const days = Math.floor(hours / 24);
-  return `${days}天前`;
+  if (days < 7) return `${days}天前`;
+
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
+  return y === new Date().getFullYear()
+    ? `${m}月${d}日`
+    : `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
 export default function ConversationList({
@@ -104,7 +116,7 @@ export default function ConversationList({
             <div className="chat-convlist__item-title" title={conv.title}>
               {conv.title}
               <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>
-                {relativeTime(conv.updated_at)}
+                {formatConvTime(conv.updated_at)}
               </div>
             </div>
             <button
