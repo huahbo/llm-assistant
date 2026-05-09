@@ -791,7 +791,7 @@ export interface ChatStreamingMessage {
 
 ### Phase C5 — 收尾（1 天）
 - [x] C5.1 写操作审批集成
-- [ ] C5.2 取消 + 错误处理 + 手测验收
+- [x] C5.2 取消 + 错误处理 + 手测验收
 
 ---
 

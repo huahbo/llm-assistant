@@ -101,6 +101,10 @@ pub async fn process_message_turn(
 
         // d. 调用 chat_stream
         let mut on_event = |event: StreamEvent| {
+            // 取消时静默丢弃所有事件（不 emit）
+            if cancel_token.load(Ordering::Relaxed) {
+                return;
+            }
             match event {
                 StreamEvent::TextDelta(chunk) => {
                     let _ = app.emit(
@@ -139,10 +143,41 @@ pub async fn process_message_turn(
             }
         };
 
-        let completion = provider
+        // 取消检查：流之前先查一次
+        if cancel_token.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(
+                "chat_cancelled",
+                json!({ "conversation_id": conv_id, "message_id": message_id }),
+            );
+            break;
+        }
+
+        let completion = match provider
             .chat_stream(&llm_messages, &tools, &mut on_event)
             .await
-            .map_err(|e| format!("LLM 调用失败: {e}"))?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "chat_error",
+                    json!({
+                        "conversation_id": conv_id,
+                        "message_id": message_id,
+                        "error": format!("{e}"),
+                    }),
+                );
+                break;
+            }
+        };
+
+        // 流结束后再检查一次取消
+        if cancel_token.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(
+                "chat_cancelled",
+                json!({ "conversation_id": conv_id, "message_id": message_id }),
+            );
+            break;
+        }
 
         // e. 更新 assistant 消息
         let tool_calls_json = if completion.tool_calls.is_empty() {

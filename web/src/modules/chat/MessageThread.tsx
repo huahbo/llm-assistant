@@ -60,6 +60,7 @@ export default function MessageThread({
             content={null}
             segments={streamingMessage.segments}
             streaming={isStreaming}
+            streamStatus={streamingMessage.status}
           />
         )}
         <div ref={bottomRef} />

@@ -42,7 +42,9 @@ type Action =
       type: "MESSAGE_DONE";
       conversationId: number;
       messageId: number;
-    };
+    }
+  | { type: "MESSAGE_CANCELLED"; conversationId: number; messageId: number }
+  | { type: "MESSAGE_ERROR"; conversationId: number; messageId: number; error: string };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -153,6 +155,30 @@ function reducer(state: State, action: Action): State {
       });
       return {
         streamingMessage: { ...prev, segments, status: "done" },
+      };
+    }
+
+    case "MESSAGE_CANCELLED": {
+      const prev = state.streamingMessage;
+      if (!prev) return state;
+      return { streamingMessage: { ...prev, status: "cancelled" } };
+    }
+
+    case "MESSAGE_ERROR": {
+      const prev = state.streamingMessage;
+      const errSeg: ChatStreamSegment = { kind: "error", message: action.error };
+      if (!prev) {
+        return {
+          streamingMessage: {
+            conversation_id: action.conversationId,
+            message_id: action.messageId,
+            segments: [errSeg],
+            status: "error",
+          },
+        };
+      }
+      return {
+        streamingMessage: { ...prev, segments: [...prev.segments, errSeg], status: "error" },
       };
     }
 
@@ -312,6 +338,26 @@ export function useChatStream(conversationId: number | null) {
         },
       );
       unlisteners.push(u5);
+
+      const u6 = await listen(
+        "chat_cancelled",
+        (e: { payload: { conversation_id: number; message_id: number } }) => {
+          const p = e.payload;
+          if (p.conversation_id !== activeConvIdRef.current) return;
+          dispatch({ type: "MESSAGE_CANCELLED", conversationId: p.conversation_id, messageId: p.message_id });
+        },
+      );
+      unlisteners.push(u6);
+
+      const u7 = await listen(
+        "chat_error",
+        (e: { payload: { conversation_id: number; message_id: number; error: string } }) => {
+          const p = e.payload;
+          if (p.conversation_id !== activeConvIdRef.current) return;
+          dispatch({ type: "MESSAGE_ERROR", conversationId: p.conversation_id, messageId: p.message_id, error: p.error });
+        },
+      );
+      unlisteners.push(u7);
     };
 
     void setup();

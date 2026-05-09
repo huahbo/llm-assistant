@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatStreamSegment } from "../../types";
+import type { ChatMessage, ChatStreamingMessage, ChatStreamSegment } from "../../types";
 import ToolCallCard from "./ToolCallCard";
 
 interface Props {
@@ -6,9 +6,10 @@ interface Props {
   content: string | null;
   segments?: ChatStreamSegment[];
   streaming?: boolean;
+  streamStatus?: ChatStreamingMessage["status"];
 }
 
-export default function MessageBubble({ role, content, segments, streaming }: Props) {
+export default function MessageBubble({ role, content, segments, streaming, streamStatus }: Props) {
   if (role === "system" || role === "tool") return null;
 
   if (role === "user") {
@@ -61,6 +62,9 @@ export default function MessageBubble({ role, content, segments, streaming }: Pr
   return (
     <div className="chat-bubble chat-bubble--assistant">
       {content ?? ""}
+      {streamStatus === "cancelled" && (
+        <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 6 }}>[已取消]</span>
+      )}
     </div>
   );
 }
