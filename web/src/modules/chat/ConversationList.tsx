@@ -4,10 +4,13 @@ import type { Conversation } from "../../types";
 interface Props {
   conversations: Conversation[];
   selectedId: number | null;
+  showArchived: boolean;
   onSelect: (id: number) => void;
   onNew: () => void;
   onRename: (id: number, title: string) => void;
+  onArchive: (id: number, archived: boolean) => void;
   onDelete: (id: number) => void;
+  onToggleArchived: () => void;
 }
 
 function relativeTime(dateStr: string): string {
@@ -24,12 +27,16 @@ function relativeTime(dateStr: string): string {
 export default function ConversationList({
   conversations,
   selectedId,
+  showArchived,
   onSelect,
   onNew,
   onRename,
+  onArchive,
   onDelete,
+  onToggleArchived,
 }: Props) {
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -58,22 +65,39 @@ export default function ConversationList({
     }
   };
 
+  const filtered = search.trim()
+    ? conversations.filter((c) =>
+        c.title.toLowerCase().includes(search.toLowerCase()),
+      )
+    : conversations;
+
   return (
     <div className="chat-convlist">
       <div className="chat-convlist__header">
-        <button
-          type="button"
-          className="chat-convlist__new-btn"
-          onClick={onNew}
-        >
+        <button type="button" className="chat-convlist__new-btn" onClick={onNew}>
           + 新对话
         </button>
+        <input
+          className="chat-convlist__search"
+          type="text"
+          placeholder="搜索对话..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <label className="chat-convlist__archive-toggle">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={onToggleArchived}
+          />
+          显示已归档
+        </label>
       </div>
       <div className="chat-convlist__list">
-        {conversations.map((conv) => (
+        {filtered.map((conv) => (
           <div
             key={conv.id}
-            className={`chat-convlist__item${selectedId === conv.id ? " chat-convlist__item--active" : ""}`}
+            className={`chat-convlist__item${selectedId === conv.id ? " chat-convlist__item--active" : ""}${conv.archived ? " chat-convlist__item--archived" : ""}`}
             onClick={() => onSelect(conv.id)}
             style={{ position: "relative" }}
           >
@@ -108,49 +132,57 @@ export default function ConversationList({
                   minWidth: 100,
                 }}
               >
-                <button
-                  type="button"
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    padding: "6px 12px",
-                    textAlign: "left",
-                    border: "none",
-                    background: "transparent",
-                    cursor: "pointer",
-                    fontSize: 13,
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleRename(conv.id, conv.title);
-                  }}
-                >
-                  重命名
-                </button>
-                <button
-                  type="button"
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    padding: "6px 12px",
-                    textAlign: "left",
-                    border: "none",
-                    background: "transparent",
-                    cursor: "pointer",
-                    fontSize: 13,
+                {[
+                  {
+                    label: "重命名",
+                    color: undefined,
+                    action: () => handleRename(conv.id, conv.title),
+                  },
+                  {
+                    label: conv.archived ? "取消归档" : "归档",
+                    color: undefined,
+                    action: () => {
+                      setOpenMenuId(null);
+                      onArchive(conv.id, !conv.archived);
+                    },
+                  },
+                  {
+                    label: "删除",
                     color: "var(--color-error, #ef4444)",
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(conv.id);
-                  }}
-                >
-                  删除
-                </button>
+                    action: () => handleDelete(conv.id),
+                  },
+                ].map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "6px 12px",
+                      textAlign: "left",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      color: item.color,
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      item.action();
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>
         ))}
+        {filtered.length === 0 && (
+          <div style={{ padding: "12px 8px", fontSize: 13, opacity: 0.5, textAlign: "center" }}>
+            {search ? "无匹配对话" : "暂无对话"}
+          </div>
+        )}
       </div>
     </div>
   );

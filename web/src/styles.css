@@ -6857,3 +6857,33 @@ code {
 .chat-dialog__btn--ok:hover {
   background: var(--accent-hover, #2563eb);
 }
+
+/* Chat conversation list - search + archive (C4.3) */
+.chat-convlist__search {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg-primary, white);
+  color: inherit;
+  box-sizing: border-box;
+}
+
+.chat-convlist__archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  margin-top: 6px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.chat-convlist__item--archived .chat-convlist__item-title {
+  opacity: 0.6;
+  font-style: italic;
+}

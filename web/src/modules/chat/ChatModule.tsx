@@ -4,6 +4,7 @@ import {
   listConversations,
   createConversation,
   renameConversation,
+  archiveConversation,
   deleteConversation,
   isTauriRuntime,
 } from "../../tauri-client";
@@ -16,20 +17,21 @@ export default function ChatModule() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<number | null>(null);
   const [showNewDialog, setShowNewDialog] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   const { streamingMessage, isStreaming, sendMessage, cancelMessage } =
     useChatStream(selectedConvId);
 
   const loadConversations = async () => {
-    const convs = await listConversations();
+    const convs = await listConversations(showArchived);
     setConversations(convs);
   };
 
   useEffect(() => {
     void loadConversations();
-  }, []);
+  }, [showArchived]);
 
-  // 监听后端自动生成的标题更新事件
+  // Listen for auto-generated title updates
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | null = null;
@@ -62,49 +64,54 @@ export default function ChatModule() {
     await loadConversations();
   };
 
+  const handleArchive = async (id: number, archived: boolean) => {
+    await archiveConversation(id, archived);
+    if (!showArchived && archived && selectedConvId === id) setSelectedConvId(null);
+    await loadConversations();
+  };
+
   const handleDelete = async (id: number) => {
     await deleteConversation(id);
     if (selectedConvId === id) setSelectedConvId(null);
     await loadConversations();
   };
 
-  const handleSend = async (text: string) => {
-    await sendMessage(text);
-  };
-
   return (
     <>
-    <div className="chat-module">
-      <div className="chat-module__left">
-        <ConversationList
-          conversations={conversations}
-          selectedId={selectedConvId}
-          onSelect={setSelectedConvId}
-          onNew={() => setShowNewDialog(true)}
-          onRename={(id, title) => void handleRename(id, title)}
-          onDelete={(id) => void handleDelete(id)}
-        />
-      </div>
-      <div className="chat-module__right">
-        {selectedConvId ? (
-          <MessageThread
-            conversationId={selectedConvId}
-            streamingMessage={streamingMessage}
-            isStreaming={isStreaming}
-            onSend={(text) => void handleSend(text)}
-            onCancel={cancelMessage}
+      <div className="chat-module">
+        <div className="chat-module__left">
+          <ConversationList
+            conversations={conversations}
+            selectedId={selectedConvId}
+            showArchived={showArchived}
+            onSelect={setSelectedConvId}
+            onNew={() => setShowNewDialog(true)}
+            onRename={(id, title) => void handleRename(id, title)}
+            onArchive={(id, archived) => void handleArchive(id, archived)}
+            onDelete={(id) => void handleDelete(id)}
+            onToggleArchived={() => setShowArchived((v) => !v)}
           />
-        ) : (
-          <div className="chat-module__empty">选择或新建对话</div>
-        )}
+        </div>
+        <div className="chat-module__right">
+          {selectedConvId ? (
+            <MessageThread
+              conversationId={selectedConvId}
+              streamingMessage={streamingMessage}
+              isStreaming={isStreaming}
+              onSend={(text) => void sendMessage(text)}
+              onCancel={cancelMessage}
+            />
+          ) : (
+            <div className="chat-module__empty">选择或新建对话</div>
+          )}
+        </div>
       </div>
-    </div>
-    {showNewDialog && (
-      <NewConversationDialog
-        onConfirm={(t, sk, im) => void handleNewConfirm(t, sk, im)}
-        onCancel={() => setShowNewDialog(false)}
-      />
-    )}
+      {showNewDialog && (
+        <NewConversationDialog
+          onConfirm={(t, sk, im) => void handleNewConfirm(t, sk, im)}
+          onCancel={() => setShowNewDialog(false)}
+        />
+      )}
     </>
   );
 }
