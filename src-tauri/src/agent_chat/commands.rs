@@ -146,6 +146,14 @@ fn build_system_prompt(
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
 
+    // 环境基线：Shell 环境为 Windows PowerShell，使用 PowerShell 语法
+    parts.push(
+        "你运行在 Windows 系统上。使用 run_shell 工具时，执行的是 PowerShell 命令，\
+不能使用 Linux/Unix 命令（如 ls -la、grep、cat）。\
+请使用等效的 PowerShell 命令（如 Get-ChildItem、Select-String、Get-Content）。"
+            .to_string(),
+    );
+
     if let Some(key) = skill_key {
         if let Ok(skills) = state.list_agent_skills_impl(None) {
             if let Some(skill) = skills.iter().find(|s| s.skill_key == key) {
@@ -168,9 +176,5 @@ fn build_system_prompt(
         }
     }
 
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n\n"))
-    }
+    Some(parts.join("\n\n"))
 }

@@ -193,7 +193,11 @@ pub async fn process_message_turn(
         } else {
             Some(completion.content.as_str())
         };
-        chat_db::update_message_after_stream(&db_path, message_id, content_opt, tool_calls_json.as_deref())?;
+        chat_db::update_message_after_stream(
+            &db_path, message_id, content_opt,
+            tool_calls_json.as_deref(),
+            completion.reasoning_content.as_deref(),
+        )?;
 
         // f. 根据 finish_reason 决定后续
         match &completion.finish_reason {
@@ -315,6 +319,7 @@ fn db_msg_to_chat_msg(msg: &crate::agent_chat::db::Message) -> Result<ChatMessag
         tool_calls,
         tool_call_id: msg.tool_call_id.clone(),
         name: msg.tool_name.clone(),
+        reasoning_content: msg.reasoning_content.clone(),
     })
 }
 
@@ -362,6 +367,7 @@ mod tests {
             tool_calls_json: tool_calls_json.map(str::to_string),
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
             sequence: 1,
             created_at: "t".to_string(),
         }

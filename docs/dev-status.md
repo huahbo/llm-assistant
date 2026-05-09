@@ -11,6 +11,25 @@
 3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
 4. 查看下方 §活跃 TODO
 
+## 本轮快讯（2026-05-09，Claude Code）
+
+### H9 阶段 A — Chat UI 三项改进 已完成
+
+- **新建** `web/src/modules/chat/MarkdownRenderer.tsx`：marked + DOMPurify 渲染正文 Markdown，highlight.js（atom-one-dark）语法高亮代码块，每个代码块独立复制按钮（复制成功变 ✓）
+- **更新** `web/src/modules/chat/MessageBubble.tsx`：卡通机器人头像（紫色方头/天线/蓝眼）/ 蓝色用户头像；助手气泡 hover 出现整体复制按钮；流式中保持纯文本（防闪烁），流结束后自动切 Markdown 渲染
+- **追加 CSS** `web/src/styles.css`：`.chat-row` 布局、`.chat-avatar`、`.chat-bubble__copy-btn`、`.md-body`、`.md-code-block` 全套样式
+- **新增依赖** `highlight.js ^11.11.1`
+- **修复** `reasoning_content` 回传 bug（DeepSeek thinking 模式 HTTP 400 问题）
+- **修复** shell 系统提示（Windows PowerShell 上下文）
+- **写入计划** `docs/h9-chat-ui-websearch-plan.md`（阶段 B Web 搜索工具方案）
+- 验证：`npm run typecheck` ✅ 零错误
+
+### 下一步：H9 阶段 B — Web 搜索工具（后续实施）
+
+详见 `docs/h9-chat-ui-websearch-plan.md`
+
+---
+
 ## 本轮快讯（2026-05-07，Codex 接力）
 
 ### H7 Phase 2.9.4 AgentToolsPane 已完成

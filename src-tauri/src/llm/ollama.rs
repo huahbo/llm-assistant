@@ -594,6 +594,7 @@ impl LlmProvider for OllamaProvider {
                         content,
                         tool_calls,
                         finish_reason,
+                        reasoning_content: None,
                     });
                 }
             }

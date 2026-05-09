@@ -26,6 +26,7 @@ struct StreamToolCallDelta {
 #[derive(Debug, Deserialize, Default)]
 struct StreamDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<StreamToolCallDelta>,
 }
@@ -53,6 +54,7 @@ struct ToolCallState {
 /// 累积 OpenAI SSE deltas，分发 StreamEvent，完成后构建 ChatCompletion
 pub struct StreamAccumulator {
     content: String,
+    reasoning_content: String,
     tool_call_states: HashMap<u32, ToolCallState>,
     /// 按首次出现顺序保存 idx，保证输出顺序
     seen_indices: Vec<u32>,
@@ -63,6 +65,7 @@ impl StreamAccumulator {
     pub fn new() -> Self {
         Self {
             content: String::new(),
+            reasoning_content: String::new(),
             tool_call_states: HashMap::new(),
             seen_indices: Vec::new(),
             finish_reason: None,
@@ -85,6 +88,13 @@ impl StreamAccumulator {
 
         for choice in chunk.choices {
             let delta = choice.delta;
+
+            // 推理内容增量（DeepSeek thinking 模式，静默累积，不 emit 事件）
+            if let Some(rc) = delta.reasoning_content {
+                if !rc.is_empty() {
+                    self.reasoning_content.push_str(&rc);
+                }
+            }
 
             // 文本增量
             if let Some(content) = delta.content {
@@ -171,6 +181,11 @@ impl StreamAccumulator {
             content: self.content,
             tool_calls,
             finish_reason,
+            reasoning_content: if self.reasoning_content.is_empty() {
+                None
+            } else {
+                Some(self.reasoning_content)
+            },
         }
     }
 }

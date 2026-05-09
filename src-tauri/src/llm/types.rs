@@ -19,6 +19,9 @@ pub struct ChatMessage {
     /// tool 角色消息对应的函数名（部分 provider 要求）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// DeepSeek thinking 模式下的推理内容，必须原样回传给 API
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -29,6 +32,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -39,6 +43,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -49,6 +54,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -59,6 +65,7 @@ impl ChatMessage {
             tool_calls: Some(tool_calls),
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -69,6 +76,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
+            reasoning_content: None,
         }
     }
 }
@@ -143,6 +151,8 @@ pub struct ChatCompletion {
     /// 累积的 tool calls（finish_reason == ToolCalls 时有值）
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: FinishReason,
+    /// DeepSeek thinking 模式下的推理内容，需回传给 API
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatCompletion {
@@ -151,6 +161,7 @@ impl ChatCompletion {
             content,
             tool_calls: vec![],
             finish_reason: FinishReason::Stop,
+            reasoning_content: None,
         }
     }
 
@@ -159,6 +170,7 @@ impl ChatCompletion {
             content: String::new(),
             tool_calls,
             finish_reason: FinishReason::ToolCalls,
+            reasoning_content: None,
         }
     }
 }

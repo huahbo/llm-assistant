@@ -29,6 +29,7 @@ pub struct Message {
     pub tool_calls_json: Option<String>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
+    pub reasoning_content: Option<String>,
     pub sequence: i64,
     pub created_at: String,
 }
@@ -57,6 +58,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             tool_calls_json TEXT,
             tool_call_id    TEXT,
             tool_name       TEXT,
+            reasoning_content TEXT,
             sequence        INTEGER NOT NULL,
             created_at      TEXT NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES agent_conversations(id) ON DELETE CASCADE
@@ -71,7 +73,12 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             enabled           INTEGER NOT NULL DEFAULT 1
         );
     "#)
-    .map_err(|e| format!("agent_chat schema 创建失败: {}", e))
+    .map_err(|e| format!("agent_chat schema 创建失败: {}", e))?;
+
+    // 迁移：为已有数据库添加 reasoning_content 列（忽略已存在错误）
+    let _ = conn.execute("ALTER TABLE agent_messages ADD COLUMN reasoning_content TEXT", []);
+
+    Ok(())
 }
 
 /// 写入 5 个内置工具（INSERT OR IGNORE，幂等）
@@ -259,17 +266,18 @@ pub fn append_message(
     Ok(conn.last_insert_rowid())
 }
 
-/// 流式完成后更新 assistant 消息的 content 和 tool_calls_json
+/// 流式完成后更新 assistant 消息的 content、tool_calls_json、reasoning_content
 pub fn update_message_after_stream(
     db_path: &Path,
     message_id: i64,
     content: Option<&str>,
     tool_calls_json: Option<&str>,
+    reasoning_content: Option<&str>,
 ) -> Result<(), String> {
     let conn = open_conn(db_path)?;
     conn.execute(
-        "UPDATE agent_messages SET content = ?1, tool_calls_json = ?2 WHERE id = ?3",
-        params![content, tool_calls_json, message_id],
+        "UPDATE agent_messages SET content = ?1, tool_calls_json = ?2, reasoning_content = ?3 WHERE id = ?4",
+        params![content, tool_calls_json, reasoning_content, message_id],
     )
     .map_err(|e| format!("更新消息失败: {}", e))?;
     Ok(())
@@ -279,7 +287,7 @@ pub fn list_messages(db_path: &Path, conv_id: i64) -> Result<Vec<Message>, Strin
     let conn = open_conn(db_path)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, sequence, created_at
+            "SELECT id, conversation_id, role, content, tool_calls_json, tool_call_id, tool_name, reasoning_content, sequence, created_at
              FROM agent_messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
         )
         .map_err(|e| format!("准备消息查询失败: {}", e))?;
@@ -293,8 +301,9 @@ pub fn list_messages(db_path: &Path, conv_id: i64) -> Result<Vec<Message>, Strin
                 tool_calls_json: row.get(4)?,
                 tool_call_id: row.get(5)?,
                 tool_name: row.get(6)?,
-                sequence: row.get(7)?,
-                created_at: row.get(8)?,
+                reasoning_content: row.get(7)?,
+                sequence: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })
         .map_err(|e| format!("查询消息失败: {}", e))?;
