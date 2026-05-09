@@ -2,6 +2,7 @@ import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState, useCal
 import InboxModule from "./modules/inbox/InboxModule";
 import AskModule from "./modules/ask/AskModule";
 import AgentStudio from "./modules/agent/AgentStudio";
+import ChatModule from "./modules/chat/ChatModule";
 import LintModule from "./modules/lint/LintModule";
 import OperationsModule from "./modules/operations/OperationsModule";
 import ResearchModule from "./modules/research/ResearchModule";
@@ -193,8 +194,9 @@ export default function App() {
       id: "core",
       title: "核心",
       items: [
+        { id: "chat", icon: "💬", label: "对话" },
         { id: "agent", icon: "🧠", label: "Agent Studio" },
-        { id: "ask", icon: "💬", label: "Ask" },
+        { id: "ask", icon: "🔍", label: "Ask" },
         { id: "wiki", icon: "📄", label: "Wiki" },
         { id: "lint", icon: "🔍", label: "Lint" },
         { id: "graph", icon: "🕸", label: "图谱" },
@@ -408,7 +410,9 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}`}>
+        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}${activeModule === "chat" ? " module-viewport--chat" : ""}`}>
+          {/* ---- Chat 模块 ---- */}
+          {activeModule === "chat" && <ChatModule />}
           {/* ---- 概览模块 ---- */}
           {activeModule === "inbox" && (
             <InboxModule
