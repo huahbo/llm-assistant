@@ -15,9 +15,12 @@ pub mod stream_parser;
 pub mod types;
 
 // 重导出常用类型，方便外部使用
+#[allow(unused_imports)]
 pub use ollama::{OllamaConfig, OllamaProvider};
+#[allow(unused_imports)]
 pub use openai::{OpenAiConfig, OpenAiProvider, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL};
 pub use provider::{LlmError, LlmProvider};
+#[allow(unused_imports)]
 pub use types::{
     ChatCompletion, ChatMessage, FinishReason, StreamEvent, ToolCall, ToolCallFunction, ToolSchema,
 };

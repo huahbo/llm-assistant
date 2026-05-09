@@ -3266,6 +3266,7 @@ pub fn db_list_ingest_queue(
 }
 
 /// 取最旧一条 queued 记录。
+#[allow(dead_code)]
 pub fn db_get_next_queued_item(
     conn: &Connection,
 ) -> Result<Option<crate::models::IngestQueueItem>, String> {

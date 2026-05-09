@@ -15,8 +15,6 @@ pub struct ToolExecResult {
     pub call_id: String,
     /// 注入 tool role message 的完整内容（给 LLM 看）
     pub content: String,
-    /// UI 用简短预览（≤ 200 字符）
-    pub display_preview: String,
     pub latency_ms: u64,
     /// write/edit_wiki：待审批条目 ID；其余工具 None
     pub awaiting_approval: Option<i64>,
@@ -35,13 +33,11 @@ pub async fn execute_tool_call(
 
     let (content, awaiting_approval) = dispatch(state, &call.function.name, args).await;
 
-    let display_preview: String = content.chars().take(200).collect();
     let latency_ms = start.elapsed().as_millis() as u64;
 
     Ok(ToolExecResult {
         call_id: call.id.clone(),
         content,
-        display_preview,
         latency_ms,
         awaiting_approval,
     })

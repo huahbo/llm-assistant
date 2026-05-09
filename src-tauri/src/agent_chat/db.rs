@@ -338,6 +338,7 @@ pub fn list_enabled_tools(db_path: &Path) -> Result<Vec<ToolSchema>, String> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn upsert_tool(
     db_path: &Path,
     name: &str,

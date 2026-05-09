@@ -110,6 +110,7 @@ pub enum ShellPolicyDecision {
     Deny,
 }
 
+#[allow(dead_code)]
 impl ShellPolicyDecision {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -191,12 +192,14 @@ impl Default for ShellPolicyConfig {
 /// Shell 策略档位（用于前端一键切换）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum ShellPolicyProfile {
     Strict,
     Balanced,
     PowerUser,
 }
 
+#[allow(dead_code)]
 impl ShellPolicyConfig {
     pub fn from_profile(profile: ShellPolicyProfile) -> Self {
         match profile {

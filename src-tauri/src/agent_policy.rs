@@ -3,6 +3,7 @@ use std::path::Path;
 
 /// Shell 命令最小策略分类（H6-S1.5/S2）。
 /// 返回：(action, decision, block_reason)。
+#[allow(dead_code)]
 pub fn classify_shell_policy(
     command: &str,
     executor: &str,

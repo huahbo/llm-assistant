@@ -24,6 +24,7 @@ pub struct ChatMessage {
     pub reasoning_content: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
@@ -110,6 +111,7 @@ pub struct ToolSchema {
 
 /// 流式事件枚举，供 on_event 回调分发
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum StreamEvent {
     /// 普通文本增量
     TextDelta(String),
@@ -155,6 +157,7 @@ pub struct ChatCompletion {
     pub reasoning_content: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ChatCompletion {
     pub fn text(content: String) -> Self {
         Self {

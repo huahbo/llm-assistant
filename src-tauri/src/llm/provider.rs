@@ -115,6 +115,7 @@ pub trait LlmProvider: Send + Sync {
     }
 
     /// 是否原生支持 function_calling / tool use
+    #[allow(dead_code)]
     fn supports_tools(&self) -> bool {
         false
     }
