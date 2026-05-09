@@ -10,10 +10,12 @@ import {
 import { useChatStream } from "./hooks/useChatStream";
 import ConversationList from "./ConversationList";
 import MessageThread from "./MessageThread";
+import NewConversationDialog from "./NewConversationDialog";
 
 export default function ChatModule() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<number | null>(null);
+  const [showNewDialog, setShowNewDialog] = useState(false);
 
   const { streamingMessage, isStreaming, sendMessage, cancelMessage } =
     useChatStream(selectedConvId);
@@ -42,10 +44,13 @@ export default function ChatModule() {
     return () => { if (unlisten) unlisten(); };
   }, []);
 
-  const handleNew = async () => {
-    const title = window.prompt("新对话名称", "新对话");
-    if (!title || !title.trim()) return;
-    const id = await createConversation(title.trim());
+  const handleNewConfirm = async (
+    title: string,
+    skillKey?: string,
+    injectMemories?: boolean,
+  ) => {
+    setShowNewDialog(false);
+    const id = await createConversation(title, skillKey, injectMemories);
     if (id !== null) {
       await loadConversations();
       setSelectedConvId(id);
@@ -68,13 +73,14 @@ export default function ChatModule() {
   };
 
   return (
+    <>
     <div className="chat-module">
       <div className="chat-module__left">
         <ConversationList
           conversations={conversations}
           selectedId={selectedConvId}
           onSelect={setSelectedConvId}
-          onNew={() => void handleNew()}
+          onNew={() => setShowNewDialog(true)}
           onRename={(id, title) => void handleRename(id, title)}
           onDelete={(id) => void handleDelete(id)}
         />
@@ -93,5 +99,12 @@ export default function ChatModule() {
         )}
       </div>
     </div>
+    {showNewDialog && (
+      <NewConversationDialog
+        onConfirm={(t, sk, im) => void handleNewConfirm(t, sk, im)}
+        onCancel={() => setShowNewDialog(false)}
+      />
+    )}
+    </>
   );
 }
