@@ -780,7 +780,7 @@ export interface ChatStreamingMessage {
 - [x] C2.3 Tauri 命令注册
 
 ### Phase C3 — 前端 UI（2 天）
-- [ ] C3.1 类型 + tauri-client
+- [x] C3.1 类型 + tauri-client
 - [ ] C3.2 useChatStream + 基础组件
 - [ ] C3.3 模块路由 + 导航集成
 

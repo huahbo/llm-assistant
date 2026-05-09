@@ -16,7 +16,8 @@ export type ModuleId =
   | "operations"
   | "settings"
   | "research"
-  | "agent";
+  | "agent"
+  | "chat";
 
 export interface ModuleItem {
   id: ModuleId;
@@ -653,6 +654,56 @@ export interface ShellPolicyConfig {
   agent_unknown_decision: ShellPolicyDecision;
   network_decision: ShellPolicyDecision;
   script_decision: ShellPolicyDecision;
+}
+
+// ── agent_chat (H8) ───────────────────────────────────────────────────────────
+
+export interface Conversation {
+  id: number;
+  title: string;
+  system_prompt: string | null;
+  skill_key: string | null;
+  memory_snapshot: string | null;
+  created_at: string;
+  updated_at: string;
+  archived: boolean;
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export interface ChatMessage {
+  id: number;
+  conversation_id: number;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls: ToolCall[] | null;
+  tool_call_id: string | null;
+  tool_name: string | null;
+  created_at: string;
+  sequence: number;
+}
+
+export type ChatStreamSegment =
+  | { kind: "text"; text: string; streaming: boolean }
+  | {
+      kind: "tool";
+      call_id: string;
+      tool_name: string;
+      args: Record<string, unknown>;
+      result?: { ok: boolean; preview: string; latency_ms: number };
+      status: "running" | "ok" | "err" | "awaiting_approval";
+    }
+  | { kind: "error"; message: string };
+
+export interface ChatStreamingMessage {
+  conversation_id: number;
+  message_id: number;
+  segments: ChatStreamSegment[];
+  status: "streaming" | "tool_running" | "awaiting_approval" | "done" | "cancelled" | "error";
 }
 
 export type ShellPolicyProfile = "strict" | "balanced" | "power_user";
