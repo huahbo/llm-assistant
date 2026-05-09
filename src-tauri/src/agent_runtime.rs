@@ -282,7 +282,7 @@ fn execute_edit_wiki_action(
     }
 }
 
-fn resolve_agent_write_target_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_agent_write_target_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
     let vault_path = state.vault_path_or_err()?;
     let raw = PathBuf::from(path.trim());
     let target_path = if raw.is_absolute() {
@@ -294,7 +294,7 @@ fn resolve_agent_write_target_path(state: &AppState, path: &str) -> Result<PathB
     Ok(target_path)
 }
 
-fn read_wiki_page_for_agent(
+pub(crate) fn read_wiki_page_for_agent(
     state: &AppState,
     page_path: &str,
     max_chars: usize,

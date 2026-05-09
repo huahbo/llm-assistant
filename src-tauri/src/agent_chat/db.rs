@@ -103,8 +103,8 @@ pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
         ),
         (
             "edit_wiki",
-            "对现有 Wiki 页面进行局部修改，需要用户审批后生效",
-            r#"{"type":"object","properties":{"path":{"type":"string","description":"目标文件路径"},"patch":{"type":"string","description":"修改说明或 unified diff"},"summary":{"type":"string","description":"变更摘要，用于审批提示"}},"required":["path","patch"]}"#,
+            "对现有 Wiki 页面进行局部修改（替换指定文本），需要用户审批后生效",
+            r#"{"type":"object","properties":{"path":{"type":"string","description":"目标文件路径"},"old_str":{"type":"string","description":"要替换的原始文本（精确匹配）"},"new_str":{"type":"string","description":"替换后的新文本"},"summary":{"type":"string","description":"变更摘要，用于审批提示"}},"required":["path","old_str","new_str"]}"#,
             "builtin",
         ),
     ];
