@@ -240,23 +240,6 @@ export default function App() {
     }
   }, []);
 
-  const handleTitlebarMouseDown = useCallback((event: ReactMouseEvent<HTMLElement>) => {
-    if (!isTauriRuntime()) {
-      return;
-    }
-    if (event.button !== 0) {
-      return;
-    }
-    const target = event.target as HTMLElement | null;
-    if (target?.closest(".window-titlebar__actions")) {
-      return;
-    }
-    // 在无边框窗口上显式触发拖动，避免仅依赖 data-tauri-drag-region 的兼容差异。
-    void getCurrentWindow().startDragging().catch((error) => {
-      console.warn("窗口拖拽启动失败。", error);
-    });
-  }, []);
-
   const handleTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null;
     if (target?.closest(".window-titlebar__actions")) {
@@ -272,7 +255,6 @@ export default function App() {
       {tauriRuntime ? (
         <header
           className="window-titlebar"
-          onMouseDown={handleTitlebarMouseDown}
           onDoubleClick={handleTitlebarDoubleClick}
         >
           <div
