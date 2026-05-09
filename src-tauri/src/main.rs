@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_chat;
 mod agent_loop;
 mod agent_policy;
 mod agent_runtime;

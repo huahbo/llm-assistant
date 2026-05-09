@@ -1590,6 +1590,10 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
     ensure_agent_runs_quality(conn)?;
     ensure_ingest_queue_quality(conn)?;
 
+    // agent_chat 表与内置工具种子（幂等）
+    crate::agent_chat::db::ensure_schema(conn)?;
+    crate::agent_chat::db::seed_builtin_tools(conn)?;
+
     Ok(())
 }
 
