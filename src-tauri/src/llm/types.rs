@@ -162,3 +162,52 @@ impl ChatCompletion {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finish_reason_from_str_known_values() {
+        assert_eq!(FinishReason::from("stop"), FinishReason::Stop);
+        assert_eq!(FinishReason::from("tool_calls"), FinishReason::ToolCalls);
+        assert_eq!(FinishReason::from("length"), FinishReason::Length);
+    }
+
+    #[test]
+    fn finish_reason_from_str_unknown_falls_back() {
+        assert_eq!(
+            FinishReason::from("content_filter"),
+            FinishReason::Other("content_filter".to_string()),
+        );
+    }
+
+    #[test]
+    fn chat_message_builders_set_correct_roles() {
+        assert_eq!(ChatMessage::system("sys").role, "system");
+        assert_eq!(ChatMessage::user("u").role, "user");
+        assert_eq!(ChatMessage::assistant("a").role, "assistant");
+    }
+
+    #[test]
+    fn chat_message_tool_result_has_all_fields() {
+        let m = ChatMessage::tool_result("cid1", "my_tool", "result body");
+        assert_eq!(m.role, "tool");
+        assert_eq!(m.tool_call_id.as_deref(), Some("cid1"));
+        assert_eq!(m.name.as_deref(), Some("my_tool"));
+        assert_eq!(m.content.as_deref(), Some("result body"));
+    }
+
+    #[test]
+    fn chat_completion_with_tool_calls_has_empty_content() {
+        let tc = ToolCall {
+            id: "id1".into(),
+            kind: "function".into(),
+            function: ToolCallFunction { name: "foo".into(), arguments: "{}".into() },
+        };
+        let c = ChatCompletion::with_tool_calls(vec![tc]);
+        assert!(c.content.is_empty());
+        assert_eq!(c.finish_reason, FinishReason::ToolCalls);
+        assert_eq!(c.tool_calls.len(), 1);
+    }
+}
