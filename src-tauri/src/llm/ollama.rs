@@ -6,9 +6,13 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::provider::{LlmError, LlmProvider};
+use super::types::{
+    ChatCompletion, ChatMessage, FinishReason, StreamEvent, ToolCall, ToolCallFunction, ToolSchema,
+};
 
 /// 默认请求超时时间（秒）
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -82,6 +86,81 @@ struct GenerateStreamResponse {
     done: bool,
 }
 
+/// Ollama /api/version 响应体
+#[derive(Debug, Deserialize)]
+struct OllamaVersion {
+    version: String,
+}
+
+/// Ollama /api/chat NDJSON 工具调用函数
+#[derive(Debug, Deserialize)]
+struct OllamaChatToolCallFunction {
+    name: String,
+    /// arguments 是 JSON 对象（不是字符串），需转换为字符串
+    arguments: serde_json::Value,
+}
+
+/// Ollama /api/chat NDJSON 工具调用条目
+#[derive(Debug, Deserialize)]
+struct OllamaChatToolCall {
+    function: OllamaChatToolCallFunction,
+}
+
+/// Ollama /api/chat NDJSON 消息体
+#[derive(Debug, Deserialize, Default)]
+struct OllamaChatMessageBody {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    tool_calls: Vec<OllamaChatToolCall>,
+}
+
+/// Ollama /api/chat NDJSON 流式响应块
+#[derive(Debug, Deserialize)]
+struct OllamaChatChunk {
+    #[serde(default)]
+    message: OllamaChatMessageBody,
+    #[serde(default)]
+    done: bool,
+    done_reason: Option<String>,
+}
+
+/// Ollama /api/chat 请求体
+#[derive(Debug, Serialize)]
+struct OllamaChatRequest<'r> {
+    model: &'r str,
+    messages: &'r [ChatMessage],
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OllamaToolWire<'r>>>,
+}
+
+/// Ollama tools 数组元素（与 OpenAI 格式相同）
+#[derive(Debug, Serialize)]
+struct OllamaToolWire<'r> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: OllamaToolFunctionWire<'r>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaToolFunctionWire<'r> {
+    name: &'r str,
+    description: &'r str,
+    parameters: &'r serde_json::Value,
+}
+
+/// 检查 Ollama 版本字符串是否支持工具调用（≥ 0.4.0）
+fn ollama_version_supports_tools(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let major: u32 = parts[0].parse().unwrap_or(0);
+    let minor: u32 = parts[1].parse().unwrap_or(0);
+    (major, minor) >= (0, 4)
+}
+
 /// Ollama /api/tags 响应体（用于健康检查）
 #[derive(Debug, Deserialize)]
 struct TagsResponse {
@@ -105,21 +184,38 @@ pub struct OllamaProvider {
     config: OllamaConfig,
     /// HTTP 客户端
     client: Client,
+    /// 版本探测结果缓存（None = 未检测，Some(bool) = 是否支持 tools）
+    tool_support_cache: Arc<Mutex<Option<bool>>>,
 }
 
 #[allow(dead_code)]
 impl OllamaProvider {
     /// 创建新的 Ollama Provider 实例
-    ///
-    /// # 参数
-    /// - `config`: Ollama 配置
     pub fn new(config: OllamaConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .expect("创建 HTTP 客户端失败");
 
-        Self { config, client }
+        Self {
+            config,
+            client,
+            tool_support_cache: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 调用 /api/version 检查是否支持工具调用（≥ 0.4.0）
+    async fn check_ollama_tool_support(&self) -> bool {
+        let url = format!("{}/api/version", self.config.base_url);
+        match self.client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<OllamaVersion>().await {
+                    Ok(v) => ollama_version_supports_tools(&v.version),
+                    Err(_) => false,
+                }
+            }
+            _ => false,
+        }
     }
 
     /// 获取当前配置的模型名称
@@ -368,6 +464,151 @@ impl LlmProvider for OllamaProvider {
         Ok(full_text)
     }
 
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatCompletion, LlmError> {
+        // 懒加载版本探测（在 await 前提前释放锁，避免 MutexGuard 跨越 await）
+        let needs_check = self.tool_support_cache.lock().unwrap().is_none();
+        if needs_check {
+            let supported = self.check_ollama_tool_support().await;
+            *self.tool_support_cache.lock().unwrap() = Some(supported);
+        }
+
+        let url = format!("{}/api/chat", self.config.base_url);
+
+        let tools_wire: Option<Vec<OllamaToolWire>> = if tools.is_empty() {
+            None
+        } else {
+            Some(
+                tools
+                    .iter()
+                    .map(|t| OllamaToolWire {
+                        kind: "function",
+                        function: OllamaToolFunctionWire {
+                            name: &t.name,
+                            description: &t.description,
+                            parameters: &t.parameters,
+                        },
+                    })
+                    .collect(),
+            )
+        };
+
+        let request_body = OllamaChatRequest {
+            model: &self.config.model,
+            messages,
+            stream: true,
+            tools: tools_wire,
+        };
+
+        let mut response = self
+            .client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(Self::map_reqwest_error)?;
+
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(LlmError::ModelNotFound(self.config.model.clone()));
+        }
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::InvalidResponse(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let mut content = String::new();
+        let mut pending = String::new();
+
+        while let Some(chunk) = response.chunk().await.map_err(Self::map_reqwest_error)? {
+            pending.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(nl) = pending.find('\n') {
+                let line = pending[..nl].trim().to_string();
+                pending.drain(..=nl);
+                if line.is_empty() {
+                    continue;
+                }
+
+                let chat_chunk: OllamaChatChunk =
+                    serde_json::from_str(&line).map_err(|e| {
+                        LlmError::InvalidResponse(format!(
+                            "解析 Ollama NDJSON 失败: {} (line: {})",
+                            e,
+                            line.chars().take(80).collect::<String>()
+                        ))
+                    })?;
+
+                if !chat_chunk.message.content.is_empty() {
+                    let text = chat_chunk.message.content.clone();
+                    content.push_str(&text);
+                    on_event(StreamEvent::TextDelta(text));
+                }
+
+                if chat_chunk.done {
+                    let finish_reason = chat_chunk
+                        .done_reason
+                        .as_deref()
+                        .map(FinishReason::from)
+                        .unwrap_or(FinishReason::Stop);
+
+                    // Ollama 在 done 块中一次性返回所有 tool_calls
+                    let mut tool_calls = Vec::new();
+                    for (idx, tc) in chat_chunk.message.tool_calls.into_iter().enumerate() {
+                        let idx = idx as u32;
+                        let id = format!("call_{}", idx);
+                        let name = tc.function.name;
+                        let arguments = serde_json::to_string(&tc.function.arguments)
+                            .unwrap_or_else(|_| "{}".to_string());
+
+                        on_event(StreamEvent::ToolCallStart {
+                            idx,
+                            id: id.clone(),
+                            name: name.clone(),
+                        });
+                        if !arguments.is_empty() {
+                            on_event(StreamEvent::ToolCallArgsDelta {
+                                idx,
+                                args_chunk: arguments.clone(),
+                            });
+                        }
+                        on_event(StreamEvent::ToolCallEnd { idx });
+
+                        tool_calls.push(ToolCall {
+                            id,
+                            kind: "function".to_string(),
+                            function: ToolCallFunction { name, arguments },
+                        });
+                    }
+
+                    on_event(StreamEvent::FinishReason(finish_reason.clone()));
+
+                    return Ok(ChatCompletion {
+                        content,
+                        tool_calls,
+                        finish_reason,
+                    });
+                }
+            }
+        }
+
+        Ok(ChatCompletion::text(content))
+    }
+
+    fn supports_tools(&self) -> bool {
+        self.tool_support_cache
+            .lock()
+            .unwrap()
+            .unwrap_or(false)
+    }
+
     async fn health_check(&self) -> Result<bool, LlmError> {
         // 调用 /api/tags 检查服务是否可用
         let url = format!("{}/api/tags", self.config.base_url);
@@ -422,5 +663,37 @@ mod tests {
         let provider = OllamaProvider::new(config);
         assert_eq!(provider.model(), "mistral");
         assert_eq!(provider.base_url(), "http://192.168.1.100:11434");
+    }
+
+    #[test]
+    fn test_ollama_version_supports_tools() {
+        assert!(ollama_version_supports_tools("0.4.0"));
+        assert!(ollama_version_supports_tools("0.5.0"));
+        assert!(ollama_version_supports_tools("1.0.0"));
+        assert!(ollama_version_supports_tools("0.6.1"));
+        assert!(!ollama_version_supports_tools("0.3.14"));
+        assert!(!ollama_version_supports_tools("0.1.0"));
+        assert!(!ollama_version_supports_tools("invalid"));
+    }
+
+    #[test]
+    fn test_ollama_chat_chunk_text_parse() {
+        let line = r#"{"model":"llama3.2","message":{"role":"assistant","content":"Hello"},"done":false}"#;
+        let chunk: OllamaChatChunk = serde_json::from_str(line).expect("parse failed");
+        assert_eq!(chunk.message.content, "Hello");
+        assert!(!chunk.done);
+        assert!(chunk.message.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_ollama_chat_chunk_tool_call_parse() {
+        let line = r#"{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"shell_exec","arguments":{"cmd":"ls -la"}}}]},"done":true,"done_reason":"tool_calls"}"#;
+        let chunk: OllamaChatChunk = serde_json::from_str(line).expect("parse failed");
+        assert!(chunk.done);
+        assert_eq!(chunk.done_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(chunk.message.tool_calls.len(), 1);
+        assert_eq!(chunk.message.tool_calls[0].function.name, "shell_exec");
+        // arguments is a JSON object
+        assert_eq!(chunk.message.tool_calls[0].function.arguments["cmd"], "ls -la");
     }
 }
