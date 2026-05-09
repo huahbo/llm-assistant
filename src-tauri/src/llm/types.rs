@@ -9,11 +9,15 @@ use serde::{Deserialize, Serialize};
 pub struct ChatMessage {
     /// "system" | "user" | "assistant" | "tool"
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     /// tool 角色消息对应的 tool_call_id
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// tool 角色消息对应的函数名（部分 provider 要求）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 

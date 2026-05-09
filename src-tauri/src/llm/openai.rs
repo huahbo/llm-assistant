@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use super::provider::{LlmError, LlmProvider};
+use super::stream_parser::StreamAccumulator;
+use super::types::{ChatCompletion, ChatMessage, StreamEvent, ToolSchema};
 
 /// 默认请求超时时间（秒）；综合报告等长文生成需要更多时间
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -72,19 +74,49 @@ impl OpenAiConfig {
     }
 }
 
-/// Chat Completions 请求中的单条消息
+/// Chat Completions 请求中的单条消息（简单 prompt 用）
 #[derive(Debug, Serialize)]
-struct ChatMessage<'a> {
+struct PromptMessage<'a> {
     role: &'a str,
     content: &'a str,
 }
 
-/// Chat Completions 请求体
+/// Chat Completions 请求体（简单 prompt 用）
 #[derive(Debug, Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
+    messages: Vec<PromptMessage<'a>>,
     stream: bool,
+}
+
+// ── chat_stream wire types ─────────────────────────────────────────────────────
+
+/// OpenAI tools 数组中的 function schema 包装
+#[derive(Debug, Serialize)]
+struct ToolSchemaWire<'r> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ToolSchemaFunctionWire<'r>,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolSchemaFunctionWire<'r> {
+    name: &'r str,
+    description: &'r str,
+    parameters: &'r serde_json::Value,
+}
+
+/// multi-turn + tools 请求体（chat_stream 专用）
+#[derive(Debug, Serialize)]
+struct ChatRequestMulti<'r> {
+    model: &'r str,
+    /// 直接序列化 types::ChatMessage（已有 skip_serializing_if 属性）
+    messages: &'r [ChatMessage],
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolSchemaWire<'r>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
 }
 
 /// Chat Completions 响应中的 choice 项
@@ -204,7 +236,7 @@ impl LlmProvider for OpenAiProvider {
 
         let request_body = ChatRequest {
             model: &self.config.model,
-            messages: vec![ChatMessage {
+            messages: vec![PromptMessage {
                 role: "user",
                 content: prompt,
             }],
@@ -317,7 +349,7 @@ impl LlmProvider for OpenAiProvider {
         let url = format!("{}/chat/completions", self.config.base_url);
         let request_body = ChatRequest {
             model: &self.config.model,
-            messages: vec![ChatMessage {
+            messages: vec![PromptMessage {
                 role: "user",
                 content: prompt,
             }],
@@ -402,13 +434,105 @@ impl LlmProvider for OpenAiProvider {
             Ok(response) => Ok(response.status().is_success()),
             Err(e) => {
                 if e.is_connect() {
-                    // 连接失败，服务不可用
                     Ok(false)
                 } else {
                     Err(Self::map_reqwest_error(e))
                 }
             }
         }
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatCompletion, LlmError> {
+        let url = format!("{}/chat/completions", self.config.base_url);
+
+        let tools_wire: Option<Vec<ToolSchemaWire>> = if tools.is_empty() {
+            None
+        } else {
+            Some(
+                tools
+                    .iter()
+                    .map(|t| ToolSchemaWire {
+                        kind: "function",
+                        function: ToolSchemaFunctionWire {
+                            name: &t.name,
+                            description: &t.description,
+                            parameters: &t.parameters,
+                        },
+                    })
+                    .collect(),
+            )
+        };
+
+        let tool_choice: Option<&'static str> = if tools.is_empty() { None } else { Some("auto") };
+
+        let request_body = ChatRequestMulti {
+            model: &self.config.model,
+            messages,
+            stream: true,
+            tools: tools_wire,
+            tool_choice,
+        };
+
+        let mut response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.api_key)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(Self::map_reqwest_error)?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            return Err(LlmError::ConnectionFailed(
+                "云端 API Key 无效或未授权，请在 Settings 中更新 API Key".to_string(),
+            ));
+        }
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::InvalidResponse(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let mut accumulator = StreamAccumulator::new();
+        let mut pending = String::new();
+
+        while let Some(chunk) = response.chunk().await.map_err(Self::map_reqwest_error)? {
+            pending.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(nl) = pending.find('\n') {
+                let line = pending[..nl].trim().to_string();
+                pending.drain(..=nl);
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(data) = line.strip_prefix("data:") {
+                    let payload = data.trim();
+                    if payload == "[DONE]" {
+                        return Ok(accumulator.into_completion());
+                    }
+                    let events = accumulator
+                        .process_line(payload)
+                        .map_err(LlmError::InvalidResponse)?;
+                    for event in events {
+                        on_event(event);
+                    }
+                }
+            }
+        }
+
+        Ok(accumulator.into_completion())
+    }
+
+    fn supports_tools(&self) -> bool {
+        true
     }
 }
 

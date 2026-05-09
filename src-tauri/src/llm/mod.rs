@@ -11,6 +11,7 @@
 pub mod ollama;
 pub mod openai;
 pub mod provider;
+pub mod stream_parser;
 pub mod types;
 
 // 重导出常用类型，方便外部使用
