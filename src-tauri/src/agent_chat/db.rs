@@ -258,6 +258,22 @@ pub fn append_message(
     Ok(conn.last_insert_rowid())
 }
 
+/// 流式完成后更新 assistant 消息的 content 和 tool_calls_json
+pub fn update_message_after_stream(
+    db_path: &Path,
+    message_id: i64,
+    content: Option<&str>,
+    tool_calls_json: Option<&str>,
+) -> Result<(), String> {
+    let conn = open_conn(db_path)?;
+    conn.execute(
+        "UPDATE agent_messages SET content = ?1, tool_calls_json = ?2 WHERE id = ?3",
+        params![content, tool_calls_json, message_id],
+    )
+    .map_err(|e| format!("更新消息失败: {}", e))?;
+    Ok(())
+}
+
 pub fn list_messages(db_path: &Path, conv_id: i64) -> Result<Vec<Message>, String> {
     let conn = open_conn(db_path)?;
     let mut stmt = conn
