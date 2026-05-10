@@ -8,6 +8,7 @@ use crate::agent_chat::{
     Conversation, Message,
 };
 use crate::state::{current_timestamp_ms, AppState};
+use chrono::Local;
 
 // ── 会话管理 ───────────────────────────────────────────────────────────────────
 
@@ -146,13 +147,14 @@ fn build_system_prompt(
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
 
-    // 环境基线：Shell 环境为 Windows PowerShell，使用 PowerShell 语法
-    parts.push(
+    // 环境基线：Shell 环境 + 当前日期
+    let today = Local::now().format("%Y年%m月%d日").to_string();
+    parts.push(format!(
         "你运行在 Windows 系统上。使用 run_shell 工具时，执行的是 PowerShell 命令，\
 不能使用 Linux/Unix 命令（如 ls -la、grep、cat）。\
-请使用等效的 PowerShell 命令（如 Get-ChildItem、Select-String、Get-Content）。"
-            .to_string(),
-    );
+请使用等效的 PowerShell 命令（如 Get-ChildItem、Select-String、Get-Content）。\n\
+当前日期：{today}。使用 web_search 工具搜索时，请在关键词中加入年份或最新等时间限定词，以获取最新信息。"
+    ));
 
     if let Some(key) = skill_key {
         if let Ok(skills) = state.list_agent_skills_impl(None) {

@@ -20,6 +20,7 @@ export default function MessageThread({
   onCancel,
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevIsStreaming = useRef(false);
 
@@ -30,30 +31,44 @@ export default function MessageThread({
 
   useEffect(() => {
     setMessages([]);
+    setPendingUserMsg(null);
     void loadMessages(conversationId);
   }, [conversationId]);
 
   useEffect(() => {
     if (prevIsStreaming.current && !isStreaming) {
-      void loadMessages(conversationId);
+      void loadMessages(conversationId).then(() => setPendingUserMsg(null));
     }
     prevIsStreaming.current = isStreaming;
   }, [isStreaming, conversationId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingMessage]);
+  }, [messages, streamingMessage, pendingUserMsg]);
+
+  const handleSend = (text: string) => {
+    setPendingUserMsg(text);
+    onSend(text);
+  };
 
   return (
     <div className="chat-thread">
       <div className="chat-thread__messages">
-        {messages.map((msg) => (
+        {messages
+          .filter((msg) => !streamingMessage || msg.id !== streamingMessage.message_id)
+          .map((msg) => (
+            <MessageBubble
+              key={msg.id}
+              role={msg.role}
+              content={msg.content}
+            />
+          ))}
+        {pendingUserMsg !== null && (
           <MessageBubble
-            key={msg.id}
-            role={msg.role}
-            content={msg.content}
+            role="user"
+            content={pendingUserMsg}
           />
-        ))}
+        )}
         {streamingMessage && (
           <MessageBubble
             role="assistant"
@@ -67,7 +82,7 @@ export default function MessageThread({
       </div>
       <ChatInputBar
         isStreaming={isStreaming}
-        onSend={onSend}
+        onSend={handleSend}
         onCancel={onCancel}
       />
     </div>

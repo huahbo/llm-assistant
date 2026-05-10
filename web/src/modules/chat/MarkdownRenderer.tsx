@@ -2,7 +2,7 @@ import { useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js";
-import "highlight.js/styles/atom-one-dark.min.css";
+import "highlight.js/styles/atom-one-light.min.css";
 
 interface Segment {
   type: "markdown" | "code";
@@ -87,8 +87,15 @@ function CodeBlock({ lang, content }: { lang: string; content: string }) {
   );
 }
 
+function stripThinkTags(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .trim();
+}
+
 export default function MarkdownRenderer({ content }: { content: string }) {
-  const segments = parseSegments(content);
+  const segments = parseSegments(stripThinkTags(content));
   return (
     <div className="md-renderer">
       {segments.map((seg, i) =>
