@@ -7,6 +7,7 @@ export default function SearchConfigPanel() {
     search_provider: "none",
     tavily_api_key: "",
     searxng_url: "http://localhost:8080",
+    brave_api_key: "",
     breadth: 3,
     depth: 1,
   });
@@ -57,6 +58,7 @@ export default function SearchConfigPanel() {
             >
               <option value="none">无（禁用联网搜索）</option>
               <option value="tavily">Tavily</option>
+              <option value="brave">Brave Search</option>
               <option value="searxng">SearXNG（自托管）</option>
             </select>
           </div>
@@ -92,6 +94,24 @@ export default function SearchConfigPanel() {
                 }
                 placeholder="http://localhost:8080"
                 spellCheck={false}
+              />
+            </div>
+          )}
+
+          {config.search_provider === "brave" && (
+            <div className="dev-panel__field">
+              <label className="dev-panel__label" htmlFor="brave-api-key">Brave Search API Key</label>
+              <input
+                id="brave-api-key"
+                className="dev-panel__input"
+                type="password"
+                value={config.brave_api_key}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, brave_api_key: e.target.value }))
+                }
+                placeholder="BSA..."
+                spellCheck={false}
+                autoComplete="off"
               />
             </div>
           )}
@@ -144,7 +164,7 @@ export default function SearchConfigPanel() {
         </div>
         <p className="settings-panel__hint">
           {isTauriRuntime()
-            ? "搜索配置用于 Deep Research 模块的联网搜索。Tavily 需要申请 API Key；SearXNG 为自托管搜索引擎。"
+            ? "搜索配置用于 Deep Research 与 AI 对话的联网搜索。支持 Tavily / Brave Search（需申请 API Key）和 SearXNG（自托管）。Agent 对话会自动级联尝试所有已配置的搜索服务。"
             : "浏览器预览模式下无法保存配置。"}
         </p>
       </div>

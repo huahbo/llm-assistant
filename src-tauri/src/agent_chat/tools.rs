@@ -50,6 +50,8 @@ async fn dispatch(state: &AppState, tool_name: &str, args: Value) -> (String, Op
         "read_wiki" => exec_read_wiki(state, args),
         "write_wiki" => exec_write_wiki(state, args),
         "edit_wiki" => exec_edit_wiki(state, args),
+        "web_search" => exec_web_search(state, args).await,
+        "fetch_url" => exec_fetch_url(args).await,
         name => (format!("未知工具: {name}"), None),
     }
 }
@@ -200,6 +202,128 @@ fn exec_edit_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
         format!("edit_wiki pending approval id={pending_id} path={resolved}"),
         Some(pending_id),
     )
+}
+
+// ── web_search ─────────────────────────────────────────────────────────────────
+
+async fn exec_web_search(state: &AppState, args: Value) -> (String, Option<i64>) {
+    let query = match str_arg(&args, "query") {
+        Some(q) => q,
+        None => return ("错误：web_search 需要 'query' 参数".to_string(), None),
+    };
+    let max_results = args
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as usize;
+
+    match state.search_web_cascade(&query, max_results).await {
+        Ok(results) if results.is_empty() => ("(no results)".to_string(), None),
+        Ok(results) => {
+            let lines: Vec<String> = results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    format!(
+                        "{}. [{}]({}) — {}",
+                        i + 1,
+                        r.title,
+                        r.url,
+                        r.snippet.chars().take(200).collect::<String>()
+                    )
+                })
+                .collect();
+            (lines.join("\n"), None)
+        }
+        Err(e) => (format!("搜索失败: {e}"), None),
+    }
+}
+
+// ── fetch_url ──────────────────────────────────────────────────────────────────
+
+async fn exec_fetch_url(args: Value) -> (String, Option<i64>) {
+    let url = match str_arg(&args, "url") {
+        Some(u) => u,
+        None => return ("错误：fetch_url 需要 'url' 参数".to_string(), None),
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("llm-wiki/1.0")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return (format!("HTTP 客户端初始化失败: {e}"), None),
+    };
+
+    // 先 HEAD 检查 Content-Length（可选，部分服务器不返回）
+    let head_resp = client.head(&url).send().await;
+    if let Ok(resp) = head_resp {
+        if let Some(len) = resp.headers().get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            if len > 5 * 1024 * 1024 {
+                return (format!("页面过大（{} 字节），拒绝获取", len), None);
+            }
+        }
+    }
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => return (format!("请求失败: {e}"), None),
+    };
+
+    if !resp.status().is_success() {
+        return (format!("HTTP 错误 {}", resp.status()), None);
+    }
+
+    let html = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => return (format!("响应读取失败: {e}"), None),
+    };
+
+    let text = extract_html_text(&html);
+    let truncated: String = text.chars().take(8_000).collect();
+    (truncated, None)
+}
+
+fn extract_html_text(html: &str) -> String {
+    use scraper::{Html, Selector};
+
+    let document = Html::parse_document(html);
+
+    // 尝试找到主内容区域
+    let content_selectors = ["main", "article", "[role=main]", "body"];
+
+    for sel_str in &content_selectors {
+        if let Ok(sel) = Selector::parse(sel_str) {
+            if let Some(element) = document.select(&sel).next() {
+                // 提取文本，跳过被 remove_sel 覆盖的子元素
+                let mut text = String::new();
+                for node in element.descendants() {
+                    if let Some(text_node) = node.value().as_text() {
+                        // 检查祖先链中是否有需要移除的标签
+                        let skip = node.ancestors().any(|a| {
+                            a.value().as_element().map_or(false, |e| {
+                                matches!(e.name(), "script" | "style" | "nav" | "footer" | "header" | "aside")
+                            })
+                        });
+                        if !skip {
+                            text.push_str(text_node.trim());
+                            text.push(' ');
+                        }
+                    }
+                }
+                let result = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if result.len() > 100 {
+                    return result;
+                }
+            }
+        }
+    }
+
+    // 最终回退：直接提取所有文本
+    document.root_element().text().collect::<Vec<_>>().join(" ")
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

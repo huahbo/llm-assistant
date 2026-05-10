@@ -1023,6 +1023,7 @@ pub struct SearchConfig {
     pub search_provider: String,
     pub tavily_api_key: String,
     pub searxng_url: String,
+    pub brave_api_key: String,
     pub breadth: i32,
     pub depth: i32,
 }
@@ -1033,6 +1034,7 @@ impl Default for SearchConfig {
             search_provider: "none".into(),
             tavily_api_key: "".into(),
             searxng_url: "http://localhost:8080".into(),
+            brave_api_key: "".into(),
             breadth: 3,
             depth: 1,
         }

@@ -81,7 +81,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// 写入 5 个内置工具（INSERT OR IGNORE，幂等）
+/// 写入 7 个内置工具（INSERT OR IGNORE，幂等）
 pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
     let tools: &[(&str, &str, &str, &str)] = &[
         (
@@ -113,6 +113,18 @@ pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
             "对现有 Wiki 页面进行局部修改（替换指定文本），需要用户审批后生效",
             r#"{"type":"object","properties":{"path":{"type":"string","description":"目标文件路径"},"old_str":{"type":"string","description":"要替换的原始文本（精确匹配）"},"new_str":{"type":"string","description":"替换后的新文本"},"summary":{"type":"string","description":"变更摘要，用于审批提示"}},"required":["path","old_str","new_str"]}"#,
             "builtin",
+        ),
+        (
+            "web_search",
+            "在互联网上搜索信息（自动级联：SearXNG→Tavily→Brave→DuckDuckGo）",
+            r#"{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"},"max_results":{"type":"integer","description":"最大结果数，默认 5","default":5}},"required":["query"]}"#,
+            "1",
+        ),
+        (
+            "fetch_url",
+            "获取网页内容，提取正文文本（最大 8000 字符，超过 5MB 的页面将被拒绝）",
+            r#"{"type":"object","properties":{"url":{"type":"string","description":"要获取的网页 URL"}},"required":["url"]}"#,
+            "1",
         ),
     ];
 
@@ -425,13 +437,15 @@ mod tests {
         seed_builtin_tools(&conn).unwrap();
         drop(conn);
         let tools = list_enabled_tools(&path).unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 7);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"run_shell"));
         assert!(names.contains(&"search_wiki"));
         assert!(names.contains(&"read_wiki"));
         assert!(names.contains(&"write_wiki"));
         assert!(names.contains(&"edit_wiki"));
+        assert!(names.contains(&"web_search"));
+        assert!(names.contains(&"fetch_url"));
     }
 
     #[test]

@@ -311,6 +311,53 @@ impl AppState {
         Ok(())
     }
 
+    /// 级联搜索：依次尝试 SearXNG → Tavily → Brave → PowerShell(DuckDuckGo)。
+    /// 任一 provider 返回非空结果即返回，全部失败返回错误。
+    pub async fn search_web_cascade(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<crate::models::WebSearchResult>, String> {
+        let config = self.get_search_config();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .user_agent("llm-wiki/1.0")
+            .build()
+            .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?;
+
+        // 1. SearXNG
+        if !config.searxng_url.trim().is_empty() {
+            match search_searxng(&client, query, &config.searxng_url, max_results).await {
+                Ok(results) if !results.is_empty() => return Ok(results),
+                _ => {}
+            }
+        }
+
+        // 2. Tavily
+        if !config.tavily_api_key.trim().is_empty() {
+            match search_tavily(&client, query, &config.tavily_api_key, max_results).await {
+                Ok(results) if !results.is_empty() => return Ok(results),
+                _ => {}
+            }
+        }
+
+        // 3. Brave
+        if !config.brave_api_key.trim().is_empty() {
+            match search_brave(&client, query, &config.brave_api_key, max_results).await {
+                Ok(results) if !results.is_empty() => return Ok(results),
+                _ => {}
+            }
+        }
+
+        // 4. PowerShell fallback（DuckDuckGo Lite）
+        match search_powershell(&client, query, max_results).await {
+            Ok(results) if !results.is_empty() => return Ok(results),
+            _ => {}
+        }
+
+        Err("搜索服务不可用：所有 provider 均无响应或无结果".to_string())
+    }
+
     /// 注册等待用户审批的子查询 channel，返回 receiver
     pub fn register_query_approval(
         &self,
@@ -10084,6 +10131,94 @@ async fn search_searxng(
     }
 
     Err("SearXNG 返回 0 条结果，请检查 engines 配置或网络连通性".to_string())
+}
+
+/// Brave Search API 搜索。
+async fn search_brave(
+    client: &reqwest::Client,
+    query: &str,
+    api_key: &str,
+    max_results: usize,
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    let url = format!(
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        query.replace(' ', "+"),
+        max_results.min(10)
+    );
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("Accept-Encoding", "gzip")
+        .header("X-Subscription-Token", api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Brave 请求失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Brave API 错误 {status}: {body}"));
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("Brave 响应解析失败: {e}"))?;
+    let mut out = Vec::new();
+    if let Some(results) = json.get("web").and_then(|w| w.get("results")).and_then(|r| r.as_array()) {
+        for item in results.iter().take(max_results) {
+            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let snippet = item.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if url.is_empty() { continue; }
+            let source = url_hostname(&url);
+            out.push(crate::models::WebSearchResult { title, url, snippet, source });
+        }
+    }
+    Ok(out)
+}
+
+/// PowerShell fallback：用 reqwest 抓取 DuckDuckGo Lite HTML 并解析结果。
+async fn search_powershell(
+    client: &reqwest::Client,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    let url = format!("https://lite.duckduckgo.com/lite/?q={}", query.replace(' ', "+"));
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("DuckDuckGo 请求失败: {e}"))?;
+
+    let html = resp.text().await.map_err(|e| format!("DuckDuckGo 响应读取失败: {e}"))?;
+
+    use scraper::{Html, Selector};
+    let document = Html::parse_document(&html);
+    let row_sel = Selector::parse("tr").unwrap();
+    let link_sel = Selector::parse("a.result-link").unwrap();
+    let snippet_sel = Selector::parse("td.result-snippet").unwrap();
+
+    let mut out = Vec::new();
+    let rows: Vec<_> = document.select(&row_sel).collect();
+    let mut i = 0;
+    while i < rows.len() && out.len() < max_results {
+        if let Some(a) = rows[i].select(&link_sel).next() {
+            let title = a.text().collect::<String>().trim().to_string();
+            let href = a.value().attr("href").unwrap_or("").to_string();
+            let snippet = if i + 1 < rows.len() {
+                rows[i + 1].select(&snippet_sel).next()
+                    .map(|s| s.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if !href.is_empty() && !title.is_empty() {
+                let source = url_hostname(&href);
+                out.push(crate::models::WebSearchResult { title, url: href, snippet, source });
+            }
+        }
+        i += 1;
+    }
+    Ok(out)
 }
 
 /// 从 URL 提取 hostname。

@@ -2190,6 +2190,7 @@ const defaultSearchConfig: SearchConfig = {
   search_provider: "none",
   tavily_api_key: "",
   searxng_url: "http://localhost:8080",
+  brave_api_key: "",
   breadth: 3,
   depth: 1,
 };

@@ -542,9 +542,10 @@ export interface ResearchTaskItem {
 }
 
 export interface SearchConfig {
-  search_provider: "tavily" | "searxng" | "none";
+  search_provider: "tavily" | "searxng" | "brave" | "none";
   tavily_api_key: string;
   searxng_url: string;
+  brave_api_key: string;
   breadth: number;
   depth: number;
 }
