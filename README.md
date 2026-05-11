@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.0 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.1 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -10,15 +10,49 @@
 
 | 模块 | 说明 |
 |------|------|
-| **Chat（AI 对话）** | ReAct 多轮 Agent 对话；Markdown 渲染 + 代码高亮 + 复制按钮；内置工具：run_shell / search_wiki / read_wiki / write_wiki / edit_wiki / **web_search / fetch_url**；四级联网搜索（SearXNG → Tavily → Brave → DuckDuckGo）；DeepSeek reasoning 支持；流式输出；对话归档/重命名/搜索 |
-| **Ingest** | 支持 Markdown / PDF / DOCX / PPTX / TXT / 图片 OCR，URL 抓取，拖拽摄入，持久化 ingest 队列（含重试/取消） |
-| **Query / Ask** | FTS5 + embedding + 引用热度 + 链接扩展 四路 RRF 检索；Ollama / OpenAI-compatible 流式对话；Ask 会话持久化管理 |
+| **Chat（AI 对话）** | ReAct 多轮 Agent 对话；Markdown 渲染 + 代码高亮；8 个内置工具（含 web_search / fetch_url / spawn_subagent）；四级联网搜索；MCP 扩展工具支持；Shell 策略审批 + 票据缓存；流式输出；对话归档/重命名 |
+| **Ingest** | 支持 Markdown / PDF / DOCX / PPTX / TXT / 图片 OCR，URL 抓取，拖拽摄入，持久化摄入队列（含重试/取消） |
+| **Query / Ask** | FTS5 + embedding + 混合语义检索（四路 RRF）；流式对话；Ask 会话持久化管理 |
 | **Wiki** | Markdown 编辑/渲染/重命名/删除，双向链接，内链补全，实体提取，Frontmatter 元数据 |
 | **Lint** | 语义矛盾/陈旧/覆盖度检测，Wiki-link 级 broken/orphan 检测，可预览/应用修复补丁 |
-| **Graph** | 知识图谱可视化，Global/Local 模式，洞察层（孤立节点/稀疏社区/桥接节点/异常连接 + embedding 相似度评分） |
-| **Deep Research** | LLM 驱动的多轮联网研究，自动分解子查询、多源聚合、综合报告，结果写入 Wiki |
-| **Agent Studio** | LLM 驱动的 Wiki 草稿生成工作区：Skill 模板、检索增强、审批后自动提炼全局记忆（AAAK-lite） |
-| **Settings** | LLM Provider 配置（Ollama / OpenAI-compatible）；搜索配置（SearXNG / Tavily / Brave Search）；OCR Provider；Shell 策略 |
+| **Graph** | 知识图谱可视化（Global/Local 模式）；Chat↔Graph 双向联动（节点高亮、右键跳转、Ask 预填充）；洞察层 |
+| **Deep Research** | LLM 驱动多轮联网研究，子查询分解、多源聚合、综合报告写入 Wiki |
+| **Agent Studio** | LLM 驱动 Wiki 草稿生成；Skill 模板；检索增强；审批后自动提炼全局记忆（AAAK-lite）；Shell 审计日志 |
+| **Settings** | LLM Provider 配置；搜索配置（SearXNG / Tavily / Brave）；OCR Provider；Shell 策略配置；**MCP 服务器管理** |
+
+---
+
+## 最近更新（H9–H13 + 重构）
+
+### H13：Chat ↔ Graph 双向联动
+- AI 回复中的 Wiki 路径自动高亮图谱节点
+- 图谱节点右键菜单：「向 Chat 提问」「在 Chat 中检索」
+- GraphBridgeContext 统一管理双向通信状态
+
+### H12：Wiki 混合语义检索
+- `searchWikiPagesHybrid` 融合 FTS5 全文 + embedding 余弦相似度
+- 后台自动为未索引页面生成向量（`VectorIndexWorker`）
+- 搜索策略自动降级：embedding 可用时混合，否则纯 FTS
+
+### H11：Agent Swarm（spawn_subagent 工具）
+- Chat Agent 可动态派生子对话，异步执行子任务并返回摘要
+- 深度限制：子代理无法再次派生，防止无限递归
+- 子对话标题前缀 `[子代理]`，可在对话列表追踪
+
+### H10：MCP Client 集成
+- 实现基于 stdio JSON-RPC 2.0 的 MCP 客户端（`tokio::process`）
+- Settings 面板支持添加/删除/重载 MCP 服务器及其工具
+- Agent 工具调用自动路由到对应 MCP 服务器（`handler_kind = "mcp:<name>"`）
+
+### H6-P2/P3：Shell 安全增强
+- **审批票据缓存**：勾选「记住 5 分钟」后，相同路径/动作免重复弹窗（TTL 300s）
+- **Shell 审计落库**：所有命令执行（含被拦截）写入 `shell_audit_log` 表
+- Agent Studio → Shell 历史区底部可查看最近 20 条审计记录
+
+### 代码结构重构
+- `tauri-client.ts`（2309 行）拆分为 10 个领域子模块（chat / shell / wiki / ingest / search / agent / config / dialog / mcp），主文件改为 barrel re-export
+- `styles.css`（1523 行 → 838 行，-45%），模块专属样式迁至各模块 CSS 文件
+- Graph UI：工具栏标签换行修复、右键菜单文字可见性修复、图谱背景改为亮色主题
 
 ---
 
@@ -29,10 +63,11 @@
 | **Ingest（文本）** | 无额外服务 | - | 初始化 Vault 后即可使用 |
 | **Ingest（图片/PDF OCR）** | Tesseract（建议含 `eng` + `chi_sim`） | PaddleOCR | `Settings → OCR Provider` |
 | **Query / Ask / Chat** | Ollama 或 OpenAI-compatible 云 Provider | - | `Settings → LLM Provider` |
-| **语义检索 / 图谱** | Ollama embedding 模型（`nomic-embed-text`） | - | `embed_ollama_model=nomic-embed-text` |
-| **Chat web_search** | 无（DuckDuckGo 兜底无需配置） | SearXNG / Tavily / Brave Search | `Settings → 搜索配置`，配置 API Key 可提升质量 |
+| **语义检索 / 混合搜索 / 图谱** | Ollama embedding 模型（`nomic-embed-text`） | - | `embed_ollama_model=nomic-embed-text` |
+| **Chat web_search** | 无（DuckDuckGo 兜底无需配置） | SearXNG / Tavily / Brave Search | `Settings → 搜索配置` |
 | **Deep Research** | 搜索 Provider（至少配置一个） | - | `Settings → 搜索配置` |
-| **Clipper 扩展** | 桌面 App 运行中 + Vault 已打开 | Chrome/Edge 扩展 | 本地服务 `127.0.0.1:19827` 可访问 |
+| **Chat MCP 工具** | 任意 MCP 服务器进程 | - | `Settings → MCP 服务器` 添加并重载 |
+| **Clipper 扩展** | 桌面 App 运行中 + Vault 已打开 | Chrome/Edge 扩展 | 本地服务 `127.0.0.1:19827` |
 | **Strict Local Mode** | Ollama（本地） | - | 禁止云 Provider，敏感任务强制本地 |
 
 ---
@@ -69,13 +104,13 @@
 ollama pull qwen2.5:7b          # 推荐，中英双语
 ollama pull deepseek-r1:7b      # 带 reasoning 推理模式
 
-# Embedding（必须，用于语义检索）
+# Embedding（必须，用于语义检索 + 混合搜索）
 ollama pull nomic-embed-text
 ```
 
 ### 安装应用
 
-1. 从 [Releases](../../releases) 下载 `LLM-Wiki_0.2.0_x64-setup.exe` 或 `.msi`
+1. 从 [Releases](../../releases) 下载最新安装包
 2. 双击安装（默认 `%LOCALAPPDATA%\LLM Wiki\`）
 3. 启动后在 **Settings → LLM Provider** 填写 Ollama 地址并选择模型
 
@@ -83,17 +118,25 @@ ollama pull nomic-embed-text
 
 ## Chat 模块使用指南
 
-Chat 是一个能力较强的 AI Agent，内置 7 个工具：
+Chat 是能力较强的 ReAct Agent，内置 8 个工具：
 
 | 工具 | 说明 |
 |------|------|
-| `run_shell` | 执行 PowerShell 命令（受 Shell 策略控制） |
-| `search_wiki` | 在本地知识库全文/语义搜索 |
+| `run_shell` | 执行 PowerShell 命令（受 Shell 策略控制；支持 5 分钟免审批票据缓存） |
+| `search_wiki` | 在本地知识库全文 + 语义混合搜索 |
 | `read_wiki` | 读取指定 Wiki 页面内容 |
-| `write_wiki` | 写入新 Wiki 页面（需审批） |
-| `edit_wiki` | 编辑现有 Wiki 页面（需审批） |
-| `web_search` | 联网搜索（自动级联：SearXNG → Tavily → Brave → DuckDuckGo） |
-| `fetch_url` | 获取网页正文（scraper 精准提取，最大 8000 字符） |
+| `write_wiki` | 写入新 Wiki 页面（需审批，支持记住 5 分钟） |
+| `edit_wiki` | 编辑现有 Wiki 页面（需审批，支持记住 5 分钟） |
+| `web_search` | 联网搜索（自动级联：SearXNG → Tavily → Brave → DuckDuckGo；结果显示来源标签） |
+| `fetch_url` | 获取网页正文（精准提取，最大 8000 字符） |
+| `spawn_subagent` | 派生子 Agent 对话异步执行子任务，返回摘要（最大深度 1） |
+
+**MCP 工具扩展**：在 `Settings → MCP 服务器` 添加任意 MCP 服务器后，其工具自动注册到 Chat Agent 工具列表，调用时通过 stdio JSON-RPC 2.0 转发。
+
+**Shell 策略**（`Settings → Shell 策略`）：
+- 按命令类型（read / write / network / script / destructive）× 来源（manual / agent）分类
+- 支持三档策略：`auto_allow` / `require_approval` / `deny`
+- 审批时勾选「记住 5 分钟」可创建 TTL 300s 的审批票据，同范围内自动放行
 
 **联网搜索配置**（可选，不配置时走 DuckDuckGo 兜底）：
 - Tavily：https://app.tavily.com 申请 API Key → `Settings → 搜索配置 → Tavily`
@@ -132,7 +175,7 @@ cargo tauri build
 ### 测试
 
 ```powershell
-# Rust 单测
+# Rust 单测（263 项）
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # 前端类型检查
@@ -148,32 +191,48 @@ llm-wiki/
 ├── src-tauri/              # Rust 后端（Tauri v2）
 │   └── src/
 │       ├── commands.rs     # Tauri 命令注册入口
-│       ├── state.rs        # 业务逻辑（ingest/query/lint/search/agent）
-│       ├── db.rs           # SQLite（FTS5 + embedding + 队列）
+│       ├── state.rs        # 业务逻辑（ingest/query/lint/search/shell/agent）
+│       ├── db.rs           # SQLite（FTS5 + embedding + 队列 + shell 审计）
 │       ├── vault.rs        # Markdown Vault 读写
-│       ├── models.rs       # 数据模型（含 SearchConfig）
+│       ├── models.rs       # 数据模型
+│       ├── agent_policy.rs # Shell 策略分类 + 审批票据缓存（TTL 5min）
 │       ├── llm/            # LLM Provider（Ollama / OpenAI-compatible）
 │       │   ├── stream_parser.rs  # SSE 流式解析 + reasoning_content
 │       │   └── types.rs    # ChatMessage / ToolCall / StreamEvent
 │       └── agent_chat/     # Chat 模块后端
-│           ├── commands.rs # 会话/消息/工具 Tauri 命令
-│           ├── runtime.rs  # ReAct 主循环 + Tauri 事件 emit
-│           ├── tools.rs    # 工具执行分发（7个内置工具）
-│           └── db.rs       # 会话/消息/工具 SQLite CRUD
+│           ├── commands.rs # 会话/消息/MCP 管理 Tauri 命令
+│           ├── runtime.rs  # ReAct 主循环 + 事件 emit
+│           ├── tools.rs    # 工具执行分发（8 个内置 + MCP 路由）
+│           ├── db.rs       # 会话/消息/工具/MCP配置 SQLite CRUD
+│           └── mcp.rs      # MCP 客户端（stdio JSON-RPC 2.0）
 ├── web/                    # React + TypeScript 前端
 │   └── src/
-│       ├── modules/chat/   # Chat 模块 UI
-│       │   ├── ChatModule.tsx
-│       │   ├── MessageThread.tsx
-│       │   ├── MessageBubble.tsx      # 头像 + Markdown 渲染 + 复制
-│       │   ├── MarkdownRenderer.tsx   # marked + DOMPurify + highlight.js
-│       │   ├── ToolCallCard.tsx
-│       │   ├── ConversationList.tsx
-│       │   └── hooks/useChatStream.ts # 流式 SSE → React state
+│       ├── modules/
+│       │   ├── chat/       # Chat UI（对话列表/消息流/工具卡片/审批）
+│       │   ├── wiki/       # Wiki 编辑/浏览
+│       │   ├── graph/      # 知识图谱可视化（含 Chat 双向联动）
+│       │   ├── agent/      # Agent Studio（运行/草稿/记忆/技能/审计）
+│       │   ├── ask/        # Query 问答
+│       │   ├── lint/       # Lint 检测与修复
+│       │   ├── settings/   # 设置面板（LLM/搜索/OCR/Shell/MCP）
+│       │   ├── research/   # Deep Research
+│       │   └── operations/ # 摄入队列管理
+│       ├── tauri-client/   # Tauri 命令封装（10 个领域子模块）
+│       │   ├── base.ts     # isTauriRuntime / withTimeout
+│       │   ├── chat.ts     # 对话 CRUD + 消息 + 审批
+│       │   ├── shell.ts    # Shell 执行 / 审计 / 策略 / 票据
+│       │   ├── wiki.ts     # Wiki CRUD / 图谱 / Lint
+│       │   ├── ingest.ts   # 摄入流水线 / 队列
+│       │   ├── search.ts   # 问答会话 / 研究任务
+│       │   ├── agent.ts    # Agent 运行 / 草稿 / 记忆 / 技能
+│       │   ├── config.ts   # LLM / OCR / Vault 配置
+│       │   ├── dialog.ts   # 文件/文件夹选择对话框
+│       │   └── mcp.ts      # MCP 服务器管理
+│       ├── tauri-client.ts # barrel re-export（10 行）
+│       ├── contexts/       # React Context（GraphBridgeContext 等）
 │       ├── App.tsx
-│       ├── tauri-client.ts
 │       ├── types.ts
-│       └── styles.css
+│       └── styles.css      # 全局基础样式（838 行，模块样式已拆至各模块）
 ├── docs/                   # 设计与开发文档
 ├── agents.md               # 三方 Agent 协作协议
 ├── scripts/                # SearXNG / Clipper 自检脚本
@@ -185,8 +244,8 @@ llm-wiki/
 ## 数据存储
 
 - **Vault**（Markdown）：`%APPDATA%\llm-wiki\vault\`
-- **主数据库**：同目录 `meta.db`（wiki_pages / ask_sessions / agent_runs / ingest_queue 等表）
-- **Chat 数据库**：同目录 `agent_chat.db`（conversations / messages / tools 表）
+- **主数据库**：同目录 `meta.db`（wiki_pages / ask_sessions / agent_runs / ingest_queue / shell_audit_log 等表）
+- **Chat 数据库**：同目录 `agent_chat.db`（conversations / messages / agent_tools / mcp_server_configs 表）
 - **搜索配置**：`%APPDATA%\llm-wiki\search-config.json`
 
 ---
