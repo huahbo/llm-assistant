@@ -4,17 +4,17 @@
 
 /* ---------- 设计令牌 ---------- */
 :root {
-  --bg-page:      #f0f4ff;
-  --bg-sidebar:   #ffffff;
-  --bg-content:   #f8faff;
+  --bg-page:      #f4f3ee;
+  --bg-sidebar:   #faf9f7;
+  --bg-content:   #f4f3ee;
   --bg-card:      #ffffff;
-  --bg-muted:     #eef2f7;
+  --bg-muted:     #eceae4;
 
-  --accent:       #4f46e5;   /* indigo-600 */
-  --accent-2:     #7c3aed;   /* violet-600 */
-  --accent-light: #eef2ff;
-  --accent-hover: #4338ca;
-  --accent-grad:  linear-gradient(135deg, #4f46e5, #7c3aed);
+  --accent:       #6366f1;   /* indigo-500 */
+  --accent-2:     #8b5cf6;   /* violet-500 */
+  --accent-light: #f0f0fe;
+  --accent-hover: #4f46e5;
+  --accent-grad:  linear-gradient(135deg, #6366f1, #8b5cf6);
 
   --success:      #059669;
   --success-bg:   #ecfdf5;
@@ -28,12 +28,12 @@
   --text:         #1e293b;
   --text-muted:   #64748b;
   --text-sidebar: #475569;
-  --border:       #e2e8f0;
-  --border-light: #f1f5f9;
+  --border:       #e5e2db;
+  --border-light: #eeecea;
 
-  --shadow-sm:    0 1px 3px rgba(0, 0, 0, 0.07);
-  --shadow-md:    0 4px 12px rgba(79, 70, 229, 0.1);
-  --shadow-lg:    0 8px 24px rgba(79, 70, 229, 0.14);
+  --shadow-sm:    0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md:    0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg:    0 8px 24px rgba(0, 0, 0, 0.10);
 
   --sidebar-w:    220px;
   --radius:       10px;
@@ -330,7 +330,7 @@ body.split-dragging .split-handle::after {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-radius: var(--radius-sm);
   color: var(--text-sidebar);
   font-size: 13.5px;
