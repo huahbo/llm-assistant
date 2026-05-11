@@ -22,6 +22,14 @@ function statusIcon(status: ToolStatus): string {
   }
 }
 
+function extractSearchSource(preview: string): { source: string | null; body: string } {
+  const match = preview.match(/^\[via ([^\]]+)\]\n?/);
+  if (match) {
+    return { source: match[1], body: preview.slice(match[0].length) };
+  }
+  return { source: null, body: preview };
+}
+
 export default function ToolCallCard({ toolName, args, result, status, pendingId }: Props) {
   const [expanded, setExpanded] = useState(status === "awaiting_approval");
   const [remember, setRemember] = useState(false);
@@ -60,11 +68,24 @@ export default function ToolCallCard({ toolName, args, result, status, pendingId
                     ? "var(--text-secondary, #6b7280)"
                     : "var(--color-error, #ef4444)",
                   marginTop: 4,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
                 }}
               >
                 {result.ok ? "结果：" : "错误："}
+                {toolName === "web_search" && (() => {
+                  const { source } = extractSearchSource(result.preview);
+                  return source ? (
+                    <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: "var(--accent-light, #eef2ff)", color: "var(--accent, #4f46e5)", fontWeight: 600 }}>
+                      via {source}
+                    </span>
+                  ) : null;
+                })()}
               </div>
-              <pre className="chat-tool-card__pre">{result.preview}</pre>
+              <pre className="chat-tool-card__pre">
+                {toolName === "web_search" ? extractSearchSource(result.preview).body : result.preview}
+              </pre>
             </>
           )}
           {status === "awaiting_approval" && (

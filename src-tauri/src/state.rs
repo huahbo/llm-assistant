@@ -318,6 +318,16 @@ impl AppState {
         query: &str,
         max_results: usize,
     ) -> Result<Vec<crate::models::WebSearchResult>, String> {
+        Ok(self.search_web_cascade_with_source(query, max_results).await?.0)
+    }
+
+    /// 级联搜索（带搜索源标签，H9-B 可观察性）。
+    /// 返回 (results, provider_name)，provider_name 为实际命中的 provider 名称。
+    pub async fn search_web_cascade_with_source(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> Result<(Vec<crate::models::WebSearchResult>, &'static str), String> {
         let config = self.get_search_config();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
@@ -328,7 +338,7 @@ impl AppState {
         // 1. SearXNG
         if !config.searxng_url.trim().is_empty() {
             match search_searxng(&client, query, &config.searxng_url, max_results).await {
-                Ok(results) if !results.is_empty() => return Ok(results),
+                Ok(results) if !results.is_empty() => return Ok((results, "SearXNG")),
                 _ => {}
             }
         }
@@ -336,7 +346,7 @@ impl AppState {
         // 2. Tavily
         if !config.tavily_api_key.trim().is_empty() {
             match search_tavily(&client, query, &config.tavily_api_key, max_results).await {
-                Ok(results) if !results.is_empty() => return Ok(results),
+                Ok(results) if !results.is_empty() => return Ok((results, "Tavily")),
                 _ => {}
             }
         }
@@ -344,14 +354,14 @@ impl AppState {
         // 3. Brave
         if !config.brave_api_key.trim().is_empty() {
             match search_brave(&client, query, &config.brave_api_key, max_results).await {
-                Ok(results) if !results.is_empty() => return Ok(results),
+                Ok(results) if !results.is_empty() => return Ok((results, "Brave")),
                 _ => {}
             }
         }
 
         // 4. PowerShell fallback（DuckDuckGo Lite）
         match search_powershell(&client, query, max_results).await {
-            Ok(results) if !results.is_empty() => return Ok(results),
+            Ok(results) if !results.is_empty() => return Ok((results, "DuckDuckGo")),
             _ => {}
         }
 

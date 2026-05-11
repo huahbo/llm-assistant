@@ -236,22 +236,20 @@ async fn exec_web_search(state: &AppState, args: Value) -> (String, Option<i64>)
         .and_then(|v| v.as_u64())
         .unwrap_or(5) as usize;
 
-    match state.search_web_cascade(&query, max_results).await {
-        Ok(results) if results.is_empty() => ("(no results)".to_string(), None),
-        Ok(results) => {
-            let lines: Vec<String> = results
-                .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    format!(
-                        "{}. [{}]({}) — {}",
-                        i + 1,
-                        r.title,
-                        r.url,
-                        r.snippet.chars().take(200).collect::<String>()
-                    )
-                })
-                .collect();
+    match state.search_web_cascade_with_source(&query, max_results).await {
+        Ok((results, _)) if results.is_empty() => ("(no results)".to_string(), None),
+        Ok((results, source)) => {
+            let mut lines: Vec<String> = Vec::with_capacity(results.len() + 1);
+            lines.push(format!("[via {source}]"));
+            for (i, r) in results.iter().enumerate() {
+                lines.push(format!(
+                    "{}. [{}]({}) — {}",
+                    i + 1,
+                    r.title,
+                    r.url,
+                    r.snippet.chars().take(200).collect::<String>()
+                ));
+            }
             (lines.join("\n"), None)
         }
         Err(e) => (format!("搜索失败: {e}"), None),
