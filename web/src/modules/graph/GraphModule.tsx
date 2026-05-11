@@ -1097,6 +1097,7 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
                     graphData={graphRenderData}
                     width={graphDimensions.width}
                     height={graphDimensions.height}
+                    backgroundColor="#eef2f7"
                     nodeLabel="label"
                     nodeRelSize={6}
                     nodeVal={(node: object) => {
@@ -1111,7 +1112,7 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
                       const n = node as GraphLikeNode;
                       return n.group ? groupColor(n.group) : "#4a9eff";
                     }}
-                    linkColor={() => "rgba(120,120,180,0.4)"}
+                    linkColor={() => "rgba(79,70,229,0.3)"}
                     linkWidth={(link: object) => {
                       const edge = link as GraphLikeLink;
                       return edge.weight ? Math.min(1 + edge.weight * 0.5, 4) : 1;
