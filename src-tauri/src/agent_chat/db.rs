@@ -136,6 +136,12 @@ pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
             r#"{"type":"object","properties":{"url":{"type":"string","description":"要获取的网页 URL"}},"required":["url"]}"#,
             "1",
         ),
+        (
+            "spawn_subagent",
+            "在独立对话上下文中启动子代理处理子任务，等待其完成后返回结果摘要（≤4000字符）。子代理可使用所有内置工具，但不能再 spawn 孙代理。",
+            r#"{"type":"object","properties":{"task":{"type":"string","description":"子代理的任务描述，要求清晰完整"}},"required":["task"]}"#,
+            "builtin",
+        ),
     ];
 
     for (name, description, parameters_schema, handler_kind) in tools {
@@ -609,7 +615,7 @@ mod tests {
         seed_builtin_tools(&conn).unwrap();
         drop(conn);
         let tools = list_enabled_tools(&path).unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"run_shell"));
         assert!(names.contains(&"search_wiki"));
@@ -618,6 +624,7 @@ mod tests {
         assert!(names.contains(&"edit_wiki"));
         assert!(names.contains(&"web_search"));
         assert!(names.contains(&"fetch_url"));
+        assert!(names.contains(&"spawn_subagent"));
     }
 
     #[test]

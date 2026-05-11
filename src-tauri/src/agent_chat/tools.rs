@@ -23,7 +23,7 @@ pub struct ToolExecResult {
 /// 分发并执行一个 tool call，总是返回 Ok（工具内部错误编码到 content 中）
 pub async fn execute_tool_call(
     state: &AppState,
-    _conv_id: i64,
+    conv_id: i64,
     call: &ToolCall,
 ) -> Result<ToolExecResult, String> {
     let start = Instant::now();
@@ -31,7 +31,7 @@ pub async fn execute_tool_call(
     let args: Value = serde_json::from_str(&call.function.arguments)
         .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
 
-    let (content, awaiting_approval) = dispatch(state, &call.function.name, args).await;
+    let (content, awaiting_approval) = dispatch(state, conv_id, &call.function.name, args).await;
 
     let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -43,7 +43,7 @@ pub async fn execute_tool_call(
     })
 }
 
-async fn dispatch(state: &AppState, tool_name: &str, args: Value) -> (String, Option<i64>) {
+async fn dispatch(state: &AppState, conv_id: i64, tool_name: &str, args: Value) -> (String, Option<i64>) {
     match tool_name {
         "run_shell" => exec_run_shell(state, args).await,
         "search_wiki" => exec_search_wiki(state, args),
@@ -52,11 +52,93 @@ async fn dispatch(state: &AppState, tool_name: &str, args: Value) -> (String, Op
         "edit_wiki" => exec_edit_wiki(state, args),
         "web_search" => exec_web_search(state, args).await,
         "fetch_url" => exec_fetch_url(args).await,
+        "spawn_subagent" => exec_spawn_subagent(state, conv_id, args).await,
         name => exec_mcp_or_unknown(state, name, args).await,
     }
 }
 
+// ── spawn_subagent ─────────────────────────────────────────────────────────────
+//
+// This function is intentionally NOT async fn — it returns Pin<Box<dyn Future>>.
+// This breaks the recursive type cycle: dispatch (async fn) → exec_spawn_subagent
+// → process_message_turn → execute_tool_call → dispatch.
+// Without this box, Rust cannot compute the size of dispatch's state machine.
+fn exec_spawn_subagent<'a>(
+    state: &'a AppState,
+    parent_conv_id: i64,
+    args: Value,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = (String, Option<i64>)> + Send + 'a>> {
+    Box::pin(async move {
+        let task = match str_arg(&args, "task") {
+            Some(t) => t,
+            None => return ("错误：spawn_subagent 需要 'task' 参数".to_string(), None),
+        };
+
+        let db_path = match state.outbox_db_path() {
+            Some(p) => p,
+            None => return ("错误：Vault 未初始化".to_string(), None),
+        };
+
+        let app_handle = match state.get_app_handle() {
+            Some(h) => h,
+            None => return ("错误：AppHandle 未就绪".to_string(), None),
+        };
+
+        // Depth limit: check if parent is already a subagent conversation.
+        let parent_is_subagent = crate::agent_chat::db::get_conversation(&db_path, parent_conv_id)
+            .ok()
+            .flatten()
+            .map(|c| c.title.starts_with("[子代理]"))
+            .unwrap_or(false);
+        if parent_is_subagent {
+            return (
+                "错误：子代理不能再 spawn 子代理（最大嵌套深度 1 层）".to_string(),
+                None,
+            );
+        }
+
+        // Create child conversation
+        let now = crate::state::current_timestamp_ms();
+        let short_task: String = task.chars().take(50).collect();
+        let title = format!("[子代理] {short_task}");
+        let child_conv_id =
+            match crate::agent_chat::db::create_conversation(&db_path, &title, None, None, None, &now) {
+                Ok(id) => id,
+                Err(e) => return (format!("创建子代理会话失败: {e}"), None),
+            };
+
+        // Run the subagent loop (Box::pin breaks the async type cycle at this call site)
+        let cancel_token = crate::agent_chat::runtime::new_cancel_token();
+        let result = Box::pin(crate::agent_chat::runtime::process_message_turn(
+            state,
+            app_handle,
+            child_conv_id,
+            task,
+            cancel_token,
+        ))
+        .await;
+
+        match result {
+            Ok(_) => {
+                // Extract the last assistant message as summary
+                let messages =
+                    crate::agent_chat::db::list_messages(&db_path, child_conv_id).unwrap_or_default();
+                let summary = messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "assistant")
+                    .and_then(|m| m.content.clone())
+                    .unwrap_or_else(|| "(无输出)".to_string());
+                let truncated: String = summary.chars().take(4000).collect();
+                (format!("[子代理完成 conv={child_conv_id}]\n{truncated}"), None)
+            }
+            Err(e) => (format!("[子代理失败] {e}"), None),
+        }
+    })
+}
+
 async fn exec_mcp_or_unknown(state: &AppState, tool_name: &str, args: Value) -> (String, Option<i64>) {
+    // conv_id not needed here — MCP dispatch goes by tool name only
     // Look up the handler_kind in DB to see if it's an MCP tool.
     let handler_kind = state
         .outbox_db_path()

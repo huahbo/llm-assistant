@@ -285,6 +285,11 @@ impl AppState {
         let _ = self.app_handle.set(handle);
     }
 
+    /// 返回 AppHandle 引用（setup 完成后始终 Some）。
+    pub fn get_app_handle(&self) -> Option<&AppHandle> {
+        self.app_handle.get()
+    }
+
     /// 从 config_path 相邻的 search-config.json 文件加载搜索配置（不存在则返回默认值）。
     fn load_search_config_from_path(config_path: &Path) -> crate::models::SearchConfig {
         let search_config_path = config_path
