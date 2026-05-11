@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Conversation } from "../../types";
 import {
   listConversations,
@@ -12,6 +12,7 @@ import { useChatStream } from "./hooks/useChatStream";
 import ConversationList from "./ConversationList";
 import MessageThread from "./MessageThread";
 import NewConversationDialog from "./NewConversationDialog";
+import { useGraphBridge, extractWikiPaths } from "../../contexts/GraphBridgeContext";
 
 export default function ChatModule() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -21,6 +22,23 @@ export default function ChatModule() {
 
   const { streamingMessage, isStreaming, sendMessage, cancelMessage } =
     useChatStream(selectedConvId);
+
+  const { setHighlightedPaths, chatPrefill, setChatPrefill } = useGraphBridge();
+  const prevStatusRef = useRef<string | null>(null);
+
+  // Extract wiki paths from AI response and highlight in graph
+  useEffect(() => {
+    const status = streamingMessage?.status ?? null;
+    if (status === "done" && prevStatusRef.current !== "done") {
+      const text = (streamingMessage?.segments ?? [])
+        .filter((s) => s.kind === "text")
+        .map((s) => (s as { kind: "text"; text: string }).text)
+        .join("");
+      const paths = extractWikiPaths(text);
+      if (paths.length > 0) setHighlightedPaths(paths);
+    }
+    prevStatusRef.current = status;
+  }, [streamingMessage?.status]);
 
   const loadConversations = async () => {
     const convs = await listConversations(showArchived);
@@ -100,6 +118,7 @@ export default function ChatModule() {
               isStreaming={isStreaming}
               onSend={(text) => void sendMessage(text)}
               onCancel={cancelMessage}
+              prefillText={chatPrefill}
             />
           ) : (
             <div className="chat-module__empty">选择或新建对话</div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { formatBackendMode } from "../../app-formatters";
 import { useToast } from "../../contexts/ToastContext";
 import { useRuntime } from "../../contexts/RuntimeContext";
+import { useGraphBridge } from "../../contexts/GraphBridgeContext";
 import {
   fetchQuerySettings,
   fetchAskHistory,
@@ -135,6 +136,7 @@ type AskModuleProps = {
 export default function AskModule({ onOpenWikiPage }: AskModuleProps) {
   const { setStatusMessage } = useToast();
   const { isTauri } = useRuntime();
+  const { askPrefill, setAskPrefill } = useGraphBridge();
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [queryResult, setQueryResult] = useState<QueryAnswerResult | null>(null);
@@ -181,6 +183,13 @@ export default function AskModule({ onOpenWikiPage }: AskModuleProps) {
   );
 
   // ── Effects ────────────────────────────────────────────────────────────────
+
+  // Consume prefill from Graph bridge (right-click "检索相关")
+  useEffect(() => {
+    if (!askPrefill) return;
+    setQueryQuestion(askPrefill);
+    setAskPrefill("");
+  }, [askPrefill]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {

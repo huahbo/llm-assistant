@@ -6,6 +6,7 @@ import { VaultProvider } from "./contexts/VaultContext";
 import { ModeProvider } from "./contexts/ModeContext";
 import { ShellPolicyProvider } from "./contexts/ShellPolicyContext";
 import { ToastProvider } from "./contexts/ToastContext";
+import { GraphBridgeProvider } from "./contexts/GraphBridgeContext";
 import "./styles.css";
 import "./modules/ask/ask.css";
 import "./modules/lint/lint.css";
@@ -23,7 +24,9 @@ root.render(
         <ModeProvider>
           <ShellPolicyProvider>
             <ToastProvider>
-              <App />
+              <GraphBridgeProvider>
+                <App />
+              </GraphBridgeProvider>
             </ToastProvider>
           </ShellPolicyProvider>
         </ModeProvider>

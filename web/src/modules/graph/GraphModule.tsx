@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from 
 import type { KnowledgeGraphData, KnowledgeGraphLink, KnowledgeGraphNode, ModuleId } from "../../types";
 import { useMode } from "../../contexts/ModeContext";
 import { useToast } from "../../contexts/ToastContext";
+import { useGraphBridge } from "../../contexts/GraphBridgeContext";
 import {
   getKnowledgeGraph,
   getKnowledgeSubgraph,
@@ -170,8 +171,16 @@ type GraphModuleProps = {
 export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
   const { activeModule, navigateTo: setActiveModule } = useMode();
   const { setStatusMessage } = useToast();
+  const { highlightedPaths, setChatPrefill, setAskPrefill } = useGraphBridge();
 
   // ── State ──────────────────────────────────────────────────────────────────
+
+  const [graphContextMenu, setGraphContextMenu] = useState<{
+    x: number;
+    y: number;
+    path: string;
+    label: string;
+  } | null>(null);
 
   const [graphEmbeddingSim, setGraphEmbeddingSim] = useState<Record<string, number> | undefined>(undefined);
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
@@ -236,6 +245,14 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
     void refreshGraphData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeModule]);
+
+  // Dismiss context menu on any click outside it
+  useEffect(() => {
+    if (!graphContextMenu) return;
+    const handler = () => setGraphContextMenu(null);
+    window.addEventListener("click", handler, { capture: true, once: true });
+    return () => window.removeEventListener("click", handler, { capture: true });
+  }, [graphContextMenu]);
 
   // ── Derived state ──────────────────────────────────────────────────────────
 
@@ -808,6 +825,27 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
     setGraphLayoutFrozen((prev) => !prev);
   };
 
+  const handleNodeRightClick = (node: object, event: MouseEvent) => {
+    event.preventDefault();
+    const n = node as GraphLikeNode;
+    if (n.isAggregate) return;
+    const pagePath = resolveGraphNodePagePath(n);
+    if (!pagePath) return;
+    setGraphContextMenu({ x: event.clientX, y: event.clientY, path: pagePath, label: n.label || pagePath });
+  };
+
+  const handleContextMenuAskAbout = (path: string, label: string) => {
+    setChatPrefill(`关于 [[${label}]]：`);
+    setActiveModule("chat" as ModuleId);
+    setGraphContextMenu(null);
+  };
+
+  const handleContextMenuSearchRelated = (label: string) => {
+    setAskPrefill(label);
+    setActiveModule("ask" as ModuleId);
+    setGraphContextMenu(null);
+  };
+
   const handleResetGraphFilters = () => {
     setGraphViewMode("global");
     setGraphLocalDepth(1);
@@ -1091,7 +1129,9 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
                         return;
                       }
                       handleGraphNodeClick(node);
+                      setGraphContextMenu(null);
                     }}
+                    onNodeRightClick={handleNodeRightClick as (node: object, event: MouseEvent) => void}
                     nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
                       const n = node as GraphLikeNode;
                       const label = n.label || n.id;
@@ -1100,11 +1140,29 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
                         !isAggregateNode && graphSelectedNodeId && isSameWikiPagePath(graphSelectedNodeId, n.id),
                       );
                       const isSearchHit = graphSearchHits.has(n.id);
+                      const isChatHighlighted = !isAggregateNode && highlightedPaths.some((p) => {
+                        const pNorm = p.toLowerCase().replace(/\\/g, "/");
+                        const idNorm = n.id.toLowerCase().replace(/\\/g, "/");
+                        return idNorm.endsWith("/" + pNorm) || idNorm.endsWith(pNorm)
+                          || n.label.toLowerCase() === pNorm;
+                      });
                       const radius = isAggregateNode
                         ? Math.min(14, 7 + Math.floor((n.count ?? 1) / 3))
                         : selected
                           ? 8
                           : 5;
+
+                      if (isChatHighlighted) {
+                        ctx.beginPath();
+                        ctx.arc(n.x ?? 0, n.y ?? 0, radius + 7, 0, 2 * Math.PI, false);
+                        ctx.fillStyle = "rgba(99, 102, 241, 0.25)";
+                        ctx.fill();
+                        ctx.strokeStyle = "rgba(99, 102, 241, 0.85)";
+                        ctx.lineWidth = Math.max(2 / globalScale, 1.2);
+                        ctx.beginPath();
+                        ctx.arc(n.x ?? 0, n.y ?? 0, radius + 7, 0, 2 * Math.PI, false);
+                        ctx.stroke();
+                      }
 
                       if (isSearchHit) {
                         ctx.beginPath();
@@ -1126,7 +1184,7 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
                         ctx.arc(n.x ?? 0, n.y ?? 0, radius + 2, 0, 2 * Math.PI, false);
                         ctx.stroke();
                       }
-                      if (globalScale > 1.4 || selected || isAggregateNode) {
+                      if (globalScale > 1.4 || selected || isAggregateNode || isChatHighlighted) {
                         ctx.fillStyle = "rgba(255,255,255,0.9)";
                         ctx.fillText(label, (n.x ?? 0) + 10, (n.y ?? 0) + 4);
                       }
@@ -1398,6 +1456,29 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
           )}
         </aside>
       </div>
+
+      {graphContextMenu && (
+        <div
+          className="graph-context-menu"
+          style={{ left: graphContextMenu.x, top: graphContextMenu.y }}
+          onMouseLeave={() => setGraphContextMenu(null)}
+        >
+          <button
+            type="button"
+            className="graph-context-menu__item"
+            onClick={() => handleContextMenuAskAbout(graphContextMenu.path, graphContextMenu.label)}
+          >
+            问这个
+          </button>
+          <button
+            type="button"
+            className="graph-context-menu__item"
+            onClick={() => handleContextMenuSearchRelated(graphContextMenu.label)}
+          >
+            检索相关
+          </button>
+        </div>
+      )}
     </>
   );
 }

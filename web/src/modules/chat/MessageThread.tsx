@@ -10,6 +10,7 @@ interface Props {
   isStreaming: boolean;
   onSend: (text: string) => void;
   onCancel: () => void;
+  prefillText?: string;
 }
 
 export default function MessageThread({
@@ -18,6 +19,7 @@ export default function MessageThread({
   isStreaming,
   onSend,
   onCancel,
+  prefillText,
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
@@ -84,6 +86,7 @@ export default function MessageThread({
         isStreaming={isStreaming}
         onSend={handleSend}
         onCancel={onCancel}
+        prefillText={prefillText}
       />
     </div>
   );

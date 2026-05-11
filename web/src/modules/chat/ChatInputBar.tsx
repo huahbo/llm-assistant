@@ -1,14 +1,24 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 interface Props {
   isStreaming: boolean;
   onSend: (text: string) => void;
   onCancel: () => void;
   disabled?: boolean;
+  prefillText?: string;
 }
 
-export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled }: Props) {
+export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, prefillText }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const appliedPrefillRef = useRef<string>("");
+
+  useEffect(() => {
+    if (!prefillText || !textareaRef.current) return;
+    if (appliedPrefillRef.current === prefillText) return;
+    appliedPrefillRef.current = prefillText;
+    textareaRef.current.value = prefillText;
+    textareaRef.current.focus();
+  }, [prefillText]);
 
   const handleSend = () => {
     const text = textareaRef.current?.value.trim() ?? "";
