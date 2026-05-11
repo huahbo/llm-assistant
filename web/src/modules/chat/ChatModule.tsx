@@ -19,6 +19,7 @@ export default function ChatModule() {
   const [selectedConvId, setSelectedConvId] = useState<number | null>(null);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const autoSelectedRef = useRef(false);
 
   const { streamingMessage, isStreaming, sendMessage, cancelMessage } =
     useChatStream(selectedConvId);
@@ -51,6 +52,20 @@ export default function ChatModule() {
   const loadConversations = async () => {
     const convs = await listConversations(showArchived);
     setConversations(convs);
+    // 首次加载：自动选最近对话，或静默创建首个对话
+    if (!autoSelectedRef.current) {
+      autoSelectedRef.current = true;
+      if (convs.length > 0) {
+        setSelectedConvId(convs[0].id);
+      } else {
+        const id = await createConversation("新对话");
+        if (id !== null) {
+          const fresh = await listConversations(showArchived);
+          setConversations(fresh);
+          setSelectedConvId(id);
+        }
+      }
+    }
   };
 
   useEffect(() => {
