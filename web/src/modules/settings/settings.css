@@ -1,0 +1,147 @@
+/* Settings 面板样式 */
+
+/* =========================================================
+   Settings Panel
+   ========================================================= */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-panel__status {
+  font-size: 13.5px;
+  color: var(--text);
+  padding: 10px 14px;
+  background: var(--accent-light);
+  border-radius: var(--radius-sm);
+  border: 1px solid #c7d2fe;
+}
+
+.settings-panel__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-panel__fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.settings-panel__fields--single {
+  grid-template-columns: minmax(260px, 520px);
+}
+
+.settings-panel__section-title {
+  margin-top: 16px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 700px) {
+  .settings-panel__fields { grid-template-columns: 1fr; }
+  .ask-empty__history-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .ask-empty__history-actions {
+    width: 100%;
+  }
+  .ask-empty__history-filter {
+    flex: 1;
+    width: 100%;
+  }
+}
+
+.settings-panel__save {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-panel__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  padding: 10px 12px;
+  background: var(--bg-content);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+}
+
+.settings-panel__shell-policy {
+  margin-top: -4px;
+}
+
+.settings-panel__shell-policy-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.operations-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.operations-tabs__item {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 5px 12px;
+}
+
+.operations-tabs__item--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-light) 68%, #ffffff 32%);
+}
+
+.operations-module {
+  padding: 14px 16px 16px;
+}
+
+.operations-tabs__hint {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.operations-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.queue-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.operations-empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.operations-empty-state strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.operations-empty-state span {
+  color: var(--text-muted);
+}
+

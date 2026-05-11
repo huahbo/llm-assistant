@@ -7,6 +7,12 @@ import { ModeProvider } from "./contexts/ModeContext";
 import { ShellPolicyProvider } from "./contexts/ShellPolicyContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import "./styles.css";
+import "./modules/ask/ask.css";
+import "./modules/lint/lint.css";
+import "./modules/wiki/wiki.css";
+import "./modules/settings/settings.css";
+import "./modules/graph/graph.css";
+import "./modules/agent/agent.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 

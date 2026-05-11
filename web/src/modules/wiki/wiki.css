@@ -1,0 +1,971 @@
+/* Wiki 面板样式 */
+
+/* =========================================================
+   Wiki Panel
+   ========================================================= */
+
+.wiki-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-light);
+}
+
+.wiki-card__footer code {
+  font-size: 11.5px;
+  font-family: "Cascadia Code", monospace;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+
+.wiki-card__button {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.wiki-summary {
+  margin-top: 6px;
+}
+
+.wiki-summary__text {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wiki-summary__mark {
+  background: #fef08a;
+  color: #1f2937;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+.wiki-summary__toggle {
+  margin-top: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.wiki-inline-status {
+  margin-top: 10px;
+}
+
+.wiki-inline-preview {
+  margin-top: 10px;
+}
+
+.wiki-inline-preview--floating {
+  margin-top: 14px;
+}
+
+.wiki-preview {
+  margin-top: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.wiki-preview__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--accent-light);
+}
+
+.wiki-preview__title h3 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.wiki-preview__title p {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.wiki-preview__title code {
+  font-family: "Cascadia Code", monospace;
+  color: var(--text-muted);
+}
+
+.wiki-preview__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.wiki-preview__actions span { font-size: 12px; color: var(--text-muted); }
+
+.wiki-editor__charcount {
+  font-size: 11px;
+  color: var(--text-muted);
+  align-self: center;
+  margin-left: auto;
+}
+
+.wiki-history-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.wiki-history-modal__panel {
+  width: min(1080px, 94vw);
+  max-height: min(780px, 88vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+}
+
+.wiki-history-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--accent-light);
+}
+
+.wiki-history-modal__head h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--accent);
+}
+
+.wiki-history-modal__head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.wiki-history-modal__body {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.wiki-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-light);
+  background: #f8fafc;
+}
+
+.wiki-history-list__item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.wiki-history-list__item:hover,
+.wiki-history-list__item--active {
+  border-color: #a5b4fc;
+  background: #eef2ff;
+}
+
+.wiki-history-list__item span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.wiki-history-list__item code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.wiki-history-diff {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wiki-history-diff__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.wiki-history-diff__head h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.wiki-history-diff__head span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.wiki-history-diff__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wiki-history-diff__rows {
+  overflow: auto;
+  padding: 10px 0;
+  background: var(--bg-content);
+}
+
+.wiki-history-diff__row {
+  display: grid;
+  grid-template-columns: 28px 48px minmax(0, 1fr);
+  gap: 8px;
+  padding: 2px 14px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.wiki-history-diff__row code {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.wiki-history-diff__sign,
+.wiki-history-diff__line-no {
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.wiki-history-diff__row--added {
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.wiki-history-diff__row--removed {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.wiki-history-diff__row--unchanged {
+  background: transparent;
+}
+
+.wiki-preview__editor-hint {
+  margin: 12px 20px 0;
+}
+
+.wiki-preview__save-error {
+  margin: 10px 20px 0;
+}
+
+.wiki-preview__meta {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-light);
+  background: #f8fafc;
+}
+
+.wiki-preview__meta-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.wiki-preview__meta-head h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.wiki-preview__meta-head span {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.wiki-preview__meta-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wiki-preview__meta-toggle {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.wiki-preview__meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.wiki-preview__meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.wiki-preview__meta-item span {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.wiki-preview__meta-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wiki-preview__meta-copy {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.wiki-preview__meta-item code {
+  font-family: "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.wiki-preview__meta-item--entities {
+  margin-top: 8px;
+}
+
+.wiki-preview__entity-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wiki-preview__entity-list code {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+}
+
+/* 独立调试面板区域：位于内容区下方，与 frontmatter 解耦 */
+.wiki-preview__debug-section {
+  border-top: 1px solid var(--border-light);
+  background: #f8fafc;
+}
+
+.wiki-preview__debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.wiki-preview__debug-toggle:hover {
+  background: #eef2ff;
+  color: var(--accent);
+}
+
+.wiki-preview__debug {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-light);
+  background: #f8fafc;
+}
+
+.wiki-preview__debug-head h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.wiki-preview__debug-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.wiki-preview__debug-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.wiki-preview__debug-item span {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.wiki-preview__debug-item code {
+  font-family: "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.wiki-preview__content {
+  padding: 20px;
+  font-size: 13px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  color: var(--text);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  background: var(--bg-content);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* 渲染后的 Markdown 内容 */
+.wiki-preview__content--rendered {
+  font-family: var(--font-sans, system-ui, sans-serif);
+  white-space: normal;
+}
+
+.wiki-preview__content--rendered h1,
+.wiki-preview__content--rendered h2,
+.wiki-preview__content--rendered h3,
+.wiki-preview__content--rendered h4 {
+  color: var(--text-heading, var(--text));
+  margin: 1.1em 0 0.4em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.wiki-preview__content--rendered h1 { font-size: 1.45em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.wiki-preview__content--rendered h2 { font-size: 1.2em; }
+.wiki-preview__content--rendered h3 { font-size: 1.05em; }
+
+.wiki-preview__content--rendered p {
+  margin: 0.6em 0;
+}
+
+.wiki-preview__content--rendered ul,
+.wiki-preview__content--rendered ol {
+  margin: 0.5em 0;
+  padding-left: 1.6em;
+}
+
+.wiki-preview__content--rendered li {
+  margin: 0.2em 0;
+}
+
+.wiki-preview__content--rendered code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.88em;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+
+.wiki-preview__content--rendered pre {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+
+.wiki-preview__content--rendered pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+.wiki-preview__content--rendered blockquote {
+  border-left: 3px solid var(--accent, #7c3aed);
+  margin: 0.8em 0;
+  padding: 0.3em 0.8em;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border-radius: 0 4px 4px 0;
+}
+
+.wiki-preview__content--rendered table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.8em 0;
+  font-size: 0.9em;
+}
+
+.wiki-preview__content--rendered th,
+.wiki-preview__content--rendered td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.wiki-preview__content--rendered th {
+  background: var(--bg-card);
+  font-weight: 600;
+}
+
+.wiki-preview__content--rendered a {
+  color: var(--accent, #7c3aed);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wiki-preview__content--rendered hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+
+.wiki-preview__content--rendered strong {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.wiki-preview__content--rendered em {
+  font-style: italic;
+}
+
+.wiki-rename-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+.wiki-rename-bar__input {
+  flex: 1;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  background: var(--bg-content);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+  min-width: 0;
+}
+
+.wiki-rename-bar__input:focus {
+  border-color: var(--accent, #7c3aed);
+}
+
+.wiki-rename-bar__error {
+  font-size: 12px;
+  color: #f87171;
+}
+
+.wiki-preview__editor-wrap {
+  padding: 16px 20px;
+  background: var(--bg-content);
+}
+
+.wiki-preview__editor {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  font-size: 13px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  line-height: 1.7;
+  background: #ffffff;
+  color: var(--text);
+}
+
+.wiki-preview__editor:focus {
+  outline: none;
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+@media (max-width: 760px) {
+  .wiki-history-modal {
+    align-items: stretch;
+    padding: 10px;
+  }
+
+  .wiki-history-modal__body {
+    grid-template-columns: 1fr;
+  }
+
+  .wiki-history-list {
+    max-height: 220px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-light);
+  }
+}
+
+.wiki-preview__citations {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-light);
+}
+
+.wiki-preview__citations-head {
+  margin-bottom: 12px;
+}
+
+.wiki-citation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wiki-citation {
+  padding: 10px 12px;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.wiki-citation__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.wiki-citation__top code {
+  font-size: 12px;
+  font-family: "Cascadia Code", monospace;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 65%;
+}
+
+.wiki-citation__meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.wiki-citation p {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.wiki-citation__actions { margin-top: 8px; }
+
+.wiki-citation__button {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+
+/* =========================================================
+   Wikilink 自动补全
+   ========================================================= */
+
+.wiki-preview__editor-wrap {
+  position: relative;
+}
+
+.wikilink-autocomplete {
+  position: absolute;
+  z-index: 1000;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  min-width: 240px;
+  max-width: 400px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.wikilink-autocomplete__head {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.wikilink-autocomplete__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wikilink-autocomplete__item {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.wikilink-autocomplete__item:hover {
+  background: var(--accent-light);
+}
+
+.wikilink-autocomplete__item--selected {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.wikilink-autocomplete__empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ── 统计仪表盘 ─────────────────────────────────────── */
+.stats-module {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0;
+}
+
+.stats-module__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stats-module__title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.stats-module__refresh {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e0e0e0);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.stats-module__refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.stats-module__empty {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-content);
+  padding: 12px 14px;
+  line-height: 1.5;
+}
+
+.stats-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.stats-card {
+  flex: 1 1 130px;
+  background: var(--bg-card);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 10px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.stats-card--warn {
+  border-color: var(--warning, #f59e0b);
+}
+
+.stats-card__value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+
+.stats-card--warn .stats-card__value {
+  color: var(--warning, #f59e0b);
+}
+
+.stats-card__label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.stats-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.stats-section__title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stats-top-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.stats-top-list__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-card);
+  border-radius: 6px;
+  border: 1px solid var(--border, #e0e0e0);
+}
+
+.stats-top-list__rank-badge {
+  min-width: 2rem;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent, #6366f1);
+  background: color-mix(in srgb, var(--accent, #6366f1) 12%, transparent);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}
+
+.stats-top-list__title {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 0.88rem;
+  cursor: pointer;
+  text-align: left;
+  flex: 1;
+}
+
+.stats-top-list__title:hover {
+  color: var(--accent, #6366f1);
+}
+
+.stats-source-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.stats-source-list__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.stats-source-list__label {
+  width: 6rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.stats-source-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border, #e0e0e0);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.stats-source-bar__fill {
+  height: 100%;
+  background: var(--accent, #6366f1);
+  border-radius: 3px;
+  min-width: 4px;
+  transition: width 0.3s ease;
+}
+
+.stats-source-list__count {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  width: 2.5rem;
+  text-align: right;
+}
+
+/* ── Agent Studio（H0） ─────────────────────────────── */

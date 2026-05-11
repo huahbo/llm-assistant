@@ -1,0 +1,239 @@
+/* Lint 面板样式 */
+
+/* =========================================================
+   Lint Panel
+   ========================================================= */
+
+.lint-severity-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.lint-severity-tab {
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 12.5px;
+  font-weight: 500;
+  border: 1.5px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  transition: all 0.12s;
+}
+
+.lint-severity-tab:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.lint-severity-tab--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.lint-filter-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lint-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.lint-issue {
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: box-shadow 0.15s;
+}
+
+.lint-issue:hover { box-shadow: var(--shadow-md); }
+
+.lint-issue__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.lint-issue__code {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: "Cascadia Code", monospace;
+  color: var(--accent);
+  background: var(--accent-light);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.lint-issue__message {
+  font-size: 13.5px;
+  color: var(--text);
+  font-weight: 500;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.lint-issue__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.lint-issue__field > span {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.lint-issue__field code {
+  font-size: 12px;
+  font-family: "Cascadia Code", monospace;
+  color: var(--text-muted);
+  background: var(--bg-content);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.lint-issue__suggestion {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.lint-issue__actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+/* Lint 问题分组折叠 */
+.lint-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.lint-group__header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-content);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.1s;
+}
+
+.lint-group__header:hover { background: var(--bg-card); }
+
+.lint-group__arrow {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.lint-group__path {
+  flex: 1;
+  font-size: 12px;
+  font-family: "Cascadia Code", monospace;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.lint-group__count {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.lint-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  background: var(--bg-card);
+}
+
+.lint-group__body .lint-issue {
+  border-radius: var(--radius-sm);
+}
+
+/* Lint 补丁历史 */
+.lint-patch-events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.lint-patch-event {
+  padding: 10px 12px;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+
+.lint-patch-event__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.lint-patch-event__code {
+  font-family: "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-light);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.lint-patch-event time {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* Lint 统计 */
+.lint-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lint-stat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12.5px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--bg-content);
+}
+
+.lint-stat--error   { background: var(--error-bg);   color: var(--error);   border-color: #fca5a5; }
+.lint-stat--warning { background: var(--warning-bg); color: var(--warning); border-color: #fcd34d; }
+.lint-stat--info    { background: var(--info-bg);    color: var(--info);    border-color: #7dd3fc; }
+
