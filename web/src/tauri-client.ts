@@ -800,6 +800,22 @@ export async function searchWikiPages(keyword: string): Promise<WikiPageItem[]> 
   }
 }
 
+/** FTS5 + 向量双路召回 wiki 页面（Ollama 不可用时自动降级为纯 FTS5）。 */
+export async function searchWikiPagesHybrid(keyword: string): Promise<WikiPageItem[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<WikiPageItem[]>("search_wiki_pages_hybrid", { keyword }),
+      20000,
+    );
+  } catch {
+    return searchWikiPages(keyword);
+  }
+}
+
 /** 搜索所有 wiki 页面路径（用于链接自动补全） */
 export async function searchWikiPaths(query: string): Promise<string[]> {
   if (!isTauriRuntime()) {

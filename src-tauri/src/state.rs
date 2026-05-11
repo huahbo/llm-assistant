@@ -2543,6 +2543,96 @@ impl AppState {
             .collect())
     }
 
+    /// Wiki 混合搜索：FTS5 关键词 + 向量语义双路召回，RRF 融合排序。
+    /// Ollama 不可用时自动降级为纯 FTS5。
+    pub async fn search_wiki_pages_hybrid(
+        &self,
+        keyword: String,
+        limit: usize,
+    ) -> Result<Vec<WikiPageItem>, String> {
+        let vault_path = {
+            let guard = self.inner.lock().expect("状态锁已被污染");
+            guard
+                .vault_path
+                .clone()
+                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
+        };
+        let db_path = vault_path.join(".app").join("meta.db");
+        db::ensure_meta_db(&db_path)?;
+
+        // FTS5 召回（keyword 为空时返回最近页面）
+        let fts_pages = db::search_wiki_pages(&db_path, &keyword, limit * 3)?;
+        let fts_paths: Vec<String> = fts_pages.iter().map(|p| p.path.clone()).collect();
+
+        // 向量召回（best-effort，失败时静默降级）
+        let embed_paths: Vec<String> = if !keyword.trim().is_empty() {
+            match self.get_embed_provider().embed(&keyword).await {
+                Ok(query_vec) => {
+                    let candidates = db::list_embeddings(&db_path, 5000).unwrap_or_default();
+                    crate::search::rank_embedding_paths_by_cosine(&query_vec, &candidates, limit * 3)
+                }
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        // RRF 融合（单路时退化为原路排名）
+        let merged_paths: Vec<String> = if embed_paths.is_empty() {
+            fts_paths.into_iter().take(limit).collect()
+        } else {
+            crate::search::reciprocal_rank_fusion(&[fts_paths, embed_paths], 60.0)
+                .into_iter()
+                .take(limit)
+                .map(|(p, _)| p)
+                .collect()
+        };
+
+        // 解析为 WikiPageItem（从 FTS 结果中查找 title/summary，找不到则用路径名）
+        let fts_map: std::collections::HashMap<String, crate::db::WikiPageRecord> =
+            db::search_wiki_pages(&db_path, "", limit * 3)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.path.clone(), r))
+                .collect();
+
+        let items = merged_paths
+            .into_iter()
+            .map(|path| {
+                let display_path = friendly_display_path(Path::new(&path));
+                let tags = read_page_tags(Path::new(&path));
+                if let Some(record) = fts_map.get(&path) {
+                    WikiPageItem {
+                        title: record.title.clone(),
+                        path: path.clone(),
+                        display_path: Some(display_path),
+                        summary: record.summary.clone(),
+                        updated_at: record.updated_at.clone(),
+                        score: record.score,
+                        tags,
+                    }
+                } else {
+                    let title = Path::new(&path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&path)
+                        .to_string();
+                    WikiPageItem {
+                        title,
+                        path: path.clone(),
+                        display_path: Some(display_path),
+                        summary: String::new(),
+                        updated_at: String::new(),
+                        score: 0.0,
+                        tags,
+                    }
+                }
+            })
+            .collect();
+
+        Ok(items)
+    }
+
     /// 获取所有 wiki 页面路径并根据查询进行模糊匹配（忽略大小写）。
     pub fn search_wiki_paths(&self, query: String) -> Result<Vec<String>, String> {
         let vault_path = {
@@ -3762,6 +3852,21 @@ Wiki 页面：\n{}",
                 if let Err(err) = db::update_wiki_page_title(&db_path, path_buf, &title) {
                     self.push_log(LogLevel::Warn, format!("更新 wiki_pages.title 失败：{err}"));
                 }
+                // 异步更新向量索引（不阻塞主流程；Ollama 不可用时静默跳过）
+                let embed_provider = self.get_embed_provider();
+                let embed_db_path = db_path.clone();
+                let embed_path = path.to_string();
+                let embed_content: String = content.chars().take(2000).collect();
+                tokio::spawn(async move {
+                    match embed_provider.embed(&embed_content).await {
+                        Ok(embedding) => {
+                            if let Err(e) = db::upsert_embedding(&embed_db_path, &embed_path, &embedding) {
+                                eprintln!("[embed] 向量索引写入失败（忽略）: {e}");
+                            }
+                        }
+                        Err(_) => {} // Ollama 不可用时静默跳过
+                    }
+                });
             }
         }
 

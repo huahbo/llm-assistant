@@ -17,6 +17,7 @@ import {
   fetchWikiPageDetail,
   fetchWikiPageCitations,
   searchWikiPages,
+  searchWikiPagesHybrid,
   searchWikiPaths,
   saveWikiPage,
   deleteWikiPage,
@@ -461,7 +462,7 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
     setWikiSearching(true);
     setStatusMessage("");
     try {
-      const result = await searchWikiPages(wikiKeyword.trim());
+      const result = await searchWikiPagesHybrid(wikiKeyword.trim());
       onPagesChange(result);
       if (wikiKeyword.trim()) {
         setStatusMessage(`Wiki 搜索完成：关键词"${wikiKeyword.trim()}"，命中 ${result.length} 页。`);

@@ -64,6 +64,15 @@ pub fn search_wiki_pages(
     state.search_wiki_pages(keyword, SEARCH_WIKI_LIMIT)
 }
 
+/// FTS5 + 向量双路召回 wiki 页面（RRF 融合）；Ollama 不可用时自动降级为纯 FTS5。
+#[tauri::command]
+pub async fn search_wiki_pages_hybrid(
+    keyword: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<WikiPageItem>, String> {
+    state.search_wiki_pages_hybrid(keyword, SEARCH_WIKI_LIMIT).await
+}
+
 /// 按查询词搜索所有 wiki 页面路径并进行模糊匹配（忽略大小写）。
 #[tauri::command]
 pub fn search_wiki_paths(query: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
