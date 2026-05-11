@@ -48,6 +48,8 @@ Thumbs.db
 *.log
 refer-rust-code/
 refer-rust-daerwen-agent/
+external/
+refer_project/
 
 # ------------------------------
 # AI tool config / cache
