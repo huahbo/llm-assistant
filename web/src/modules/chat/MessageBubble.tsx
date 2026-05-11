@@ -3,6 +3,51 @@ import type { ChatMessage, ChatStreamingMessage, ChatStreamSegment } from "../..
 import ToolCallCard from "./ToolCallCard";
 import MarkdownRenderer from "./MarkdownRenderer";
 
+type ToolSeg = ChatStreamSegment & { kind: "tool" };
+
+function ToolGroup({ tools, streaming }: { tools: ToolSeg[]; streaming: boolean }) {
+  const isRunning = tools.some((t) => t.status === "running");
+  const isAwaiting = tools.some((t) => t.status === "awaiting_approval");
+  const [open, setOpen] = useState(false);
+  const showCards = open || isRunning || isAwaiting;
+
+  const doneCount = tools.filter((t) => t.status === "ok" || t.status === "err").length;
+  const totalMs = tools.reduce((s, t) => s + (t.result?.latency_ms ?? 0), 0);
+
+  let summary = `🔧 ${tools.length} 次工具调用`;
+  if (isRunning) summary += " ⏳";
+  else if (isAwaiting) summary += " ⏸ 等待审批";
+  else summary += `  ${doneCount}/${tools.length} 完成 · ${totalMs}ms`;
+
+  return (
+    <div className="chat-tool-group">
+      <button
+        type="button"
+        className="chat-tool-group__toggle"
+        onClick={() => setOpen((v) => !v)}
+        disabled={streaming && isRunning}
+      >
+        <span className="chat-tool-group__label">{summary}</span>
+        <span className="chat-tool-group__arrow">{showCards ? "▲" : "▼"}</span>
+      </button>
+      {showCards && (
+        <div className="chat-tool-group__cards">
+          {tools.map((seg) => (
+            <ToolCallCard
+              key={seg.call_id}
+              toolName={seg.tool_name}
+              args={seg.args}
+              result={seg.result}
+              status={seg.status}
+              pendingId={seg.pending_id}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface Props {
   role: ChatMessage["role"];
   content: string | null;
@@ -95,6 +140,7 @@ export default function MessageBubble({ role, content, segments, streaming, stre
 
   // Assistant — streaming (segments present)
   if (segments && segments.length > 0) {
+    const toolSegs = segments.filter((s): s is ToolSeg => s.kind === "tool");
     const fullText = segments
       .filter((s) => s.kind === "text")
       .map((s) => (s.kind === "text" ? s.text : ""))
@@ -104,6 +150,7 @@ export default function MessageBubble({ role, content, segments, streaming, stre
       <div className="chat-row chat-row--assistant">
         <BotAvatar />
         <div className="chat-bubble chat-bubble--assistant">
+          {toolSegs.length > 0 && <ToolGroup tools={toolSegs} streaming={!!streaming} />}
           {segments.map((seg, i) => {
             if (seg.kind === "text") {
               return streaming ? (
@@ -113,18 +160,6 @@ export default function MessageBubble({ role, content, segments, streaming, stre
                 </span>
               ) : (
                 <MarkdownRenderer key={i} content={seg.text} />
-              );
-            }
-            if (seg.kind === "tool") {
-              return (
-                <ToolCallCard
-                  key={seg.call_id}
-                  toolName={seg.tool_name}
-                  args={seg.args}
-                  result={seg.result}
-                  status={seg.status}
-                  pendingId={seg.pending_id}
-                />
               );
             }
             if (seg.kind === "error") {
@@ -142,8 +177,9 @@ export default function MessageBubble({ role, content, segments, streaming, stre
     );
   }
 
-  // Assistant — persisted (plain content from DB)
+  // Assistant — persisted from DB (skip empty placeholder messages)
   const text = content ?? "";
+  if (!text && streamStatus !== "cancelled") return null;
   return (
     <div className="chat-row chat-row--assistant">
       <BotAvatar />

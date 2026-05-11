@@ -72,8 +72,9 @@ function reducer(state: State, action: Action): State {
       } else {
         segments.push({ kind: "text", text: action.text, streaming: true });
       }
+      // Always track the latest message_id so the filter covers the final ReAct iteration
       return {
-        streamingMessage: { ...prev, segments, status: "streaming" },
+        streamingMessage: { ...prev, message_id: action.messageId, segments, status: "streaming" },
       };
     }
 
@@ -105,8 +106,9 @@ function reducer(state: State, action: Action): State {
       } else {
         segments.push(toolSeg);
       }
+      // Track latest message_id across all ReAct iterations
       return {
-        streamingMessage: { ...prev, segments, status: "tool_running" },
+        streamingMessage: { ...prev, message_id: action.messageId, segments, status: "tool_running" },
       };
     }
 

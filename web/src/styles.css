@@ -7156,3 +7156,51 @@ code {
   background: transparent;
   padding: 0;
 }
+
+/* ── Tool call group ─────────────────────────────────────────────────────────── */
+
+.chat-tool-group {
+  margin: 4px 0 6px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.chat-tool-group__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-secondary, #f9fafb);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-secondary, #6b7280);
+  gap: 8px;
+  transition: background 0.1s;
+}
+
+.chat-tool-group__toggle:hover {
+  background: var(--bg-hover, #f3f4f6);
+}
+
+.chat-tool-group__label {
+  flex: 1;
+  font-size: 12px;
+}
+
+.chat-tool-group__arrow {
+  font-size: 10px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.chat-tool-group__cards {
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
