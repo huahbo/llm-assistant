@@ -14,6 +14,7 @@ import "./modules/wiki/wiki.css";
 import "./modules/settings/settings.css";
 import "./modules/graph/graph.css";
 import "./modules/agent/agent.css";
+import "./modules/chat/chat.css";
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 

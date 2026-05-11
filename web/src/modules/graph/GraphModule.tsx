@@ -1179,14 +1179,14 @@ export default function GraphModule({ handleOpenWikiPage }: GraphModuleProps) {
                       ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, 2 * Math.PI, false);
                       ctx.fill();
                       if (selected) {
-                        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+                        ctx.strokeStyle = "rgba(79, 70, 229, 0.9)";
                         ctx.lineWidth = Math.max(2 / globalScale, 1);
                         ctx.beginPath();
                         ctx.arc(n.x ?? 0, n.y ?? 0, radius + 2, 0, 2 * Math.PI, false);
                         ctx.stroke();
                       }
                       if (globalScale > 1.4 || selected || isAggregateNode || isChatHighlighted) {
-                        ctx.fillStyle = "rgba(255,255,255,0.9)";
+                        ctx.fillStyle = "#1e293b";
                         ctx.fillText(label, (n.x ?? 0) + 10, (n.y ?? 0) + 4);
                       }
                     }}
