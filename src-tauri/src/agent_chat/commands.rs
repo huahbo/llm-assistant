@@ -138,6 +138,83 @@ pub async fn reject_chat_write(
     state.reject_chat_write(pending_id)
 }
 
+// ── MCP 服务器管理 ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_mcp_servers(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::agent_chat::mcp::McpServerConfig>, String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+    let mut configs = chat_db::list_mcp_servers(&db_path)?;
+    let running = state.list_running_mcp_clients();
+    for cfg in &mut configs {
+        cfg.enabled = running.contains(&cfg.name);
+    }
+    Ok(configs)
+}
+
+#[tauri::command]
+pub async fn upsert_mcp_server(
+    name: String,
+    command: String,
+    args: Vec<String>,
+    env: std::collections::HashMap<String, String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+    let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "[]".to_string());
+    let env_json = serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string());
+    let now = current_timestamp_ms();
+    chat_db::upsert_mcp_server(&db_path, &name, &command, &args_json, &env_json, true, &now)
+}
+
+#[tauri::command]
+pub async fn delete_mcp_server(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+    state.stop_mcp_client(&name);
+    chat_db::delete_mcp_server(&db_path, &name)
+}
+
+/// Spawn the MCP server, call tools/list, and sync tools into agent_tools.
+#[tauri::command]
+pub async fn reload_mcp_server_tools(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+
+    let cfg = chat_db::get_mcp_server(&db_path, &name)?
+        .ok_or_else(|| format!("MCP 服务器 '{name}' 不存在"))?;
+
+    // (Re)spawn the client
+    state.stop_mcp_client(&name);
+    state.spawn_mcp_client(name.clone(), &cfg.command, &cfg.args, &cfg.env).await?;
+
+    let arc = state
+        .get_mcp_client(&name)
+        .ok_or_else(|| "客户端未启动".to_string())?;
+    let tools = {
+        let mut client = arc.lock().await;
+        client.list_tools().await?
+    };
+
+    let tool_names: Vec<String> = tools.iter().map(|t| t.tool_name.clone()).collect();
+    chat_db::sync_mcp_tools(&db_path, &name, &tools)?;
+
+    Ok(tool_names)
+}
+
 // ── 内部：system prompt 构建 ───────────────────────────────────────────────────
 
 fn build_system_prompt(

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import SearchConfigPanel from "../lint/SearchConfigPanel";
 import {
   shellPolicyDecisionOptions,
@@ -8,11 +8,16 @@ import {
 } from "../../contexts/ShellPolicyContext";
 import { useToast } from "../../contexts/ToastContext";
 import {
+  deleteMcpServer,
   fetchLlmConfig,
   getLlmProviderPresets,
   isTauriRuntime,
+  listMcpServers,
+  reloadMcpServerTools,
   saveLlmConfig,
+  upsertMcpServer,
 } from "../../tauri-client";
+import type { McpServerConfig } from "../../types";
 import {
   buildCloudProviderPresetConfig,
   cloudProviderPresets,
@@ -64,6 +69,72 @@ export default function SettingsModule({
   const [llmConfigEmbedModel, setLlmConfigEmbedModel] = useState("nomic-embed-text:latest");
   const [llmConfigEmbedBaseUrl, setLlmConfigEmbedBaseUrl] = useState("");
   const [llmConfigSaving, setLlmConfigSaving] = useState(false);
+
+  // MCP 服务器配置状态
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpNewName, setMcpNewName] = useState("");
+  const [mcpNewCommand, setMcpNewCommand] = useState("");
+  const [mcpNewArgs, setMcpNewArgs] = useState("");
+  const [mcpStatus, setMcpStatus] = useState<Record<string, string>>({});
+  const mcpLoadedRef = useRef(false);
+
+  // 挂载时加载 MCP 服务器列表（懒加载：仅触发一次）
+  const handleLoadMcpServers = async () => {
+    if (mcpLoadedRef.current) return;
+    mcpLoadedRef.current = true;
+    setMcpLoading(true);
+    try {
+      const servers = await listMcpServers();
+      setMcpServers(servers);
+    } finally {
+      setMcpLoading(false);
+    }
+  };
+
+  const handleAddMcpServer = async () => {
+    if (!mcpNewName.trim() || !mcpNewCommand.trim()) return;
+    const args = mcpNewArgs.trim()
+      ? mcpNewArgs.split(/\s+/).filter(Boolean)
+      : [];
+    try {
+      await upsertMcpServer(mcpNewName.trim(), mcpNewCommand.trim(), args, {});
+      setMcpNewName("");
+      setMcpNewCommand("");
+      setMcpNewArgs("");
+      const servers = await listMcpServers();
+      setMcpServers(servers);
+      setMcpStatus((s) => ({ ...s, [mcpNewName.trim()]: "已保存" }));
+    } catch (e) {
+      setMcpStatus((s) => ({ ...s, [mcpNewName.trim()]: `失败: ${String(e)}` }));
+    }
+  };
+
+  const handleReloadMcpTools = async (name: string) => {
+    setMcpStatus((s) => ({ ...s, [name]: "连接中…" }));
+    try {
+      const tools = await reloadMcpServerTools(name);
+      setMcpStatus((s) => ({ ...s, [name]: `已加载 ${tools.length} 个工具` }));
+      const servers = await listMcpServers();
+      setMcpServers(servers);
+    } catch (e) {
+      setMcpStatus((s) => ({ ...s, [name]: `失败: ${String(e)}` }));
+    }
+  };
+
+  const handleDeleteMcpServer = async (name: string) => {
+    try {
+      await deleteMcpServer(name);
+      setMcpServers((prev) => prev.filter((s) => s.name !== name));
+      setMcpStatus((s) => {
+        const next = { ...s };
+        delete next[name];
+        return next;
+      });
+    } catch (e) {
+      setMcpStatus((s) => ({ ...s, [name]: `删除失败: ${String(e)}` }));
+    }
+  };
 
   // 挂载时加载 LLM 配置
   useEffect(() => {
@@ -494,6 +565,103 @@ export default function SettingsModule({
         </div>
       </section>
       <SearchConfigPanel />
+      <section className="panel">
+        <details onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) void handleLoadMcpServers(); }}>
+          <summary className="section-head" style={{ cursor: "pointer", listStyle: "none" }}>
+            <h2 style={{ display: "inline" }}>MCP 服务器</h2>
+            <span className="section-head__hint" style={{ marginLeft: 8 }}>
+              Model Context Protocol — 扩展 Agent 工具箱
+            </span>
+          </summary>
+          <div className="settings-panel" style={{ marginTop: 12 }}>
+            {mcpLoading ? (
+              <p className="dev-panel__hint">加载中…</p>
+            ) : (
+              <>
+                {mcpServers.length > 0 && (
+                  <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse", marginBottom: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--border-muted)" }}>
+                        <th style={{ textAlign: "left", padding: "4px 8px" }}>名称</th>
+                        <th style={{ textAlign: "left", padding: "4px 8px" }}>命令</th>
+                        <th style={{ textAlign: "left", padding: "4px 8px" }}>状态</th>
+                        <th style={{ padding: "4px 8px" }}>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mcpServers.map((srv) => (
+                        <tr key={srv.name} style={{ borderBottom: "1px solid var(--border-muted)" }}>
+                          <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{srv.name}</td>
+                          <td style={{ padding: "4px 8px", fontFamily: "monospace", color: "var(--text-muted)" }}>
+                            {srv.command} {srv.args.join(" ")}
+                          </td>
+                          <td style={{ padding: "4px 8px", fontSize: 12, color: srv.enabled ? "var(--accent)" : "var(--text-muted)" }}>
+                            {mcpStatus[srv.name] ?? (srv.enabled ? "运行中" : "已停止")}
+                          </td>
+                          <td style={{ padding: "4px 8px", display: "flex", gap: 6 }}>
+                            <button
+                              type="button"
+                              className="dev-panel__button"
+                              onClick={() => void handleReloadMcpTools(srv.name)}
+                            >
+                              连接 / 刷新工具
+                            </button>
+                            <button
+                              type="button"
+                              className="dev-panel__button"
+                              style={{ color: "var(--error)" }}
+                              onClick={() => void handleDeleteMcpServer(srv.name)}
+                            >
+                              删除
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <div className="settings-panel__fields" style={{ gap: 8 }}>
+                  <p className="dev-panel__label" style={{ marginBottom: 4 }}>添加 MCP 服务器</p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <input
+                      className="dev-panel__input"
+                      style={{ flex: "0 0 140px" }}
+                      placeholder="名称（如 filesystem）"
+                      value={mcpNewName}
+                      onChange={(e) => setMcpNewName(e.target.value)}
+                    />
+                    <input
+                      className="dev-panel__input"
+                      style={{ flex: "1 1 200px" }}
+                      placeholder="命令（如 npx）"
+                      value={mcpNewCommand}
+                      onChange={(e) => setMcpNewCommand(e.target.value)}
+                    />
+                    <input
+                      className="dev-panel__input"
+                      style={{ flex: "2 1 260px" }}
+                      placeholder="参数（空格分隔，如 -y @modelcontextprotocol/server-filesystem /path）"
+                      value={mcpNewArgs}
+                      onChange={(e) => setMcpNewArgs(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="dev-panel__button"
+                      disabled={!mcpNewName.trim() || !mcpNewCommand.trim() || !isTauriRuntime()}
+                      onClick={() => void handleAddMcpServer()}
+                    >
+                      保存
+                    </button>
+                  </div>
+                  <p className="dev-panel__hint">
+                    保存后点击"连接 / 刷新工具"启动服务器进程并将工具注册到 Agent。
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </details>
+      </section>
     </>
   );
 }

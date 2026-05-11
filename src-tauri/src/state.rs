@@ -80,6 +80,13 @@ pub struct AppState {
     chat_write_approvals: Mutex<
         std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Result<String, String>>>,
     >,
+    /// 活跃 MCP 客户端（server_name -> client）。Arc 允许多个 await 并发持有引用。
+    mcp_clients: Mutex<
+        std::collections::HashMap<
+            String,
+            std::sync::Arc<tokio::sync::Mutex<crate::agent_chat::mcp::McpClient>>,
+        >,
+    >,
 }
 
 /// 状态快照。
@@ -181,6 +188,7 @@ impl AppState {
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
             chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
+            mcp_clients: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -268,6 +276,7 @@ impl AppState {
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
             chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
+            mcp_clients: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -5725,6 +5734,50 @@ Wiki 页面：\n{}",
             let _ = tx.send(Err("用户拒绝写操作".to_string()));
         }
         Ok(())
+    }
+
+    // ── MCP client management ──────────────────────────────────────────────────
+
+    /// Spawn an MCP server and register it in the active clients map.
+    pub async fn spawn_mcp_client(
+        &self,
+        name: String,
+        command: &str,
+        args: &[String],
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
+        let client = crate::agent_chat::mcp::McpClient::spawn(name.clone(), command, args, env).await?;
+        let mut clients = self.mcp_clients.lock().expect("mcp_clients 锁已被污染");
+        clients.insert(name, std::sync::Arc::new(tokio::sync::Mutex::new(client)));
+        Ok(())
+    }
+
+    /// Stop (drop) a running MCP client.
+    pub fn stop_mcp_client(&self, name: &str) {
+        let mut clients = self.mcp_clients.lock().expect("mcp_clients 锁已被污染");
+        clients.remove(name);
+    }
+
+    /// Return the Arc for a given MCP client name, or None if not running.
+    pub fn get_mcp_client(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<tokio::sync::Mutex<crate::agent_chat::mcp::McpClient>>> {
+        self.mcp_clients
+            .lock()
+            .expect("mcp_clients 锁已被污染")
+            .get(name)
+            .cloned()
+    }
+
+    /// Return names of all currently running MCP clients.
+    pub fn list_running_mcp_clients(&self) -> Vec<String> {
+        self.mcp_clients
+            .lock()
+            .expect("mcp_clients 锁已被污染")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// 取消正在进行的会话查询（软取消：停止 emit chunk）
@@ -13411,6 +13464,7 @@ entities:
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
             chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
+            mcp_clients: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

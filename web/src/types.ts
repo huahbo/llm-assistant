@@ -709,3 +709,14 @@ export interface ChatStreamingMessage {
 }
 
 export type ShellPolicyProfile = "strict" | "balanced" | "power_user";
+
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  /** true = currently running, false = stopped (runtime state, not persisted) */
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}

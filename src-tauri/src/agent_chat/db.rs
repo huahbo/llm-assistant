@@ -36,7 +36,7 @@ pub struct Message {
 
 // ── Schema ─────────────────────────────────────────────────────────────────────
 
-/// 创建 agent_chat 所需的 3 张表（幂等，由 db::init_schema 调用）
+/// 创建 agent_chat 所需的 4 张表（幂等，由 db::init_schema 调用）
 pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(r#"
         CREATE TABLE IF NOT EXISTS agent_conversations (
@@ -71,6 +71,16 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             parameters_schema TEXT NOT NULL,
             handler_kind      TEXT NOT NULL,
             enabled           INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS mcp_server_configs (
+            name        TEXT PRIMARY KEY,
+            command     TEXT NOT NULL,
+            args        TEXT NOT NULL DEFAULT '[]',
+            env_json    TEXT NOT NULL DEFAULT '{}',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
         );
     "#)
     .map_err(|e| format!("agent_chat schema 创建失败: {}", e))?;
@@ -374,12 +384,174 @@ pub fn upsert_tool(
     Ok(())
 }
 
+// ── Handler kind lookup ────────────────────────────────────────────────────────
+
+/// Return the handler_kind for a given tool name, or None if not found.
+pub fn get_tool_handler_kind(db_path: &Path, name: &str) -> Result<Option<String>, String> {
+    let conn = open_conn(db_path)?;
+    conn.query_row(
+        "SELECT handler_kind FROM agent_tools WHERE name = ?1 AND enabled = 1",
+        params![name],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("查询工具处理器失败: {e}"))
+}
+
+// ── MCP server config CRUD ─────────────────────────────────────────────────────
+
+pub fn upsert_mcp_server(
+    db_path: &Path,
+    name: &str,
+    command: &str,
+    args_json: &str,
+    env_json: &str,
+    enabled: bool,
+    now: &str,
+) -> Result<(), String> {
+    let conn = open_conn(db_path)?;
+    conn.execute(
+        r#"INSERT INTO mcp_server_configs (name, command, args, env_json, enabled, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+           ON CONFLICT(name) DO UPDATE SET
+             command = excluded.command,
+             args = excluded.args,
+             env_json = excluded.env_json,
+             enabled = excluded.enabled,
+             updated_at = excluded.updated_at"#,
+        params![name, command, args_json, env_json, enabled as i32, now],
+    )
+    .map_err(|e| format!("upsert MCP 服务器 '{}' 失败: {}", name, e))?;
+    Ok(())
+}
+
+pub fn list_mcp_servers(db_path: &Path) -> Result<Vec<crate::agent_chat::mcp::McpServerConfig>, String> {
+    let conn = open_conn(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, command, args, env_json, enabled, created_at, updated_at
+             FROM mcp_server_configs ORDER BY name ASC",
+        )
+        .map_err(|e| format!("准备 MCP 服务器列表查询失败: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i32>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|e| format!("查询 MCP 服务器列表失败: {e}"))?;
+    let mut result = Vec::new();
+    for row in rows {
+        let (name, command, args_json, env_json, enabled, created_at, updated_at) =
+            row.map_err(|e| format!("读取 MCP 服务器行失败: {e}"))?;
+        let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
+        let env: std::collections::HashMap<String, String> =
+            serde_json::from_str(&env_json).unwrap_or_default();
+        result.push(crate::agent_chat::mcp::McpServerConfig {
+            name,
+            command,
+            args,
+            env,
+            enabled: enabled != 0,
+            created_at,
+            updated_at,
+        });
+    }
+    Ok(result)
+}
+
+pub fn get_mcp_server(
+    db_path: &Path,
+    name: &str,
+) -> Result<Option<crate::agent_chat::mcp::McpServerConfig>, String> {
+    let conn = open_conn(db_path)?;
+    conn.query_row(
+        "SELECT name, command, args, env_json, enabled, created_at, updated_at
+         FROM mcp_server_configs WHERE name = ?1",
+        params![name],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i32>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|e| format!("查询 MCP 服务器失败: {e}"))?
+    .map(|(name, command, args_json, env_json, enabled, created_at, updated_at)| {
+        let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
+        let env: std::collections::HashMap<String, String> =
+            serde_json::from_str(&env_json).unwrap_or_default();
+        Ok::<_, String>(crate::agent_chat::mcp::McpServerConfig {
+            name,
+            command,
+            args,
+            env,
+            enabled: enabled != 0,
+            created_at,
+            updated_at,
+        })
+    })
+    .transpose()
+}
+
+pub fn delete_mcp_server(db_path: &Path, name: &str) -> Result<(), String> {
+    let conn = open_conn(db_path)?;
+    conn.execute("DELETE FROM mcp_server_configs WHERE name = ?1", params![name])
+        .map_err(|e| format!("删除 MCP 服务器 '{}' 失败: {}", name, e))?;
+    // Also remove associated tools
+    let pattern = format!("mcp:{name}");
+    conn.execute(
+        "DELETE FROM agent_tools WHERE handler_kind = ?1",
+        params![pattern],
+    )
+    .map_err(|e| format!("删除 MCP 工具记录失败: {e}"))?;
+    Ok(())
+}
+
+/// Register MCP tool definitions into agent_tools table.
+pub fn sync_mcp_tools(
+    db_path: &Path,
+    server_name: &str,
+    tools: &[crate::agent_chat::mcp::McpToolDef],
+) -> Result<(), String> {
+    let conn = open_conn(db_path)?;
+    // Remove existing tools for this server
+    let handler_pattern = format!("mcp:{server_name}");
+    conn.execute(
+        "DELETE FROM agent_tools WHERE handler_kind = ?1",
+        params![handler_pattern],
+    )
+    .map_err(|e| format!("清理旧 MCP 工具失败: {e}"))?;
+    // Insert new tools
+    for tool in tools {
+        let handler_kind = format!("mcp:{}", tool.server_name);
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_tools (name, description, parameters_schema, handler_kind, enabled)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![tool.tool_name, tool.description, tool.parameters_schema, handler_kind],
+        )
+        .map_err(|e| format!("写入 MCP 工具 '{}' 失败: {}", tool.tool_name, e))?;
+    }
+    Ok(())
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use tempfile::NamedTempFile;
 
     fn setup_db() -> (NamedTempFile, std::path::PathBuf) {

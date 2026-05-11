@@ -52,8 +52,39 @@ async fn dispatch(state: &AppState, tool_name: &str, args: Value) -> (String, Op
         "edit_wiki" => exec_edit_wiki(state, args),
         "web_search" => exec_web_search(state, args).await,
         "fetch_url" => exec_fetch_url(args).await,
-        name => (format!("未知工具: {name}"), None),
+        name => exec_mcp_or_unknown(state, name, args).await,
     }
+}
+
+async fn exec_mcp_or_unknown(state: &AppState, tool_name: &str, args: Value) -> (String, Option<i64>) {
+    // Look up the handler_kind in DB to see if it's an MCP tool.
+    let handler_kind = state
+        .outbox_db_path()
+        .and_then(|p| crate::agent_chat::db::get_tool_handler_kind(&p, tool_name).ok().flatten());
+
+    if let Some(kind) = handler_kind {
+        if let Some(server_name) = kind.strip_prefix("mcp:") {
+            let arc = match state.get_mcp_client(server_name) {
+                Some(a) => a,
+                None => {
+                    return (
+                        format!("MCP 服务器 '{server_name}' 未运行；请在设置中启动它后重试"),
+                        None,
+                    )
+                }
+            };
+            let result = {
+                let mut client = arc.lock().await;
+                client.call_tool(tool_name, args).await
+            };
+            return match result {
+                Ok(output) => (output, None),
+                Err(e) => (format!("MCP 工具调用失败: {e}"), None),
+            };
+        }
+    }
+
+    (format!("未知工具: {tool_name}"), None)
 }
 
 // ── run_shell ──────────────────────────────────────────────────────────────────

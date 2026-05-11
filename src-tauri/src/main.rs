@@ -150,6 +150,10 @@ fn main() {
             agent_chat::commands::cancel_chat_message,
             agent_chat::commands::approve_chat_write,
             agent_chat::commands::reject_chat_write,
+            agent_chat::commands::list_mcp_servers,
+            agent_chat::commands::upsert_mcp_server,
+            agent_chat::commands::delete_mcp_server,
+            agent_chat::commands::reload_mcp_server_tools,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");
