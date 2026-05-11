@@ -40,6 +40,14 @@ export default function ChatModule() {
     prevStatusRef.current = status;
   }, [streamingMessage?.status]);
 
+  // Clear chatPrefill from bridge context after ChatInputBar has had a render cycle
+  // to apply it. Without this, switching to a NEW conversation re-applies the stale prefill.
+  useEffect(() => {
+    if (!chatPrefill || !selectedConvId) return;
+    const tid = window.setTimeout(() => setChatPrefill(""), 0);
+    return () => window.clearTimeout(tid);
+  }, [chatPrefill, selectedConvId]);
+
   const loadConversations = async () => {
     const convs = await listConversations(showArchived);
     setConversations(convs);
