@@ -145,3 +145,443 @@
   color: var(--text-muted);
 }
 
+/* =========================================================
+   Runtime Banner（运行模式展示）
+   ========================================================= */
+
+.runtime-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  background: var(--accent-light);
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+}
+
+.runtime-banner__mode {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.runtime-banner__badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 20px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 8px;
+}
+
+.runtime-banner__description {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.runtime-status {
+  font-size: 12.5px;
+  color: var(--warning);
+  margin-top: 8px;
+}
+
+.runtime-hint {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  font-style: italic;
+}
+
+/* =========================================================
+   Mode Selector（运行模式选择）
+   ========================================================= */
+
+.mode-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.mode-option {
+  padding: 12px 14px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  cursor: pointer;
+}
+
+.mode-option:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.mode-option--active {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.mode-option--active .mode-option__name {
+  color: var(--accent);
+}
+
+.mode-option__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-option__badge {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.mode-option__description {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+/* Template init preview + Recent vaults */
+
+.template-init-preview {
+  margin-top: 10px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-content);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recent-vaults {
+  margin-top: 8px;
+  margin-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recent-vaults__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.recent-vaults__clear {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.recent-vaults__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.recent-vaults__item {
+  max-width: 360px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-vaults__item:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.template-init-preview__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.template-init-preview__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.template-init-preview__desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.template-init-preview__meta {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.template-init-preview__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.template-init-preview__block h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.template-init-preview__block ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.template-init-preview__block code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+
+@media (max-width: 960px) {
+  .template-init-preview__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* =========================================================
+   LLM 状态面板
+   ========================================================= */
+
+.llm-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.llm-status-card {
+  padding: 12px 14px;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.llm-status-card__label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 600;
+}
+
+.llm-status-card__value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+/* =========================================================
+   Stats Row（Overview 统计行）
+   ========================================================= */
+
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  padding: 14px;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.stat-card__value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -1px;
+}
+
+.stat-card__label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.stat-card--ingesting {
+  border-color: var(--info);
+  background: var(--info-bg);
+}
+
+.stat-card--ingesting .stat-card__value {
+  color: var(--info);
+}
+
+/* =========================================================
+   Ingest Result
+   ========================================================= */
+
+.ingest-result {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--success-bg);
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius);
+}
+
+.ingest-result__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--success);
+}
+
+.ingest-result__entities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ingest-result__entity {
+  padding: 2px 10px;
+  border-radius: 20px;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ingest-result__updated {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* =========================================================
+   Log Panel
+   ========================================================= */
+
+.log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid transparent;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+}
+
+.log-item--info    { border-left-color: var(--info);    background: var(--info-bg); }
+.log-item--warn    { border-left-color: var(--warning); background: var(--warning-bg); }
+.log-item--error   { border-left-color: var(--error);   background: var(--error-bg); }
+
+.log-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.log-item__level {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.log-item--info  .log-item__level { color: var(--info); }
+.log-item--warn  .log-item__level { color: var(--warning); }
+.log-item--error .log-item__level { color: var(--error); }
+
+.log-item__head time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.log-item p {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* =========================================================
+   Module Grid（功能占位卡片）
+   ========================================================= */
+
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.module-card {
+  padding: 16px;
+  background: var(--bg-content);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.15s;
+}
+
+.module-card:hover { border-color: var(--accent); }
+
+.module-card__index {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.module-card h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.module-card p {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
