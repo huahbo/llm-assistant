@@ -1,6 +1,8 @@
+import { useState } from "react";
 import type { MutableRefObject } from "react";
 import { type ShellPolicyProfileKey, getActiveProfileKey } from "../../contexts/ShellPolicyContext";
-import type { ShellPolicyConfig, ShellHistoryEntry, ShellSessionInfo } from "../../types";
+import type { ShellPolicyConfig, ShellHistoryEntry, ShellSessionInfo, ShellAuditEvent } from "../../types";
+import { listShellAuditEvents } from "../../tauri-client";
 
 type ShellPolicyProfileItem = {
   key: ShellPolicyProfileKey;
@@ -63,6 +65,22 @@ export default function AgentToolsPane({
   handleApproveShellCommand,
 }: AgentToolsPaneProps) {
   const activeProfileKey = getActiveProfileKey(agentShellPolicyConfig);
+  const [showAudit, setShowAudit] = useState(false);
+  const [auditLog, setAuditLog] = useState<ShellAuditEvent[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const handleToggleAudit = async () => {
+    if (!showAudit) {
+      setAuditLoading(true);
+      try {
+        const events = await listShellAuditEvents(20);
+        setAuditLog(events);
+      } finally {
+        setAuditLoading(false);
+      }
+    }
+    setShowAudit((v) => !v);
+  };
   return (
     <section className={`agent-studio__tools-workspace agent-studio__tools-workspace--${agentShellTheme}`}>
       <div className="agent-studio__tools-head">
@@ -235,6 +253,46 @@ export default function AgentToolsPane({
           </button>
         </div>
         <p className="agent-studio__shell-input-tip">支持会话命令（例如 `cd ..`）和流式输出；工具调用与任务模式隔离。</p>
+      </div>
+      <div className="agent-studio__audit">
+        <button
+          type="button"
+          className="agent-studio__audit-toggle"
+          onClick={() => { void handleToggleAudit(); }}
+        >
+          {showAudit ? "▲ 收起审计日志" : "▼ 查看审计日志"}
+          {auditLoading && " …"}
+        </button>
+        {showAudit && (
+          <div className="agent-studio__audit-panel">
+            {auditLog.length === 0 ? (
+              <p className="agent-studio__audit-empty">暂无审计记录</p>
+            ) : (
+              <table className="agent-studio__audit-table">
+                <thead>
+                  <tr>
+                    <th>命令</th>
+                    <th>来源</th>
+                    <th>决策</th>
+                    <th>退出码</th>
+                    <th>耗时</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLog.map((e) => (
+                    <tr key={e.id} className={e.blocked ? "blocked" : ""}>
+                      <td title={e.command}>{e.command.length > 40 ? `${e.command.slice(0, 40)}…` : e.command}</td>
+                      <td>{e.executor}</td>
+                      <td>{e.policy_decision}</td>
+                      <td>{e.exit_code ?? "—"}</td>
+                      <td>{e.latency_ms != null ? `${e.latency_ms}ms` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

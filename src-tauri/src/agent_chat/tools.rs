@@ -168,8 +168,18 @@ fn exec_write_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
         Err(e) => return (format!("路径解析失败: {e}"), None),
     };
     let resolved = target.to_string_lossy().to_string();
-    let pending_id = pending_write_id();
 
+    // H6-P2：有效票据存在时自动批准，跳过人工审批弹窗。
+    if crate::agent_policy::check_write_ticket(&resolved) {
+        let pending_id = pending_write_id();
+        state.store_pending_agent_write(pending_id, resolved.clone(), content, None);
+        return match state.approve_agent_write_impl(pending_id) {
+            Ok(msg) => (format!("[ticket-auto-approved] {msg}"), None),
+            Err(e) => (format!("[ticket] 写入失败: {e}"), None),
+        };
+    }
+
+    let pending_id = pending_write_id();
     state.store_pending_agent_write(pending_id, resolved.clone(), content, None);
     (
         format!("write_wiki pending approval id={pending_id} path={resolved}"),
@@ -195,8 +205,18 @@ fn exec_edit_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
         Err(e) => return (format!("路径解析失败: {e}"), None),
     };
     let resolved = target.to_string_lossy().to_string();
-    let pending_id = pending_write_id();
 
+    // H6-P2：有效票据存在时自动批准，跳过人工审批弹窗。
+    if crate::agent_policy::check_write_ticket(&resolved) {
+        let pending_id = pending_write_id();
+        state.store_pending_agent_write(pending_id, resolved.clone(), new_str, Some(old_str));
+        return match state.approve_agent_write_impl(pending_id) {
+            Ok(msg) => (format!("[ticket-auto-approved] {msg}"), None),
+            Err(e) => (format!("[ticket] 编辑失败: {e}"), None),
+        };
+    }
+
+    let pending_id = pending_write_id();
     state.store_pending_agent_write(pending_id, resolved.clone(), new_str, Some(old_str));
     (
         format!("edit_wiki pending approval id={pending_id} path={resolved}"),

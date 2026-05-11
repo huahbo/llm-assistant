@@ -1,5 +1,31 @@
 use crate::models::{ShellPolicyConfig, ShellPolicyDecision};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+// ── Write Ticket Cache (H6-P2) ────────────────────────────────────────────────
+
+const TICKET_TTL: Duration = Duration::from_secs(300);
+
+static TICKET_CACHE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn ticket_cache() -> &'static Mutex<HashMap<String, Instant>> {
+    TICKET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 检查某路径是否有有效的写操作审批票据（TTL 5 分钟）。
+pub fn check_write_ticket(path: &str) -> bool {
+    let cache = ticket_cache().lock().unwrap();
+    cache.get(path).is_some_and(|&t| t.elapsed() < TICKET_TTL)
+}
+
+/// 为路径颁发写操作审批票据（TTL 5 分钟），同时清理过期条目。
+pub fn grant_write_ticket(path: &str) {
+    let mut cache = ticket_cache().lock().unwrap();
+    cache.retain(|_, v| v.elapsed() < TICKET_TTL);
+    cache.insert(path.to_string(), Instant::now());
+}
 
 /// Shell 命令最小策略分类（H6-S1.5/S2）。
 /// 返回：(action, decision, block_reason)。

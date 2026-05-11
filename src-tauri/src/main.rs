@@ -138,6 +138,7 @@ fn main() {
             commands::reject_agent_write,
             commands::approve_and_run_shell,
             commands::list_shell_audit_events,
+            commands::grant_write_ticket,
             agent_chat::commands::create_conversation,
             agent_chat::commands::list_conversations,
             agent_chat::commands::rename_conversation,

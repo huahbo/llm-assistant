@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ChatStreamSegment } from "../../types";
-import { approveChatWrite, rejectChatWrite } from "../../tauri-client";
+import { approveChatWrite, rejectChatWrite, grantWriteTicket } from "../../tauri-client";
 
 type ToolStatus = (ChatStreamSegment & { kind: "tool" })["status"];
 
@@ -24,9 +24,15 @@ function statusIcon(status: ToolStatus): string {
 
 export default function ToolCallCard({ toolName, args, result, status, pendingId }: Props) {
   const [expanded, setExpanded] = useState(status === "awaiting_approval");
+  const [remember, setRemember] = useState(false);
 
   const handleApprove = async () => {
-    if (pendingId != null) await approveChatWrite(pendingId);
+    if (pendingId == null) return;
+    if (remember) {
+      const path = typeof args.path === "string" ? args.path : "";
+      if (path) await grantWriteTicket(path);
+    }
+    await approveChatWrite(pendingId);
   };
 
   const handleReject = async () => {
@@ -66,6 +72,18 @@ export default function ToolCallCard({ toolName, args, result, status, pendingId
               <span style={{ fontSize: 12, color: "var(--text-secondary, #6b7280)" }}>
                 等待审批写操作
               </span>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text-secondary, #6b7280)", cursor: "pointer" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                  style={{ cursor: "pointer" }}
+                />
+                记住 5 分钟
+              </label>
               <div className="chat-tool-card__approval-btns">
                 <button
                   type="button"

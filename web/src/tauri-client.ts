@@ -2288,6 +2288,13 @@ export async function listShellAuditEvents(limit?: number): Promise<ShellAuditEv
   return invoke<ShellAuditEvent[]>("list_shell_audit_events", { limit });
 }
 
+/** 颁发写操作审批票据（H6-P2）。用户勾选"记住 5 分钟"时调用。 */
+export async function grantWriteTicket(path: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<void>("grant_write_ticket", { path });
+}
+
 /** 创建 Shell 会话（会话内 cwd 持久化）。 */
 export async function createShellSession(source?: "manual" | "agent"): Promise<ShellSessionInfo | null> {
   if (!isTauriRuntime()) return null;

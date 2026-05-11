@@ -1046,3 +1046,10 @@ pub fn list_shell_audit_events(
 ) -> Result<Vec<ShellAuditEvent>, String> {
     state.list_shell_audit_events_impl(limit.unwrap_or(100))
 }
+
+/// 颁发写操作审批票据（H6-P2）。
+/// 用户勾选"记住 5 分钟"后前端调用，此后同路径写操作无需再弹审批。
+#[tauri::command]
+pub fn grant_write_ticket(path: String) {
+    crate::agent_policy::grant_write_ticket(&path);
+}
