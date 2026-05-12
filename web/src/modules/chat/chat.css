@@ -453,8 +453,7 @@
 .chat-inputbar__row--actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+  justify-content: space-between;
 }
 
 .chat-inputbar__textarea {
@@ -534,26 +533,24 @@
 }
 
 .chat-inputbar__plus-btn {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  background: var(--bg-muted);
-  border: 1.5px solid var(--border);
-  color: var(--text-muted);
-  font-size: 24px;
+  background: var(--accent);
+  border: none;
+  color: white;
+  font-size: 28px;
   line-height: 1;
-  padding: 0 0 2px 0;   /* + 字符视觉重心偏下，上移 2px */
+  padding: 0 0 2px 0;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition: background 0.12s;
 }
 
 .chat-inputbar__plus-btn:hover:not(:disabled) {
-  background: var(--accent-light);
-  color: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-hover);
 }
 
 .chat-inputbar__plus-btn:disabled {
