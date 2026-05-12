@@ -450,11 +450,6 @@
   background: var(--error-bg);
 }
 
-.chat-inputbar__row--actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
 
 .chat-inputbar__textarea {
   flex: 1;
@@ -483,6 +478,12 @@
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+}
+
+.chat-inputbar__row--actions {
+  justify-content: space-between;
+  align-items: flex-end;
+  width: 100%;
 }
 
 .chat-inputbar__hint {
@@ -539,9 +540,9 @@
   background: var(--accent);
   border: none;
   color: white;
-  font-size: 28px;
-  line-height: 1;
-  padding: 0 0 2px 0;
+  font-size: 26px;
+  line-height: 34px;
+  padding: 0 0 3px 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -825,6 +826,54 @@
   gap: 10px;
 }
 
+.skill-installer__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.skill-installer__list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: var(--bg-muted);
+  border-radius: var(--radius-sm);
+}
+
+.skill-installer__list-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-installer__list-del {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.skill-installer__list-del:hover {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
+.skill-installer__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 0;
+}
+
 .skill-installer__hint {
   font-size: 12px;
   color: var(--text-muted);
@@ -878,7 +927,7 @@
 }
 
 .skill-installer__btn:disabled {
-  opacity: 0.6;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
