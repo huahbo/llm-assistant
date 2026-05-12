@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { FileChunk } from "../../tauri-client";
+import { setConvShellMode } from "../../tauri-client";
 import PlusMenu from "./PlusMenu";
+
+type ShellMode = "off" | "approval" | "yolo";
+
+const SHELL_CYCLE: ShellMode[] = ["off", "approval", "yolo"];
+const SHELL_LABEL: Record<ShellMode, string> = { off: "", approval: "🔒 审批", yolo: "⚡ Yolo" };
+const SHELL_TITLE: Record<ShellMode, string> = {
+  off: "Shell 未启用，点击开启审批模式",
+  approval: "Shell 审批模式（每次询问），点击切换到 Yolo",
+  yolo: "Shell Yolo 模式（直接执行），点击关闭",
+};
 
 interface Props {
   isStreaming: boolean;
@@ -8,6 +19,9 @@ interface Props {
   onCancel: () => void;
   disabled?: boolean;
   prefillText?: string;
+  conversationId?: number;
+  shellMode?: ShellMode;
+  onShellModeChange?: (mode: ShellMode) => void;
 }
 
 const CHAR_LIMIT = 40_000;
@@ -23,11 +37,17 @@ function buildMessageWithFiles(text: string, chunks: FileChunk[]): string {
   return text.trim() ? `${fileBlocks}\n\n${text}` : fileBlocks;
 }
 
-export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, prefillText }: Props) {
+export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, prefillText, conversationId, shellMode = "off", onShellModeChange }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const appliedPrefillRef = useRef<string>("");
   const [showPlus, setShowPlus] = useState(false);
   const [fileChunks, setFileChunks] = useState<FileChunk[]>([]);
+
+  const handleShellToggle = async () => {
+    const next = SHELL_CYCLE[(SHELL_CYCLE.indexOf(shellMode) + 1) % SHELL_CYCLE.length];
+    if (conversationId != null) await setConvShellMode(conversationId, next);
+    onShellModeChange?.(next);
+  };
 
   useEffect(() => {
     if (!prefillText || !textareaRef.current) return;
@@ -105,24 +125,48 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
           )}
         </div>
 
-        {isStreaming ? (
-          <button
-            type="button"
-            className="chat-inputbar__btn chat-inputbar__btn--cancel"
-            onClick={onCancel}
-          >
-            取消
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="chat-inputbar__btn chat-inputbar__btn--send"
-            disabled={disabled}
-            onClick={handleSend}
-          >
-            发送
-          </button>
-        )}
+        <div className="chat-inputbar__right">
+          {shellMode !== "off" && (
+            <button
+              type="button"
+              className={`chat-inputbar__shell-btn chat-inputbar__shell-btn--${shellMode}`}
+              onClick={() => void handleShellToggle()}
+              title={SHELL_TITLE[shellMode]}
+              disabled={isStreaming || disabled}
+            >
+              {SHELL_LABEL[shellMode]}
+            </button>
+          )}
+          {shellMode === "off" && (
+            <button
+              type="button"
+              className="chat-inputbar__shell-btn chat-inputbar__shell-btn--off"
+              onClick={() => void handleShellToggle()}
+              title={SHELL_TITLE["off"]}
+              disabled={isStreaming || disabled}
+            >
+              🖥
+            </button>
+          )}
+          {isStreaming ? (
+            <button
+              type="button"
+              className="chat-inputbar__btn chat-inputbar__btn--cancel"
+              onClick={onCancel}
+            >
+              取消
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="chat-inputbar__btn chat-inputbar__btn--send"
+              disabled={disabled}
+              onClick={handleSend}
+            >
+              发送
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

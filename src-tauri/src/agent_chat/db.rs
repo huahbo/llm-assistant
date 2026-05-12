@@ -16,6 +16,7 @@ pub struct Conversation {
     pub skill_key: Option<String>,
     pub memory_snapshot: Option<String>,
     pub archived: bool,
+    pub shell_mode: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -87,6 +88,11 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
 
     // 迁移：为已有数据库添加 reasoning_content 列（忽略已存在错误）
     let _ = conn.execute("ALTER TABLE agent_messages ADD COLUMN reasoning_content TEXT", []);
+    // 迁移：为已有数据库添加 shell_mode 列（忽略已存在错误）
+    let _ = conn.execute(
+        "ALTER TABLE agent_conversations ADD COLUMN shell_mode TEXT NOT NULL DEFAULT 'off'",
+        [],
+    );
 
     Ok(())
 }
@@ -187,10 +193,10 @@ pub fn create_conversation(
 pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<Conversation>, String> {
     let conn = open_conn(db_path)?;
     let sql = if include_archived {
-        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, created_at, updated_at
+        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at
          FROM agent_conversations ORDER BY updated_at DESC"
     } else {
-        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, created_at, updated_at
+        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at
          FROM agent_conversations WHERE archived = 0 ORDER BY updated_at DESC"
     };
     let mut stmt = conn.prepare(sql).map_err(|e| format!("准备列表查询失败: {}", e))?;
@@ -203,8 +209,9 @@ pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<
                 skill_key: row.get(3)?,
                 memory_snapshot: row.get(4)?,
                 archived: row.get::<_, i32>(5)? != 0,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                shell_mode: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "off".to_string()),
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
             })
         })
         .map_err(|e| format!("查询会话列表失败: {}", e))?;
@@ -215,7 +222,7 @@ pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<
 pub fn get_conversation(db_path: &Path, id: i64) -> Result<Option<Conversation>, String> {
     let conn = open_conn(db_path)?;
     conn.query_row(
-        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, created_at, updated_at
+        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at
          FROM agent_conversations WHERE id = ?1",
         params![id],
         |row| {
@@ -226,13 +233,36 @@ pub fn get_conversation(db_path: &Path, id: i64) -> Result<Option<Conversation>,
                 skill_key: row.get(3)?,
                 memory_snapshot: row.get(4)?,
                 archived: row.get::<_, i32>(5)? != 0,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                shell_mode: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "off".to_string()),
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
             })
         },
     )
     .optional()
     .map_err(|e| format!("查询会话失败: {}", e))
+}
+
+pub fn get_conv_shell_mode(db_path: &Path, conv_id: i64) -> Result<String, String> {
+    let conn = open_conn(db_path)?;
+    conn.query_row(
+        "SELECT COALESCE(shell_mode, 'off') FROM agent_conversations WHERE id = ?1",
+        params![conv_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| format!("查询 shell_mode 失败: {e}"))?
+    .ok_or_else(|| format!("会话 #{conv_id} 不存在"))
+}
+
+pub fn set_conv_shell_mode(db_path: &Path, conv_id: i64, mode: &str) -> Result<(), String> {
+    let conn = open_conn(db_path)?;
+    conn.execute(
+        "UPDATE agent_conversations SET shell_mode = ?1 WHERE id = ?2",
+        params![mode, conv_id],
+    )
+    .map_err(|e| format!("更新 shell_mode 失败: {e}"))?;
+    Ok(())
 }
 
 pub fn rename_conversation(db_path: &Path, id: i64, title: &str, now: &str) -> Result<(), String> {

@@ -80,6 +80,8 @@ pub struct AppState {
     chat_write_approvals: Mutex<
         std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Result<String, String>>>,
     >,
+    /// agent_chat shell 审批待执行信息（pending_id -> (command, timeout_ms)）
+    chat_shell_pending: Mutex<std::collections::HashMap<i64, (String, u64)>>,
     /// 活跃 MCP 客户端（server_name -> client）。Arc 允许多个 await 并发持有引用。
     mcp_clients: Mutex<
         std::collections::HashMap<
@@ -188,6 +190,7 @@ impl AppState {
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
             chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
+            chat_shell_pending: Mutex::new(std::collections::HashMap::new()),
             mcp_clients: Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -276,6 +279,7 @@ impl AppState {
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
             chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
+            chat_shell_pending: Mutex::new(std::collections::HashMap::new()),
             mcp_clients: Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -5789,6 +5793,75 @@ Wiki 页面：\n{}",
             .remove(&pending_id);
         if let Some(tx) = tx {
             let _ = tx.send(Err("用户拒绝写操作".to_string()));
+        }
+        Ok(())
+    }
+
+    // ── Shell approval (chat) ──────────────────────────────────────────────────
+
+    /// 登记待审批 shell 命令（approval 模式下由 exec_run_shell 调用）
+    pub fn register_chat_shell_pending(&self, pending_id: i64, command: String, timeout_ms: u64) {
+        self.chat_shell_pending
+            .lock()
+            .expect("chat_shell_pending 锁已被污染")
+            .insert(pending_id, (command, timeout_ms));
+    }
+
+    /// 审批通过：执行 shell 命令，将结果发送到 ReAct 循环等待的 channel
+    pub async fn approve_chat_shell_impl(&self, pending_id: i64) -> Result<(), String> {
+        let (command, timeout_ms) = self
+            .chat_shell_pending
+            .lock()
+            .expect("chat_shell_pending 锁已被污染")
+            .remove(&pending_id)
+            .ok_or_else(|| format!("pending_id={pending_id} 不存在或已过期"))?;
+
+        let result = self
+            .run_shell_impl(command, timeout_ms, Some("chat_approved".to_string()), None, None)
+            .await;
+
+        let content = match result {
+            Ok(r) => {
+                let mut out = String::new();
+                if r.blocked {
+                    out.push_str(&format!("blocked: {}\n", r.blocked_reason.unwrap_or_default()));
+                }
+                if !r.stdout.is_empty() { out.push_str(&r.stdout); }
+                if !r.stderr.is_empty() {
+                    if !out.is_empty() { out.push('\n'); }
+                    out.push_str("--- stderr ---\n");
+                    out.push_str(&r.stderr);
+                }
+                if out.is_empty() { out.push_str("(no output)"); }
+                out
+            }
+            Err(e) => format!("shell 执行失败: {e}"),
+        };
+
+        let tx = self
+            .chat_write_approvals
+            .lock()
+            .expect("chat_write_approvals 锁已被污染")
+            .remove(&pending_id);
+        if let Some(tx) = tx {
+            let _ = tx.send(Ok(content));
+        }
+        Ok(())
+    }
+
+    /// 审批拒绝：丢弃命令，通知 ReAct 循环
+    pub fn reject_chat_shell_impl(&self, pending_id: i64) -> Result<(), String> {
+        self.chat_shell_pending
+            .lock()
+            .expect("chat_shell_pending 锁已被污染")
+            .remove(&pending_id);
+        let tx = self
+            .chat_write_approvals
+            .lock()
+            .expect("chat_write_approvals 锁已被污染")
+            .remove(&pending_id);
+        if let Some(tx) = tx {
+            let _ = tx.send(Err("用户拒绝执行".to_string()));
         }
         Ok(())
     }
@@ -13521,6 +13594,7 @@ entities:
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
             chat_write_approvals: Mutex::new(std::collections::HashMap::new()),
+            chat_shell_pending: Mutex::new(std::collections::HashMap::new()),
             mcp_clients: Mutex::new(std::collections::HashMap::new()),
         }
     }

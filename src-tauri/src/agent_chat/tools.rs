@@ -45,7 +45,7 @@ pub async fn execute_tool_call(
 
 async fn dispatch(state: &AppState, conv_id: i64, tool_name: &str, args: Value) -> (String, Option<i64>) {
     match tool_name {
-        "run_shell" => exec_run_shell(state, args).await,
+        "run_shell" => exec_run_shell(state, conv_id, args).await,
         "search_wiki" => exec_search_wiki(state, args),
         "read_wiki" => exec_read_wiki(state, args),
         "write_wiki" => exec_write_wiki(state, args),
@@ -171,7 +171,7 @@ async fn exec_mcp_or_unknown(state: &AppState, tool_name: &str, args: Value) -> 
 
 // ── run_shell ──────────────────────────────────────────────────────────────────
 
-async fn exec_run_shell(state: &AppState, args: Value) -> (String, Option<i64>) {
+async fn exec_run_shell(state: &AppState, conv_id: i64, args: Value) -> (String, Option<i64>) {
     let command = match str_arg(&args, "command") {
         Some(c) => c,
         None => return ("错误：run_shell 需要 'command' 参数".to_string(), None),
@@ -181,41 +181,60 @@ async fn exec_run_shell(state: &AppState, args: Value) -> (String, Option<i64>) 
         .and_then(|v| v.as_u64())
         .unwrap_or(30_000);
 
-    match state
-        .run_shell_impl(
-            command,
-            timeout_ms,
-            Some("agent".to_string()),
+    let db_path = match state.outbox_db_path() {
+        Some(p) => p,
+        None => return ("错误：Vault 未初始化".to_string(), None),
+    };
+
+    let shell_mode = crate::agent_chat::db::get_conv_shell_mode(&db_path, conv_id)
+        .unwrap_or_else(|_| "off".to_string());
+
+    match shell_mode.as_str() {
+        "off" => (
+            "Shell 未启用。请在对话输入框中切换 Shell 模式后重试。".to_string(),
             None,
-            None,
-        )
-        .await
-    {
-        Ok(result) => {
-            let mut out = String::new();
-            if result.blocked {
-                out.push_str(&format!(
-                    "blocked: {}\n",
-                    result.blocked_reason.unwrap_or_default()
-                ));
+        ),
+        "yolo" => {
+            match state
+                .run_shell_impl(command, timeout_ms, Some("chat_yolo".to_string()), None, None)
+                .await
+            {
+                Ok(result) => (format_shell_result(result), None),
+                Err(e) => (format!("shell 执行失败: {e}"), None),
             }
-            if !result.stdout.is_empty() {
-                out.push_str(&result.stdout);
-            }
-            if !result.stderr.is_empty() {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str("--- stderr ---\n");
-                out.push_str(&result.stderr);
-            }
-            if out.is_empty() {
-                out.push_str("(no output)");
-            }
-            (out, None)
         }
-        Err(e) => (format!("shell 执行失败: {e}"), None),
+        "approval" => {
+            let pending_id = pending_write_id();
+            state.register_chat_shell_pending(pending_id, command, timeout_ms);
+            (
+                format!("shell_pending_approval id={pending_id}"),
+                Some(pending_id),
+            )
+        }
+        _ => ("错误：未知 shell_mode".to_string(), None),
     }
+}
+
+fn format_shell_result(result: crate::models::ShellResult) -> String {
+    let mut out = String::new();
+    if result.blocked {
+        out.push_str(&format!("blocked: {}\n", result.blocked_reason.unwrap_or_default()));
+    }
+    if !result.stdout.is_empty() {
+        out.push_str(&result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        if !out.is_empty() { out.push('\n'); }
+        out.push_str("--- stderr ---\n");
+        out.push_str(&result.stderr);
+    }
+    if out.is_empty() { out.push_str("(no output)"); }
+    // 截断超长输出
+    if out.len() > 10_000 {
+        out.truncate(10_000);
+        out.push_str("\n...(输出已截断)");
+    }
+    out
 }
 
 // ── search_wiki ────────────────────────────────────────────────────────────────

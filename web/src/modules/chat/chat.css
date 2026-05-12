@@ -530,6 +530,142 @@
   background: var(--accent-hover);
 }
 
+/* ── Shell 模式按钮 ────────────────────────────────────────────────────────────── */
+
+.chat-inputbar__right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-inputbar__shell-btn {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.chat-inputbar__shell-btn--off {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.chat-inputbar__shell-btn--off:hover:not(:disabled) {
+  background: var(--bg-muted);
+  color: var(--text-primary);
+}
+
+.chat-inputbar__shell-btn--approval {
+  background: var(--bg-muted);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.chat-inputbar__shell-btn--approval:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chat-inputbar__shell-btn--yolo {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.chat-inputbar__shell-btn--yolo:hover:not(:disabled) {
+  background: #fde68a;
+}
+
+.chat-inputbar__shell-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Shell 审批卡 ──────────────────────────────────────────────────────────────── */
+
+.shell-approval-card {
+  background: var(--bg-card);
+  border: 1.5px solid #fcd34d;
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 4px 0;
+}
+
+.shell-approval-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.shell-approval-card__icon {
+  font-size: 16px;
+}
+
+.shell-approval-card__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.shell-approval-card__countdown {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-approval-card__command {
+  background: var(--bg-muted);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: monospace;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: 10px;
+}
+
+.shell-approval-card__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.shell-approval-card__btn {
+  padding: 5px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background 0.12s;
+}
+
+.shell-approval-card__btn--approve {
+  background: var(--accent);
+  color: white;
+}
+
+.shell-approval-card__btn--approve:hover {
+  background: var(--accent-hover);
+}
+
+.shell-approval-card__btn--reject {
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.shell-approval-card__btn--reject:hover {
+  color: var(--error);
+  border-color: var(--error);
+}
+
 .chat-inputbar__btn--cancel {
   background: var(--bg-muted);
   color: var(--text);

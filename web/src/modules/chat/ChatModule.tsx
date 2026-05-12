@@ -7,6 +7,7 @@ import {
   archiveConversation,
   deleteConversation,
   isTauriRuntime,
+  getConvShellMode,
 } from "../../tauri-client";
 import { useChatStream } from "./hooks/useChatStream";
 import ConversationList from "./ConversationList";
@@ -19,10 +20,18 @@ export default function ChatModule() {
   const [selectedConvId, setSelectedConvId] = useState<number | null>(null);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [shellMode, setShellMode] = useState<"off" | "approval" | "yolo">("off");
   const autoSelectedRef = useRef(false);
 
   const { streamingMessage, isStreaming, sendMessage, cancelMessage } =
     useChatStream(selectedConvId);
+
+  useEffect(() => {
+    if (selectedConvId == null) { setShellMode("off"); return; }
+    void getConvShellMode(selectedConvId).then((m) =>
+      setShellMode((m as "off" | "approval" | "yolo") ?? "off")
+    );
+  }, [selectedConvId]);
 
   const { setHighlightedPaths, chatPrefill, setChatPrefill } = useGraphBridge();
   const prevStatusRef = useRef<string | null>(null);
@@ -142,6 +151,8 @@ export default function ChatModule() {
               onSend={(text) => void sendMessage(text)}
               onCancel={cancelMessage}
               prefillText={chatPrefill}
+              shellMode={shellMode}
+              onShellModeChange={setShellMode}
             />
           ) : (
             <div className="chat-module__empty">选择或新建对话</div>

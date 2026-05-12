@@ -83,8 +83,12 @@ pub async fn process_message_turn(
             llm_messages.push(db_msg_to_chat_msg(msg)?);
         }
 
-        // c. 加载启用的工具
-        let tools = chat_db::list_enabled_tools(&db_path)?;
+        // c. 加载启用的工具（shell_mode=off 时从列表中移除 run_shell）
+        let shell_mode = chat_db::get_conv_shell_mode(&db_path, conv_id).unwrap_or_else(|_| "off".to_string());
+        let mut tools = chat_db::list_enabled_tools(&db_path)?;
+        if shell_mode == "off" {
+            tools.retain(|t| t.name != "run_shell");
+        }
 
         // 预插入 assistant 占位消息，获取 message_id
         let now2 = current_timestamp_ms();
@@ -224,6 +228,8 @@ pub async fn process_message_turn(
                                 "message_id": message_id,
                                 "call_id": call.id,
                                 "pending_id": pending_id,
+                                "tool_name": call.function.name,
+                                "args": call.function.arguments,
                             }),
                         );
                         // 创建 oneshot channel，挂起循环等待用户审批

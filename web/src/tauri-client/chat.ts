@@ -136,6 +136,44 @@ export async function rejectChatWrite(pendingId: number): Promise<void> {
   }
 }
 
+// ── Shell mode (H14) ─────────────────────────────────────────────────────────
+
+export async function getConvShellMode(conversationId: number): Promise<string> {
+  if (!isTauriRuntime()) return "off";
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(invoke<string>("get_conv_shell_mode", { conversationId }), 5_000);
+  } catch {
+    return "off";
+  }
+}
+
+export async function setConvShellMode(conversationId: number, mode: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await withTimeout(invoke<void>("set_conv_shell_mode", { conversationId, mode }), 5_000);
+}
+
+export async function approveChatShell(pendingId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("approve_chat_shell", { pendingId }), 40_000);
+  } catch {
+    // ignore
+  }
+}
+
+export async function rejectChatShell(pendingId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await withTimeout(invoke<void>("reject_chat_shell", { pendingId }), 5_000);
+  } catch {
+    // ignore
+  }
+}
+
 export interface FileChunk {
   filename: string;
   content: string;

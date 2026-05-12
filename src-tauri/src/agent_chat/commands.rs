@@ -138,6 +138,44 @@ pub async fn reject_chat_write(
     state.reject_chat_write(pending_id)
 }
 
+#[tauri::command]
+pub async fn get_conv_shell_mode(
+    conversation_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let db_path = state.outbox_db_path().ok_or_else(|| "Vault 未初始化".to_string())?;
+    chat_db::get_conv_shell_mode(&db_path, conversation_id)
+}
+
+#[tauri::command]
+pub async fn set_conv_shell_mode(
+    conversation_id: i64,
+    mode: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if !["off", "yolo", "approval"].contains(&mode.as_str()) {
+        return Err(format!("无效 shell_mode: {mode}，必须为 off / yolo / approval"));
+    }
+    let db_path = state.outbox_db_path().ok_or_else(|| "Vault 未初始化".to_string())?;
+    chat_db::set_conv_shell_mode(&db_path, conversation_id, &mode)
+}
+
+#[tauri::command]
+pub async fn approve_chat_shell(
+    pending_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.approve_chat_shell_impl(pending_id).await
+}
+
+#[tauri::command]
+pub async fn reject_chat_shell(
+    pending_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.reject_chat_shell_impl(pending_id)
+}
+
 // ── MCP 服务器管理 ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
