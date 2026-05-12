@@ -141,6 +141,7 @@ fn main() {
             commands::list_shell_audit_events,
             commands::grant_write_ticket,
             commands::read_file_for_chat,
+            commands::open_external_url,
             commands::install_skill_from_url,
             agent_chat::commands::create_conversation,
             agent_chat::commands::list_conversations,

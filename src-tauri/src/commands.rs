@@ -1072,6 +1072,39 @@ pub fn read_file_for_chat(
     state.read_file_for_chat_impl(&path)
 }
 
+/// 在系统默认浏览器中打开外部 URL，防止 WebView 直接导航替换 App 界面。
+/// 仅允许 http/https URL。
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("只允许 http/https URL".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开链接失败: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开链接失败: {e}"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开链接失败: {e}"))
+    }
+}
+
 /// 从 URL 下载 Skill JSON 并安装到技能库。
 /// JSON 格式：{ "name": "...", "system_prompt": "...", "description"?: "..." }
 #[tauri::command]
