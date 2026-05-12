@@ -34,7 +34,7 @@ export default function PlusMenu({ onFileAttached, onClose }: Props) {
     const paths = await pickFiles({
       multiple: false,
       filters: [
-        { name: "文档与文本", extensions: ["txt", "md", "markdown", "pdf", "docx", "pptx", "csv", "json", "yaml", "yml", "log"] },
+        { name: "文档与文本", extensions: ["txt", "md", "markdown", "pdf", "doc", "docx", "pptx", "csv", "json", "yaml", "yml", "log"] },
         { name: "代码文件",   extensions: ["rs", "py", "js", "ts", "go", "java", "c", "cpp", "h"] },
         { name: "所有文件",   extensions: ["*"] },
       ],
@@ -61,7 +61,7 @@ export default function PlusMenu({ onFileAttached, onClose }: Props) {
             <span className="plus-menu__icon">📎</span>
             <span className="plus-menu__label">
               <span className="plus-menu__label-title">上传文件</span>
-              <span className="plus-menu__label-sub">txt / md / pdf / docx / csv / 代码</span>
+              <span className="plus-menu__label-sub">txt / md / pdf / doc / docx / csv / 代码</span>
             </span>
           </button>
 

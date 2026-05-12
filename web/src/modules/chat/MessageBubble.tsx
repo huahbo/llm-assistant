@@ -121,6 +121,32 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
+// ── File block parser ──────────────────────────────────────────────────────────
+
+const FILE_SEP = "━".repeat(40); // ━ × 40, matches buildMessageWithFiles
+
+function parseFileBlocks(raw: string): { attachments: string[]; text: string } {
+  const attachments: string[] = [];
+  let pos = 0;
+
+  while (pos < raw.length && raw.startsWith("[📎 ", pos)) {
+    const needle = "]\n" + FILE_SEP;
+    const headerEnd = raw.indexOf(needle, pos);
+    if (headerEnd === -1) break;
+
+    attachments.push(raw.slice(pos + 1, headerEnd)); // strip leading "["
+
+    const afterOpenSep = headerEnd + needle.length; // after "]\n━━━...━━━"
+    const closeSepPos = raw.indexOf("\n" + FILE_SEP, afterOpenSep);
+    if (closeSepPos === -1) break;
+
+    pos = closeSepPos + 1 + FILE_SEP.length; // after closing ━━━
+    while (pos < raw.length && raw[pos] === "\n") pos++;
+  }
+
+  return { attachments, text: raw.slice(pos) };
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function MessageBubble({ role, content, segments, streaming, streamStatus }: Props) {
@@ -128,10 +154,18 @@ export default function MessageBubble({ role, content, segments, streaming, stre
 
   // User message
   if (role === "user") {
+    const { attachments, text } = parseFileBlocks(content ?? "");
     return (
       <div className="chat-row chat-row--user">
         <div className="chat-bubble chat-bubble--user">
-          {content ?? ""}
+          {attachments.length > 0 && (
+            <div className="chat-bubble__attachments">
+              {attachments.map((label, i) => (
+                <span key={i} className="chat-bubble__attach-badge">{label}</span>
+              ))}
+            </div>
+          )}
+          {text}
         </div>
         <UserAvatar />
       </div>

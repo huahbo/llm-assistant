@@ -1990,11 +1990,12 @@ impl AppState {
                         .ok_or_else(|| "PDF 文本提取失败，请确认文件包含可选中的文字".to_string())
                 })?
             }
+            "doc" => extract_text_from_doc(source_path)?,
             "docx" => extract_text_from_docx(source_path)?,
             "pptx" => extract_text_from_pptx(source_path)?,
             other => {
                 return Err(format!(
-                    "不支持 .{other} 类型，支持：txt/md/pdf/docx/pptx/csv/json 及常见代码文件"
+                    "不支持 .{other} 类型，支持：txt/md/pdf/doc/docx/pptx/csv/json 及常见代码文件"
                 ))
             }
         };
@@ -7303,6 +7304,107 @@ fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Heuristic text extractor for legacy Word .doc (OLE compound document) files.
+/// Tries UTF-16LE scan for CJK content, falls back to ASCII string extraction.
+fn extract_text_from_doc(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 .doc 失败: {e}"))?;
+
+    // Validate OLE compound document magic bytes
+    const OLE_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    if bytes.len() < 8 || bytes[0..8] != OLE_MAGIC {
+        return Err("不是有效的 .doc 文件（非 OLE 复合文档格式）".to_string());
+    }
+
+    // UTF-16LE scan for CJK and Latin text (try both byte alignments)
+    let utf16_text = doc_scan_utf16le(&bytes);
+
+    // ASCII run extraction as fallback / supplement
+    let ascii_text = doc_scan_ascii(&bytes);
+
+    let has_cjk = utf16_text.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c));
+    let text = if has_cjk { utf16_text } else { ascii_text };
+
+    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text.trim().to_string();
+
+    if text.len() < 20 {
+        return Err(
+            "无法从 .doc 文件提取可读文本（建议将文件另存为 .docx 格式后重试）".to_string(),
+        );
+    }
+    Ok(text)
+}
+
+fn is_doc_text_char(cp: u16) -> bool {
+    matches!(
+        cp,
+        0x0009
+            | 0x000A
+            | 0x000D
+            | 0x0020..=0x007E
+            | 0x00A0..=0x00FF
+            | 0x2010..=0x2027
+            | 0x3000..=0x303F
+            | 0x3040..=0x30FF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0xFF01..=0xFF60
+    )
+}
+
+fn doc_scan_utf16le(bytes: &[u8]) -> String {
+    let mut best = String::new();
+    for start in 0..2usize {
+        let mut tokens: Vec<String> = Vec::new();
+        let mut run: Vec<u16> = Vec::new();
+        let mut i = start;
+        while i + 1 < bytes.len() {
+            let cp = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+            if is_doc_text_char(cp) {
+                run.push(cp);
+            } else {
+                if run.len() >= 4 {
+                    tokens.push(String::from_utf16_lossy(&run).to_string());
+                }
+                run.clear();
+            }
+            i += 2;
+        }
+        if run.len() >= 4 {
+            tokens.push(String::from_utf16_lossy(&run).to_string());
+        }
+        let candidate = tokens.join(" ");
+        let cjk = |s: &str| s.chars().filter(|c| ('\u{4E00}'..='\u{9FFF}').contains(c)).count();
+        if cjk(&candidate) > cjk(&best) || (cjk(&candidate) == cjk(&best) && candidate.len() > best.len()) {
+            best = candidate;
+        }
+    }
+    best
+}
+
+fn doc_scan_ascii(bytes: &[u8]) -> String {
+    const MIN_RUN: usize = 8;
+    let mut tokens: Vec<String> = Vec::new();
+    let mut run = String::new();
+    for &b in bytes {
+        match b {
+            0x09 => run.push(' '),
+            0x20..=0x7E => run.push(b as char),
+            _ => {
+                if run.len() >= MIN_RUN {
+                    tokens.push(std::mem::take(&mut run));
+                } else {
+                    run.clear();
+                }
+            }
+        }
+    }
+    if run.len() >= MIN_RUN {
+        tokens.push(run);
+    }
+    tokens.join(" ")
 }
 
 fn extract_text_from_docx(source_path: &Path) -> Result<String, String> {
