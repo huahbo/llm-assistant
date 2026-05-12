@@ -1062,3 +1062,59 @@ pub fn list_shell_audit_events(
 pub fn grant_write_ticket(path: String) {
     crate::agent_policy::grant_write_ticket(&path);
 }
+
+/// 从本地文件读取纯文本内容，供 Chat 消息附件上下文使用（不写入 Vault）。
+#[tauri::command]
+pub fn read_file_for_chat(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<crate::models::FileChunk, String> {
+    state.read_file_for_chat_impl(&path)
+}
+
+/// 从 URL 下载 Skill JSON 并安装到技能库。
+/// JSON 格式：{ "name": "...", "system_prompt": "...", "description"?: "..." }
+#[tauri::command]
+pub async fn install_skill_from_url(
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("llm-wiki/1.0")
+        .build()
+        .map_err(|e| format!("HTTP client 创建失败: {e}"))?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("下载失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}: 无法获取 {url}", resp.status().as_u16()));
+    }
+
+    let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("JSON 解析失败: {e}"))?;
+
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Skill JSON 缺少有效的 'name' 字段".to_string())?
+        .to_string();
+
+    let system_prompt = value
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Skill JSON 缺少有效的 'system_prompt' 字段".to_string())?
+        .to_string();
+
+    let skill = state.upsert_agent_skill_impl(&name, &system_prompt)?;
+    Ok(skill.id)
+}

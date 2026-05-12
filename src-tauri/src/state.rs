@@ -1955,6 +1955,58 @@ impl AppState {
         }
     }
 
+    /// 从本地文件提取纯文本，供 Chat 消息上下文使用（不写入 Vault）。
+    pub fn read_file_for_chat_impl(&self, path: &str) -> Result<crate::models::FileChunk, String> {
+        let source_path = std::path::Path::new(path.trim());
+        let filename = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+
+        let ext = source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let raw_content = match ext.as_str() {
+            "txt" | "md" | "markdown" | "csv" | "json" | "yaml" | "yml"
+            | "toml" | "xml" | "html" | "htm" | "log" | "rs" | "py"
+            | "js" | "ts" | "go" | "java" | "c" | "cpp" | "h" => {
+                let bytes = std::fs::read(source_path)
+                    .map_err(|e| format!("读取文件失败: {e}"))?;
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+            "pdf" => {
+                extract_text_from_pdf(source_path).or_else(|_| {
+                    let bytes = std::fs::read(source_path)
+                        .map_err(|e| format!("读取 PDF 失败: {e}"))?;
+                    extract_text_from_pdf_with_pdf_extract(&bytes)
+                        .ok_or_else(|| "PDF 文本提取失败，请确认文件包含可选中的文字".to_string())
+                })?
+            }
+            "docx" => extract_text_from_docx(source_path)?,
+            "pptx" => extract_text_from_pptx(source_path)?,
+            other => {
+                return Err(format!(
+                    "不支持 .{other} 类型，支持：txt/md/pdf/docx/pptx/csv/json 及常见代码文件"
+                ))
+            }
+        };
+
+        const MAX_CHARS: usize = 40_000;
+        let total = raw_content.chars().count();
+        let (content, truncated) = if total > MAX_CHARS {
+            (raw_content.chars().take(MAX_CHARS).collect(), true)
+        } else {
+            (raw_content, false)
+        };
+        let char_count = content.chars().count();
+
+        Ok(crate::models::FileChunk { filename, content, char_count, truncated })
+    }
+
     /// 读取 PDF 文本后复用现有 Markdown ingest 流程。
     pub async fn ingest_pdf_impl(
         &self,

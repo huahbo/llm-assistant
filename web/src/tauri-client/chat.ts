@@ -135,3 +135,16 @@ export async function rejectChatWrite(pendingId: number): Promise<void> {
     // ignore
   }
 }
+
+export interface FileChunk {
+  filename: string;
+  content: string;
+  char_count: number;
+  truncated: boolean;
+}
+
+export async function readFileForChat(path: string): Promise<FileChunk | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(invoke<FileChunk>("read_file_for_chat", { path }), 15_000);
+}

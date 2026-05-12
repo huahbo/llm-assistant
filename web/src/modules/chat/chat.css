@@ -410,6 +410,58 @@
   gap: 6px;
 }
 
+/* 附件 badge 行 */
+.chat-inputbar__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 4px;
+}
+
+.chat-inputbar__attach-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--accent-light);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--text);
+  max-width: 280px;
+}
+
+.chat-inputbar__attach-size {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.chat-inputbar__attach-remove {
+  margin-left: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 50%;
+}
+
+.chat-inputbar__attach-remove:hover {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
+/* 输入行（+ 按钮 + textarea） */
+.chat-inputbar__row--input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.chat-inputbar__row--actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .chat-inputbar__textarea {
   flex: 1;
   resize: none;
@@ -476,6 +528,365 @@
 
 .chat-inputbar__btn:disabled {
   opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── + 按钮 ───────────────────────────────────────────────────────────────── */
+
+.chat-inputbar__plus-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.chat-inputbar__plus-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-muted);
+  border: 1.5px solid var(--border);
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  margin-bottom: 4px;
+}
+
+.chat-inputbar__plus-btn:hover:not(:disabled) {
+  background: var(--accent-light);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.chat-inputbar__plus-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── + 弹出菜单 ───────────────────────────────────────────────────────────── */
+
+.plus-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 200;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  width: 280px;
+  overflow: hidden;
+}
+
+.plus-menu__toast {
+  padding: 8px 12px;
+  background: var(--success-bg);
+  color: var(--success);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.plus-menu__main {
+  padding: 6px;
+}
+
+.plus-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.plus-menu__item:hover {
+  background: var(--bg-muted);
+}
+
+.plus-menu__icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+}
+
+.plus-menu__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plus-menu__label-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plus-menu__label-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.plus-menu__divider {
+  height: 1px;
+  background: var(--border-light);
+  margin: 4px 0;
+}
+
+/* ── MCP 精选库 ───────────────────────────────────────────────────────────── */
+
+.mcp-gallery {
+  width: 100%;
+}
+
+.mcp-gallery__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mcp-gallery__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mcp-gallery__close {
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.mcp-gallery__close:hover {
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+.mcp-gallery__list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.mcp-gallery__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.mcp-gallery__item:hover {
+  background: var(--bg-muted);
+}
+
+.mcp-gallery__item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mcp-gallery__item-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.mcp-gallery__form {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcp-gallery__back {
+  font-size: 12px;
+  color: var(--accent);
+  text-align: left;
+}
+
+.mcp-gallery__form-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mcp-gallery__form-pkg {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: "Cascadia Code", monospace;
+}
+
+.mcp-gallery__label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.mcp-gallery__input {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg-card);
+  color: var(--text);
+  outline: none;
+}
+
+.mcp-gallery__input:focus {
+  border-color: var(--accent);
+}
+
+.mcp-gallery__env-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.mcp-gallery__env-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mcp-gallery__error {
+  font-size: 12px;
+  color: var(--error);
+  background: var(--error-bg);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.mcp-gallery__add-btn {
+  padding: 7px 14px;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.mcp-gallery__add-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.mcp-gallery__add-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Skill 安装器 ─────────────────────────────────────────────────────────── */
+
+.skill-installer {
+  width: 100%;
+}
+
+.skill-installer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.skill-installer__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.skill-installer__close {
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.skill-installer__close:hover {
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+.skill-installer__body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-installer__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.skill-installer__hint code {
+  background: var(--bg-muted);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.skill-installer__input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg-card);
+  color: var(--text);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.skill-installer__input:focus {
+  border-color: var(--accent);
+}
+
+.skill-installer__error {
+  font-size: 12px;
+  color: var(--error);
+  background: var(--error-bg);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.skill-installer__btn {
+  padding: 7px 14px;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.skill-installer__btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.skill-installer__btn:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 

@@ -1145,3 +1145,12 @@ pub struct ShellStreamChunk {
     pub stream: String, // stdout | stderr | system
     pub done: bool,
 }
+
+/// 文件附件块——从本地文件提取的纯文本，供 Chat 消息上下文使用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileChunk {
+    pub filename: String,
+    pub content: String,
+    pub char_count: usize,
+    pub truncated: bool,
+}

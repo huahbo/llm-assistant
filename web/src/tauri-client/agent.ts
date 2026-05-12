@@ -447,6 +447,14 @@ export async function deleteAgentSkill(id: number): Promise<boolean> {
   }
 }
 
+// ── Skill URL 安装 ────────────────────────────────────────────────────────────
+
+export async function installSkillFromUrl(url: string): Promise<number | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(invoke<number>("install_skill_from_url", { url }), 20_000);
+}
+
 // ── Outbox events ─────────────────────────────────────────────────────────────
 
 /** 获取 Outbox 事件（增量轮询） */
