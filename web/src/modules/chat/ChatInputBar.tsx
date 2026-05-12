@@ -145,7 +145,11 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
               title={SHELL_TITLE["off"]}
               disabled={isStreaming || disabled}
             >
-              🖥
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="0.75" y="0.75" width="14.5" height="14.5" rx="2.5" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M3.5 5.5L6.5 8L3.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <line x1="8.5" y1="10.5" x2="12" y2="10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
             </button>
           )}
           {isStreaming ? (
