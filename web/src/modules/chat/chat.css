@@ -868,6 +868,44 @@
   background: var(--error-bg);
 }
 
+.skill-installer__tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.skill-installer__tab {
+  flex: 1;
+  padding: 5px 0;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.skill-installer__tab--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.skill-installer__tab:not(.skill-installer__tab--active):hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.skill-installer__textarea {
+  resize: vertical;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 90px;
+}
+
 .skill-installer__divider {
   height: 1px;
   background: var(--border);
