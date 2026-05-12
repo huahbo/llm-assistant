@@ -112,7 +112,10 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
             title="添加文件 / MCP / Skill"
             disabled={isStreaming || disabled}
           >
-            +
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <line x1="7" y1="1.5" x2="7" y2="12.5" stroke="white" strokeWidth="2.2" strokeLinecap="round"/>
+              <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="white" strokeWidth="2.2" strokeLinecap="round"/>
+            </svg>
           </button>
           {showPlus && (
             <PlusMenu
