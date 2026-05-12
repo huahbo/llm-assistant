@@ -98,6 +98,25 @@
   flex: 1;
   overflow-y: auto;
   padding: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.chat-convlist__list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-convlist__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-convlist__list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+
+.chat-convlist__list:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
 }
 
 .chat-convlist__item {
