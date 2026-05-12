@@ -4,11 +4,11 @@
 
 /* ---------- 设计令牌 ---------- */
 :root {
-  --bg-page:      #f4f3ee;
-  --bg-sidebar:   #faf9f7;
-  --bg-content:   #f4f3ee;
-  --bg-card:      #ffffff;
-  --bg-muted:     #eceae4;
+  --bg-page:      #f6f1e9;
+  --bg-sidebar:   #faf6f0;
+  --bg-content:   #f6f1e9;
+  --bg-card:      #fffdf9;
+  --bg-muted:     #ede8de;
 
   --accent:       #6366f1;   /* indigo-500 */
   --accent-2:     #8b5cf6;   /* violet-500 */
@@ -28,8 +28,8 @@
   --text:         #1e293b;
   --text-muted:   #64748b;
   --text-sidebar: #475569;
-  --border:       #e5e2db;
-  --border-light: #eeecea;
+  --border:       #e2dcd2;
+  --border-light: #ece6da;
 
   --shadow-sm:    0 1px 3px rgba(0, 0, 0, 0.05);
   --shadow-md:    0 4px 12px rgba(0, 0, 0, 0.08);
