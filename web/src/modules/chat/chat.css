@@ -220,8 +220,8 @@
 
 .chat-bubble--user {
   align-self: flex-end;
-  background: var(--accent);
-  color: white;
+  background: #c7d2fe;   /* indigo-200：淡蓝，视觉更轻 */
+  color: #312e81;         /* indigo-900：深色文字保持可读性 */
   border-bottom-right-radius: 4px;
 }
 
@@ -453,7 +453,8 @@
 .chat-inputbar__row--actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .chat-inputbar__textarea {
@@ -541,7 +542,7 @@
   color: var(--text-muted);
   font-size: 24px;
   line-height: 1;
-  padding: 0;
+  padding: 0 0 2px 0;   /* + 字符视觉重心偏下，上移 2px */
   display: flex;
   align-items: center;
   justify-content: center;
