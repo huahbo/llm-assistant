@@ -294,6 +294,11 @@ body.split-dragging .split-handle::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  scrollbar-width: none;
+}
+
+.sidebar__nav::-webkit-scrollbar {
+  display: none;
 }
 
 .sidebar__nav-group {

@@ -155,8 +155,8 @@
   justify-content: space-between;
   gap: 16px;
   padding: 14px 16px;
-  background: var(--accent-light);
-  border: 1px solid #c7d2fe;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   margin-bottom: 14px;
 }
