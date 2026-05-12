@@ -74,7 +74,16 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
         </div>
       )}
 
-      <div className="chat-inputbar__row chat-inputbar__row--input">
+      <textarea
+        ref={textareaRef}
+        className="chat-inputbar__textarea"
+        rows={3}
+        placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
+        disabled={isStreaming || disabled}
+        onKeyDown={handleKeyDown}
+      />
+
+      <div className="chat-inputbar__row chat-inputbar__row--actions">
         <div className="chat-inputbar__plus-wrap">
           <button
             type="button"
@@ -96,17 +105,6 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
           )}
         </div>
 
-        <textarea
-          ref={textareaRef}
-          className="chat-inputbar__textarea"
-          rows={3}
-          placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
-          disabled={isStreaming || disabled}
-          onKeyDown={handleKeyDown}
-        />
-      </div>
-
-      <div className="chat-inputbar__row chat-inputbar__row--actions">
         {isStreaming ? (
           <button
             type="button"

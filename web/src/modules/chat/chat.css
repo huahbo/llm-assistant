@@ -450,16 +450,10 @@
   background: var(--error-bg);
 }
 
-/* 输入行（+ 按钮 + textarea） */
-.chat-inputbar__row--input {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-
 .chat-inputbar__row--actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .chat-inputbar__textarea {
@@ -552,7 +546,6 @@
   justify-content: center;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
-  margin-bottom: 4px;
 }
 
 .chat-inputbar__plus-btn:hover:not(:disabled) {
