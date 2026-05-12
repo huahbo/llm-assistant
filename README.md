@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.1 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.2 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -10,7 +10,7 @@
 
 | 模块 | 说明 |
 |------|------|
-| **Chat（AI 对话）** | ReAct 多轮 Agent 对话；Markdown 渲染 + 代码高亮；8 个内置工具（含 web_search / fetch_url / spawn_subagent）；四级联网搜索；MCP 扩展工具支持；Shell 策略审批 + 票据缓存；流式输出；对话归档/重命名 |
+| **Chat（AI 对话）** | ReAct 多轮 Agent 对话；Markdown 渲染 + 代码高亮；8 个内置工具（含 web_search / fetch_url / spawn_subagent）；四级联网搜索；MCP 扩展工具支持；**Shell 三模式**（off/approval/yolo，会话级独立配置）；Shell 策略审批 + 票据缓存；文件上传附件（支持 txt/md/pdf/doc/docx/pptx/csv/json/代码）；流式输出；对话归档/重命名 |
 | **Ingest** | 支持 Markdown / PDF / DOCX / PPTX / TXT / 图片 OCR，URL 抓取，拖拽摄入，持久化摄入队列（含重试/取消） |
 | **Query / Ask** | FTS5 + embedding + 混合语义检索（四路 RRF）；流式对话；Ask 会话持久化管理 |
 | **Wiki** | Markdown 编辑/渲染/重命名/删除，双向链接，内链补全，实体提取，Frontmatter 元数据 |
@@ -22,7 +22,22 @@
 
 ---
 
-## 最近更新（H9–H13 + 重构）
+## 最近更新（H9–H14 + 修复）
+
+### v0.2.2（H14 + 今日修复）
+
+#### H14：Chat Agent Shell 三模式
+- 每个对话独立配置 Shell 权限：`off`（禁用）/ `approval`（每次审批）/ `yolo`（直接执行）
+- 输入栏 Shell 图标一键循环切换，审批模式下弹出审批卡片 + 30 秒倒计时自动拒绝
+- Shell 模式持久化到会话数据库，重启后保留
+
+#### 体验修复
+- **外部链接**：点击 AI 回复中的超链接改为在系统默认浏览器打开，不再替换 App 界面
+- **文件附件展示**：上传文档后用户消息气泡只显示附件徽章（文件名 + 字数），不再展开原文内容
+- **`.doc` 格式支持**：新增旧版 Word 文件上传（OLE 复合文档，含 ASCII + UTF-16LE CJK 启发式文本提取）
+- **UI 细节**：Shell 未启用图标换为 SVG 终端图标；`+` 按钮缩小（34px→30px）并换用 SVG 十字精确居中
+
+---
 
 ### H13：Chat ↔ Graph 双向联动
 - AI 回复中的 Wiki 路径自动高亮图谱节点
@@ -218,7 +233,7 @@ llm-wiki/
 │       │   ├── research/   # Deep Research
 │       │   └── operations/ # 摄入队列管理
 │       ├── tauri-client/   # Tauri 命令封装（10 个领域子模块）
-│       │   ├── base.ts     # isTauriRuntime / withTimeout
+│       │   ├── base.ts     # isTauriRuntime / withTimeout / openExternalUrl
 │       │   ├── chat.ts     # 对话 CRUD + 消息 + 审批
 │       │   ├── shell.ts    # Shell 执行 / 审计 / 策略 / 票据
 │       │   ├── wiki.ts     # Wiki CRUD / 图谱 / Lint
