@@ -76,11 +76,6 @@ export default function SkillInstaller({ onClose, onInstalled }: Props) {
 
   return (
     <div className="skill-installer">
-      <div className="skill-installer__header">
-        <span className="skill-installer__title">管理 Skill</span>
-        <button className="skill-installer__close" onClick={onClose}>✕</button>
-      </div>
-
       <div className="skill-installer__body">
         {skills.length > 0 && (
           <div className="skill-installer__list">

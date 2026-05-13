@@ -107,13 +107,6 @@ export default function McpGallery({ onClose, onAdded }: Props) {
 
   return (
     <div className="mcp-gallery">
-      <div className="mcp-gallery__header">
-        <span className="mcp-gallery__title">
-          {panel === "list" ? "MCP 服务器" : panel === "gallery" ? "添加 MCP 服务器" : selected?.name ?? ""}
-        </span>
-        <button className="mcp-gallery__close" onClick={onClose}>✕</button>
-      </div>
-
       {/* ── 已安装列表 ── */}
       {panel === "list" && (
         <div className="mcp-gallery__manage">
