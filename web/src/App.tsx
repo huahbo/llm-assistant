@@ -33,6 +33,16 @@ import { readDropModeFromStorage, writeDropModeToStorage, type DropMode } from "
 import { loadAppData } from "./app-data";
 
 export default function App() {
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    (localStorage.getItem("theme") as "light" | "dark") ??
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+  );
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
   const [overview, setOverview] = useState<AppOverview | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [pages, setPages] = useState<WikiPageItem[]>([]);
@@ -272,6 +282,23 @@ export default function App() {
           </div>
           <div className="window-titlebar__drag-spacer" data-tauri-drag-region />
           <div className="window-titlebar__actions">
+            <button
+              type="button"
+              className="window-titlebar__action-btn window-titlebar__action-btn--theme"
+              aria-label={theme === "dark" ? "切换浅色主题" : "切换暗黑主题"}
+              title={theme === "dark" ? "切换浅色主题" : "切换暗黑主题"}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+              )}
+            </button>
             <button
               type="button"
               className="window-titlebar__action-btn window-titlebar__action-btn--minimize"

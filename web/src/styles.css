@@ -46,6 +46,32 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* ---------- 暗黑主题覆盖 ---------- */
+:root[data-theme="dark"] {
+  --bg-page:      #1c1b19;
+  --bg-sidebar:   #211f1d;
+  --bg-content:   #1c1b19;
+  --bg-card:      #252320;
+  --bg-muted:     #2e2b28;
+
+  --accent-light: #1e1e35;
+
+  --success-bg:   #0d2018;
+  --warning-bg:   #241c08;
+  --error-bg:     #2a1010;
+  --info-bg:      #0a1e2e;
+
+  --text:         #e8e4dd;
+  --text-muted:   #9b9691;
+  --text-sidebar: #b4b0aa;
+  --border:       #3d3a36;
+  --border-light: #312e2b;
+
+  --shadow-sm:    0 1px 3px rgba(0, 0, 0, 0.30);
+  --shadow-md:    0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-lg:    0 8px 24px rgba(0, 0, 0, 0.55);
+}
+
 /* ---------- 重置 ---------- */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { height: 100%; background: var(--bg-sidebar); overflow: hidden; }
@@ -155,6 +181,14 @@ html.window-focused .window-titlebar {
 .window-titlebar__action-btn--close:hover {
   background: #e5484d;
   color: #fff;
+}
+
+.window-titlebar__action-btn--theme {
+  color: var(--text-muted);
+}
+.window-titlebar__action-btn--theme:hover {
+  background: var(--bg-muted);
+  color: var(--text);
 }
 
 /* X 号单独放大一点 */
