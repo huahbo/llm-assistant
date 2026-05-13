@@ -92,6 +92,16 @@ export default function SettingsModule({
     }
   };
 
+  const refreshMcpServers = async () => {
+    setMcpLoading(true);
+    try {
+      const servers = await listMcpServers();
+      setMcpServers(servers);
+    } finally {
+      setMcpLoading(false);
+    }
+  };
+
   const handleAddMcpServer = async () => {
     if (!mcpNewName.trim() || !mcpNewCommand.trim()) return;
     const args = mcpNewArgs.trim()
@@ -572,6 +582,13 @@ export default function SettingsModule({
             <span className="section-head__hint" style={{ marginLeft: 8 }}>
               Model Context Protocol — 扩展 Agent 工具箱
             </span>
+            <button
+              type="button"
+              className="dev-panel__button"
+              style={{ marginLeft: 10, fontSize: 11, padding: "2px 8px" }}
+              onClick={(e) => { e.preventDefault(); void refreshMcpServers(); }}
+              title="从数据库重新加载 MCP 列表（同步对话模块的操作）"
+            >↻ 刷新</button>
           </summary>
           <div className="settings-panel" style={{ marginTop: 12 }}>
             {mcpLoading ? (
