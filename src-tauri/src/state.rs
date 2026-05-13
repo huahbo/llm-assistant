@@ -531,8 +531,12 @@ impl AppState {
             .as_deref()
             .map(|k| !k.trim().is_empty())
             .unwrap_or(false);
-        let resolved_provider =
-            resolve_active_provider(mode, active_provider.as_deref(), has_cloud_key, None);
+        let resolved_provider = config_service::resolve_active_provider(
+            mode,
+            active_provider.as_deref(),
+            has_cloud_key,
+            None,
+        );
 
         match mode {
             AppMode::StrictLocal => {
@@ -548,13 +552,11 @@ impl AppState {
                     let model = cloud_model
                         .filter(|m| !m.trim().is_empty())
                         .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
-                    let base_url = effective_cloud_base_url(
+                    let base_url = config_service::effective_cloud_base_url(
                         cloud_provider_name.as_deref(),
                         cloud_base_url.as_deref(),
                     );
                     let config = OpenAiConfig::with_base_url_and_model(key, base_url, model, None);
-                    // 注意：Hybrid 模式下的 OpenAiProvider 目前不进入 OnceLock，以支持 key 的实时更新
-                    // 或者，我们可以改进 OnceLock 逻辑使其支持重置
                     Some(Arc::new(OpenAiProvider::new(config)) as Arc<dyn LlmProvider>)
                 } else {
                     Some(self.get_ollama_provider())
@@ -563,216 +565,14 @@ impl AppState {
         }
     }
 
-    /// 使用 LLM 生成摘要，失败时回退到截断
-    ///
-    /// # 参数
-    /// - `content`: 需要摘要的原始内容
-    ///
-    /// # 返回
-    /// 生成的摘要文本。如果 LLM 调用失败，则回退到简单截断。
     pub async fn generate_summary(&self, content: &str) -> String {
-        // 截断到 8000 字符，避免长 PDF 超出云端 LLM token 限制（约 2000 token）
-        const MAX_INPUT_CHARS: usize = 8000;
-        let truncated_content: String = content.chars().take(MAX_INPUT_CHARS).collect();
-        let content = truncated_content.as_str();
-
-        // 尝试获取 LLM Provider
-        let provider = match self.get_llm_provider() {
-            Some(p) => p,
-            None => {
-                self.push_log(
-                    LogLevel::Warn,
-                    "LLM Provider 不可用，回退到截断摘要".to_string(),
-                );
-                return vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS);
-            }
-        };
-
-        // 尝试使用 LLM 生成摘要
-        match provider.summarize(content, LLM_SUMMARY_MAX_TOKENS).await {
-            Ok(summary) => {
-                let summary = summary.trim().to_string();
-                if summary.is_empty() {
-                    self.push_log(LogLevel::Warn, "LLM 返回空摘要，回退到截断摘要".to_string());
-                    vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS)
-                } else {
-                    self.push_log(
-                        LogLevel::Info,
-                        format!("LLM 摘要生成成功，长度={}", summary.chars().count()),
-                    );
-                    summary
-                }
-            }
-            Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("LLM 摘要生成失败: {}，回退到截断摘要", err),
-                );
-                vault::fallback_summarize(content, LLM_SUMMARY_MAX_TOKENS)
-            }
-        }
+        config_service::generate_summary(self, content).await
     }
 
-    /// 构造 LLM 状态查询输入，避免在异步命令中持有 `State` 借用。
-    /// 返回 (mode, cloud_config_if_active, ollama_provider_if_active)
-    fn llm_status_input(
-        &self,
-    ) -> (
-        AppMode,
-        Option<String>,
-        Option<OpenAiConfig>,
-        Option<Arc<dyn LlmProvider>>,
-    ) {
-        let (
-            mode,
-            cloud_api_key,
-            cloud_base_url,
-            cloud_model,
-            cloud_provider_name,
-            active_provider,
-        ) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (
-                guard.mode,
-                guard.cloud_api_key.clone(),
-                guard.cloud_base_url.clone(),
-                guard.cloud_model.clone(),
-                guard.cloud_provider_name.clone(),
-                guard.active_provider.clone(),
-            )
-        };
-
-        let has_cloud_key = cloud_api_key
-            .as_deref()
-            .map(|k| !k.trim().is_empty())
-            .unwrap_or(false);
-        let resolved_provider =
-            resolve_active_provider(mode, active_provider.as_deref(), has_cloud_key, None);
-
-        match mode {
-            AppMode::StrictLocal => (mode, None, None, Some(self.get_ollama_provider())),
-            AppMode::Hybrid => {
-                if resolved_provider == "cloud" {
-                    let key = cloud_api_key
-                        .filter(|k| !k.trim().is_empty())
-                        .expect("resolved_provider=cloud 时必须存在非空 key");
-                    let model = cloud_model
-                        .filter(|m| !m.trim().is_empty())
-                        .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
-                    let base_url = effective_cloud_base_url(
-                        cloud_provider_name.as_deref(),
-                        cloud_base_url.as_deref(),
-                    );
-                    let config = OpenAiConfig::with_base_url_and_model(key, base_url, model, None);
-                    (mode, cloud_provider_name, Some(config), None)
-                } else {
-                    (mode, None, None, Some(self.get_ollama_provider()))
-                }
-            }
-        }
-    }
-
-    /// 使用输入快照查询当前活跃 Provider 的健康状态。
-    async fn llm_status_from_input(
-        mode: AppMode,
-        cloud_provider_name: Option<String>,
-        cloud_config: Option<OpenAiConfig>,
-        provider: Option<Arc<dyn LlmProvider>>,
-    ) -> LlmStatus {
-        if let Some(config) = cloud_config {
-            let provider_name = normalize_cloud_provider_name(cloud_provider_name.as_deref())
-                .as_deref()
-                .map(display_cloud_provider_name)
-                .unwrap_or_else(|| "openai-compatible".to_string());
-            let base_url = config.base_url.clone();
-            let model = config.model.clone();
-            let provider = OpenAiProvider::new(config);
-            match provider.health_check().await {
-                Ok(true) => build_llm_status(
-                    &provider_name,
-                    &base_url,
-                    &model,
-                    mode,
-                    true,
-                    format!("云端 Provider（OpenAI-compatible）可用：{}", provider_name),
-                ),
-                Ok(false) => build_llm_status(
-                    &provider_name,
-                    &base_url,
-                    &model,
-                    mode,
-                    false,
-                    "云端 Provider（OpenAI-compatible）健康检查未通过，请确认 API Key、基础地址与网络可达"
-                        .to_string(),
-                ),
-                Err(err) => build_llm_status(
-                    &provider_name,
-                    &base_url,
-                    &model,
-                    mode,
-                    false,
-                    format!("云端 Provider（OpenAI-compatible）状态检查失败: {}", err),
-                ),
-            }
-        } else {
-            // 使用本地 Ollama
-            match provider {
-                Some(provider) => {
-                    let base_url = provider.base_url().to_string();
-                    let model = provider.model().to_string();
-
-                    match provider.health_check().await {
-                        Ok(true) => build_llm_status(
-                            "ollama",
-                            &base_url,
-                            &model,
-                            mode,
-                            true,
-                            "本地 Ollama 可用".to_string(),
-                        ),
-                        Ok(false) => build_llm_status(
-                            "ollama",
-                            &base_url,
-                            &model,
-                            mode,
-                            false,
-                            "本地 Ollama 健康检查未通过，请确认服务已启动且模型已准备好"
-                                .to_string(),
-                        ),
-                        Err(err) => build_llm_status(
-                            "ollama",
-                            &base_url,
-                            &model,
-                            mode,
-                            false,
-                            llm_health_error_message(&err),
-                        ),
-                    }
-                }
-                None => {
-                    let config = OllamaConfig::default();
-                    build_llm_status(
-                        "ollama",
-                        &config.base_url,
-                        &config.model,
-                        mode,
-                        false,
-                        "本地 Ollama Provider 初始化失败".to_string(),
-                    )
-                }
-            }
-        }
-    }
-
-    /// 返回可在异步命令中安全等待的 LLM 状态查询 Future。
     pub fn llm_status_future(
         &self,
     ) -> impl std::future::Future<Output = LlmStatus> + Send + 'static {
-        let (mode, cloud_provider_name, cloud_config, ollama_provider) = self.llm_status_input();
-        async move {
-            Self::llm_status_from_input(mode, cloud_provider_name, cloud_config, ollama_provider)
-                .await
-        }
+        config_service::llm_status_future(self)
     }
 
     /// 获取知识图谱数据（所有 wiki 页面节点 + citations 边）。
@@ -1012,354 +812,40 @@ impl AppState {
 
     /// 获取当前 LLM Provider 配置（供 Settings 页面读取）。
     pub fn get_llm_config(&self) -> LlmProviderConfig {
-        let guard = self.inner.lock().expect("状态锁已被污染");
-        let mode = guard.mode;
-        let cloud_api_key = guard.cloud_api_key.clone().unwrap_or_default();
-        let normalized_provider_name =
-            normalize_cloud_provider_name(guard.cloud_provider_name.as_deref());
-        let cloud_base_url = normalize_cloud_base_url(
-            normalized_provider_name.as_deref(),
-            guard.cloud_base_url.as_deref(),
-        )
-        .unwrap_or_default();
-        let cloud_model = guard.cloud_model.clone().unwrap_or_default();
-        let cloud_provider_name = normalized_provider_name
-            .as_deref()
-            .map(display_cloud_provider_name)
-            .unwrap_or_else(|| "openai-compatible".to_string());
-        let ollama_model = guard.ollama_model.clone().unwrap_or_default();
-        let ollama_base_url = guard.ollama_base_url.clone().unwrap_or_default();
-        let embed_ollama_model = guard
-            .embed_ollama_model
-            .clone()
-            .unwrap_or_else(|| "nomic-embed-text:latest".to_string());
-        let embed_ollama_base_url = guard.embed_ollama_base_url.clone().unwrap_or_default();
-        let has_cloud_key = !cloud_api_key.trim().is_empty();
-        let active_provider =
-            resolve_active_provider(mode, guard.active_provider.as_deref(), has_cloud_key, None);
-
-        LlmProviderConfig {
-            cloud_api_key,
-            cloud_base_url,
-            cloud_model,
-            cloud_provider_name,
-            active_provider,
-            ollama_model,
-            ollama_base_url,
-            embed_ollama_model,
-            embed_ollama_base_url,
-        }
+        config_service::get_llm_config(self)
     }
 
-    /// 保存 LLM Provider 配置（云端字段持久化）。
     pub fn set_llm_config(&self, config: LlmProviderConfig) -> Result<LlmProviderConfig, String> {
-        let (mode, vault_path, query_top_k, expected_snapshot, persisted_active_provider) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (
-                guard.mode,
-                guard.vault_path.clone(),
-                guard.query_top_k,
-                guard.config_snapshot.clone(),
-                guard.active_provider.clone(),
-            )
-        };
-
-        let cloud_api_key = if config.cloud_api_key.trim().is_empty() {
-            None
-        } else {
-            Some(config.cloud_api_key.trim().to_string())
-        };
-        let cloud_provider_name =
-            normalize_cloud_provider_name(Some(config.cloud_provider_name.as_str()));
-        let cloud_base_url = normalize_cloud_base_url(
-            cloud_provider_name.as_deref(),
-            Some(config.cloud_base_url.as_str()),
-        );
-        let cloud_model = if config.cloud_model.trim().is_empty() {
-            None
-        } else {
-            Some(config.cloud_model.trim().to_string())
-        };
-        let ollama_model = if config.ollama_model.trim().is_empty() {
-            None
-        } else {
-            Some(config.ollama_model.trim().to_string())
-        };
-        let ollama_base_url = if config.ollama_base_url.trim().is_empty() {
-            None
-        } else {
-            Some(config.ollama_base_url.trim().to_string())
-        };
-        let has_cloud_key = cloud_api_key
-            .as_deref()
-            .map(|key| !key.trim().is_empty())
-            .unwrap_or(false);
-        let active_provider = resolve_active_provider(
-            mode,
-            Some(config.active_provider.as_str()),
-            has_cloud_key,
-            persisted_active_provider.as_deref(),
-        );
-
-        // 先更新 guard，persist_config 会从 guard 读取云端字段
-        {
-            let mut guard = self.inner.lock().expect("状态锁已被污染");
-            guard.cloud_api_key = cloud_api_key;
-            guard.cloud_provider_name = cloud_provider_name;
-            guard.cloud_base_url = cloud_base_url;
-            guard.cloud_model = cloud_model;
-            guard.active_provider = Some(active_provider);
-            guard.ollama_model = ollama_model;
-            guard.ollama_base_url = ollama_base_url;
-            guard.embed_ollama_model = if config.embed_ollama_model.trim().is_empty() {
-                None
-            } else {
-                Some(config.embed_ollama_model.trim().to_string())
-            };
-            guard.embed_ollama_base_url = if config.embed_ollama_base_url.trim().is_empty() {
-                None
-            } else {
-                Some(config.embed_ollama_base_url.trim().to_string())
-            };
-        }
-
-        match self.persist_config(
-            mode,
-            vault_path.as_deref(),
-            query_top_k,
-            expected_snapshot.as_deref(),
-        ) {
-            Ok(serialized) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.config_snapshot = Some(serialized);
-                guard.push_log(
-                    LogLevel::Info,
-                    "云端 Provider 配置已保存".to_string(),
-                    current_timestamp_ms(),
-                );
-                drop(guard);
-                Ok(self.get_llm_config())
-            }
-            Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("云端 Provider 配置持久化失败: {}", err),
-                );
-                Err(err)
-            }
-        }
+        config_service::set_llm_config(self, config)
     }
 
-    /// 读取默认 OCR Provider 配置。
     pub fn get_ocr_config(&self) -> Option<String> {
-        let guard = self.inner.lock().expect("状态锁已被污染");
-        guard.default_ocr_provider.clone()
+        config_service::get_ocr_config(self)
     }
 
-    /// 保存默认 OCR Provider 配置并持久化到磁盘。
     pub fn set_ocr_config(&self, provider: Option<String>) -> Result<(), String> {
-        let (mode, vault_path, query_top_k, expected_snapshot) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (
-                guard.mode,
-                guard.vault_path.clone(),
-                guard.query_top_k,
-                guard.config_snapshot.clone(),
-            )
-        };
-
-        // 更新内存状态
-        {
-            let mut guard = self.inner.lock().expect("状态锁已被污染");
-            guard.default_ocr_provider = provider;
-        }
-
-        match self.persist_config(
-            mode,
-            vault_path.as_deref(),
-            query_top_k,
-            expected_snapshot.as_deref(),
-        ) {
-            Ok(serialized) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.config_snapshot = Some(serialized);
-                guard.push_log(
-                    LogLevel::Info,
-                    "OCR Provider 配置已保存".to_string(),
-                    current_timestamp_ms(),
-                );
-                Ok(())
-            }
-            Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("OCR Provider 配置持久化失败: {}", err),
-                );
-                Err(err)
-            }
-        }
+        config_service::set_ocr_config(self, provider)
     }
 
-    /// 读取 Shell 策略配置。
     pub fn get_shell_policy_config(&self) -> ShellPolicyConfig {
-        let guard = self.inner.lock().expect("状态锁已被污染");
-        guard.shell_policy.clone()
+        config_service::get_shell_policy_config(self)
     }
 
-    /// 保存 Shell 策略配置并持久化到磁盘。
     pub fn set_shell_policy_config(
         &self,
         config: ShellPolicyConfig,
     ) -> Result<ShellPolicyConfig, String> {
-        let (mode, vault_path, query_top_k, expected_snapshot) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (
-                guard.mode,
-                guard.vault_path.clone(),
-                guard.query_top_k,
-                guard.config_snapshot.clone(),
-            )
-        };
-
-        {
-            let mut guard = self.inner.lock().expect("状态锁已被污染");
-            guard.shell_policy = config;
-        }
-
-        match self.persist_config(
-            mode,
-            vault_path.as_deref(),
-            query_top_k,
-            expected_snapshot.as_deref(),
-        ) {
-            Ok(serialized) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.config_snapshot = Some(serialized);
-                guard.push_log(
-                    LogLevel::Info,
-                    "Shell 策略配置已保存".to_string(),
-                    current_timestamp_ms(),
-                );
-                Ok(guard.shell_policy.clone())
-            }
-            Err(err) => {
-                self.push_log(LogLevel::Warn, format!("Shell 策略配置持久化失败: {}", err));
-                Err(err)
-            }
-        }
+        config_service::set_shell_policy_config(self, config)
     }
 
     pub fn set_mode(&self, mode: AppMode) -> ModeChangeResult {
-        // 先读取快照，再释放锁；避免 persist_config 内部二次加锁导致死锁。
-        let (previous_mode, expected_snapshot, vault_path, query_top_k) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (
-                guard.mode,
-                guard.config_snapshot.clone(),
-                guard.vault_path.clone(),
-                guard.query_top_k,
-            )
-        };
-
-        match self.persist_config(
-            mode,
-            vault_path.as_deref(),
-            query_top_k,
-            expected_snapshot.as_deref(),
-        ) {
-            Ok(serialized) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.mode = mode;
-                guard.config_snapshot = Some(serialized);
-                guard.push_log(
-                    LogLevel::Info,
-                    format!("模式切换为 {:?}", mode),
-                    current_timestamp_ms(),
-                );
-
-                ModeChangeResult {
-                    previous_mode,
-                    current_mode: mode,
-                    strict_local_enabled: matches!(mode, AppMode::StrictLocal),
-                }
-            }
-            Err(err) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.push_log(
-                    LogLevel::Warn,
-                    format!("模式持久化失败: {}", err),
-                    current_timestamp_ms(),
-                );
-
-                ModeChangeResult {
-                    previous_mode,
-                    current_mode: previous_mode,
-                    strict_local_enabled: matches!(previous_mode, AppMode::StrictLocal),
-                }
-            }
-        }
+        config_service::set_mode(self, mode)
     }
 
     pub fn init_vault(&self, vault_path: PathBuf) -> Result<VaultInitResult, String> {
-        let mode = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.mode
-        };
-
-        let mut result = match vault::initialize_vault(&vault_path, mode) {
-            Ok(result) => result,
-            Err(err) => {
-                self.push_log(LogLevel::Warn, format!("Vault 初始化失败: {}", err));
-                return Err(err);
-            }
-        };
-        let warning = self.set_vault_path(vault_path.clone()).err();
-
-        if let Some(message) = warning {
-            self.push_log(
-                LogLevel::Warn,
-                format!("Vault 初始化完成，但运行配置更新失败: {}", message),
-            );
-            result.message = format!("Vault 初始化完成，但运行配置更新失败: {}", message);
-        } else {
-            self.push_log(
-                LogLevel::Info,
-                format!("Vault 已初始化: {}", vault_path.to_string_lossy()),
-            );
-        }
-
-        self.record_outbox_event(
-            "vault_initialized",
-            serde_json::json!({
-                "vault_path": result.vault_path.clone(),
-                "created_paths": result.created_paths.clone(),
-                "message": result.message.clone(),
-            }),
-        );
-
-        // 重置上次崩溃遗留的 running ingest 队列项（使其重新排队）。
-        // 此处是可靠触发点：vault_path 刚写入，DB 路径已确定。
-        // start_queue_worker 中的同名调用在 vault 初始化前触发，会因 outbox_db_path()=None
-        // 而静默跳过，因此必须在此补做一次。
-        if let Some(db_path) = self.outbox_db_path() {
-            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                let now = current_timestamp_ms();
-                match db::db_reset_stale_running(&conn, &now) {
-                    Ok(n) if n > 0 => {
-                        self.push_log(
-                            LogLevel::Info,
-                            format!("重启恢复：已将 {} 条中断的 ingest 任务重新排队", n),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        Ok(result)
+        config_service::init_vault(self, vault_path)
     }
 
-    /// 使用模板初始化 Vault。
     pub fn init_vault_with_template(
         &self,
         vault_path: PathBuf,
@@ -1367,72 +853,7 @@ impl AppState {
         template_purpose: String,
         extra_dirs: Vec<String>,
     ) -> Result<VaultInitResult, String> {
-        // 防止路径遍历攻击
-        for dir in &extra_dirs {
-            let clean = dir.trim().replace('\\', "/");
-            if clean.contains("..") || clean.starts_with('/') {
-                return Err(format!("非法目录路径（不允许路径遍历或绝对路径）: {}", dir));
-            }
-        }
-        // 模板内容大小限制（防止写入超大文件）
-        const MAX_TEMPLATE_BYTES: usize = 512 * 1024;
-        if template_schema.len() > MAX_TEMPLATE_BYTES {
-            return Err("模板 schema 内容超过 512 KB 限制".to_string());
-        }
-        if template_purpose.len() > MAX_TEMPLATE_BYTES {
-            return Err("模板 purpose 内容超过 512 KB 限制".to_string());
-        }
-
-        let mut result = self.init_vault(vault_path.clone())?;
-
-        // 写入模板文件（通常放在 wiki 目录下）
-        let wiki_dir = vault_path.join("wiki");
-        if !wiki_dir.exists() {
-            fs::create_dir_all(&wiki_dir).map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
-        }
-
-        let schema_path = wiki_dir.join("schema.md");
-        if !schema_path.exists() {
-            fs::write(&schema_path, template_schema)
-                .map_err(|e| format!("创建 schema.md 失败: {}", e))?;
-            result
-                .created_paths
-                .push(schema_path.to_string_lossy().to_string());
-        }
-
-        let purpose_path = wiki_dir.join("purpose.md");
-        if !purpose_path.exists() {
-            fs::write(&purpose_path, template_purpose)
-                .map_err(|e| format!("创建 purpose.md 失败: {}", e))?;
-            result
-                .created_paths
-                .push(purpose_path.to_string_lossy().to_string());
-        }
-
-        // 创建额外目录
-        for dir in extra_dirs {
-            let target_dir = if dir.starts_with("wiki/") || dir == "wiki" {
-                vault_path.join(&dir)
-            } else {
-                wiki_dir.join(&dir)
-            };
-
-            if !target_dir.exists() {
-                fs::create_dir_all(&target_dir)
-                    .map_err(|e| format!("创建额外目录 {:?} 失败: {}", target_dir, e))?;
-                result
-                    .created_paths
-                    .push(target_dir.to_string_lossy().to_string());
-            }
-        }
-
-        self.push_log(
-            LogLevel::Info,
-            format!("Vault 模板初始化完成: {}", vault_path.to_string_lossy()),
-        );
-
-        result.message = format!("Vault 模板初始化已完成：{}", vault_path.to_string_lossy());
-        Ok(result)
+        config_service::init_vault_with_template(self, vault_path, template_schema, template_purpose, extra_dirs)
     }
 
     pub async fn ingest_markdown(
@@ -2489,62 +1910,19 @@ impl AppState {
     }
 
     pub fn overview(&self) -> AppOverview {
-        let guard = self.inner.lock().expect("状态锁已被污染");
-        let vault_path = guard
-            .vault_path
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|| "vault".to_string());
-        let pending_tasks = guard
-            .vault_path
-            .as_ref()
-            .and_then(|path| db::count_pending_tasks(&path.join(".app").join("meta.db")).ok())
-            .unwrap_or(0);
-
-        AppOverview {
-            app_name: "LLM Wiki".to_string(),
-            mode: guard.mode,
-            vault_path,
-            recent_log_count: guard.logs.len(),
-            pending_tasks,
-            supported_modes: vec![AppMode::Hybrid, AppMode::StrictLocal],
-        }
+        config_service::overview(self)
     }
 
     pub fn default_paths(&self) -> DefaultPaths {
-        let root = Self::project_root();
-        DefaultPaths {
-            vault_path: root.join("vault").to_string_lossy().to_string(),
-            ingest_source_path: Self::default_ingest_source_path(root)
-                .to_string_lossy()
-                .to_string(),
-        }
-    }
-
-    fn default_ingest_source_path(_root: PathBuf) -> PathBuf {
-        #[cfg(windows)]
-        {
-            PathBuf::from(r"E:\llm-wiki\test-llm.md")
-        }
-
-        #[cfg(not(windows))]
-        {
-            _root.join("test-llm.md")
-        }
+        config_service::default_paths(self)
     }
 
     pub fn query_settings(&self) -> QuerySettings {
-        let guard = self.inner.lock().expect("状态锁已被污染");
-        QuerySettings {
-            top_k: guard.query_top_k,
-            min_top_k: QUERY_TOP_K_MIN,
-            max_top_k: QUERY_TOP_K_MAX,
-        }
+        config_service::query_settings(self)
     }
 
     pub fn recent_logs(&self, limit: usize) -> Vec<LogEntry> {
-        let guard = self.inner.lock().expect("状态锁已被污染");
-        guard.logs.iter().rev().take(limit).cloned().collect()
+        config_service::recent_logs(self, limit)
     }
 
     pub fn recent_wiki_pages(&self, limit: usize) -> Result<Vec<WikiPageItem>, String> {
@@ -5971,62 +5349,46 @@ Wiki 页面：\n{}",
         Ok(())
     }
 
-    fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
-        let (mode, query_top_k, expected_snapshot) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (guard.mode, guard.query_top_k, guard.config_snapshot.clone())
-        };
+    // ── 配置 I/O 薄包装（实现在 config_service）─────────────────────────────
 
-        {
-            let mut guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path = Some(vault_path.clone());
-        }
-
-        match self.persist_config(
-            mode,
-            Some(vault_path.as_path()),
-            query_top_k,
-            expected_snapshot.as_deref(),
-        ) {
-            Ok(serialized) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.config_snapshot = Some(serialized);
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    fn default_config_path() -> PathBuf {
-        Self::default_config_path_from_root(&Self::project_root())
-    }
-
-    fn project_root() -> PathBuf {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or(manifest_dir)
-    }
-
-    fn default_config_path_from_root(root: &Path) -> PathBuf {
-        root.join(".runtime").join("app-config.json")
+    #[cfg(test)]
+    fn llm_status_input(
+        &self,
+    ) -> (
+        AppMode,
+        Option<String>,
+        Option<OpenAiConfig>,
+        Option<Arc<dyn LlmProvider>>,
+    ) {
+        config_service::llm_status_input(self)
     }
 
     fn load_config(config_path: &Path) -> (AppConfig, Option<String>) {
-        match fs::read_to_string(config_path) {
-            Ok(raw) => match serde_json::from_str::<AppConfig>(&raw) {
-                Ok(config) => (config, Some(raw)),
-                Err(_) => (AppConfig::default(), Some(raw)),
-            },
-            Err(err) if err.kind() == io::ErrorKind::NotFound => (AppConfig::default(), None),
-            Err(_) => (AppConfig::default(), None),
-        }
+        config_service::load_config(config_path)
     }
 
-    /// 将运行时配置序列化为新字段格式。
+    fn default_config_path() -> PathBuf {
+        config_service::default_config_path()
+    }
+
+    fn project_root() -> PathBuf {
+        config_service::project_root()
+    }
+
+    fn default_config_path_from_root(root: &Path) -> PathBuf {
+        config_service::default_config_path_from_root(root)
+    }
+
     fn serialize_config_full(config: &AppConfig) -> String {
-        serde_json::to_string_pretty(config).expect("配置序列化失败")
+        config_service::serialize_config_full(config)
+    }
+
+    fn write_config_file(
+        config_path: &Path,
+        serialized: &str,
+        expected_snapshot: Option<&str>,
+    ) -> Result<(), String> {
+        config_service::write_config_file(config_path, serialized, expected_snapshot)
     }
 
     fn persist_config(
@@ -6036,79 +5398,11 @@ Wiki 页面：\n{}",
         query_top_k: usize,
         expected_snapshot: Option<&str>,
     ) -> Result<String, String> {
-        // 从当前 guard 读取云端字段及 OCR 字段，确保不丢失已保存的配置
-        let config = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            AppConfig {
-                mode,
-                vault_path: vault_path.map(|path| path.to_string_lossy().to_string()),
-                query_top_k: Some(query_top_k),
-                cloud_api_key: guard.cloud_api_key.clone(),
-                cloud_base_url: guard.cloud_base_url.clone(),
-                cloud_model: guard.cloud_model.clone(),
-                cloud_provider_name: guard.cloud_provider_name.clone(),
-                active_provider: guard.active_provider.clone(),
-                default_ocr_provider: guard.default_ocr_provider.clone(),
-                ollama_model: guard.ollama_model.clone(),
-                ollama_base_url: guard.ollama_base_url.clone(),
-                embed_ollama_model: guard.embed_ollama_model.clone(),
-                embed_ollama_base_url: guard.embed_ollama_base_url.clone(),
-                shell_policy: Some(guard.shell_policy.clone()),
-            }
-        };
-        let serialized = Self::serialize_config_full(&config);
-
-        if let Some(parent) = self.config_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| format!("创建配置目录失败: {}", err))?;
-        }
-
-        let current_snapshot = match fs::read_to_string(&self.config_path) {
-            Ok(raw) => Some(raw),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-            Err(err) => return Err(format!("读取配置文件失败: {}", err)),
-        };
-
-        match expected_snapshot {
-            Some(snapshot) => {
-                if current_snapshot.as_deref() != Some(snapshot) {
-                    return Err("配置文件已被外部修改".to_string());
-                }
-            }
-            None => {
-                if current_snapshot.is_some() {
-                    return Err("配置文件已被外部创建或修改".to_string());
-                }
-            }
-        }
-
-        Self::write_config_file(&self.config_path, &serialized, current_snapshot.as_deref())?;
-        Ok(serialized)
+        config_service::persist_config(self, mode, vault_path, query_top_k, expected_snapshot)
     }
 
-    fn write_config_file(
-        config_path: &Path,
-        serialized: &str,
-        expected_snapshot: Option<&str>,
-    ) -> Result<(), String> {
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| format!("创建配置目录失败: {}", err))?;
-        }
-
-        let current_snapshot = match fs::read_to_string(config_path) {
-            Ok(raw) => Some(raw),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-            Err(err) => return Err(format!("读取配置文件失败: {}", err)),
-        };
-
-        if let Some(snapshot) = expected_snapshot {
-            if current_snapshot.as_deref() != Some(snapshot) {
-                return Err("配置文件已被外部修改".to_string());
-            }
-        } else if current_snapshot.is_some() {
-            return Err("配置文件已被外部创建或修改".to_string());
-        }
-
-        fs::write(config_path, serialized).map_err(|err| format!("写入配置文件失败: {}", err))
+    fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
+        config_service::set_vault_path(self, vault_path)
     }
 
     fn push_log(&self, level: LogLevel, message: String) {
@@ -10112,132 +9406,6 @@ fn build_query_answer(question: &str, matches: &[WikiMatch]) -> String {
     lines.join("\n")
 }
 
-fn build_llm_status(
-    provider: &str,
-    base_url: &str,
-    model: &str,
-    mode: AppMode,
-    healthy: bool,
-    message: String,
-) -> LlmStatus {
-    LlmStatus {
-        provider: provider.to_string(),
-        base_url: base_url.to_string(),
-        model: model.to_string(),
-        healthy,
-        message,
-        mode,
-    }
-}
-
-fn normalize_cloud_provider_name(provider_name: Option<&str>) -> Option<String> {
-    let value = provider_name?.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    let lowered = value.to_ascii_lowercase();
-    let canonical = if lowered.contains("deepseek") {
-        "deepseek"
-    } else if lowered.contains("zhipu") || lowered.contains("glm") {
-        "glm"
-    } else if lowered.contains("minimax") {
-        "minimax"
-    } else {
-        value
-    };
-
-    Some(canonical.to_string())
-}
-
-fn normalize_active_provider(active_provider: Option<&str>) -> Option<&'static str> {
-    let value = active_provider?.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let lowered = value.to_ascii_lowercase();
-    match lowered.as_str() {
-        "cloud" => Some("cloud"),
-        "ollama" => Some("ollama"),
-        _ => None,
-    }
-}
-
-fn resolve_active_provider(
-    mode: AppMode,
-    preferred: Option<&str>,
-    has_cloud_key: bool,
-    fallback: Option<&str>,
-) -> String {
-    if matches!(mode, AppMode::StrictLocal) {
-        return "ollama".to_string();
-    }
-
-    let preferred =
-        normalize_active_provider(preferred).or_else(|| normalize_active_provider(fallback));
-
-    match preferred {
-        Some("cloud") if has_cloud_key => "cloud".to_string(),
-        Some("cloud") => "ollama".to_string(),
-        Some("ollama") => "ollama".to_string(),
-        _ if has_cloud_key => "cloud".to_string(),
-        _ => "ollama".to_string(),
-    }
-}
-
-fn display_cloud_provider_name(provider_name: &str) -> String {
-    let trimmed = provider_name.trim();
-    let lowered = trimmed.to_ascii_lowercase();
-    match lowered.as_str() {
-        "deepseek" => "DeepSeek".to_string(),
-        "glm" => "GLM".to_string(),
-        "minimax" => "MiniMax".to_string(),
-        _ => trimmed.to_string(),
-    }
-}
-
-fn provider_default_base_url(provider_name: Option<&str>) -> Option<String> {
-    let lowered = provider_name?.trim().to_ascii_lowercase();
-    if lowered.contains("deepseek") {
-        Some("https://api.deepseek.com/v1".to_string())
-    } else if lowered.contains("zhipu") || lowered.contains("glm") {
-        Some("https://open.bigmodel.cn/api/paas/v4".to_string())
-    } else if lowered.contains("minimax") {
-        Some("https://api.minimax.chat/v1".to_string())
-    } else {
-        None
-    }
-}
-
-fn normalize_cloud_base_url(provider_name: Option<&str>, base_url: Option<&str>) -> Option<String> {
-    if let Some(value) = base_url {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    provider_default_base_url(provider_name)
-}
-
-fn effective_cloud_base_url(provider_name: Option<&str>, base_url: Option<&str>) -> String {
-    normalize_cloud_base_url(provider_name, base_url)
-        .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string())
-}
-
-fn llm_health_error_message(err: &LlmError) -> String {
-    match err {
-        LlmError::ConnectionFailed(detail) => {
-            format!("无法连接到本地 Ollama 服务：{}", detail)
-        }
-        LlmError::Timeout => "本地 Ollama 健康检查超时".to_string(),
-        LlmError::ModelNotFound(model) => format!("本地 Ollama 未找到模型：{}", model),
-        LlmError::InvalidResponse(detail) => {
-            format!("本地 Ollama 返回了无效响应：{}", detail)
-        }
-    }
-}
-
 // ─── Deep Research Pipeline ──────────────────────────────────────────────────
 
 /// Tavily 搜索。
@@ -11507,6 +10675,10 @@ fn md5_simple(input: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::config_service::{
+        build_llm_status, display_cloud_provider_name, effective_cloud_base_url,
+        llm_health_error_message, normalize_cloud_base_url, normalize_cloud_provider_name,
+    };
     use async_trait::async_trait;
     use rusqlite::{params, Connection};
     use std::{
