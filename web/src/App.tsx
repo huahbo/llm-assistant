@@ -31,6 +31,7 @@ import type {
 
 import { readDropModeFromStorage, writeDropModeToStorage, type DropMode } from "./ask-utils";
 import { loadAppData } from "./app-data";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() =>
@@ -421,77 +422,91 @@ export default function App() {
 
         <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}${activeModule === "chat" ? " module-viewport--chat" : ""}`}>
           {/* ---- Chat 模块 ---- */}
-          {activeModule === "chat" && <ChatModule />}
+          {activeModule === "chat" && <ErrorBoundary label="Chat"><ChatModule /></ErrorBoundary>}
           {/* ---- 概览模块 ---- */}
           {activeModule === "inbox" && (
-            <InboxModule
-              overview={overview}
-              pagesCount={pages.length}
-              logs={logs}
-              dropMode={dropMode}
-              onRefreshAppData={refreshAppData}
-              navigateTo={setActiveModule}
-              llmAvailabilityText={llmAvailabilityText}
-              llmModelText={llmModelText}
-              llmAddressText={llmAddressText}
-              llmHintText={llmHintText}
-            />
+            <ErrorBoundary label="Inbox">
+              <InboxModule
+                overview={overview}
+                pagesCount={pages.length}
+                logs={logs}
+                dropMode={dropMode}
+                onRefreshAppData={refreshAppData}
+                navigateTo={setActiveModule}
+                llmAvailabilityText={llmAvailabilityText}
+                llmModelText={llmModelText}
+                llmAddressText={llmAddressText}
+                llmHintText={llmHintText}
+              />
+            </ErrorBoundary>
           )}
           {/* ---- Wiki 模块 ---- */}
           {activeModule === "wiki" && (
-            <WikiModule
-              ref={wikiModuleRef}
-              pages={pages}
-              onPagesChange={setPages}
-            />
+            <ErrorBoundary label="Wiki">
+              <WikiModule
+                ref={wikiModuleRef}
+                pages={pages}
+                onPagesChange={setPages}
+              />
+            </ErrorBoundary>
           )}
 
           {/* ---- Ask 模块 ---- */}
           {activeModule === "ask" && (
-            <AskModule onOpenWikiPage={handleOpenWikiPage} />
+            <ErrorBoundary label="Ask"><AskModule onOpenWikiPage={handleOpenWikiPage} /></ErrorBoundary>
           )}
 
           {/* ---- Lint 模块 ---- */}
           {activeModule === "lint" && (
-            <LintModule
-              onRefreshAppData={refreshAppData}
-              onCreateBrokenWikiLinkPage={handleCreateLintTargetPage}
-              onOpenPatchPage={handleOpenLintPatchPage}
-            />
+            <ErrorBoundary label="Lint">
+              <LintModule
+                onRefreshAppData={refreshAppData}
+                onCreateBrokenWikiLinkPage={handleCreateLintTargetPage}
+                onOpenPatchPage={handleOpenLintPatchPage}
+              />
+            </ErrorBoundary>
           )}
 
           {/* ---- 图谱模块 ---- */}
           {activeModule === "graph" && (
-            <GraphModule
-              handleOpenWikiPage={handleOpenWikiPage}
-            />
+            <ErrorBoundary label="Graph">
+              <GraphModule handleOpenWikiPage={handleOpenWikiPage} />
+            </ErrorBoundary>
           )}
 
           {/* ---- Settings 模块 ---- */}
           {activeModule === "settings" && (
-            <SettingsModule
-              onRefreshAppData={refreshAppData}
-              dropMode={dropMode}
-              onDropModeChange={(mode) => {
-                setDropMode(mode);
-                writeDropModeToStorage(mode);
-              }}
-            />
+            <ErrorBoundary label="Settings">
+              <SettingsModule
+                onRefreshAppData={refreshAppData}
+                dropMode={dropMode}
+                onDropModeChange={(mode) => {
+                  setDropMode(mode);
+                  writeDropModeToStorage(mode);
+                }}
+              />
+            </ErrorBoundary>
           )}
           {/* ---- 运行模块（队列 + 统计合并） ---- */}
           {activeModule === "operations" && (
-            <OperationsModule
-              requestedTab={requestedOperationsTab}
-              navigateTo={setActiveModule}
-            />
+            <ErrorBoundary label="Operations">
+              <OperationsModule
+                requestedTab={requestedOperationsTab}
+                navigateTo={setActiveModule}
+              />
+            </ErrorBoundary>
           )}
           {/* ---- Deep Research 模块 ---- */}
           {activeModule === "research" && (
-            <ResearchModule onOpenWikiPage={handleOpenResearchWikiPage} />
+            <ErrorBoundary label="Research">
+              <ResearchModule onOpenWikiPage={handleOpenResearchWikiPage} />
+            </ErrorBoundary>
           )}
           {/* ---- Agent Studio 模块 ---- */}
           {activeModule === "agent" && (
-            <AgentStudio onOpenWikiPage={handleOpenWikiPage} />
+            <ErrorBoundary label="Agent Studio">
+              <AgentStudio onOpenWikiPage={handleOpenWikiPage} />
+            </ErrorBoundary>
           )}
         </div>
       </div>
