@@ -875,3 +875,44 @@ code {
   font-size: 0.9em;
 }
 
+/* =========================================================
+   骨架屏（Skeleton）
+   ========================================================= */
+
+@keyframes skeleton-shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+
+.skeleton-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 24px 28px;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.skeleton-pane__header {
+  height: 22px;
+  width: 40%;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--bg-muted) 25%, var(--border-light) 50%, var(--bg-muted) 75%);
+  background-size: 1200px 100%;
+  animation: skeleton-shimmer 1.4s infinite linear;
+}
+
+.skeleton-pane__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skeleton-pane__row {
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--bg-muted) 25%, var(--border-light) 50%, var(--bg-muted) 75%);
+  background-size: 1200px 100%;
+  animation: skeleton-shimmer 1.4s infinite linear;
+}
+

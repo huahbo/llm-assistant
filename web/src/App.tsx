@@ -32,6 +32,7 @@ import type {
 import { readDropModeFromStorage, writeDropModeToStorage, type DropMode } from "./ask-utils";
 import { loadAppData } from "./app-data";
 import ErrorBoundary from "./components/ErrorBoundary";
+import SkeletonPane from "./components/SkeletonPane";
 
 export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() =>
@@ -49,6 +50,7 @@ export default function App() {
   const [pages, setPages] = useState<WikiPageItem[]>([]);
   const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
   const [llmStatusLoaded, setLlmStatusLoaded] = useState(false);
+  const [appReady, setAppReady] = useState(false);
   const { statusMessage, setStatusMessage } = useToast();
   const { vaultPath, setVaultPath } = useVault();
   const [dropMode, setDropMode] = useState<DropMode>(() => readDropModeFromStorage());
@@ -118,6 +120,7 @@ export default function App() {
         }
         setLlmStatus(data.llmStatus);
         setLlmStatusLoaded(true);
+        setAppReady(true);
       }
     };
 
@@ -421,10 +424,11 @@ export default function App() {
         ) : null}
 
         <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}${activeModule === "chat" ? " module-viewport--chat" : ""}`}>
+          {!appReady && <SkeletonPane rows={8} />}
           {/* ---- Chat 模块 ---- */}
-          {activeModule === "chat" && <ErrorBoundary label="Chat"><ChatModule /></ErrorBoundary>}
+          {appReady && activeModule === "chat" && <ErrorBoundary label="Chat"><ChatModule /></ErrorBoundary>}
           {/* ---- 概览模块 ---- */}
-          {activeModule === "inbox" && (
+          {appReady && activeModule === "inbox" && (
             <ErrorBoundary label="Inbox">
               <InboxModule
                 overview={overview}
@@ -441,7 +445,7 @@ export default function App() {
             </ErrorBoundary>
           )}
           {/* ---- Wiki 模块 ---- */}
-          {activeModule === "wiki" && (
+          {appReady && activeModule === "wiki" && (
             <ErrorBoundary label="Wiki">
               <WikiModule
                 ref={wikiModuleRef}
@@ -452,12 +456,12 @@ export default function App() {
           )}
 
           {/* ---- Ask 模块 ---- */}
-          {activeModule === "ask" && (
+          {appReady && activeModule === "ask" && (
             <ErrorBoundary label="Ask"><AskModule onOpenWikiPage={handleOpenWikiPage} /></ErrorBoundary>
           )}
 
           {/* ---- Lint 模块 ---- */}
-          {activeModule === "lint" && (
+          {appReady && activeModule === "lint" && (
             <ErrorBoundary label="Lint">
               <LintModule
                 onRefreshAppData={refreshAppData}
@@ -468,14 +472,14 @@ export default function App() {
           )}
 
           {/* ---- 图谱模块 ---- */}
-          {activeModule === "graph" && (
+          {appReady && activeModule === "graph" && (
             <ErrorBoundary label="Graph">
               <GraphModule handleOpenWikiPage={handleOpenWikiPage} />
             </ErrorBoundary>
           )}
 
           {/* ---- Settings 模块 ---- */}
-          {activeModule === "settings" && (
+          {appReady && activeModule === "settings" && (
             <ErrorBoundary label="Settings">
               <SettingsModule
                 onRefreshAppData={refreshAppData}
@@ -488,7 +492,7 @@ export default function App() {
             </ErrorBoundary>
           )}
           {/* ---- 运行模块（队列 + 统计合并） ---- */}
-          {activeModule === "operations" && (
+          {appReady && activeModule === "operations" && (
             <ErrorBoundary label="Operations">
               <OperationsModule
                 requestedTab={requestedOperationsTab}
@@ -497,13 +501,13 @@ export default function App() {
             </ErrorBoundary>
           )}
           {/* ---- Deep Research 模块 ---- */}
-          {activeModule === "research" && (
+          {appReady && activeModule === "research" && (
             <ErrorBoundary label="Research">
               <ResearchModule onOpenWikiPage={handleOpenResearchWikiPage} />
             </ErrorBoundary>
           )}
           {/* ---- Agent Studio 模块 ---- */}
-          {activeModule === "agent" && (
+          {appReady && activeModule === "agent" && (
             <ErrorBoundary label="Agent Studio">
               <AgentStudio onOpenWikiPage={handleOpenWikiPage} />
             </ErrorBoundary>
