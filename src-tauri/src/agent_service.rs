@@ -1,10 +1,12 @@
-use std::fs;
+use std::{fs, time::Duration};
 
 use crate::{
     agent_loop::{run_agent_task_loop, summarize_agent_task},
     db,
     state::{current_timestamp_ms, AppState},
 };
+
+const AGENT_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 执行 Agent 任务模式主流程（H6-S2）。
 pub async fn run_agent_task(
@@ -49,24 +51,31 @@ pub async fn run_agent_task(
         .take(2400)
         .collect::<String>();
 
-    let loop_outcome = run_agent_task_loop(
-        state,
-        run_id,
-        &instruction,
-        iteration_budget,
-        &wiki_excerpt,
-        &memory_context,
-    )
-    .await?;
+    let inner = async {
+        let loop_outcome = run_agent_task_loop(
+            state,
+            run_id,
+            &instruction,
+            iteration_budget,
+            &wiki_excerpt,
+            &memory_context,
+        )
+        .await?;
 
-    // 如果有 pending_write 或 pending_edit，存入 state 等待审批
-    if let Some((path, content)) = loop_outcome.pending_write.clone() {
-        state.store_pending_agent_write(run_id, path, content, None);
-    } else if let Some((path, old_str, new_str)) = loop_outcome.pending_edit.clone() {
-        state.store_pending_agent_write(run_id, path, new_str, Some(old_str));
-    }
+        // 如果有 pending_write 或 pending_edit，存入 state 等待审批
+        if let Some((path, content)) = loop_outcome.pending_write.clone() {
+            state.store_pending_agent_write(run_id, path, content, None);
+        } else if let Some((path, old_str, new_str)) = loop_outcome.pending_edit.clone() {
+            state.store_pending_agent_write(run_id, path, new_str, Some(old_str));
+        }
 
-    let answer = summarize_agent_task(state, &instruction, &wiki_excerpt, &loop_outcome).await?;
+        let answer = summarize_agent_task(state, &instruction, &wiki_excerpt, &loop_outcome).await?;
+        Ok::<_, String>((loop_outcome, answer))
+    };
+
+    let (loop_outcome, answer) = tokio::time::timeout(AGENT_WALL_CLOCK_TIMEOUT, inner)
+        .await
+        .map_err(|_| "Agent 任务超时（超过 10 分钟），已自动终止".to_string())??;
 
     let done_at = current_timestamp_ms();
     let preview: String = answer.chars().take(120).collect();
