@@ -36,6 +36,19 @@ use crate::{
     vault,
 };
 
+// 服务模块（H16 拆分）
+pub mod config_service;
+pub mod shell_service;
+pub mod search_service;
+pub mod wiki_service;
+pub mod graph_service;
+pub mod lint_service;
+pub mod ingest_service;
+pub mod ask_service;
+// agent_service: Phase 9 迁移时添加（与顶层 crate::agent_service 合并）
+pub mod chat_service;
+pub mod research_service;
+
 const STALE_PENDING_TASK_THRESHOLD_MS: u128 = 24 * 60 * 60 * 1000;
 const QUERY_TOP_K_MIN: usize = 1;
 const QUERY_TOP_K_MAX: usize = 8;
