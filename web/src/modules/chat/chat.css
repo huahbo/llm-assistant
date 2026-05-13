@@ -1373,6 +1373,69 @@
   background: var(--accent-hover);
 }
 
+/* ── ChatModal 全屏弹窗 ───────────────────────────────────────────────────── */
+
+.chat-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.48);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+
+.chat-modal__dialog {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 560px;
+  max-width: 92vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chat-modal__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.chat-modal__close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.chat-modal__close:hover {
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+.chat-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
 /* ── Markdown 渲染 ────────────────────────────────────────────────────────── */
 
 .md-renderer {
