@@ -967,6 +967,128 @@
   cursor: not-allowed;
 }
 
+/* 已安装列表 */
+.mcp-gallery__manage {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 6px;
+  gap: 6px;
+}
+
+.mcp-gallery__empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 6px;
+}
+
+.mcp-gallery__installed {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.mcp-gallery__installed-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.mcp-gallery__installed-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.mcp-gallery__installed-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mcp-gallery__installed-cmd {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: "Cascadia Code", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-gallery__installed-status {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.mcp-gallery__installed-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mcp-gallery__btn {
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--bg-page);
+  color: var(--text-muted);
+  transition: background 0.1s, color 0.1s;
+}
+
+.mcp-gallery__btn:hover {
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+.mcp-gallery__btn--delete:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+.mcp-gallery__add-new {
+  margin-top: 4px;
+  padding: 7px 10px;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--accent);
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.mcp-gallery__add-new:hover {
+  background: var(--accent-light);
+}
+
+/* 精选列表：已安装标记 */
+.mcp-gallery__item--installed {
+  opacity: 0.75;
+}
+
+.mcp-gallery__item-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  background: var(--accent-light);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 /* ── Skill 安装器 ─────────────────────────────────────────────────────────── */
 
 .skill-installer {
