@@ -7,272 +7,52 @@
 ## 快速恢复步骤
 
 1. 运行基线验证（见下方 §验证基线）
-2. 读 `docs/交接状态卡.md`，确认当前接力状态
-3. 读 `docs/实施过程记录.md` 最新 3 条了解背景
-4. 查看下方 §活跃 TODO
+2. 查看下方 §活跃 TODO
+3. 阅读最新 5 条 git log 了解背景
 
-## 本轮快讯（2026-05-09，Claude Code）
+## 本轮快讯（2026-05-15，Claude Code）
 
-### H9 阶段 A — Chat UI 三项改进 已完成
+### H11 Swarm 子代理层级追踪 已完成
+- `agent_conversations` 表新增 `parent_conv_id INTEGER` / `depth INTEGER NOT NULL DEFAULT 0`
+- SQLite 幂等迁移（`let _ = conn.execute("ALTER TABLE ...")`）
+- `list_conversations` 两个分支均加 `WHERE depth = 0`，子代理会话不出现在主列表
+- 新增 `list_child_conversations` / `get_conv_depth` DB 函数
+- `exec_spawn_subagent` 改用结构化深度检测（max depth 2，即根→子→孙三层）
+- 新增 Tauri 命令：`list_child_conversations`
+- 新增测试：`test_depth_tracking_and_list_excludes_subagents`
 
-- **新建** `web/src/modules/chat/MarkdownRenderer.tsx`：marked + DOMPurify 渲染正文 Markdown，highlight.js（atom-one-dark）语法高亮代码块，每个代码块独立复制按钮（复制成功变 ✓）
-- **更新** `web/src/modules/chat/MessageBubble.tsx`：卡通机器人头像（紫色方头/天线/蓝眼）/ 蓝色用户头像；助手气泡 hover 出现整体复制按钮；流式中保持纯文本（防闪烁），流结束后自动切 Markdown 渲染
-- **追加 CSS** `web/src/styles.css`：`.chat-row` 布局、`.chat-avatar`、`.chat-bubble__copy-btn`、`.md-body`、`.md-code-block` 全套样式
-- **新增依赖** `highlight.js ^11.11.1`
-- **修复** `reasoning_content` 回传 bug（DeepSeek thinking 模式 HTTP 400 问题）
-- **修复** shell 系统提示（Windows PowerShell 上下文）
-- **写入计划** `docs/h9-chat-ui-websearch-plan.md`（阶段 B Web 搜索工具方案）
-- 验证：`npm run typecheck` ✅ 零错误
+### H11 list_wiki_pages 工具 已完成
+- 新增工具 `list_wiki_pages`，支持 `path_prefix` 过滤，最多返回 100 条
+- 工具描述已注入 seed tools（9 个工具）
 
-### 下一步：H9 阶段 B — Web 搜索工具（后续实施）
+### H11 read_wiki 分页 已完成
+- `exec_read_wiki` 新增 `start_char` 参数，8000 字符分块输出
+- 重构：直接 `fs::read_to_string` 读文件，不再解析格式化字符串（防止内容含 `content=` 时截断）
 
-详见 `docs/h9-chat-ui-websearch-plan.md`
+### H11 search_wiki 混合检索 已完成
+- `exec_search_wiki` 改为 `async fn`，调用 `search_wiki_pages_hybrid`（FTS5 + Ollama 向量 RRF）
+- Ollama 不可用时优雅降级到 FTS5
 
----
+### 跨会话消息搜索 已完成
+- DB 新增 `search_messages(query, limit)` — LIKE 搜索 user/assistant 消息，JOIN conversations，只返回 depth=0 的对话
+- 新增 Tauri 命令 `search_chat_messages`
+- 前端 `ConversationList` 新增消息搜索结果区（防抖 300ms，2+ 字符触发）
 
-## 本轮快讯（2026-05-07，Codex 接力）
+### 对话导出功能 已完成
+- 新增 Tauri 命令 `export_conversation_markdown` — 格式化 user/assistant 消息为 Markdown
+- `MessageThread` 新增"导出"按钮（复制到剪贴板）和"存入 Wiki"按钮（保存到 `chat-exports/`）
 
-### H7 Phase 2.9.4 AgentToolsPane 已完成
-- 新增 `web/src/modules/agent/AgentToolsPane.tsx`，将 Agent 工具页（Shell 工作区、策略档位、快捷命令、历史与输入区）从 `App.tsx` 抽离为独立组件。
-- `web/src/App.tsx` 的 `agentRightTab === "tools"` 分支已替换为 `<AgentToolsPane />` 接线，行为保持不变。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.9.5 `AgentChatPane + AgentReviewPane`。
-
-## 本轮快讯（2026-05-04，Codex 接力）
-
-### H7 Phase 1.4 ShellPolicyContext 已完成
-- Codex 在 Claude 限流后接手 H7 拆分重构，先清理 `App.tsx` 行尾噪声，确认无语义 diff。
-- 新增 `web/src/contexts/ShellPolicyContext.tsx`，迁出 Shell 策略配置、保存、刷新、档位切换与 dirty/saving 状态。
-- `web/src/main.tsx` 已接入 `ShellPolicyProvider`；`App.tsx` 改用 `useShellPolicy()`，Settings 与 Agent 仍共用同一策略数据源。
-- 本轮为前端 Context 串行临界步骤，后端不改，避免与 Claude 已提交的 H7 Phase 0~1.3 改动交叉冲突。
-- 验证：`cd web && npm run typecheck` ✅；`npm run test -- --run` 仍因 WSL Rollup 可选依赖缺失启动失败；`cargo test` 因 WSL 缺 `pkg-config` 未进入业务测试。
-- 下一步：H7 Phase 1.5 `ToastContext`。
-
-### H7 Phase 1.5 ToastContext 已完成
-- 新增 `web/src/contexts/ToastContext.tsx`，将全局提示与 Agent 提示状态从 `App.tsx` 移到统一 Context。
-- `web/src/main.tsx` 已接入 `ToastProvider`；`App.tsx` 改用 `useToast()`，保留现有 `setStatusMessage` / `setAgentStatusMessage` 调用形态，降低本步风险。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：进入 H7 Phase 2，优先拆 `SettingsModule`。
-
-### H7 Phase 2.1 SettingsModule 已完成
-- 新增 `web/src/modules/settings/SettingsModule.tsx`，将 Settings 渲染分支从 `App.tsx` 外移。
-- Settings 内部直接消费 `ShellPolicyContext`；LLM Provider 表单与拖拽模式暂以 props 接入，保持行为不变。
-- `App.tsx` 删除 Settings JSX 大块，仅保留 `<SettingsModule />` 路由接线。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.2 `OperationsModule`。
-
-### H7 Phase 2.2 OperationsModule 已完成
-- 新增 `web/src/modules/operations/OperationsModule.tsx`，将“运行”模块（队列 + 统计）从 `App.tsx` 外移。
-- 继续复用已提取的 `QueuePanel`，队列刷新/取消/重试与统计加载通过 props 接入。
-- `App.tsx` 仅保留 `<OperationsModule />` 路由接线。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.3 `InboxModule`。
-
-### H7 Phase 2.3 InboxModule 已完成
-- 新增 `web/src/modules/inbox/InboxModule.tsx`，将概览首页（运行模式、Vault 操作、摄入卡片、剪藏扩展、最近日志）从 `App.tsx` 外移。
-- 本步只迁移渲染边界，摄入状态、模板初始化状态、模式切换与日志数据仍由 `App.tsx` 持有并通过 props 接入。
-- `App.tsx` 仅保留 `<InboxModule />` 路由接线与队列/文件选择的桥接 handler。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.4 `LintModule`。
-
-### H7 Phase 2.4 LintModule 已完成
-- 新增 `web/src/modules/lint/LintModule.tsx`，将 Lint 面板、最近补丁记录、补丁建议三块视图从 `App.tsx` 外移。
-- 当前仍由 `App.tsx` 持有 lint 报告、筛选条件、补丁预览与应用状态；`LintModule` 仅通过 props 接入，避免本步同时迁移状态归属。
-- 补充 `handleCreateLintTargetPage` / `handleOpenLintPatchPage` 两个桥接 handler，保持断链页面创建与“打开页面”跳转行为不变。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.5 `WikiModule`。
-
-### H7 Phase 2.5 WikiModule 已完成
-- 新增 `web/src/modules/wiki/WikiModule.tsx`，将 Wiki 模块列表页（搜索/排序、标签过滤、文件树、卡片预览入口、AI 新建弹窗）从 `App.tsx` 外移。
-- 当前仍由 `App.tsx` 持有 Wiki 详情预览、编辑、历史版本、frontmatter 与 citations 状态；`WikiModule` 通过 props + render callback 接入，先稳定边界再做后续纵向收口。
-- 补充 Wiki 模块桥接回调（新建弹窗开关、标签切换、卡片状态判断、文件树渲染回调）以保持行为一致。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.6 `AskModule`。
-
-### H7 Phase 2.6 AskModule 已完成
-- 新增 `web/src/modules/ask/AskModule.tsx`，将 Ask 模块（会话列表、消息区、检索调试区、底部输入区）从 `App.tsx` 外移。
-- 当前仍由 `App.tsx` 持有 Ask 的会话状态、流式查询状态、历史记录与保存逻辑；`AskModule` 通过 props 接线，保持原有交互行为。
-- 内联“停止查询”逻辑收敛为 `handleCancelQuery`，并作为回调传入模块，避免在 JSX 内嵌副作用逻辑。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.7 `GraphModule`。
-
-### H7 Phase 2.7 GraphModule 已完成
-- 新增 `web/src/modules/graph/GraphModule.tsx`，将图谱模块（工具栏、ForceGraph2D 画布、洞察侧栏、节点详情）从 `App.tsx` 外移。
-- 通过 props 传递图谱状态、派生数据与交互 handler；新增 `handleResetGraphFilters` 统一替代原 JSX 内联 reset 逻辑，减少视图层副作用散布。
-- 本轮通过并行子代理完成图谱依赖扫描与模块实现，主线负责验收与收口，未改后端代码。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.8 `Research` 收口。
-
-### H7 Phase 2.8 Research 收口已完成
-- 新增 `web/src/modules/research/ResearchModule.tsx` 作为研究模块包装层，承接 `App.tsx` 的 research 分支。
-- `App.tsx` 移除 research 分支内联回调，改为复用 `handleOpenResearchWikiPage`，将 Research 入口保持在模块边界内。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.9.1 `Agent Studio` 骨架提取。
-
-### H7 Phase 2.9.1 AgentStudio 骨架 + MemoryPanel 已完成
-- 新增 `web/src/modules/agent/AgentStudio.tsx`，将 Agent Studio 模块头部与外层容器从 `App.tsx` 外移为骨架组件。
-- 新增 `web/src/modules/agent/AgentMemoryPanel.tsx`，将“记忆上下文”面板从 Agent 主体 JSX 中抽离，保留状态与 handler 在 `App.tsx` 持有。
-- `App.tsx` 的 Agent 分支改为 `<AgentStudio /> + <AgentMemoryPanel />` 组合，减少单文件嵌套层级并为后续 `Skills / RunHistory / Tools` 拆分做边界准备。
-- 验证：`cd web && npm run typecheck` ✅
-- 下一步：H7 Phase 2.9.4 `AgentToolsPane`。
-
-## 本轮快讯（2026-05-04，Claude/Opus 4.7 架构）
-
-### H7 App.tsx 拆分重构计划（架构设计稿出炉）
-- 新增 `docs/h7-app-tsx-refactor-plan.md`：完整可执行计划，Sonnet 4.6 接手即可执行
-- 路线：**Context + 模块组件**（不引新依赖：无 Zustand/Redux/Router）
-- 目标：App.tsx 从 13858 行降至 < 500 行，10 模块独立、5 个 Context 收口跨模块状态
-- 阶段划分：Phase 0（4 个内嵌组件外移） → Phase 1（建立 5 个 Context） → Phase 2（9 个模块按风险递增提取） → Phase 3（收口验证）
-- 预计 15-20 个 commit，每个 commit 独立 typecheck + cargo test 验证
-- Sonnet 4.6 限流时可断点续作（计划里有 §5 进度勾选表）
-
-### write_wiki / edit_wiki E2E 状态变更
-- **决策**：跳过用户手测，以已有自动化测试为准
-- 覆盖证据：4 条 Rust 测试已落 `src-tauri/src/state.rs`
-  - `approve_agent_write_full_write_creates_file` ✅
-  - `reject_agent_write_does_not_create_file` ✅
-  - `approve_agent_write_patch_replaces_content` ✅
-  - `approve_agent_write_patch_fails_when_old_str_not_found` ✅
-- 详见 `docs/h7-app-tsx-refactor-plan.md` §0.1
-
-### 代码质量加固（H6-P1 收口后）
-- `db.rs`：新增 `get_agent_run_by_id()`，O(1) 查询替代原 list_agent_runs(500) 全表扫
-- `state.rs`：`archive_agent_run_impl` 改用单行查询
-- `agent_policy.rs`：match 去冗余 guard；`is_script_command` 修 `-file` 误判；新增 `bash xxx.sh` 检测
-- `App.tsx`：`handleSaveShellPolicy` / `handleApplyAndSaveShellPolicyProfile` 补 `isTauriRuntime()` 前置守卫
-- 评分：agent_policy A / db.rs A / state.rs archive A- / App.tsx handlers A-
+### spawn_subagent 工具卡片渲染 已完成
+- `ToolCallCard` 特判 `spawn_subagent`，显示 🤖 图标 + 子对话 conv badge + 可滚动摘要
 
 ---
 
-## 本轮快讯（2026-04-30，Claude 收口）
-
-### H6-P1 Shell 策略扩展
-- `ShellPolicyConfig` 新增 `network_decision` / `script_decision`（默认 `require_approval`）
-- 新增 `ShellPolicyProfile` 枚举与 `from_profile()`：`strict` / `balanced` / `power_user`
-- 分类优先级：`destructive > script > network > read/write/unknown`
-- `NETWORK_COMMANDS` 白名单 16 个（curl/wget/iwr/ping/ssh 等）
-- `is_script_command`：.ps1/.bat/.cmd/.sh 及 `powershell -file` 调用检测
-- Settings UI 新增 network/script 两个策略下拉控件
-- 档位预设 strict/balanced/power_user 同步升级含 network/script 字段
-- cargo test：**233 通过，0 失败**（新增 policy 测试 ×8 + archive/restore 约束测试 ×3）
-- npm run typecheck：零错误
-
-### 自动化测试覆盖（P0/P1 手测项代码验证）
-- `archive_agent_run_rejects_running_status`：running 状态禁归档 ✅
-- `archive_agent_run_rejects_when_pending_write_exists`：pending write 禁归档 ✅
-- `archive_and_restore_agent_run_round_trip`：归档→恢复→幂等约束 ✅
-- `approve_agent_write_full_write_creates_file` / `patch_replaces_content` / `patch_fails_when_old_str_not_found`：审批链路三条路径 ✅（已有）
-
----
-
-## 本轮快讯（2026-04-29，Claude 收口）
-
-### H6-S2 工具链补全
-- `edit_wiki` 工具已实现：`AgentToolAction::EditWiki { path, old_str, new_str }`，`replacen` 字符串替换，走与 `write_wiki` 相同审批流
-- `PendingAgentWrite.old_str: Option<String>` 区分全写（None）与 patch（Some）
-- `approve_agent_write` 双模式：有 old_str 时执行 patch，无则全写
-- loop prompt 增加 edit_wiki 工具 #5，规则：修改现有页面用 edit_wiki，新建用 write_wiki
-- cargo test：**213 通过，0 失败**
-
-### Agent Studio UI 完善
-- 内联执行日志（tool_start/tool_end/awaiting_approval 直接显示在任务区）
-- 三栏拖拽分割 + 侧边栏折叠为图标模式（52px）
-- `body.split-dragging` 持久高亮分割线
-- 聊天框内滚动修复：module-viewport--agent + flex:1 传导，chat-thread 内部 overflow: auto 生效
-
-### 窗口 UI 打磨
-- 标题栏高 32px，按钮 44px，X=14px / —=11px translateY(-2px) / □=11px 1.5px边
-- DWM shadow 保留（投影+三侧边框），CSS border-top 补顶边，焦点监听动态切换颜色深浅
-- `data-tauri-drag-region` 修复窗口拖动
-
-### 2026-04-29（Codex 续做）
-- 已补齐任务模式“上下文面板实质注入”链路：
-  - 前端 `runAgentTask` 传入 `memory_context`
-  - 后端 `run_agent_task` 命令签名与服务链路接收 `memory_context`
-  - `build_loop_prompt` 新增“上下文配置（记忆/技能）”段落
-- 技能模板变量在任务模式生效：`{{topic}}` / `{{memories}}` 在前端传参前完成替换后注入。
-- 工具调用可视化升级：任务区执行日志已升级为“结构化工具时间线”（start/end 配对、耗时、详情折叠）。
-- 任务续跑最小闭环：新增“继续任务”按钮，自动拼接原指令 + 最近工具轨迹 + 上次结果，支持同 run 快速恢复执行。
-- 端到端验证辅助：任务模式新增“写入审批验证 / 编辑审批验证”一键填充指令，便于快速手测审批链路。
-- Agent Studio 右侧布局按“方案2”收敛：改为“主内容滚动区 + 底部 Shell 抽屉”。
-  - Shell 抽屉固定在右侧底部，展开后输入框始终可见，不再依赖拉高窗口。
-  - 工具入口改为右上显式按钮（打开/收起工具能力）+ 抽屉二级开关，避免误判“未展开”。
-  - 清理旧的未使用 shell 容器样式，完成 JSX/CSS 对齐。
-
-### 2026-04-29（Codex 继续）
-- Agent Studio Shell 升级为“会话型流式终端（方案 B）+ 深色皮肤”：
-  - 工具区加入快捷命令、历史清空、单条输出复制、`↑/↓` 历史回填、流式状态 badge。
-  - 输入区固定在工具卡底部，长历史时仍可持续输入，不再被输出区挤走。
-  - 深色终端皮肤重做（背景层次、边框对比、提示/输出可读性）。
-- 后端 Shell 兼容增强：
-  - `ls/ls -a/ls -la/ls --all` 在 manual 模式统一翻译为 `Get-ChildItem`，避免 PowerShell 参数歧义。
-  - `cd` / `cd /d <path>` 在会话模式下作为内建命令处理并持久化 cwd。
-
-### 2026-04-29（Codex 新推进）
-- 新增独立计划文件：`docs/h6-shell-max-safety-plan.md`（P0~P3 全路径，便于限流后接手）。
-- H6-S3 P0 已开工并落地后端骨架：
-  - `ShellPolicyConfig` 入模（可持久化到 `app-config.json`）。
-  - `run_shell_impl` 改为读取配置执行策略。
-  - 新增 Tauri 命令：`get_shell_policy_config` / `set_shell_policy_config`。
-  - 前端 SDK 新增同名接口，并已在 Agent 工具页接入最小策略面板（3 个决策旋钮 + 保存 + 档位预设）。
-
-### 2026-04-30（Codex 继续）
-- H6-S3 P1 小步推进：Shell 策略从 3 维扩展为 5 维：
-  - 新增 `manual_write_decision`
-  - 新增 `agent_read_decision`
-- 策略面板与预设档位已同步升级，能更细粒度控制“高能力”放行边界。
-- Settings 模块已新增“Shell 策略（全局）”入口，与 Agent 工具页策略面板共用同一配置。
-- 按最新 UI 红线完成收敛：
-  - Settings 已拆分为 3 个独立模块：`LLM Provider 配置` / `拖拽行为` / `Shell 策略（全局）`。
-  - Agent 工具页 Shell 策略区已瘦身为“仅档位按钮”，移除重复 5 项下拉，释放终端可视空间。
-- 继续推进“Agent 运行历史 UI”：
-  - 左侧聊天区顶部新增 `历史 Runs` 横向卡片条（按更新时间倒序）。
-  - 每个 run 显示状态标签与时间，点击可快速切换当前 run。
-  - run 状态可见性增强（running/reviewing/applied/failed/queued 颜色语义）。
-
-### 2026-04-30（Codex 继续）
-- 历史 Runs 收敛为 B 方案 + 软删除：
-  - 展开区改为“竖向限高列表 + 内部滚动”，移除横向长滑问题。
-  - 增加“管理模式（显示已归档）”切换。
-  - 新增软删除链路：`archive_agent_run` / `restore_agent_run`，默认列表隐藏归档 run。
-  - 归档安全约束：`running/reviewing` 禁止归档；存在待审批写入时禁止归档。
-
-### 2026-04-30（Codex 继续）
-- 历史 Runs 细节修复：
-  - “归档”按钮样式已修复为横向显示（避免竖排）。
-  - 管理模式语义强化：非管理模式仅显示未归档项；管理模式显示全部且提供“归档/恢复”操作。
-
-### 2026-04-30（Codex 继续）
-- 修复“运行模块空白”：
-  - 已新增 `operations` 页面渲染分支。
-  - 队列+统计已并入“运行”模块内页签（任务队列/运行统计）。
-
-### 2026-04-30（Codex 继续）
-- 已移除 `queue/stats` 旧路由冗余：
-  - `ModuleId` 去除 `queue`、`stats`。
-  - 删除旧页面分支 `activeModule === "queue/stats"`。
-  - 保留唯一链路：`operations` 模块 + 内部页签。
-
-### 2026-04-30（Codex 继续）
-- 运行模块视觉微调收口（运行页签头 / 间距 / 空态提示）：
-  - 页签下新增动态提示文案（队列/统计各自说明）。
-  - 压缩运行模块页签区间距，统一内容区节奏与留白。
-  - 队列空态升级为“标题 + 下一步动作”提示卡。
-  - 统计空态升级为边框提示卡，文案更明确（初始化或先摄入）。
-  - `QueuePanel` 去除重复外层标题与 panel 包裹，改为嵌入式内容块。
-  - 验证：`cd web && npm run typecheck` ✅
-- Claude 专用接手稿：`docs/claude-handoff-2026-04-30.md`
-
----
-
-## 验证基线（2026-04-30）
+## 验证基线（2026-05-15）
 
 ```powershell
-cd src-tauri; cargo test          # 233 通过 ✅
-cd ../web; npm run typecheck      # 零错误 ✅
+cd src-tauri; cargo test    # 264 通过 ✅
+cd ../web; npm run typecheck # 待验证（上一轮零错误）
 ```
-
-> 说明（WSL 本轮）：`cd web; npm run test -- --run` 在当前 Linux 侧因缺失可选依赖 `@rollup/rollup-linux-x64-gnu` 失败；且 `npm i` 会被 `@tauri-apps/cli-win32-x64-msvc` 平台限制拦截。建议在 Windows 本机环境执行前端测试。
 
 ---
 
@@ -280,11 +60,11 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | commit | 描述 |
 |--------|------|
-| `9b5e3a7` | refactor: 代码质量提升至 A — db/policy/state/App 四处加固 |
-| `aa8f9e1` | docs: 更新 dev-status 基线 233 + P1 完成 + TODO 重排 |
-| `5d6355d` | feat(H6-P1): 扩展 Shell 策略 network/script 两个维度 + 档位预设 + 自动化测试 |
-| `44f9029` | chore: ignore opencode.json |
-| `109319c` | chore: 清理 docs/archive 旧路径 |
+| `612e8c5` | refactor(agent): exec_read_wiki 直接读文件而非解析格式化字符串 |
+| `09d3808` | feat(agent): 跨会话消息内容搜索 |
+| `81b1062` | feat(agent): read_wiki 支持 start_char 翻页 |
+| `163d67a` | feat(agent): 新增 list_wiki_pages 工具 |
+| `c32eefa` | perf(agent): search_wiki 工具升级为 FTS5+向量 RRF 混合检索 |
 
 ---
 
@@ -292,126 +72,21 @@ cd ../web; npm run typecheck      # 零错误 ✅
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 🔴 0 | **H7 App.tsx 拆分重构** | 计划已出，待 Sonnet 4.6 执行 | 按 `docs/h7-app-tsx-refactor-plan.md` Phase 0→3 增量执行；15-20 个 commit |
-| 🟢 1 | **write_wiki / edit_wiki E2E** | 自动化覆盖（用户决定跳过手测） | `state.rs` 4 条测试已覆盖，详见 h7 计划 §0.1 |
-| 🟢 2 | **H6-P1 Shell 策略扩展 + 代码加固** | 已完成（2026-04-30） | network/script + Profile + 233 测试 + db/policy/state/App 四处加固 |
-| 🟢 3 | **H6-S3 archive/restore 约束** | 已测试（2026-04-30） | 3 条自动化测试：running 禁归档、pending write 禁归档、归档恢复闭环 |
-| 🟢 4 | **Agent 运行历史 UI** | 已完成（2026-04-30） | 新增历史 runs 卡片条，可点击切换并查看对应事件流 |
-| 🟢 5 | **上下文面板实质注入** | 已完成（2026-04-29） | `memory_context` 已进入 `build_loop_prompt`；`{{topic}}/{{memories}}` 在任务模式可用 |
-| 🟡 6 | **H6-P2 审批票据（降低摩擦）** | 未开始 | 作用域 action+cwd+session，TTL 5min，见 h6-shell-max-safety-plan.md P2 |
-| 🟡 7 | **H6-P3 审计落库** | 未开始 | 命令+决策+exit_code 结构化落库，见 h6-shell-max-safety-plan.md P3 |
-| 🟡 8 | **styles.css / tauri-client.ts 拆分** | 未开始 | 在 H7 之后做，避免一次拆太多文件 |
-
----
-
-## H6 详细计划
-
-### 背景
-
-Agent Studio 目前是"一次性 LLM 调用 → 生成草稿"，H6 目标是升级为**可操作本机的真实 Agent**——LLM 自主决策调用工具（shell、文件读写），配合三层护栏保证 OS 安全。参考项目：`refer-rust-daerwen-agent/`（Rust + Tauri，与本项目技术栈完全一致）。
-
----
-
-### H6-S1：Shell Tool MVP（待手测）
-
-**目标**：Agent Studio 支持手动执行 shell（PowerShell/bash），用于后续 agent 工具调用打底。  
-**当前收口项**：
-1. 前端排版：补齐 `.agent-studio__shell*` 样式并做移动端适配。
-2. 前端编译：修复 `React.useRef` 模块化导入错误（改为 `useRef`）。
-3. 最小验证：`npm run typecheck` 通过；Windows 端手动跑 `Get-Date` / 非法命令回显。
-
----
-
-### H6-S1.5：安全前置（新增，S2 前必须完成）
-
-**目标**：在真正 agent 自动执行前，先把策略判定前置到 `run_shell`，避免黑名单单点风险。  
-**实施要点**：
-1. `ShellResult` 新增策略元信息：`policy_action`、`policy_decision`、`executor`。
-2. `run_shell` 新增 `source` 入参（`manual|agent`），默认 `manual`。
-3. 后端增加最小策略分类：
-   - destructive → `deny`（直接拦截）
-   - `source=agent` 且 write/unknown → `require_approval`（先拦截，等待审批流）
-   - 其他 → `auto_allow`
-4. 前端 shell 历史展示策略元信息，便于调试和交接。
-
-**验收标准**：
-1. `npm run typecheck` 通过；
-2. 手动执行常见只读命令正常；
-3. 高危命令返回 `blocked=true` 且带策略原因；
-4. （后续）`source=agent` 的写入命令被要求审批而非直接执行。
-
----
-
-### H6-S2：Agentic Tool-Call Loop（daerwen 移植）
-
-> **前置**：H6-S1 与 H6-S1.5 验收通过后才开始 S2。
-
-**目标**：Agent Studio 新增"任务模式"——用户输入自然语言指令，LLM 自主循环调用工具（shell、文件读写、wiki 检索）直到完成任务。
-
-**当前进展（已完成 skeleton+next）**：
-1. 后端新增 `run_agent_task` 命令与 `run_agent_task_impl`。
-2. `run_agent_task_impl` 已支持多轮决策与受控工具调用（`run_shell/search_wiki/read_wiki/write_wiki`）。
-3. 前端新增任务模式 Beta 面板（任务指令、预算轮次、结果区）。
-4. 任务执行后自动写入 run events，并将 run 状态置为 `reviewing`。
-5. `run_shell` 策略判定已统一到 `src-tauri/src/agent_policy.rs`，避免重复实现漂移。
-6. `write_wiki` 当前走审批前置策略：触发 `require_approval` 日志，暂不执行真实写盘。
-
-#### 要移植的模块（来自 `refer-rust-daerwen-agent/`）
-
-| 源路径 | 目标路径 | 说明 |
-|--------|----------|------|
-| `crates/daerwen-tools/src/builtins.rs` | `src-tauri/src/agent_tools.rs`（新建） | `ReadFile/WriteFile/EditFile/ShellTool` + `ToolHandler` trait |
-| `crates/daerwen-policy/src/lib.rs` | `src-tauri/src/agent_policy.rs`（新建） | `PathGuard` 5区分级 + `PolicyEngine` |
-| `crates/daerwen-agent/src/lib.rs` | `src-tauri/src/agent_loop.rs`（新建） | `Agent::run_with_history` 多迭代 tool-call loop |
-
-#### 关键适配点
-
-1. **BashTool → ShellTool**：`Command::new("bash")` 改为 Windows/Unix 条件编译（同 S1 方案）
-2. **PathGuard workspace**：绑定到当前 vault 路径而非 `~/.daerwen`
-3. **LlmClient**：复用现有 `get_llm_provider()` 而非 daerwen 的独立 llm crate
-4. **工具集**：`read_file / write_file / edit_file / run_shell / search_wiki / read_wiki`（后两个接现有 BM25 检索）
-5. **Callbacks**：通过现有 Tauri `app_handle.emit` 把 `on_tool_start/on_tool_end` 推送到前端事件流
-
-#### 新增 Tauri 命令
-
-```rust
-// 执行 agent 任务（多轮工具调用）
-run_agent_task(run_id: i64, instruction: String, max_iterations: Option<u32>, state)
-  -> Result<String, String>  // 返回最终 LLM 文本
-```
-
-#### 前端变更
-
-- Agent Studio 新增"任务模式"标签（与现有草稿模式并列）
-- 任务输入框 + "运行任务"按钮
-- 工具调用实时可视化：每次 `on_tool_start` 事件显示 `🔧 tool_name(input...)`，结束后折叠
-- 最终答案区
-
-#### 交接注意（给 Claude/Codex/Gemini）
-
-1. 先完成 S1/S1.5 收口，再进入 S2；不要跳阶段并行改 S2。
-2. 若遇到“技能不能自由选择”反馈，先确认 `skill_key` 唯一 upsert 语义（不是多选能力缺失）。
-3. `opencode.json` 是协作辅助文件，保持忽略，不纳入提交。
-
----
-
-## H5 功能速查（已完成）
-
-| 功能 | 入口 | 说明 |
-|------|------|------|
-| 自动记忆提炼 (B) | 审批写盘后自动触发 | LLM 从草稿提炼 3-5 条全局记忆；事件日志记录数量 |
-| 批注重写 (A) | 草稿头"基于批注重写"输入栏 | 原草稿 + 批注 → LLM → 新草稿；自动选中 |
-| Ask 联动 (C) | 输入栏"Ask 联动"checkbox | 先 query_ask(top_k=3) 获取现有知识库答案注入 prompt |
-| Skill 模板变量 (D) | Skill prompt 内写 `{{topic}}` `{{memories}}` | 生成时自动替换，skill 可复用 |
-| 检索增强 (H4) | 输入栏"检索增强"checkbox | 读 wiki 正文 400 字，搜 8 条 |
+| 🔴 1 | **H11 子代理结果反馈** | 未开始 | 父对话轮次结束后，子代理最终答案自动拼入父对话 tool_result；当前只有 conv badge 但父上下文看不到子代理内容 |
+| 🔴 2 | **前端 typecheck 验证** | 待确认 | `npm run typecheck` 需在 Windows 侧执行（WSL 缺 rollup 可选依赖） |
+| 🟡 3 | **H10 MCP 扩展** | 计划已有 (`docs/h10-mcp-plan.md` 若有) | MCP server 动态装载 |
+| 🟡 4 | **H12 ONNX 本地推理** | 未开始 | 离线向量嵌入，不依赖 Ollama |
+| 🟡 5 | **H13 图谱双向联动** | 未开始 | 从对话/Agent 结果自动更新知识图谱 |
+| 🟢 6 | **打包发布 (P22)** | 未开始 | `npm run tauri build` —— 需先确认 typecheck ✅ |
 
 ---
 
 ## 关键架构约束
 
+- **测试基线**：264 通过（2026-05-15）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**
-- **审批约束**：写盘必须经确认弹窗，禁止静默覆盖
-- **Shell 安全**：黑名单拦截 + 超时控制（max 120s）；S2 加 PathGuard 5区分级
-- **参考项目**：`refer-rust-daerwen-agent/`，技术栈与本项目完全一致，可直接移植
+- **子代理深度限制**：最大 depth 2（根 0 → 子 1 → 孙 2），`exec_spawn_subagent` 以 DB `depth` 字段判断，不用标题前缀
+- **审批约束**：write_wiki/edit_wiki 写盘必须经用户确认
+- **state.rs 模块化**：H16 完成 12 阶段拆分，现为 `state/` 子模块体系（wiki/ingest/lint/graph/ask/chat/agent/research_service 等）
