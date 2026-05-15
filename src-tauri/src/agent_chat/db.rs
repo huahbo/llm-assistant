@@ -153,6 +153,12 @@ pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
             "1",
         ),
         (
+            "list_wiki_pages",
+            "列出 Wiki 中所有页面（最多 100 条），可按路径前缀过滤。用于探索 Vault 结构、查找特定目录下的页面。",
+            r#"{"type":"object","properties":{"path_prefix":{"type":"string","description":"路径前缀过滤（可选），如 'docs/' 只列出 docs 目录下的页面"}}}"#,
+            "builtin",
+        ),
+        (
             "spawn_subagent",
             "在独立对话上下文中启动子代理处理子任务，等待其完成后返回结果摘要（≤4000字符）。最大递归深度 3 层（根→子→孙）。",
             r#"{"type":"object","properties":{"task":{"type":"string","description":"子代理的任务描述，要求清晰完整"}},"required":["task"]}"#,
@@ -703,7 +709,7 @@ mod tests {
         seed_builtin_tools(&conn).unwrap();
         drop(conn);
         let tools = list_enabled_tools(&path).unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 9);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"run_shell"));
         assert!(names.contains(&"search_wiki"));
@@ -712,6 +718,7 @@ mod tests {
         assert!(names.contains(&"edit_wiki"));
         assert!(names.contains(&"web_search"));
         assert!(names.contains(&"fetch_url"));
+        assert!(names.contains(&"list_wiki_pages"));
         assert!(names.contains(&"spawn_subagent"));
     }
 

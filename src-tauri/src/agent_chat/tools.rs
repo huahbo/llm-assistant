@@ -47,6 +47,7 @@ async fn dispatch(state: &AppState, conv_id: i64, tool_name: &str, args: Value) 
     match tool_name {
         "run_shell" => exec_run_shell(state, conv_id, args).await,
         "search_wiki" => exec_search_wiki(state, args).await,
+        "list_wiki_pages" => exec_list_wiki_pages(state, args),
         "read_wiki" => exec_read_wiki(state, args),
         "write_wiki" => exec_write_wiki(state, args),
         "edit_wiki" => exec_edit_wiki(state, args),
@@ -274,6 +275,38 @@ async fn exec_search_wiki(state: &AppState, args: Value) -> (String, Option<i64>
             (lines.join("\n"), None)
         }
         Err(e) => (format!("搜索失败: {e}"), None),
+    }
+}
+
+// ── list_wiki_pages ────────────────────────────────────────────────────────────
+
+fn exec_list_wiki_pages(state: &AppState, args: Value) -> (String, Option<i64>) {
+    let path_prefix = str_arg(&args, "path_prefix");
+
+    match state.search_wiki_pages(String::new(), 200) {
+        Ok(pages) => {
+            let filtered: Vec<_> = pages
+                .iter()
+                .filter(|p| {
+                    path_prefix
+                        .as_deref()
+                        .map(|pf| p.path.starts_with(pf))
+                        .unwrap_or(true)
+                })
+                .take(100)
+                .collect();
+
+            if filtered.is_empty() {
+                return ("(no pages)".to_string(), None);
+            }
+
+            let lines: Vec<String> = filtered
+                .iter()
+                .map(|p| format!("{} | {}", p.path, p.title))
+                .collect();
+            (format!("共 {} 个页面：\n{}", lines.len(), lines.join("\n")), None)
+        }
+        Err(e) => (format!("列表获取失败: {e}"), None),
     }
 }
 
