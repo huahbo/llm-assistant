@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatStreamingMessage } from "../../types";
-import { listChatMessages, approveChatShell, rejectChatShell, exportConversationMarkdown } from "../../tauri-client";
+import { listChatMessages, approveChatShell, rejectChatShell, exportConversationMarkdown, saveWikiPage } from "../../tauri-client";
 import MessageBubble from "./MessageBubble";
 import ChatInputBar from "./ChatInputBar";
 
@@ -15,6 +15,7 @@ interface ShellApprovalPayload {
 
 interface Props {
   conversationId: number;
+  conversationTitle?: string;
   streamingMessage: ChatStreamingMessage | null;
   isStreaming: boolean;
   onSend: (text: string) => void;
@@ -22,10 +23,12 @@ interface Props {
   prefillText?: string;
   shellMode?: "off" | "approval" | "yolo";
   onShellModeChange?: (mode: "off" | "approval" | "yolo") => void;
+  onSavedToWiki?: (path: string) => void;
 }
 
 export default function MessageThread({
   conversationId,
+  conversationTitle,
   streamingMessage,
   isStreaming,
   onSend,
@@ -33,12 +36,14 @@ export default function MessageThread({
   prefillText,
   shellMode = "off",
   onShellModeChange,
+  onSavedToWiki,
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
   const [shellApproval, setShellApproval] = useState<ShellApprovalPayload | null>(null);
   const [shellCountdown, setShellCountdown] = useState(30);
   const [exportLabel, setExportLabel] = useState("导出");
+  const [saveLabel, setSaveLabel] = useState("存入 Wiki");
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevIsStreaming = useRef(false);
@@ -118,6 +123,26 @@ export default function MessageThread({
     setTimeout(() => setExportLabel("导出"), 2000);
   };
 
+  const handleSaveToWiki = async () => {
+    const md = await exportConversationMarkdown(conversationId);
+    if (!md) return;
+    const title = conversationTitle ?? `对话 #${conversationId}`;
+    // Generate a URL-safe slug from the title
+    const slug = title
+      .toLowerCase()
+      .replace(/[^\w一-龥\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 60);
+    const path = `chat-exports/${slug}.md`;
+    const result = await saveWikiPage(path, md);
+    if (result) {
+      setSaveLabel("已保存");
+      setTimeout(() => setSaveLabel("存入 Wiki"), 2000);
+      onSavedToWiki?.(path);
+    }
+  };
+
   const handleSend = (text: string) => {
     setPendingUserMsg(text);
     onSend(text);
@@ -134,6 +159,15 @@ export default function MessageThread({
           title="导出为 Markdown（复制到剪贴板）"
         >
           {exportLabel}
+        </button>
+        <button
+          type="button"
+          className="chat-thread__export-btn"
+          onClick={() => void handleSaveToWiki()}
+          disabled={messages.length === 0}
+          title="将对话保存为 Wiki 页面（chat-exports/）"
+        >
+          {saveLabel}
         </button>
       </div>
       <div className="chat-thread__messages">

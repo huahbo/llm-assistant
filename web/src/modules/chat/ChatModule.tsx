@@ -146,6 +146,7 @@ export default function ChatModule() {
           {selectedConvId ? (
             <MessageThread
               conversationId={selectedConvId}
+              conversationTitle={conversations.find((c) => c.id === selectedConvId)?.title}
               streamingMessage={streamingMessage}
               isStreaming={isStreaming}
               onSend={(text) => void sendMessage(text)}
@@ -153,6 +154,7 @@ export default function ChatModule() {
               prefillText={chatPrefill}
               shellMode={shellMode}
               onShellModeChange={setShellMode}
+              onSavedToWiki={() => { /* could show a toast or navigate to wiki */ }}
             />
           ) : (
             <div className="chat-module__empty">选择或新建对话</div>
