@@ -1618,28 +1618,15 @@ impl AppState {
         conv_id: i64,
         token: crate::agent_chat::runtime::CancelToken,
     ) {
-        self.chat_cancellations
-            .lock()
-            .expect("chat_cancellations 锁已被污染")
-            .insert(conv_id, token);
+        chat_service::store_chat_cancel_token(self, conv_id, token)
     }
 
     pub fn cancel_chat_token(&self, conv_id: i64) {
-        use std::sync::atomic::Ordering;
-        let mut map = self
-            .chat_cancellations
-            .lock()
-            .expect("chat_cancellations 锁已被污染");
-        if let Some(token) = map.remove(&conv_id) {
-            token.store(true, Ordering::Relaxed);
-        }
+        chat_service::cancel_chat_token(self, conv_id)
     }
 
     pub fn remove_chat_cancel_token(&self, conv_id: i64) {
-        self.chat_cancellations
-            .lock()
-            .expect("chat_cancellations 锁已被污染")
-            .remove(&conv_id);
+        chat_service::remove_chat_cancel_token(self, conv_id)
     }
 
     pub fn register_chat_write_approval(
@@ -1647,101 +1634,27 @@ impl AppState {
         pending_id: i64,
         tx: tokio::sync::oneshot::Sender<Result<String, String>>,
     ) {
-        self.chat_write_approvals
-            .lock()
-            .expect("chat_write_approvals 锁已被污染")
-            .insert(pending_id, tx);
+        chat_service::register_chat_write_approval(self, pending_id, tx)
     }
 
     pub fn approve_chat_write(&self, pending_id: i64) -> Result<(), String> {
-        let result = self.approve_agent_write_impl(pending_id);
-        let msg = result.unwrap_or_else(|e| format!("写操作失败: {e}"));
-        let tx = self
-            .chat_write_approvals
-            .lock()
-            .expect("chat_write_approvals 锁已被污染")
-            .remove(&pending_id);
-        if let Some(tx) = tx {
-            let _ = tx.send(Ok(msg));
-        }
-        Ok(())
+        chat_service::approve_chat_write(self, pending_id)
     }
 
     pub fn reject_chat_write(&self, pending_id: i64) -> Result<(), String> {
-        let _ = self.reject_agent_write_impl(pending_id);
-        let tx = self
-            .chat_write_approvals
-            .lock()
-            .expect("chat_write_approvals 锁已被污染")
-            .remove(&pending_id);
-        if let Some(tx) = tx {
-            let _ = tx.send(Err("用户拒绝写操作".to_string()));
-        }
-        Ok(())
+        chat_service::reject_chat_write(self, pending_id)
     }
 
     pub fn register_chat_shell_pending(&self, pending_id: i64, command: String, timeout_ms: u64) {
-        self.chat_shell_pending
-            .lock()
-            .expect("chat_shell_pending 锁已被污染")
-            .insert(pending_id, (command, timeout_ms));
+        chat_service::register_chat_shell_pending(self, pending_id, command, timeout_ms)
     }
 
     pub async fn approve_chat_shell_impl(&self, pending_id: i64) -> Result<(), String> {
-        let (command, timeout_ms) = self
-            .chat_shell_pending
-            .lock()
-            .expect("chat_shell_pending 锁已被污染")
-            .remove(&pending_id)
-            .ok_or_else(|| format!("pending_id={pending_id} 不存在或已过期"))?;
-
-        let result = self
-            .run_shell_impl(command, timeout_ms, Some("chat_approved".to_string()), None, None)
-            .await;
-
-        let content = match result {
-            Ok(r) => {
-                let mut out = String::new();
-                if r.blocked {
-                    out.push_str(&format!("blocked: {}\n", r.blocked_reason.unwrap_or_default()));
-                }
-                if !r.stdout.is_empty() { out.push_str(&r.stdout); }
-                if !r.stderr.is_empty() {
-                    if !out.is_empty() { out.push('\n'); }
-                    out.push_str("--- stderr ---\n");
-                    out.push_str(&r.stderr);
-                }
-                if out.is_empty() { out.push_str("(no output)"); }
-                out
-            }
-            Err(e) => format!("shell 执行失败: {e}"),
-        };
-
-        let tx = self
-            .chat_write_approvals
-            .lock()
-            .expect("chat_write_approvals 锁已被污染")
-            .remove(&pending_id);
-        if let Some(tx) = tx {
-            let _ = tx.send(Ok(content));
-        }
-        Ok(())
+        chat_service::approve_chat_shell_impl(self, pending_id).await
     }
 
     pub fn reject_chat_shell_impl(&self, pending_id: i64) -> Result<(), String> {
-        self.chat_shell_pending
-            .lock()
-            .expect("chat_shell_pending 锁已被污染")
-            .remove(&pending_id);
-        let tx = self
-            .chat_write_approvals
-            .lock()
-            .expect("chat_write_approvals 锁已被污染")
-            .remove(&pending_id);
-        if let Some(tx) = tx {
-            let _ = tx.send(Err("用户拒绝执行".to_string()));
-        }
-        Ok(())
+        chat_service::reject_chat_shell_impl(self, pending_id)
     }
 
     pub async fn spawn_mcp_client(
@@ -1751,35 +1664,22 @@ impl AppState {
         args: &[String],
         env: &std::collections::HashMap<String, String>,
     ) -> Result<(), String> {
-        let client = crate::agent_chat::mcp::McpClient::spawn(name.clone(), command, args, env).await?;
-        let mut clients = self.mcp_clients.lock().expect("mcp_clients 锁已被污染");
-        clients.insert(name, std::sync::Arc::new(tokio::sync::Mutex::new(client)));
-        Ok(())
+        chat_service::spawn_mcp_client(self, name, command, args, env).await
     }
 
     pub fn stop_mcp_client(&self, name: &str) {
-        let mut clients = self.mcp_clients.lock().expect("mcp_clients 锁已被污染");
-        clients.remove(name);
+        chat_service::stop_mcp_client(self, name)
     }
 
     pub fn get_mcp_client(
         &self,
         name: &str,
     ) -> Option<std::sync::Arc<tokio::sync::Mutex<crate::agent_chat::mcp::McpClient>>> {
-        self.mcp_clients
-            .lock()
-            .expect("mcp_clients 锁已被污染")
-            .get(name)
-            .cloned()
+        chat_service::get_mcp_client(self, name)
     }
 
     pub fn list_running_mcp_clients(&self) -> Vec<String> {
-        self.mcp_clients
-            .lock()
-            .expect("mcp_clients 锁已被污染")
-            .keys()
-            .cloned()
-            .collect()
+        chat_service::list_running_mcp_clients(self)
     }
 
     pub fn cancel_ask_session(&self, session_id: String) -> Result<(), String> {
