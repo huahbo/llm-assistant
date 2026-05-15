@@ -19,6 +19,8 @@ pub struct Conversation {
     pub shell_mode: String,
     pub created_at: String,
     pub updated_at: String,
+    pub parent_conv_id: Option<i64>,
+    pub depth: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +50,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             memory_snapshot TEXT,
             archived      INTEGER NOT NULL DEFAULT 0,
             created_at    TEXT NOT NULL,
-            updated_at    TEXT NOT NULL
+            updated_at    TEXT NOT NULL,
+            parent_conv_id INTEGER,
+            depth         INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS agent_messages (
@@ -91,6 +95,12 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     // 迁移：为已有数据库添加 shell_mode 列（忽略已存在错误）
     let _ = conn.execute(
         "ALTER TABLE agent_conversations ADD COLUMN shell_mode TEXT NOT NULL DEFAULT 'off'",
+        [],
+    );
+    // 迁移：为已有数据库添加子代理层级追踪列（忽略已存在错误）
+    let _ = conn.execute("ALTER TABLE agent_conversations ADD COLUMN parent_conv_id INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE agent_conversations ADD COLUMN depth INTEGER NOT NULL DEFAULT 0",
         [],
     );
 
@@ -179,12 +189,15 @@ pub fn create_conversation(
     skill_key: Option<&str>,
     memory_snapshot: Option<&str>,
     now: &str,
+    parent_conv_id: Option<i64>,
+    depth: i32,
 ) -> Result<i64, String> {
     let conn = open_conn(db_path)?;
     conn.execute(
-        "INSERT INTO agent_conversations (title, system_prompt, skill_key, memory_snapshot, archived, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
-        params![title, system_prompt, skill_key, memory_snapshot, now],
+        "INSERT INTO agent_conversations
+             (title, system_prompt, skill_key, memory_snapshot, archived, created_at, updated_at, parent_conv_id, depth)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5, ?6, ?7)",
+        params![title, system_prompt, skill_key, memory_snapshot, now, parent_conv_id, depth],
     )
     .map_err(|e| format!("创建会话失败: {}", e))?;
     Ok(conn.last_insert_rowid())
@@ -193,11 +206,11 @@ pub fn create_conversation(
 pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<Conversation>, String> {
     let conn = open_conn(db_path)?;
     let sql = if include_archived {
-        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at
+        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at, parent_conv_id, depth
          FROM agent_conversations ORDER BY updated_at DESC"
     } else {
-        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at
-         FROM agent_conversations WHERE archived = 0 ORDER BY updated_at DESC"
+        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at, parent_conv_id, depth
+         FROM agent_conversations WHERE archived = 0 AND depth = 0 ORDER BY updated_at DESC"
     };
     let mut stmt = conn.prepare(sql).map_err(|e| format!("准备列表查询失败: {}", e))?;
     let rows = stmt
@@ -212,6 +225,8 @@ pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<
                 shell_mode: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "off".to_string()),
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                parent_conv_id: row.get(9)?,
+                depth: row.get::<_, Option<i32>>(10)?.unwrap_or(0),
             })
         })
         .map_err(|e| format!("查询会话列表失败: {}", e))?;
@@ -222,7 +237,7 @@ pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<
 pub fn get_conversation(db_path: &Path, id: i64) -> Result<Option<Conversation>, String> {
     let conn = open_conn(db_path)?;
     conn.query_row(
-        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at
+        "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at, parent_conv_id, depth
          FROM agent_conversations WHERE id = ?1",
         params![id],
         |row| {
@@ -236,11 +251,25 @@ pub fn get_conversation(db_path: &Path, id: i64) -> Result<Option<Conversation>,
                 shell_mode: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "off".to_string()),
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                parent_conv_id: row.get(9)?,
+                depth: row.get::<_, Option<i32>>(10)?.unwrap_or(0),
             })
         },
     )
     .optional()
     .map_err(|e| format!("查询会话失败: {}", e))
+}
+
+pub fn get_conv_depth(db_path: &Path, conv_id: i64) -> Result<i32, String> {
+    let conn = open_conn(db_path)?;
+    conn.query_row(
+        "SELECT COALESCE(depth, 0) FROM agent_conversations WHERE id = ?1",
+        params![conv_id],
+        |row| row.get::<_, i32>(0),
+    )
+    .optional()
+    .map_err(|e| format!("查询 depth 失败: {e}"))?
+    .ok_or_else(|| format!("会话 #{conv_id} 不存在"))
 }
 
 pub fn get_conv_shell_mode(db_path: &Path, conv_id: i64) -> Result<String, String> {
@@ -602,7 +631,7 @@ mod tests {
     #[test]
     fn test_create_and_list_conversation() {
         let (_f, path) = setup_db();
-        let id = create_conversation(&path, "Test Conv", None, None, None, "2026-01-01").unwrap();
+        let id = create_conversation(&path, "Test Conv", None, None, None, "2026-01-01", None, 0).unwrap();
         assert!(id > 0);
         let convs = list_conversations(&path, false).unwrap();
         assert_eq!(convs.len(), 1);
@@ -613,7 +642,7 @@ mod tests {
     #[test]
     fn test_append_messages_in_order() {
         let (_f, path) = setup_db();
-        let cid = create_conversation(&path, "Chat", None, None, None, "2026-01-01").unwrap();
+        let cid = create_conversation(&path, "Chat", None, None, None, "2026-01-01", None, 0).unwrap();
         let m1 = append_message(&path, cid, "user", Some("Hello"), None, None, None, "t1").unwrap();
         let m2 = append_message(&path, cid, "assistant", Some("Hi"), None, None, None, "t2").unwrap();
         let msgs = list_messages(&path, cid).unwrap();
@@ -627,7 +656,7 @@ mod tests {
     #[test]
     fn test_archive_excluded_from_default_list() {
         let (_f, path) = setup_db();
-        let id = create_conversation(&path, "Old Chat", None, None, None, "2026-01-01").unwrap();
+        let id = create_conversation(&path, "Old Chat", None, None, None, "2026-01-01", None, 0).unwrap();
         archive_conversation(&path, id, true, "2026-01-02").unwrap();
         let default_list = list_conversations(&path, false).unwrap();
         assert!(default_list.is_empty());
@@ -660,7 +689,7 @@ mod tests {
     #[test]
     fn test_delete_conversation_cascades_messages() {
         let (_f, path) = setup_db();
-        let cid = create_conversation(&path, "Ephemeral", None, None, None, "2026-01-01").unwrap();
+        let cid = create_conversation(&path, "Ephemeral", None, None, None, "2026-01-01", None, 0).unwrap();
         append_message(&path, cid, "user", Some("msg"), None, None, None, "t1").unwrap();
         assert_eq!(list_messages(&path, cid).unwrap().len(), 1);
         delete_conversation(&path, cid).unwrap();
@@ -669,9 +698,31 @@ mod tests {
     }
 
     #[test]
+    fn test_depth_tracking_and_list_excludes_subagents() {
+        let (_f, path) = setup_db();
+        let root_id = create_conversation(&path, "Root", None, None, None, "2026-01-01", None, 0).unwrap();
+        let child_id = create_conversation(&path, "[子代理 d1] task", None, None, None, "2026-01-01", Some(root_id), 1).unwrap();
+        let grandchild_id = create_conversation(&path, "[子代理 d2] sub", None, None, None, "2026-01-01", Some(child_id), 2).unwrap();
+
+        assert_eq!(get_conv_depth(&path, root_id).unwrap(), 0);
+        assert_eq!(get_conv_depth(&path, child_id).unwrap(), 1);
+        assert_eq!(get_conv_depth(&path, grandchild_id).unwrap(), 2);
+
+        // list_conversations should only return root-level (depth=0) conversations
+        let visible = list_conversations(&path, false).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, root_id);
+
+        // get_conversation should return parent linkage
+        let child = get_conversation(&path, child_id).unwrap().unwrap();
+        assert_eq!(child.parent_conv_id, Some(root_id));
+        assert_eq!(child.depth, 1);
+    }
+
+    #[test]
     fn test_tool_calls_json_roundtrip() {
         let (_f, path) = setup_db();
-        let cid = create_conversation(&path, "Tool Chat", None, None, None, "2026-01-01").unwrap();
+        let cid = create_conversation(&path, "Tool Chat", None, None, None, "2026-01-01", None, 0).unwrap();
         let tool_calls_json = r#"[{"id":"call_1","type":"function","function":{"name":"run_shell","arguments":"{\"command\":\"ls\"}"}}]"#;
         let mid = append_message(&path, cid, "assistant", None, Some(tool_calls_json), None, None, "t1").unwrap();
         let msgs = list_messages(&path, cid).unwrap();

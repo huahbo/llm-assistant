@@ -32,6 +32,8 @@ pub async fn create_conversation(
         skill_key.as_deref(),
         None,
         &now,
+        None,
+        0,
     )
 }
 

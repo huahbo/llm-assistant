@@ -84,28 +84,34 @@ fn exec_spawn_subagent<'a>(
             None => return ("错误：AppHandle 未就绪".to_string(), None),
         };
 
-        // Depth limit: check if parent is already a subagent conversation.
-        let parent_is_subagent = crate::agent_chat::db::get_conversation(&db_path, parent_conv_id)
-            .ok()
-            .flatten()
-            .map(|c| c.title.starts_with("[子代理]"))
-            .unwrap_or(false);
-        if parent_is_subagent {
+        // Depth limit: max 2 levels (root=0, child=1, grandchild=2).
+        let parent_depth = crate::agent_chat::db::get_conv_depth(&db_path, parent_conv_id)
+            .unwrap_or(0);
+        if parent_depth >= 2 {
             return (
-                "错误：子代理不能再 spawn 子代理（最大嵌套深度 1 层）".to_string(),
+                "错误：已达最大嵌套深度（3 层），子代理不能继续 spawn".to_string(),
                 None,
             );
         }
+        let child_depth = parent_depth + 1;
 
-        // Create child conversation
+        // Create child conversation with parent linkage and depth
         let now = crate::state::current_timestamp_ms();
         let short_task: String = task.chars().take(50).collect();
-        let title = format!("[子代理] {short_task}");
-        let child_conv_id =
-            match crate::agent_chat::db::create_conversation(&db_path, &title, None, None, None, &now) {
-                Ok(id) => id,
-                Err(e) => return (format!("创建子代理会话失败: {e}"), None),
-            };
+        let title = format!("[子代理 d{child_depth}] {short_task}");
+        let child_conv_id = match crate::agent_chat::db::create_conversation(
+            &db_path,
+            &title,
+            None,
+            None,
+            None,
+            &now,
+            Some(parent_conv_id),
+            child_depth,
+        ) {
+            Ok(id) => id,
+            Err(e) => return (format!("创建子代理会话失败: {e}"), None),
+        };
 
         // Run the subagent loop (Box::pin breaks the async type cycle at this call site)
         let cancel_token = crate::agent_chat::runtime::new_cancel_token();
