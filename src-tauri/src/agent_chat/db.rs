@@ -124,8 +124,8 @@ pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
         ),
         (
             "read_wiki",
-            "读取指定 Wiki 页面的完整 Markdown 内容",
-            r#"{"type":"object","properties":{"path":{"type":"string","description":"Wiki 页面相对路径，如 'docs/index.md'"}},"required":["path"]}"#,
+            "读取指定 Wiki 页面的 Markdown 内容（每次最多 8000 字符）。如果页面较长，使用 start_char 参数翻页。",
+            r#"{"type":"object","properties":{"path":{"type":"string","description":"Wiki 页面相对路径，如 'docs/index.md'"},"start_char":{"type":"integer","description":"起始字符偏移量，默认 0（从头读取）"}},"required":["path"]}"#,
             "builtin",
         ),
         (

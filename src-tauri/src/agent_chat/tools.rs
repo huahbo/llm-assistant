@@ -312,15 +312,42 @@ fn exec_list_wiki_pages(state: &AppState, args: Value) -> (String, Option<i64>) 
 
 // ── read_wiki ──────────────────────────────────────────────────────────────────
 
+const READ_WIKI_CHUNK: usize = 8_000;
+
 fn exec_read_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
     let path = match str_arg(&args, "path") {
         Some(p) => p,
         None => return ("错误：read_wiki 需要 'path' 参数".to_string(), None),
     };
-    match crate::agent_runtime::read_wiki_page_for_agent(state, &path, 8_000) {
-        Ok(content) => (content, None),
-        Err(e) => (format!("读取失败: {e}"), None),
-    }
+    let start_char = args
+        .get("start_char")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    // Read full content via agent_runtime (uses vault path validation)
+    let full = match crate::agent_runtime::read_wiki_page_for_agent(state, &path, usize::MAX) {
+        Ok(raw) => {
+            // raw is "path=... chars=... content=..." — extract the content part
+            if let Some(idx) = raw.find("content=") {
+                raw[idx + 8..].to_string()
+            } else {
+                raw
+            }
+        }
+        Err(e) => return (format!("读取失败: {e}"), None),
+    };
+
+    let total_chars = full.chars().count();
+    let chunk: String = full.chars().skip(start_char).take(READ_WIKI_CHUNK).collect();
+    let end_char = start_char + chunk.chars().count();
+
+    let header = if total_chars <= READ_WIKI_CHUNK && start_char == 0 {
+        format!("path={path} 全文 {total_chars} 字符：\n")
+    } else {
+        format!("path={path} 共 {total_chars} 字符，显示 {start_char}–{end_char}：\n")
+    };
+
+    (format!("{header}{chunk}"), None)
 }
 
 // ── write_wiki ─────────────────────────────────────────────────────────────────
