@@ -10,7 +10,15 @@
 2. 查看下方 §活跃 TODO
 3. 阅读最新 5 条 git log 了解背景
 
-## 本轮快讯（2026-05-15，Claude Code）
+## 本轮快讯（2026-05-15，Claude Code）— 收口
+
+### 历史工具调用显示 已完成
+- `Message` 结构体新增 `tool_calls: Option<serde_json::Value>`（解析自 `tool_calls_json`）
+- `list_messages` 构建时顺带解析，Tauri 序列化直达前端
+- `MessageThread.tsx` 新增 `buildDisplayGroups`：将 DB 消息（含 tool/tool_calls）重组为带 ToolGroup 的展示段
+- 历史对话重载后，工具调用卡片与流式阶段视觉一致
+
+
 
 ### H11 Swarm 子代理层级追踪 已完成
 - `agent_conversations` 表新增 `parent_conv_id INTEGER` / `depth INTEGER NOT NULL DEFAULT 0`
@@ -51,7 +59,7 @@
 
 ```powershell
 cd src-tauri; cargo test    # 264 通过 ✅
-cd ../web; npm run typecheck # 待验证（上一轮零错误）
+cd ../web; npm run typecheck # 零错误 ✅
 ```
 
 ---
@@ -60,11 +68,11 @@ cd ../web; npm run typecheck # 待验证（上一轮零错误）
 
 | commit | 描述 |
 |--------|------|
+| `31df6c8` | feat(chat): 对话重载时显示历史工具调用记录 |
 | `612e8c5` | refactor(agent): exec_read_wiki 直接读文件而非解析格式化字符串 |
 | `09d3808` | feat(agent): 跨会话消息内容搜索 |
 | `81b1062` | feat(agent): read_wiki 支持 start_char 翻页 |
 | `163d67a` | feat(agent): 新增 list_wiki_pages 工具 |
-| `c32eefa` | perf(agent): search_wiki 工具升级为 FTS5+向量 RRF 混合检索 |
 
 ---
 
@@ -72,8 +80,8 @@ cd ../web; npm run typecheck # 待验证（上一轮零错误）
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| 🔴 1 | **H11 子代理结果反馈** | 未开始 | 父对话轮次结束后，子代理最终答案自动拼入父对话 tool_result；当前只有 conv badge 但父上下文看不到子代理内容 |
-| 🔴 2 | **前端 typecheck 验证** | 待确认 | `npm run typecheck` 需在 Windows 侧执行（WSL 缺 rollup 可选依赖） |
+| 🟢 1 | **历史工具调用显示** | 已完成（2026-05-15） | `buildDisplayGroups` 将 DB 消息重组为 ToolGroup 展示段；typecheck ✅ 264测试 ✅ |
+| 🔴 2 | **前端 typecheck 验证** | 已确认 ✅ | `npm run typecheck` 零错误 |
 | 🟡 3 | **H10 MCP 扩展** | 计划已有 (`docs/h10-mcp-plan.md` 若有) | MCP server 动态装载 |
 | 🟡 4 | **H12 ONNX 本地推理** | 未开始 | 离线向量嵌入，不依赖 Ollama |
 | 🟡 5 | **H13 图谱双向联动** | 未开始 | 从对话/Agent 结果自动更新知识图谱 |
