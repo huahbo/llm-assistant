@@ -177,6 +177,38 @@
   overflow: hidden;
 }
 
+.chat-thread__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  background: var(--bg-secondary, #f9fafb);
+  min-height: 32px;
+}
+
+.chat-thread__export-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  background: var(--bg-primary, white);
+  color: var(--text-secondary, #6b7280);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.chat-thread__export-btn:hover:not(:disabled) {
+  background: var(--accent-light, #eef2ff);
+  color: var(--accent, #4f46e5);
+  border-color: var(--accent, #4f46e5);
+}
+
+.chat-thread__export-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .chat-thread__messages {
   flex: 1;
   overflow-y: auto;

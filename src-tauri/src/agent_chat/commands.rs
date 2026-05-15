@@ -96,6 +96,46 @@ pub async fn delete_conversation(
     chat_db::delete_conversation(&db_path, conversation_id)
 }
 
+// ── 对话导出 ────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn export_conversation_markdown(
+    conversation_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+
+    let conv = chat_db::get_conversation(&db_path, conversation_id)?
+        .ok_or_else(|| format!("会话 #{conversation_id} 不存在"))?;
+    let messages = chat_db::list_messages(&db_path, conversation_id)?;
+
+    let mut out = format!("# {}\n\n", conv.title);
+
+    for msg in &messages {
+        match msg.role.as_str() {
+            "user" => {
+                let content = msg.content.as_deref().unwrap_or("").trim();
+                if !content.is_empty() {
+                    out.push_str(&format!("**用户**\n\n{content}\n\n---\n\n"));
+                }
+            }
+            "assistant" => {
+                let content = msg.content.as_deref().unwrap_or("").trim();
+                if !content.is_empty() {
+                    out.push_str(&format!("**AI**\n\n{content}\n\n---\n\n"));
+                } else if msg.tool_calls_json.is_some() {
+                    // Assistant message that only has tool calls — skip body
+                }
+            }
+            _ => {} // skip system / tool result messages
+        }
+    }
+
+    Ok(out.trim_end_matches("---\n\n").to_string())
+}
+
 // ── 消息 ───────────────────────────────────────────────────────────────────────
 
 #[tauri::command]

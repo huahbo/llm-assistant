@@ -24,6 +24,21 @@ export async function createConversation(
   }
 }
 
+export async function exportConversationMarkdown(
+  conversationId: number,
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<string>("export_conversation_markdown", { conversationId }),
+      10_000,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function listChildConversations(
   parentConvId: number,
 ): Promise<Conversation[]> {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatStreamingMessage } from "../../types";
-import { listChatMessages, approveChatShell, rejectChatShell } from "../../tauri-client";
+import { listChatMessages, approveChatShell, rejectChatShell, exportConversationMarkdown } from "../../tauri-client";
 import MessageBubble from "./MessageBubble";
 import ChatInputBar from "./ChatInputBar";
 
@@ -38,6 +38,7 @@ export default function MessageThread({
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
   const [shellApproval, setShellApproval] = useState<ShellApprovalPayload | null>(null);
   const [shellCountdown, setShellCountdown] = useState(30);
+  const [exportLabel, setExportLabel] = useState("导出");
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevIsStreaming = useRef(false);
@@ -109,6 +110,14 @@ export default function MessageThread({
     await rejectChatShell(id);
   };
 
+  const handleExport = async () => {
+    const md = await exportConversationMarkdown(conversationId);
+    if (!md) return;
+    await navigator.clipboard.writeText(md);
+    setExportLabel("已复制");
+    setTimeout(() => setExportLabel("导出"), 2000);
+  };
+
   const handleSend = (text: string) => {
     setPendingUserMsg(text);
     onSend(text);
@@ -116,6 +125,17 @@ export default function MessageThread({
 
   return (
     <div className="chat-thread">
+      <div className="chat-thread__toolbar">
+        <button
+          type="button"
+          className="chat-thread__export-btn"
+          onClick={() => void handleExport()}
+          disabled={messages.length === 0}
+          title="导出为 Markdown（复制到剪贴板）"
+        >
+          {exportLabel}
+        </button>
+      </div>
       <div className="chat-thread__messages">
         {messages
           .filter((msg) => !streamingMessage || msg.id !== streamingMessage.message_id)
