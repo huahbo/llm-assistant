@@ -30,6 +30,18 @@ function extractSearchSource(preview: string): { source: string | null; body: st
   return { source: null, body: preview };
 }
 
+function extractSubagentResult(preview: string): { convId: number | null; summary: string; failed: boolean } {
+  const doneMatch = preview.match(/^\[子代理完成 conv=(\d+)\]\n?([\s\S]*)/);
+  if (doneMatch) {
+    return { convId: parseInt(doneMatch[1], 10), summary: doneMatch[2] ?? "", failed: false };
+  }
+  const failMatch = preview.match(/^\[子代理失败\] ([\s\S]*)/);
+  if (failMatch) {
+    return { convId: null, summary: failMatch[1] ?? preview, failed: true };
+  }
+  return { convId: null, summary: preview, failed: false };
+}
+
 export default function ToolCallCard({ toolName, args, result, status, pendingId }: Props) {
   const [expanded, setExpanded] = useState(status === "awaiting_approval");
   const [remember, setRemember] = useState(false);
@@ -50,7 +62,7 @@ export default function ToolCallCard({ toolName, args, result, status, pendingId
   return (
     <div className="chat-tool-card">
       <div className="chat-tool-card__header" onClick={() => setExpanded((v) => !v)}>
-        <span>🔧</span>
+        <span>{toolName === "spawn_subagent" ? "🤖" : "🔧"}</span>
         <span>{toolName}</span>
         <span>{statusIcon(status)}</span>
         {result && <span>{result.latency_ms}ms</span>}
@@ -59,7 +71,25 @@ export default function ToolCallCard({ toolName, args, result, status, pendingId
       {expanded && (
         <div className="chat-tool-card__body">
           <pre className="chat-tool-card__pre">{JSON.stringify(args, null, 2)}</pre>
-          {result && (
+          {result && toolName === "spawn_subagent" ? (() => {
+            const { convId, summary, failed } = extractSubagentResult(result.preview);
+            return (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <span style={{
+                    fontSize: 10, padding: "1px 6px", borderRadius: 10, fontWeight: 600,
+                    background: failed ? "var(--color-error-light, #fee2e2)" : "var(--accent-light, #eef2ff)",
+                    color: failed ? "var(--color-error, #ef4444)" : "var(--accent, #4f46e5)",
+                  }}>
+                    {failed ? "子代理失败" : `子代理 #${convId} 完成`}
+                  </span>
+                </div>
+                <pre className="chat-tool-card__pre" style={{ maxHeight: 200, overflow: "auto" }}>
+                  {summary}
+                </pre>
+              </div>
+            );
+          })() : result && (
             <>
               <div
                 style={{
