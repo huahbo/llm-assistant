@@ -46,7 +46,7 @@ pub async fn execute_tool_call(
 async fn dispatch(state: &AppState, conv_id: i64, tool_name: &str, args: Value) -> (String, Option<i64>) {
     match tool_name {
         "run_shell" => exec_run_shell(state, conv_id, args).await,
-        "search_wiki" => exec_search_wiki(state, args),
+        "search_wiki" => exec_search_wiki(state, args).await,
         "read_wiki" => exec_read_wiki(state, args),
         "write_wiki" => exec_write_wiki(state, args),
         "edit_wiki" => exec_edit_wiki(state, args),
@@ -244,8 +244,9 @@ fn format_shell_result(result: crate::models::ShellResult) -> String {
 }
 
 // ── search_wiki ────────────────────────────────────────────────────────────────
+// 使用 FTS5 + 向量 RRF 混合检索（Ollama 不可用时自动降级为纯 FTS5）
 
-fn exec_search_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
+async fn exec_search_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
     let query = match str_arg(&args, "query") {
         Some(q) => q,
         None => return ("错误：search_wiki 需要 'query' 参数".to_string(), None),
@@ -255,7 +256,7 @@ fn exec_search_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
         .and_then(|v| v.as_u64())
         .unwrap_or(5) as usize;
 
-    match state.search_wiki_pages(query, top_k) {
+    match state.search_wiki_pages_hybrid(query, top_k).await {
         Ok(pages) if pages.is_empty() => ("(no results)".to_string(), None),
         Ok(pages) => {
             let lines: Vec<String> = pages
