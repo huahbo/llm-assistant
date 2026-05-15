@@ -668,6 +668,8 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
   archived: boolean;
+  parent_conv_id: number | null;
+  depth: number;
 }
 
 export interface ToolCall {

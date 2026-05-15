@@ -49,6 +49,17 @@ pub async fn list_conversations(
 }
 
 #[tauri::command]
+pub async fn list_child_conversations(
+    parent_conv_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<Conversation>, String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+    chat_db::list_child_conversations(&db_path, parent_conv_id)
+}
+
+#[tauri::command]
 pub async fn rename_conversation(
     conversation_id: i64,
     new_title: String,

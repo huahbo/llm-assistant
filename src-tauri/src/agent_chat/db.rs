@@ -154,7 +154,7 @@ pub fn seed_builtin_tools(conn: &Connection) -> Result<(), String> {
         ),
         (
             "spawn_subagent",
-            "在独立对话上下文中启动子代理处理子任务，等待其完成后返回结果摘要（≤4000字符）。子代理可使用所有内置工具，但不能再 spawn 孙代理。",
+            "在独立对话上下文中启动子代理处理子任务，等待其完成后返回结果摘要（≤4000字符）。最大递归深度 3 层（根→子→孙）。",
             r#"{"type":"object","properties":{"task":{"type":"string","description":"子代理的任务描述，要求清晰完整"}},"required":["task"]}"#,
             "builtin",
         ),
@@ -258,6 +258,35 @@ pub fn get_conversation(db_path: &Path, id: i64) -> Result<Option<Conversation>,
     )
     .optional()
     .map_err(|e| format!("查询会话失败: {}", e))
+}
+
+pub fn list_child_conversations(db_path: &Path, parent_conv_id: i64) -> Result<Vec<Conversation>, String> {
+    let conn = open_conn(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at, parent_conv_id, depth
+             FROM agent_conversations WHERE parent_conv_id = ?1 ORDER BY created_at ASC",
+        )
+        .map_err(|e| format!("准备子代理列表查询失败: {e}"))?;
+    let rows = stmt
+        .query_map(params![parent_conv_id], |row| {
+            Ok(Conversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                system_prompt: row.get(2)?,
+                skill_key: row.get(3)?,
+                memory_snapshot: row.get(4)?,
+                archived: row.get::<_, i32>(5)? != 0,
+                shell_mode: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "off".to_string()),
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                parent_conv_id: row.get(9)?,
+                depth: row.get::<_, Option<i32>>(10)?.unwrap_or(0),
+            })
+        })
+        .map_err(|e| format!("查询子代理列表失败: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取子代理行失败: {e}"))
 }
 
 pub fn get_conv_depth(db_path: &Path, conv_id: i64) -> Result<i32, String> {

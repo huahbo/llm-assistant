@@ -24,6 +24,21 @@ export async function createConversation(
   }
 }
 
+export async function listChildConversations(
+  parentConvId: number,
+): Promise<Conversation[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<Conversation[]>("list_child_conversations", { parentConvId }),
+      10_000,
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function listConversations(
   includeArchived = false,
 ): Promise<Conversation[]> {
