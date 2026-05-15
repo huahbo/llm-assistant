@@ -1,4 +1,4 @@
-import type { Conversation, ChatMessage } from "../types";
+import type { Conversation, ChatMessage, MessageSearchHit } from "../types";
 import { isTauriRuntime, withTimeout } from "./base";
 
 // ── agent_chat (H8) ───────────────────────────────────────────────────────────
@@ -21,6 +21,22 @@ export async function createConversation(
     );
   } catch {
     return null;
+  }
+}
+
+export async function searchChatMessages(
+  query: string,
+  limit = 20,
+): Promise<MessageSearchHit[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await withTimeout(
+      invoke<MessageSearchHit[]>("search_chat_messages", { query, limit }),
+      10_000,
+    );
+  } catch {
+    return [];
   }
 }
 

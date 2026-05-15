@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from "react";
-import type { Conversation } from "../../types";
+import { useState, useRef, useEffect, useCallback } from "react";
+import type { Conversation, MessageSearchHit } from "../../types";
+import { searchChatMessages } from "../../tauri-client";
 
 interface Props {
   conversations: Conversation[];
@@ -49,7 +50,9 @@ export default function ConversationList({
 }: Props) {
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  const [msgHits, setMsgHits] = useState<MessageSearchHit[]>([]);
   const menuRef = useRef<HTMLDivElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (openMenuId === null) return;
@@ -77,6 +80,15 @@ export default function ConversationList({
     }
   };
 
+  const handleSearchChange = useCallback((q: string) => {
+    setSearch(q);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    if (q.trim().length < 2) { setMsgHits([]); return; }
+    searchTimerRef.current = setTimeout(() => {
+      void searchChatMessages(q.trim(), 10).then(setMsgHits);
+    }, 300);
+  }, []);
+
   const filtered = search.trim()
     ? conversations.filter((c) =>
         c.title.toLowerCase().includes(search.toLowerCase()),
@@ -92,9 +104,9 @@ export default function ConversationList({
         <input
           className="chat-convlist__search"
           type="text"
-          placeholder="搜索对话..."
+          placeholder="搜索标题或消息内容..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => handleSearchChange(e.target.value)}
         />
         <label className="chat-convlist__archive-toggle">
           <input
@@ -190,12 +202,28 @@ export default function ConversationList({
             )}
           </div>
         ))}
-        {filtered.length === 0 && (
+        {filtered.length === 0 && msgHits.length === 0 && (
           <div style={{ padding: "12px 8px", fontSize: 13, opacity: 0.5, textAlign: "center" }}>
             {search ? "无匹配对话" : "暂无对话"}
           </div>
         )}
       </div>
+      {msgHits.length > 0 && (
+        <div className="chat-convlist__msg-hits">
+          <div className="chat-convlist__msg-hits-label">消息内容匹配</div>
+          {msgHits.map((hit) => (
+            <div
+              key={hit.message_id}
+              className="chat-convlist__msg-hit"
+              onClick={() => onSelect(hit.conversation_id)}
+              title={`在"${hit.conversation_title}"中找到`}
+            >
+              <div className="chat-convlist__msg-hit-conv">{hit.conversation_title}</div>
+              <div className="chat-convlist__msg-hit-snippet">{hit.snippet}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

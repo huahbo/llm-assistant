@@ -168,6 +168,52 @@
   opacity: 1;
 }
 
+/* ── 跨会话消息搜索结果 ──────────────────────────────────────────────────── */
+
+.chat-convlist__msg-hits {
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  padding: 4px 0;
+}
+
+.chat-convlist__msg-hits-label {
+  font-size: 10px;
+  color: var(--text-muted, #9ca3af);
+  padding: 4px 8px 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.chat-convlist__msg-hit {
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 1px 4px;
+  transition: background 0.1s;
+}
+
+.chat-convlist__msg-hit:hover {
+  background: var(--bg-hover, #f3f4f6);
+}
+
+.chat-convlist__msg-hit-conv {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent, #4f46e5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-convlist__msg-hit-snippet {
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  margin-top: 2px;
+}
+
 /* ── 消息线程 ─────────────────────────────────────────────────────────────── */
 
 .chat-thread {

@@ -498,6 +498,60 @@ pub fn get_tool_handler_kind(db_path: &Path, name: &str) -> Result<Option<String
     .map_err(|e| format!("查询工具处理器失败: {e}"))
 }
 
+// ── 跨会话消息搜索 ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MessageSearchHit {
+    pub conversation_id: i64,
+    pub conversation_title: String,
+    pub message_id: i64,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+pub fn search_messages(
+    db_path: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<MessageSearchHit>, String> {
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let conn = open_conn(db_path)?;
+    let pattern = format!("%{query}%");
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.conversation_id, c.title, m.id, m.role, m.content, m.created_at
+             FROM agent_messages m
+             JOIN agent_conversations c ON c.id = m.conversation_id
+             WHERE m.content LIKE ?1
+               AND m.role IN ('user', 'assistant')
+               AND c.depth = 0
+             ORDER BY m.created_at DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| format!("准备消息搜索失败: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![pattern, limit as i64], |row| {
+            let content: Option<String> = row.get(4)?;
+            Ok(MessageSearchHit {
+                conversation_id: row.get(0)?,
+                conversation_title: row.get(1)?,
+                message_id: row.get(2)?,
+                role: row.get(3)?,
+                snippet: content.unwrap_or_default().chars().take(120).collect(),
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("执行消息搜索失败: {e}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("读取消息搜索结果失败: {e}"))
+}
+
 // ── MCP server config CRUD ─────────────────────────────────────────────────────
 
 pub fn upsert_mcp_server(

@@ -144,6 +144,7 @@ fn main() {
             commands::install_skill_from_url,
             agent_chat::commands::create_conversation,
             agent_chat::commands::list_conversations,
+            agent_chat::commands::search_chat_messages,
             agent_chat::commands::list_child_conversations,
             agent_chat::commands::export_conversation_markdown,
             agent_chat::commands::rename_conversation,

@@ -672,6 +672,15 @@ export interface Conversation {
   depth: number;
 }
 
+export interface MessageSearchHit {
+  conversation_id: number;
+  conversation_title: string;
+  message_id: number;
+  role: string;
+  snippet: string;
+  created_at: string;
+}
+
 export interface ToolCall {
   id: string;
   type: "function";

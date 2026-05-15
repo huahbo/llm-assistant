@@ -49,6 +49,18 @@ pub async fn list_conversations(
 }
 
 #[tauri::command]
+pub async fn search_chat_messages(
+    query: String,
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<chat_db::MessageSearchHit>, String> {
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+    chat_db::search_messages(&db_path, &query, limit.unwrap_or(20).max(1).min(100) as usize)
+}
+
+#[tauri::command]
 pub async fn list_child_conversations(
     parent_conv_id: i64,
     state: State<'_, AppState>,
