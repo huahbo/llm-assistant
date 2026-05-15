@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     agent_policy::classify_shell_policy_with_config,
-    agent_service, db,
+    db,
     llm::{
         LlmError, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider,
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
@@ -45,7 +45,7 @@ pub mod graph_service;
 pub mod lint_service;
 pub mod ingest_service;
 pub mod ask_service;
-// agent_service: Phase 9 迁移时添加（与顶层 crate::agent_service 合并）
+pub mod agent_service;
 pub mod chat_service;
 pub mod research_service;
 

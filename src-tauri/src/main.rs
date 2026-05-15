@@ -4,7 +4,6 @@ mod agent_chat;
 mod agent_loop;
 mod agent_policy;
 mod agent_runtime;
-mod agent_service;
 mod agent_tools;
 mod clip_server;
 mod commands;
