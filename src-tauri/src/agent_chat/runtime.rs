@@ -365,12 +365,17 @@ mod tests {
     use crate::agent_chat::db::Message;
 
     fn make_msg(role: &str, content: Option<&str>, tool_calls_json: Option<&str>) -> Message {
+        let tool_calls_json = tool_calls_json.map(str::to_string);
+        let tool_calls = tool_calls_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
         Message {
             id: 1,
             conversation_id: 1,
             role: role.to_string(),
             content: content.map(str::to_string),
-            tool_calls_json: tool_calls_json.map(str::to_string),
+            tool_calls_json,
+            tool_calls,
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,

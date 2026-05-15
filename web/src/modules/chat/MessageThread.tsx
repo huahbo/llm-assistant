@@ -1,8 +1,65 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatMessage, ChatStreamingMessage } from "../../types";
+import type { ChatMessage, ChatStreamSegment, ChatStreamingMessage } from "../../types";
 import { listChatMessages, approveChatShell, rejectChatShell, exportConversationMarkdown, saveWikiPage } from "../../tauri-client";
 import MessageBubble from "./MessageBubble";
 import ChatInputBar from "./ChatInputBar";
+
+interface DisplayGroup {
+  messageId: number;
+  role: "user" | "assistant";
+  content: string | null;
+  segments: ChatStreamSegment[] | undefined;
+}
+
+function buildDisplayGroups(messages: ChatMessage[]): DisplayGroup[] {
+  const toolResultsByCallId = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role === "tool" && msg.tool_call_id && msg.content) {
+      toolResultsByCallId.set(msg.tool_call_id, msg.content);
+    }
+  }
+
+  const groups: DisplayGroup[] = [];
+  for (const msg of messages) {
+    if (msg.role === "system" || msg.role === "tool") continue;
+
+    if (msg.role === "user") {
+      groups.push({ messageId: msg.id, role: "user", content: msg.content, segments: undefined });
+      continue;
+    }
+
+    // assistant — reconstruct segments if tool_calls present
+    const toolSegs: ChatStreamSegment[] = [];
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      for (const tc of msg.tool_calls) {
+        let args: Record<string, unknown> = {};
+        try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { /* ok */ }
+        const resultContent = toolResultsByCallId.get(tc.id);
+        toolSegs.push({
+          kind: "tool",
+          call_id: tc.id,
+          tool_name: tc.function.name,
+          args,
+          result: resultContent !== undefined
+            ? { ok: true, preview: resultContent, latency_ms: 0 }
+            : undefined,
+          status: resultContent !== undefined ? "ok" : "err",
+        });
+      }
+    }
+
+    const segments: ChatStreamSegment[] | undefined =
+      toolSegs.length > 0
+        ? [
+            ...toolSegs,
+            ...(msg.content ? [{ kind: "text" as const, text: msg.content, streaming: false }] : []),
+          ]
+        : undefined;
+
+    groups.push({ messageId: msg.id, role: "assistant", content: msg.content, segments });
+  }
+  return groups;
+}
 
 interface ShellApprovalPayload {
   conversation_id: number;
@@ -171,13 +228,15 @@ export default function MessageThread({
         </button>
       </div>
       <div className="chat-thread__messages">
-        {messages
-          .filter((msg) => !streamingMessage || msg.id !== streamingMessage.message_id)
-          .map((msg) => (
+        {buildDisplayGroups(
+            messages.filter((msg) => !streamingMessage || msg.id !== streamingMessage.message_id)
+          ).map((group) => (
             <MessageBubble
-              key={msg.id}
-              role={msg.role}
-              content={msg.content}
+              key={group.messageId}
+              role={group.role}
+              content={group.segments ? null : group.content}
+              segments={group.segments}
+              streaming={false}
             />
           ))}
         {pendingUserMsg !== null && (

@@ -30,6 +30,8 @@ pub struct Message {
     pub role: String,
     pub content: Option<String>,
     pub tool_calls_json: Option<String>,
+    /// Parsed tool calls for the frontend (derived from tool_calls_json)
+    pub tool_calls: Option<serde_json::Value>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub reasoning_content: Option<String>,
@@ -415,12 +417,17 @@ pub fn list_messages(db_path: &Path, conv_id: i64) -> Result<Vec<Message>, Strin
         .map_err(|e| format!("准备消息查询失败: {}", e))?;
     let rows = stmt
         .query_map(params![conv_id], |row| {
+            let tool_calls_json: Option<String> = row.get(4)?;
+            let tool_calls = tool_calls_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
             Ok(Message {
                 id: row.get(0)?,
                 conversation_id: row.get(1)?,
                 role: row.get(2)?,
                 content: row.get(3)?,
-                tool_calls_json: row.get(4)?,
+                tool_calls_json,
+                tool_calls,
                 tool_call_id: row.get(5)?,
                 tool_name: row.get(6)?,
                 reasoning_content: row.get(7)?,
