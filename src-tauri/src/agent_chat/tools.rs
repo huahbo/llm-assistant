@@ -324,16 +324,18 @@ fn exec_read_wiki(state: &AppState, args: Value) -> (String, Option<i64>) {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
 
-    // Read full content via agent_runtime (uses vault path validation)
-    let full = match crate::agent_runtime::read_wiki_page_for_agent(state, &path, usize::MAX) {
-        Ok(raw) => {
-            // raw is "path=... chars=... content=..." — extract the content part
-            if let Some(idx) = raw.find("content=") {
-                raw[idx + 8..].to_string()
-            } else {
-                raw
-            }
-        }
+    // Resolve and validate path via agent_runtime, then read directly
+    let vault_path = match state.vault_path_or_err() {
+        Ok(p) => p,
+        Err(e) => return (format!("读取失败: {e}"), None),
+    };
+    let resolved = match crate::state::resolve_existing_wiki_page_path(&vault_path, &path) {
+        Ok(p) => p,
+        Err(e) => return (format!("读取失败: {e}"), None),
+    };
+
+    let full = match std::fs::read_to_string(&resolved) {
+        Ok(s) => s,
         Err(e) => return (format!("读取失败: {e}"), None),
     };
 
