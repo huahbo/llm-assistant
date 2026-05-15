@@ -1577,54 +1577,11 @@ impl AppState {
         })
     }
 
-    /// 用 LLM 从文档内容中提取关键实体（LLM 不可用时返回空列表）。
+
     async fn extract_entities(&self, content: &str) -> Vec<String> {
-        let provider = match self.get_llm_provider() {
-            Some(p) => p,
-            None => return Vec::new(),
-        };
-
-        // 截断内容，避免超出 token 上限
-        let truncated: String = content.chars().take(2000).collect();
-        let prompt = format!(
-            "请从以下文档中提取关键实体（技术名、概念名、产品名、人名等），\
-每行输出一个实体名称，不要编号，不要解释，最多提取10个最重要的实体：\n\n{}",
-            truncated
-        );
-
-        match provider.complete(&prompt).await {
-            Ok(response) => {
-                let entities: Vec<String> = response
-                    .lines()
-                    .map(|line| line.trim().trim_start_matches('-').trim().to_string())
-                    .filter(|e| !e.is_empty() && e.len() <= 60)
-                    .take(10)
-                    .collect();
-
-                if !entities.is_empty() {
-                    self.push_log(
-                        LogLevel::Info,
-                        format!("实体提取完成，共 {} 个实体", entities.len()),
-                    );
-                }
-                entities
-            }
-            Err(err) => {
-                self.push_log(LogLevel::Warn, format!("实体提取失败，跳过: {}", err));
-                Vec::new()
-            }
-        }
+        wiki_service::extract_entities(self, content).await
     }
 
-    /// Ingest 后扫描相关 Wiki 页面并注入双向 See Also 链接。
-    ///
-    /// 流程：
-    /// 1. 用实体名在 FTS 中搜索相关页面（最多 5 页）。
-    /// 2. 向每个相关页面追加指向新页的 See Also 链接。
-    /// 3. 向新页追加指向相关页面的 See Also 链接。
-    /// 4. 更新受影响页面的 FTS 索引。
-    ///
-    /// 任何单步失败都记录告警但不中断整体流程。
     async fn update_related_pages_with_link(
         &self,
         db_path: &Path,
@@ -1633,120 +1590,9 @@ impl AppState {
         new_wiki_title: &str,
         entities: &[String],
     ) -> Vec<String> {
-        if entities.is_empty() {
-            return Vec::new();
-        }
-
-        // 将实体名称分词，合并去重后送入 FTS
-        let mut token_set = std::collections::HashSet::new();
-        for entity in entities {
-            for token in tokenize_query(entity) {
-                token_set.insert(token);
-            }
-        }
-        let tokens: Vec<String> = token_set.into_iter().collect();
-
-        if tokens.is_empty() {
-            return Vec::new();
-        }
-
-        // FTS 搜索相关页面（最多取 5 个，排除自身）
-        let related_paths: Vec<String> = match db::search_fts_page_paths(db_path, &tokens, 10) {
-            Ok(paths) => paths
-                .into_iter()
-                .filter(|p| p != new_wiki_abs_path)
-                .take(5)
-                .collect(),
-            Err(err) => {
-                self.push_log(LogLevel::Warn, format!("相关页面 FTS 搜索失败: {}", err));
-                return Vec::new();
-            }
-        };
-
-        if related_paths.is_empty() {
-            return Vec::new();
-        }
-
-        // 新页面相对于 vault 根的路径（用于写入其他页面的链接）
-        let new_wiki_relative = PathBuf::from(new_wiki_abs_path)
-            .strip_prefix(vault_path)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| new_wiki_abs_path.to_string());
-
-        let mut updated = Vec::new();
-
-        for related_abs in &related_paths {
-            let related_path = PathBuf::from(related_abs);
-            if !related_path.exists() {
-                continue;
-            }
-
-            let related_relative = related_path
-                .strip_prefix(vault_path)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| related_abs.clone());
-
-            let related_title = related_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-                .to_string();
-
-            // 1. 向相关页面追加指向新页的反向链接
-            match vault::append_see_also_link(&related_path, &new_wiki_relative, new_wiki_title) {
-                Ok(true) => {
-                    updated.push(related_abs.clone());
-                    // 更新该相关页面的 FTS 索引
-                    if let Ok(content) = fs::read_to_string(&related_path) {
-                        let _ = db::upsert_fts_page(
-                            db_path,
-                            Path::new(related_abs),
-                            &related_title,
-                            &content,
-                        );
-                    }
-                }
-                Ok(false) => {} // 链接已存在，跳过
-                Err(err) => {
-                    self.push_log(
-                        LogLevel::Warn,
-                        format!("注入反向链接失败 {}: {}", related_abs, err),
-                    );
-                }
-            }
-
-            // 2. 向新页追加指向相关页面的正向链接（失败不计入 updated）
-            let new_path = PathBuf::from(new_wiki_abs_path);
-            if let Err(err) =
-                vault::append_see_also_link(&new_path, &related_relative, &related_title)
-            {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("注入正向链接失败 {}: {}", related_abs, err),
-                );
-            }
-        }
-
-        // 更新新页的 FTS 索引（包含追加的 See Also 内容）
-        if !updated.is_empty() {
-            if let Ok(content) = fs::read_to_string(new_wiki_abs_path) {
-                let _ = db::upsert_fts_page(
-                    db_path,
-                    Path::new(new_wiki_abs_path),
-                    new_wiki_title,
-                    &content,
-                );
-            }
-            self.push_log(
-                LogLevel::Info,
-                format!("双向链接注入完成，更新了 {} 个相关页面", updated.len()),
-            );
-        }
-
-        updated
+        wiki_service::update_related_pages_with_link(self, db_path, vault_path, new_wiki_abs_path, new_wiki_title, entities).await
     }
 
-    /// 使用本地 Provider 生成 Query 回答。
     async fn generate_query_answer_with_provider(
         &self,
         question: &str,
@@ -1846,33 +1692,7 @@ impl AppState {
     }
 
     pub fn recent_wiki_pages(&self, limit: usize) -> Result<Vec<WikiPageItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        db::ensure_meta_db(&db_path)?;
-        let pages = db::list_recent_wiki_pages(&db_path, limit)?;
-
-        Ok(pages
-            .into_iter()
-            .map(|page| {
-                let display_path = friendly_display_path(Path::new(&page.path));
-                let tags = read_page_tags(Path::new(&page.path));
-                WikiPageItem {
-                    title: page.title,
-                    path: page.path,
-                    display_path: Some(display_path),
-                    summary: page.summary,
-                    updated_at: page.updated_at,
-                    score: 0.0,
-                    tags,
-                }
-            })
-            .collect())
+        wiki_service::recent_wiki_pages(self, limit)
     }
 
     pub fn recent_lint_patch_events(
@@ -1896,251 +1716,34 @@ impl AppState {
         keyword: String,
         limit: usize,
     ) -> Result<Vec<WikiPageItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        db::ensure_meta_db(&db_path)?;
-        let pages = db::search_wiki_pages(&db_path, &keyword, limit)?;
-
-        Ok(pages
-            .into_iter()
-            .map(|page| {
-                let display_path = friendly_display_path(Path::new(&page.path));
-                let tags = read_page_tags(Path::new(&page.path));
-                WikiPageItem {
-                    title: page.title,
-                    path: page.path,
-                    display_path: Some(display_path),
-                    summary: page.summary,
-                    updated_at: page.updated_at,
-                    score: page.score,
-                    tags,
-                }
-            })
-            .collect())
+        wiki_service::search_wiki_pages(self, keyword, limit)
     }
 
-    /// Wiki 混合搜索：FTS5 关键词 + 向量语义双路召回，RRF 融合排序。
-    /// Ollama 不可用时自动降级为纯 FTS5。
     pub async fn search_wiki_pages_hybrid(
         &self,
         keyword: String,
         limit: usize,
     ) -> Result<Vec<WikiPageItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        db::ensure_meta_db(&db_path)?;
-
-        // FTS5 召回（keyword 为空时返回最近页面）
-        let fts_pages = db::search_wiki_pages(&db_path, &keyword, limit * 3)?;
-        let fts_paths: Vec<String> = fts_pages.iter().map(|p| p.path.clone()).collect();
-
-        // 向量召回（best-effort，失败时静默降级）
-        let embed_paths: Vec<String> = if !keyword.trim().is_empty() {
-            match self.get_embed_provider().embed(&keyword).await {
-                Ok(query_vec) => {
-                    let candidates = db::list_embeddings(&db_path, 5000).unwrap_or_default();
-                    crate::search::rank_embedding_paths_by_cosine(&query_vec, &candidates, limit * 3)
-                }
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
-
-        // RRF 融合（单路时退化为原路排名）
-        let merged_paths: Vec<String> = if embed_paths.is_empty() {
-            fts_paths.into_iter().take(limit).collect()
-        } else {
-            crate::search::reciprocal_rank_fusion(&[fts_paths, embed_paths], 60.0)
-                .into_iter()
-                .take(limit)
-                .map(|(p, _)| p)
-                .collect()
-        };
-
-        // 解析为 WikiPageItem（从 FTS 结果中查找 title/summary，找不到则用路径名）
-        let fts_map: std::collections::HashMap<String, crate::db::WikiPageRecord> =
-            db::search_wiki_pages(&db_path, "", limit * 3)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.path.clone(), r))
-                .collect();
-
-        let items = merged_paths
-            .into_iter()
-            .map(|path| {
-                let display_path = friendly_display_path(Path::new(&path));
-                let tags = read_page_tags(Path::new(&path));
-                if let Some(record) = fts_map.get(&path) {
-                    WikiPageItem {
-                        title: record.title.clone(),
-                        path: path.clone(),
-                        display_path: Some(display_path),
-                        summary: record.summary.clone(),
-                        updated_at: record.updated_at.clone(),
-                        score: record.score,
-                        tags,
-                    }
-                } else {
-                    let title = Path::new(&path)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(&path)
-                        .to_string();
-                    WikiPageItem {
-                        title,
-                        path: path.clone(),
-                        display_path: Some(display_path),
-                        summary: String::new(),
-                        updated_at: String::new(),
-                        score: 0.0,
-                        tags,
-                    }
-                }
-            })
-            .collect();
-
-        Ok(items)
+        wiki_service::search_wiki_pages_hybrid(self, keyword, limit).await
     }
 
-    /// 获取所有 wiki 页面路径并根据查询进行模糊匹配（忽略大小写）。
     pub fn search_wiki_paths(&self, query: String) -> Result<Vec<String>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        db::ensure_meta_db(&db_path)?;
-        let pages = db::list_all_wiki_pages(&db_path)?;
-
-        let query_lower = query.to_lowercase();
-        Ok(pages
-            .into_iter()
-            .filter(|p| p.path.to_lowercase().contains(&query_lower))
-            .map(|p| p.path)
-            .collect())
+        wiki_service::search_wiki_paths(self, query)
     }
 
     pub fn wiki_page_detail(&self, page_path: String) -> Result<WikiPageDetail, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let target_path = resolve_existing_wiki_page_path(&vault_path, &page_path)?;
-        if target_path.extension().and_then(|v| v.to_str()) != Some("md") {
-            return Err("仅支持读取 Markdown 页面".to_string());
-        }
-
-        let content =
-            fs::read_to_string(&target_path).map_err(|err| format!("读取页面失败: {}", err))?;
-        let title = extract_title_from_markdown(&content, &target_path);
-        let frontmatter = parse_wiki_frontmatter(&content);
-        let updated_at = file_modified_timestamp_ms(&target_path);
-
-        Ok(WikiPageDetail {
-            title,
-            path: target_path.to_string_lossy().to_string(),
-            display_path: friendly_display_path(&target_path),
-            frontmatter,
-            content,
-            updated_at,
-        })
+        wiki_service::wiki_page_detail(self, page_path)
     }
 
-    /// 设置或取消 Wiki 页面的 stale 标记（直接修改 frontmatter）。
     pub fn set_page_stale(&self, page_path: String, stale: bool) -> Result<(), String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let vault_path = vault_path.ok_or_else(|| "请先初始化 Vault".to_string())?;
-
-        // 规范化并安全检查路径
-        let abs_path = if std::path::Path::new(&page_path).is_absolute() {
-            std::path::PathBuf::from(&page_path)
-        } else {
-            vault_path.join("wiki").join(&page_path)
-        };
-        let abs_path = abs_path
-            .canonicalize()
-            .map_err(|e| format!("页面路径无效: {}", e))?;
-        let wiki_root = vault_path
-            .join("wiki")
-            .canonicalize()
-            .map_err(|e| format!("wiki 目录无效: {}", e))?;
-        if !abs_path.starts_with(&wiki_root) {
-            return Err("禁止操作 wiki 目录之外的文件".to_string());
-        }
-
-        let content = fs::read_to_string(&abs_path).map_err(|e| format!("读取页面失败: {}", e))?;
-
-        let updated = set_frontmatter_stale_field(&content, stale);
-
-        fs::write(&abs_path, &updated).map_err(|e| format!("写入页面失败: {}", e))?;
-
-        self.push_log(
-            LogLevel::Info,
-            format!(
-                "页面 stale 标记已{}: {}",
-                if stale { "设置" } else { "取消" },
-                abs_path.to_string_lossy()
-            ),
-        );
-        Ok(())
+        wiki_service::set_page_stale(self, page_path, stale)
     }
 
     pub fn wiki_page_citations(
         &self,
         page_path: String,
     ) -> Result<Vec<WikiPageCitationItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let target_path = resolve_existing_wiki_page_path(&vault_path, &page_path)?;
-        let target_path_string = target_path.to_string_lossy().to_string();
-        let db_path = vault_path.join(".app").join("meta.db");
-        db::ensure_meta_db(&db_path)?;
-        let citations = db::list_citations_for_page(&db_path, &target_path_string)?;
-
-        Ok(citations
-            .into_iter()
-            .map(|citation| {
-                let cited_page_display_path =
-                    friendly_display_path(Path::new(&citation.cited_page_path));
-                WikiPageCitationItem {
-                    cited_page_path: citation.cited_page_path.clone(),
-                    cited_page_display_path: Some(cited_page_display_path),
-                    score: citation.score,
-                    excerpt: citation.excerpt,
-                    target_exists: is_existing_wiki_page_target(
-                        &vault_path,
-                        &citation.cited_page_path,
-                    ),
-                }
-            })
-            .collect())
+        wiki_service::wiki_page_citations(self, page_path)
     }
 
     pub fn lint_report(&self) -> LintReport {
@@ -3151,119 +2754,7 @@ Wiki 页面：\n{}",
         content: &str,
         expected_checksum: Option<&str>,
     ) -> Result<crate::models::SaveWikiPageResult, String> {
-        let path_buf = std::path::Path::new(path);
-        match path_buf.extension().and_then(|ext| ext.to_str()) {
-            Some("md") => {}
-            _ => return Err(format!("路径必须是 .md 文件：{path}")),
-        }
-        if let Some(parent) = path_buf.parent() {
-            if !parent.exists() {
-                return Err(format!("父目录不存在：{}", parent.display()));
-            }
-        }
-
-        // 校验 checksum（写入前防止静默覆盖外部编辑）
-        let previous_content = if let Some(expected) = expected_checksum {
-            if path_buf.exists() {
-                let current_raw = std::fs::read_to_string(path_buf)
-                    .map_err(|err| format!("读取现有文件失败：{}", err))?;
-                let current_hash = format!("{:x}", md5_simple(&current_raw));
-                if current_hash != expected {
-                    return Err("checksum_mismatch: 文件已被外部修改，请刷新后再编辑。".to_string());
-                }
-                Some(current_raw)
-            } else {
-                // 文件尚不存在，跳过 checksum 校验
-                None
-            }
-        } else {
-            if path_buf.exists() {
-                Some(
-                    std::fs::read_to_string(path_buf)
-                        .map_err(|err| format!("读取现有文件失败：{}", err))?,
-                )
-            } else {
-                None
-            }
-        };
-
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let db_path = vault_path
-            .as_ref()
-            .map(|vault_path| vault_path.join(".app").join("meta.db"));
-
-        if let (Some(prev_content), Some(db_path)) = (previous_content.as_deref(), db_path.as_ref())
-        {
-            if prev_content != content && db_path.exists() {
-                let previous_hash = format!("{:x}", md5_simple(prev_content));
-                let previous_title = wiki_title_from_content(prev_content, path);
-                db::insert_wiki_page_history(
-                    db_path,
-                    path_buf,
-                    &previous_title,
-                    &previous_hash,
-                    prev_content,
-                    &current_timestamp_ms(),
-                )?;
-            }
-        }
-
-        // 1. 写入文件
-        let changed = crate::vault::write_wiki_page(path, content)?;
-
-        if !changed {
-            return Ok(crate::models::SaveWikiPageResult {
-                path: path.to_string(),
-                message: "内容未变化，跳过写入".to_string(),
-            });
-        }
-
-        // 2. 更新 SQLite FTS 索引 + wiki_pages.title（复用已有逻辑）
-        if let Some(db_path) = db_path {
-            if db_path.exists() {
-                let title = wiki_title_from_content(content, path);
-                let body = content.to_string();
-                // 更新 FTS 索引（失败时仅记录警告，不阻断主流程）
-                if let Err(err) = db::upsert_fts_page(&db_path, path_buf, &title, &body) {
-                    self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）：{err}"));
-                }
-                // 同步 wiki_pages.title 到 DB，确保图谱/检索显示正确标题
-                if let Err(err) = db::update_wiki_page_title(&db_path, path_buf, &title) {
-                    self.push_log(LogLevel::Warn, format!("更新 wiki_pages.title 失败：{err}"));
-                }
-                // 异步更新向量索引（不阻塞主流程；Ollama 不可用时静默跳过）
-                let embed_provider = self.get_embed_provider();
-                let embed_db_path = db_path.clone();
-                let embed_path = path.to_string();
-                let embed_content: String = content.chars().take(2000).collect();
-                tokio::spawn(async move {
-                    match embed_provider.embed(&embed_content).await {
-                        Ok(embedding) => {
-                            if let Err(e) = db::upsert_embedding(&embed_db_path, &embed_path, &embedding) {
-                                eprintln!("[embed] 向量索引写入失败（忽略）: {e}");
-                            }
-                        }
-                        Err(_) => {} // Ollama 不可用时静默跳过
-                    }
-                });
-            }
-        }
-
-        self.record_outbox_event(
-            "wiki_page_saved",
-            serde_json::json!({
-                "path": path,
-                "content_length": content.chars().count(),
-            }),
-        );
-
-        Ok(crate::models::SaveWikiPageResult {
-            path: path.to_string(),
-            message: format!("已保存并更新索引：{path}"),
-        })
+        wiki_service::save_wiki_page_impl(self, path, content, expected_checksum).await
     }
 
     pub fn list_wiki_page_history_impl(
@@ -3271,80 +2762,23 @@ Wiki 页面：\n{}",
         path: &str,
         limit: Option<usize>,
     ) -> Result<Vec<WikiPageHistoryItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        let normalized_limit = limit.unwrap_or(20).clamp(1, 100);
-        db::list_wiki_page_history(&db_path, std::path::Path::new(path), normalized_limit).map(
-            |records| {
-                records
-                    .into_iter()
-                    .map(|record| WikiPageHistoryItem {
-                        id: record.id,
-                        path: record.path,
-                        title: record.title,
-                        content_hash: record.content_hash,
-                        checksum: record.checksum,
-                        created_at: record.created_at,
-                    })
-                    .collect()
-            },
-        )
+        wiki_service::list_wiki_page_history_impl(self, path, limit)
     }
 
     pub fn get_wiki_page_history_entry_impl(
         &self,
         id: i64,
     ) -> Result<WikiPageHistoryDetail, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        let record = db::get_wiki_page_history_entry(&db_path, id)?
-            .ok_or_else(|| format!("未找到页面历史记录：{}", id))?;
-        Ok(WikiPageHistoryDetail {
-            id: record.id,
-            path: record.path,
-            title: record.title,
-            content_hash: record.content_hash,
-            checksum: record.checksum,
-            created_at: record.created_at,
-            content: record.prev_content.unwrap_or_default(),
-        })
+        wiki_service::get_wiki_page_history_entry_impl(self, id)
     }
 
-    /// 从历史快照恢复 Wiki 页面内容（"一键恢复到此版本"）。
     pub async fn restore_wiki_page_from_history_impl(
         &self,
         id: i64,
     ) -> Result<crate::models::SaveWikiPageResult, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        let record = db::get_wiki_page_history_entry(&db_path, id)?
-            .ok_or_else(|| format!("未找到页面历史记录：{}", id))?;
-        let content = record
-            .prev_content
-            .ok_or_else(|| "历史记录中无内容可恢复".to_string())?;
-        let path = record.path;
-        self.save_wiki_page_impl(&path, &content, None).await
+        wiki_service::restore_wiki_page_from_history_impl(self, id).await
     }
 
-    /// 复用主动新建页面的 prompt 逻辑，生成带 frontmatter 的 Markdown 草稿。
     async fn generate_ai_wiki_markdown_draft_impl(
         &self,
         db_path: &Path,
@@ -3354,221 +2788,14 @@ Wiki 页面：\n{}",
         research_mode: bool,
         ask_context: Option<&str>,
     ) -> Result<(String, String, String), String> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let search_limit = if research_mode { 8 } else { 5 };
-        let related_pages = if db_path.exists() {
-            db::search_wiki_pages(db_path, topic, search_limit).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let related_context = if related_pages.is_empty() {
-            "（暂无相关页面）".to_string()
-        } else {
-            related_pages
-                .iter()
-                .map(|p| {
-                    let snippet = if research_mode {
-                        std::fs::read_to_string(&p.path)
-                            .ok()
-                            .map(|t| extract_content_after_frontmatter(&t, 400))
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| {
-                                if p.summary.is_empty() {
-                                    "（无摘要）".to_string()
-                                } else {
-                                    p.summary.chars().take(400).collect()
-                                }
-                            })
-                    } else {
-                        if p.summary.is_empty() {
-                            "（无摘要）".to_string()
-                        } else {
-                            p.summary.chars().take(120).collect()
-                        }
-                    };
-                    format!("- {}: {}", p.title, snippet)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let memories_section = if let Some(ctx) = memories_context {
-            if ctx.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "\n已记录的上下文记忆（请结合这些信息生成内容）：\n{}\n",
-                    ctx
-                )
-            }
-        } else {
-            String::new()
-        };
-
-        let skill_section = if let Some(skill) = skill_prompt {
-            let normalized = skill.trim();
-            if normalized.is_empty() {
-                String::new()
-            } else {
-                // H5-D: 替换模板变量 {{topic}} {{memories}}
-                let memories_text = memories_context.unwrap_or("").trim().to_string();
-                let expanded = normalized
-                    .replace("{{topic}}", topic)
-                    .replace("{{memories}}", &memories_text);
-                format!("\n当前启用技能模板（请优先遵循）：\n{}\n", expanded)
-            }
-        } else {
-            String::new()
-        };
-
-        let ask_section = if let Some(ctx) = ask_context {
-            let trimmed = ctx.trim();
-            if trimmed.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "\n知识库已有答案（Ask 检索结果，请参考但不要照抄）：\n{}\n",
-                    trimmed
-                )
-            }
-        } else {
-            String::new()
-        };
-
-        let prompt = format!(
-            "你是一个专业的知识管理助手，负责为个人 Wiki 创建结构化页面。\n\
-            \n\
-            请为以下主题创建一个结构化的 Wiki 页面初稿。\n\
-            \n\
-            要创建的主题：{topic}\n\
-            {memories_section}\
-            {skill_section}\
-            {ask_section}\
-            知识库中已有的相关页面：\n\
-            {related_context}\n\
-            \n\
-            输出要求（不要有任何前缀，只输出 Markdown 内容）：\n\
-            \n\
-            # {{页面标题}}\n\
-            \n\
-            {{2-4 段正文，每段 3-5 句，与相关页面形成知识链接，使用 [[相关页面]] 格式引用}}\n\
-            \n\
-            ## 参考\n\
-            {{如有相关已有页面，用 [[页面标题]] 格式列出}}",
-            topic = topic,
-            memories_section = memories_section,
-            skill_section = skill_section,
-            ask_section = ask_section,
-            related_context = related_context,
-        );
-
-        let provider = self.get_llm_provider();
-        let llm_content = if let Some(p) = provider {
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(60), p.complete(&prompt))
-                    .await
-                    .map_err(|_| "LLM 调用超时（60s）".to_string())?
-                    .map_err(|e| format!("LLM 调用失败: {}", e))?;
-            result.trim().to_string()
-        } else {
-            return Err("LLM 未配置，无法生成页面内容".to_string());
-        };
-
-        if llm_content.is_empty() {
-            return Err("LLM 返回了空内容，请检查模型配置".to_string());
-        }
-
-        let page_title = extract_markdown_h1_title(&llm_content)
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| topic.to_string());
-
-        // frontmatter 与已有 create_wiki_page_with_ai 保持一致，便于后续审批直写。
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .to_string();
-        let frontmatter = format!(
-            "---\ntitle: '{}'\nsource: 'ai_generated'\ncreated_at: '{}'\nentities: []\n---\n",
-            page_title.replace('\'', "''"),
-            now_ms,
-        );
-        let full_content = format!("{}{}", frontmatter, llm_content);
-        Ok((page_title, llm_content, full_content))
+        wiki_service::generate_ai_wiki_markdown_draft_impl(self, db_path, topic, memories_context, skill_prompt, research_mode, ask_context).await
     }
 
     pub async fn create_wiki_page_with_ai_impl(
         &self,
         topic: String,
     ) -> Result<NewPageResult, String> {
-        // a. 检查 Vault 是否已初始化
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let vault_path = vault_path.ok_or_else(|| "请先初始化 Vault".to_string())?;
-
-        // b. 清理主题字符串
-        let topic = topic.trim().to_string();
-        if topic.is_empty() {
-            return Err("主题名称不能为空".to_string());
-        }
-        let topic: String = topic.chars().take(200).collect();
-
-        let db_path = vault_path.join(".app").join("meta.db");
-
-        // c. 生成 slug
-        let base_slug = topic_to_slug(&topic);
-        if base_slug.is_empty() {
-            return Err("无法从主题生成有效文件名，请使用英文或数字".to_string());
-        }
-
-        // d. 找到不冲突的文件路径
-        let wiki_dir = vault_path.join("wiki");
-        std::fs::create_dir_all(&wiki_dir).map_err(|e| format!("创建 wiki 目录失败: {}", e))?;
-        let final_slug = resolve_unique_wiki_slug(&wiki_dir, &base_slug)?;
-        let wiki_file_path = wiki_dir.join(format!("{}.md", final_slug));
-        let wiki_path_str = wiki_file_path.to_string_lossy().to_string();
-
-        // e. 生成草稿内容（与 Agent Draft 逻辑共用）。
-        let (page_title, llm_content, full_content) = self
-            .generate_ai_wiki_markdown_draft_impl(&db_path, &topic, None, None, false, None)
-            .await?;
-        let now_ms = current_timestamp_ms();
-
-        // f. 写入文件
-        std::fs::write(&wiki_file_path, &full_content)
-            .map_err(|e| format!("写入 wiki 文件失败: {}", e))?;
-
-        // g. 更新 DB
-        if db_path.exists() || true {
-            let content_hash = format!("{:x}", md5_simple(&full_content));
-            if let Err(e) = db::upsert_generated_wiki_page(
-                &db_path,
-                &page_title,
-                &wiki_file_path,
-                &llm_content.chars().take(300).collect::<String>(),
-                &content_hash,
-                &now_ms,
-            ) {
-                self.push_log(LogLevel::Warn, format!("DB 更新失败（降级）: {}", e));
-            }
-        }
-
-        // h. 更新 FTS
-        if let Err(e) = db::upsert_fts_page(&db_path, &wiki_file_path, &page_title, &full_content) {
-            self.push_log(LogLevel::Warn, format!("FTS 索引更新失败（降级）: {}", e));
-        }
-
-        // i. 返回结果
-        let content_preview: String = llm_content.chars().take(300).collect();
-        Ok(NewPageResult {
-            wiki_path: wiki_path_str,
-            title: page_title,
-            content_preview,
-        })
+        wiki_service::create_wiki_page_with_ai_impl(self, topic).await
     }
 
     pub async fn rename_wiki_page_impl(
@@ -3576,193 +2803,18 @@ Wiki 页面：\n{}",
         old_path: &str,
         new_name: &str,
     ) -> Result<crate::models::RenameWikiPageResult, String> {
-        // 1. 验证新文件名（不允许路径分隔符、不能为空）
-        let new_name = new_name.trim();
-        if new_name.is_empty() {
-            return Err("新文件名不能为空".to_string());
-        }
-        if new_name.contains('/') || new_name.contains('\\') {
-            return Err("新文件名不能包含路径分隔符".to_string());
-        }
-        // 确保以 .md 结尾
-        let new_name = if new_name.ends_with(".md") {
-            new_name.to_string()
-        } else {
-            format!("{new_name}.md")
-        };
-
-        // 2. 计算新路径（与旧文件同目录）
-        let old_file = std::path::Path::new(old_path);
-        let parent = old_file
-            .parent()
-            .ok_or_else(|| format!("无法获取父目录：{old_path}"))?;
-        let new_file = parent.join(&new_name);
-        let new_path_str = new_file.to_string_lossy().to_string();
-
-        if new_file == old_file {
-            return Ok(crate::models::RenameWikiPageResult {
-                new_path: new_path_str,
-                message: "文件名未变化".to_string(),
-            });
-        }
-
-        if new_file.exists() {
-            return Err(format!("目标文件已存在：{new_path_str}"));
-        }
-
-        // 3. 重命名文件
-        std::fs::rename(old_file, &new_file).map_err(|err| format!("文件重命名失败：{}", err))?;
-
-        // 4. 读取新文件内容以更新 FTS
-        let content = std::fs::read_to_string(&new_file).unwrap_or_default();
-        let title = content
-            .lines()
-            .find(|l| l.starts_with("# "))
-            .map(|l| l.trim_start_matches("# ").trim().to_string())
-            .unwrap_or_else(|| new_name.trim_end_matches(".md").to_string());
-
-        // 5. 更新数据库
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-
-        if let Some(vault_path) = vault_path {
-            let db_path = vault_path.join(".app").join("meta.db");
-            if db_path.exists() {
-                if let Err(err) =
-                    db::rename_wiki_page_in_db(&db_path, old_file, &new_file, &title, &content)
-                {
-                    self.push_log(LogLevel::Warn, format!("数据库重命名失败（降级）：{err}"));
-                }
-            }
-        }
-
-        self.record_outbox_event(
-            "wiki_page_renamed",
-            serde_json::json!({
-                "old_path": old_path,
-                "new_path": new_path_str.clone(),
-                "new_name": new_name,
-            }),
-        );
-
-        Ok(crate::models::RenameWikiPageResult {
-            new_path: new_path_str.clone(),
-            message: format!("已重命名：{old_path} → {new_path_str}"),
-        })
+        wiki_service::rename_wiki_page_impl(self, old_path, new_name).await
     }
 
     pub async fn delete_wiki_page_impl(
         &self,
         path: &str,
     ) -> Result<crate::models::DeleteWikiPageResult, String> {
-        // 1. 删除 .md 文件
-        let file_path = std::path::Path::new(path);
-        if file_path.exists() {
-            std::fs::remove_file(file_path).map_err(|err| format!("删除文件失败：{}", err))?;
-        }
-
-        // 2. 清理数据库记录
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-
-        let mut pruned_index_links = 0usize;
-        if let Some(vault_path) = vault_path {
-            let db_path = vault_path.join(".app").join("meta.db");
-            if db_path.exists() {
-                if let Err(err) = db::delete_wiki_page_from_db(&db_path, file_path) {
-                    self.push_log(LogLevel::Warn, format!("数据库清理失败（降级）：{err}"));
-                }
-            }
-            match prune_missing_index_links(&vault_path) {
-                Ok(removed) => {
-                    pruned_index_links = removed;
-                }
-                Err(err) => {
-                    self.push_log(LogLevel::Warn, format!("index.md 清理失败（降级）：{err}"));
-                }
-            }
-        }
-
-        self.record_outbox_event(
-            "wiki_page_deleted",
-            serde_json::json!({
-                "path": path,
-                "pruned_index_links": pruned_index_links,
-            }),
-        );
-
-        Ok(crate::models::DeleteWikiPageResult {
-            path: path.to_string(),
-            message: if pruned_index_links > 0 {
-                format!("已删除：{path}（同步清理 index.md 失效链接 {pruned_index_links} 条）")
-            } else {
-                format!("已删除：{path}")
-            },
-        })
+        wiki_service::delete_wiki_page_impl(self, path).await
     }
 
-    /// 启动时清理孤立 wiki 页面：DB 有记录但文件已不存在的条目。
-    /// 在 setup hook 中调用，保证前端首次加载拿到的数据已是干净状态。
     pub fn purge_orphaned_wiki_pages(&self) {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return; // vault 未配置，跳过
-        };
-
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return;
-        }
-
-        let paths = match db::list_wiki_page_paths(&db_path) {
-            Ok(p) => p,
-            Err(err) => {
-                eprintln!("[purge_orphaned] 读取 wiki_pages 失败: {err}");
-                return;
-            }
-        };
-
-        let mut purged = 0usize;
-        for path_str in &paths {
-            let file_path = std::path::Path::new(path_str);
-            if !file_path.exists() {
-                match db::delete_wiki_page_from_db(&db_path, file_path) {
-                    Ok(()) => {
-                        eprintln!("[purge_orphaned] 已清理孤立记录: {path_str}");
-                        purged += 1;
-                    }
-                    Err(err) => {
-                        eprintln!("[purge_orphaned] 清理失败 {path_str}: {err}");
-                    }
-                }
-            }
-        }
-
-        let mut pruned_index_links = 0usize;
-        match prune_missing_index_links(&vault_path) {
-            Ok(removed) => {
-                pruned_index_links = removed;
-            }
-            Err(err) => {
-                eprintln!("[purge_orphaned] index.md 清理失败: {err}");
-            }
-        }
-
-        if purged > 0 {
-            eprintln!("[purge_orphaned] 启动清理完成，共删除 {purged} 条孤立 wiki 页面记录");
-        }
-        if pruned_index_links > 0 {
-            eprintln!(
-                "[purge_orphaned] 启动清理完成，index.md 共移除 {pruned_index_links} 条失效链接"
-            );
-        }
+        wiki_service::purge_orphaned_wiki_pages(self)
     }
 
     pub fn save_ask_history_impl(&self, question: &str) -> Result<(), String> {
