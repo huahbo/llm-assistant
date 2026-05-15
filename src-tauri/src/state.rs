@@ -619,81 +619,9 @@ impl AppState {
         question: &str,
         matches: &[WikiMatch],
         provider: Option<Arc<dyn LlmProvider>>,
-        mut on_chunk: Option<&mut (dyn FnMut(String) + Send)>,
+        on_chunk: Option<&mut (dyn FnMut(String) + Send)>,
     ) -> (String, String) {
-        let fallback_answer = || build_query_answer(question, matches);
-
-        let provider = match provider {
-            Some(provider) => provider,
-            None => {
-                let fallback = fallback_answer();
-                if !fallback.is_empty() {
-                    if let Some(handler) = on_chunk.as_deref_mut() {
-                        handler(fallback.clone());
-                    }
-                }
-                self.push_log(
-                    LogLevel::Warn,
-                    "本地 LLM Provider 不可用，Query 已回退到规则回答".to_string(),
-                );
-                return (fallback, "rule".to_string());
-            }
-        };
-
-        let prompt = build_query_prompt(question, matches);
-
-        let streamed = {
-            let on_chunk_ref = &mut on_chunk;
-            let mut chunk_forwarder = |chunk: String| {
-                if let Some(handler) = on_chunk_ref.as_deref_mut() {
-                    handler(chunk);
-                }
-            };
-            provider
-                .complete_stream(&prompt, &mut chunk_forwarder)
-                .await
-        };
-
-        match streamed {
-            Ok(answer) => {
-                let answer = answer.trim().to_string();
-                if answer.is_empty() {
-                    let fallback = fallback_answer();
-                    if !fallback.is_empty() {
-                        if let Some(handler) = on_chunk.as_deref_mut() {
-                            handler(fallback.clone());
-                        }
-                    }
-                    self.push_log(
-                        LogLevel::Warn,
-                        "本地 LLM 返回空回答，Query 已回退到规则回答".to_string(),
-                    );
-                    (fallback, "rule".to_string())
-                } else {
-                    self.push_log(
-                        LogLevel::Info,
-                        format!(
-                            "本地 LLM Query 合成成功，回答长度={}",
-                            answer.chars().count()
-                        ),
-                    );
-                    (answer, "llm".to_string())
-                }
-            }
-            Err(err) => {
-                let fallback = fallback_answer();
-                if !fallback.is_empty() {
-                    if let Some(handler) = on_chunk.as_deref_mut() {
-                        handler(fallback.clone());
-                    }
-                }
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("本地 LLM Query 合成失败: {}，已回退到规则回答", err),
-                );
-                (fallback, "rule".to_string())
-            }
-        }
+        ask_service::generate_query_answer_with_provider(self, question, matches, provider, on_chunk).await
     }
 
     pub fn overview(&self) -> AppOverview {
@@ -811,63 +739,7 @@ impl AppState {
     }
 
     pub async fn query_ask(&self, question: String) -> Result<QueryAnswerResult, String> {
-        self.query_ask_with_options(question, QueryAskOptions::default())
-            .await
-    }
-
-    async fn query_embedding_route_paths(
-        &self,
-        db_path: &Path,
-        question: &str,
-        limit: usize,
-    ) -> Vec<String> {
-        if limit == 0 {
-            return Vec::new();
-        }
-        let trimmed = question.trim();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-
-        let candidate_limit = (limit.saturating_mul(20))
-            .max(limit)
-            .min(QUERY_EMBED_ROUTE_MAX_CANDIDATES);
-        let candidates = match db::list_embeddings(db_path, candidate_limit) {
-            Ok(items) => items,
-            Err(err) => {
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("读取 embedding 候选失败，已跳过 embedding 召回: {}", err),
-                );
-                return Vec::new();
-            }
-        };
-
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        self.emit_progress("query_progress", "embedding", "正在执行 embedding 召回...");
-        match self.get_embed_provider().embed(trimmed).await {
-            Ok(query_embedding) => {
-                crate::search::rank_embedding_paths_by_cosine(&query_embedding, &candidates, limit)
-            }
-            Err(err) => {
-                let hint = if matches!(
-                    err,
-                    LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)
-                ) {
-                    "（Ollama 未启动或缺少 nomic-embed-text:latest）"
-                } else {
-                    ""
-                };
-                self.push_log(
-                    LogLevel::Warn,
-                    format!("embedding 召回失败，已跳过{}：{}", hint, err),
-                );
-                Vec::new()
-            }
-        }
+        ask_service::query_ask(self, question).await
     }
 
     pub async fn query_ask_with_options(
@@ -875,204 +747,17 @@ impl AppState {
         question: String,
         options: QueryAskOptions,
     ) -> Result<QueryAnswerResult, String> {
-        let normalized_question = question.trim().to_string();
-        if normalized_question.is_empty() {
-            return Err("问题不能为空".to_string());
-        }
-
-        let (mode, vault_path, default_top_k) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (guard.mode, guard.vault_path.clone(), guard.query_top_k)
-        };
-
-        let vault_path =
-            vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
-        let wiki_dir = vault_path.join("wiki");
-        let db_path = vault_path.join(".app").join("meta.db");
-        let tokens = tokenize_query(&normalized_question);
-        let top_k = normalize_top_k(options.top_k.or(Some(default_top_k)));
-
-        // 步骤1：多路 RRF 融合检索
-        self.emit_progress("query_progress", "searching", "多路 RRF 检索中...");
-        let embedding_paths = if tokens.is_empty() {
-            Vec::new()
-        } else {
-            self.query_embedding_route_paths(&db_path, &normalized_question, top_k * 4)
-                .await
-        };
-        let extra_routes = if embedding_paths.is_empty() {
-            Vec::new()
-        } else {
-            vec![("embedding".to_string(), embedding_paths)]
-        };
-        let (matches, search_strategy, fts_error, search_debug) =
-            search_wiki_matches_rrf_with_extra_routes(
-                &db_path,
-                &wiki_dir,
-                &tokens,
-                &normalized_question,
-                top_k,
-                &extra_routes,
-            )?;
-
-        if let Some(err) = fts_error {
-            self.push_log(
-                LogLevel::Warn,
-                format!("FTS 查询失败，已降级为文件扫描: {}", err),
-            );
-        }
-
-        let citations = matches
-            .iter()
-            .map(|item| {
-                let display_path = friendly_display_path(Path::new(&item.page_path));
-                QueryCitation {
-                    page_path: item.page_path.clone(),
-                    display_path: Some(display_path),
-                    score: item.score,
-                    excerpt: item.excerpt.clone(),
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // 步骤2：LLM 合成回答
-        self.emit_progress("query_progress", "generating", "正在合成回答（LLM）...");
-        let provider = self.get_llm_provider();
-        self.emit_progress(
-            "query_progress",
-            "answer_stream_start",
-            "开始流式输出回答...",
-        );
-        let mut emit_chunk = |chunk: String| {
-            if !chunk.is_empty() {
-                self.emit_progress("query_progress", "answer_chunk", &chunk);
-            }
-        };
-        let (answer, answer_strategy) = self
-            .generate_query_answer_with_provider(
-                &normalized_question,
-                &matches,
-                provider,
-                Some(&mut emit_chunk),
-            )
-            .await;
-        self.emit_progress("query_progress", "answer_stream_done", "回答输出完成。");
-
-        let matched_pages = matches
-            .iter()
-            .map(|item| item.page_path.clone())
-            .collect::<Vec<_>>();
-
-        self.push_log(
-            LogLevel::Info,
-            format!(
-                "Query 检索完成: '{}'，命中 {} 页，检索策略={}，回答策略={}，top_k={}",
-                normalized_question,
-                matched_pages.len(),
-                search_strategy,
-                answer_strategy,
-                top_k
-            ),
-        );
-
-        self.record_outbox_event(
-            "query_answered",
-            serde_json::json!({
-                "question": normalized_question.clone(),
-                "matched_pages": matched_pages.clone(),
-                "search_strategy": search_strategy,
-                "answer_strategy": answer_strategy.clone(),
-                "top_k": top_k,
-                "search_debug": search_debug.clone(),
-            }),
-        );
-
-        Ok(QueryAnswerResult {
-            question: normalized_question,
-            answer,
-            citations,
-            matched_pages,
-            mode,
-            checked_at: current_timestamp_ms(),
-            search_strategy: search_strategy.to_string(),
-            answer_strategy,
-            search_debug,
-        })
+        ask_service::query_ask_with_options(self, question, options).await
     }
-
     pub fn set_query_top_k(&self, top_k: usize) -> Result<QuerySettings, String> {
-        let normalized_top_k = normalize_top_k(Some(top_k));
-        let (mode, vault_path, expected_snapshot) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (
-                guard.mode,
-                guard.vault_path.clone(),
-                guard.config_snapshot.clone(),
-            )
-        };
-
-        match self.persist_config(
-            mode,
-            vault_path.as_deref(),
-            normalized_top_k,
-            expected_snapshot.as_deref(),
-        ) {
-            Ok(serialized) => {
-                let mut guard = self.inner.lock().expect("状态锁已被污染");
-                guard.query_top_k = normalized_top_k;
-                guard.config_snapshot = Some(serialized);
-                guard.push_log(
-                    LogLevel::Info,
-                    format!("Query TopK 已更新为 {}", normalized_top_k),
-                    current_timestamp_ms(),
-                );
-                Ok(QuerySettings {
-                    top_k: normalized_top_k,
-                    min_top_k: QUERY_TOP_K_MIN,
-                    max_top_k: QUERY_TOP_K_MAX,
-                })
-            }
-            Err(err) => {
-                self.push_log(LogLevel::Warn, format!("Query TopK 持久化失败: {}", err));
-                Err(err)
-            }
-        }
+        ask_service::set_query_top_k(self, top_k)
     }
 
     pub fn save_query_answer(
         &self,
         input: SaveQueryAnswerInput,
     ) -> Result<SaveQueryAnswerResult, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard
-                .vault_path
-                .clone()
-                .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?
-        };
-
-        match vault::save_query_answer(&vault_path, &input) {
-            Ok(result) => {
-                self.push_log(
-                    LogLevel::Info,
-                    format!("Query 结果已保存: {}", result.wiki_path),
-                );
-                self.record_outbox_event(
-                    "query_saved_to_wiki",
-                    serde_json::json!({
-                        "question": input.question.clone(),
-                        "page_title": result.page_title.clone(),
-                        "wiki_path": result.wiki_path.clone(),
-                        "citations": input.citations.len(),
-                    }),
-                );
-                Ok(result)
-            }
-            Err(err) => {
-                self.push_log(LogLevel::Warn, format!("保存 Query 结果失败: {}", err));
-                Err(err)
-            }
-        }
+        ask_service::save_query_answer(self, input)
     }
 
     /// 将编辑后的内容写回 vault 文件，并同步更新 SQLite FTS 索引。
@@ -1147,288 +832,70 @@ impl AppState {
     }
 
     pub fn save_ask_history_impl(&self, question: &str) -> Result<(), String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(());
-        }
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .to_string();
-        db::save_ask_history(&db_path, question, &created_at)?;
-        Ok(())
+        ask_service::save_ask_history_impl(self, question)
     }
 
     pub fn get_ask_history_impl(
         &self,
         limit: usize,
     ) -> Result<Vec<crate::models::AskHistoryItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(Vec::new());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(Vec::new());
-        }
-        // 读取上限与落库上限一致，避免异常大值导致一次性扫描过多数据。
-        let safe_limit = limit.min(db::ASK_HISTORY_MAX_ENTRIES);
-        let records = db::list_ask_history(&db_path, safe_limit)?;
-        Ok(records
-            .into_iter()
-            .map(|r| crate::models::AskHistoryItem {
-                id: r.id,
-                question: r.question,
-                created_at: r.created_at,
-            })
-            .collect())
+        ask_service::get_ask_history_impl(self, limit)
     }
 
-    /// 清空 Ask 历史（DB 持久化）。
     pub fn clear_ask_history_impl(&self) -> Result<usize, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(0);
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(0);
-        }
-        db::clear_ask_history(&db_path)
+        ask_service::clear_ask_history_impl(self)
     }
 
-    /// 创建 Ask 会话（若已存在则刷新更新时间）。
     pub fn create_ask_session_impl(
         &self,
         session_id: &str,
         title: Option<&str>,
     ) -> Result<AskSessionItem, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Err("请先调用 init_vault 初始化 Vault".to_string());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        let now = current_timestamp_ms();
-        let raw_title = title.unwrap_or("新对话");
-        let normalized_title = if raw_title.trim().is_empty() {
-            "新对话"
-        } else {
-            raw_title.trim()
-        };
-        db::create_ask_session(&db_path, session_id, normalized_title, &now)?;
-        Ok(AskSessionItem {
-            session_id: session_id.trim().to_string(),
-            title: normalized_title.to_string(),
-            created_at: now.clone(),
-            updated_at: now,
-            turn_count: 0,
-            last_turn_role: None,
-            last_turn_content: None,
-        })
+        ask_service::create_ask_session_impl(self, session_id, title)
     }
 
-    /// 查询会话列表（按最近更新时间倒序）。
     pub fn list_ask_sessions_impl(&self, limit: usize) -> Result<Vec<AskSessionItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(Vec::new());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(Vec::new());
-        }
-        let safe_limit = limit.min(200);
-        let records = db::list_ask_sessions(&db_path, safe_limit)?;
-        Ok(records
-            .into_iter()
-            .map(|item| AskSessionItem {
-                session_id: item.session_id,
-                title: item.title,
-                created_at: item.created_at,
-                updated_at: item.updated_at,
-                turn_count: item.turn_count,
-                last_turn_role: item.last_turn_role,
-                last_turn_content: item.last_turn_content,
-            })
-            .collect())
+        ask_service::list_ask_sessions_impl(self, limit)
     }
 
-    /// 查询指定会话的轮次列表（正序）。
     pub fn list_ask_session_turns_impl(
         &self,
         session_id: &str,
         limit: usize,
     ) -> Result<Vec<AskSessionTurnItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(Vec::new());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(Vec::new());
-        }
-        let safe_limit = limit.min(400);
-        let records = db::list_ask_session_turns(&db_path, session_id, safe_limit)?;
-        Ok(records
-            .into_iter()
-            .map(|item| AskSessionTurnItem {
-                id: item.id,
-                session_id: item.session_id,
-                role: item.role,
-                content: item.content,
-                created_at: item.created_at,
-                citations: serde_json::from_str::<Vec<QueryCitation>>(&item.citations_json)
-                    .unwrap_or_default(),
-                meta: item
-                    .meta_json
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str::<AskSessionTurnMeta>(raw).ok()),
-            })
-            .collect())
+        ask_service::list_ask_session_turns_impl(self, session_id, limit)
     }
 
-    /// 跨会话检索 Ask 轮次内容（用于历史定位）。
     pub fn search_ask_session_turns_impl(
         &self,
         keyword: &str,
         limit: usize,
     ) -> Result<Vec<AskSessionSearchHitItem>, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(Vec::new());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(Vec::new());
-        }
-        let safe_limit = limit.min(200);
-        let records = db::search_ask_session_turns(&db_path, keyword, safe_limit)?;
-        Ok(records
-            .into_iter()
-            .map(|item| {
-                let snippet = item
-                    .snippet
-                    .replace('\n', " ")
-                    .replace('\r', " ")
-                    .trim()
-                    .chars()
-                    .take(120)
-                    .collect::<String>();
-                AskSessionSearchHitItem {
-                    session_id: item.session_id,
-                    session_title: item.session_title,
-                    turn_id: item.turn_id,
-                    role: item.role,
-                    snippet,
-                    created_at: item.created_at,
-                }
-            })
-            .collect())
+        ask_service::search_ask_session_turns_impl(self, keyword, limit)
     }
 
-    /// 重命名 Ask 会话标题。
     pub fn rename_ask_session_impl(&self, session_id: &str, title: &str) -> Result<(), String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Err("请先调用 init_vault 初始化 Vault".to_string());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        db::rename_ask_session(&db_path, session_id, title, &current_timestamp_ms())
+        ask_service::rename_ask_session_impl(self, session_id, title)
     }
 
-    /// 删除 Ask 会话（含全部轮次）。
     pub fn delete_ask_session_impl(&self, session_id: &str) -> Result<usize, String> {
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(0);
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        let affected = db::delete_ask_session(&db_path, session_id)?;
-        {
-            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            sessions.remove(session_id);
-        }
-        {
-            let mut flags = self
-                .ask_cancel_flags
-                .lock()
-                .expect("cancel_flags 锁已被污染");
-            flags.remove(session_id);
-        }
-        Ok(affected)
+        ask_service::delete_ask_session_impl(self, session_id)
     }
 
-    /// 按 id 增量读取 outbox 事件。
     pub fn get_outbox_events_impl(
         &self,
         last_id: i64,
         limit: usize,
     ) -> Result<Vec<OutboxEventItem>, String> {
-        let db_path = self
-            .outbox_db_path()
-            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
-        let records = db::list_outbox_events_from_id(&db_path, last_id, limit)?;
-        Ok(records
-            .into_iter()
-            .map(|item| OutboxEventItem {
-                id: item.id,
-                event_type: item.event_type,
-                payload_json: item.payload_json,
-                created_at: item.created_at,
-                processed_at: item.processed_at,
-                consumer_tag: item.consumer_tag,
-            })
-            .collect())
+        ask_service::get_outbox_events_impl(self, last_id, limit)
     }
 
-    /// 标记 outbox 事件已消费。
     pub fn ack_outbox_events_impl(
         &self,
         up_to_id: i64,
         consumer_tag: &str,
     ) -> Result<OutboxAckResult, String> {
-        let db_path = self
-            .outbox_db_path()
-            .ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
-        let acked =
-            db::ack_outbox_events(&db_path, up_to_id, consumer_tag, &current_timestamp_ms())?;
-        Ok(OutboxAckResult {
-            acked,
-            up_to_id,
-            consumer_tag: consumer_tag.trim().to_string(),
-        })
+        ask_service::ack_outbox_events_impl(self, up_to_id, consumer_tag)
     }
 
     /// 创建 Agent Run（H0：最小闭环入口）。
@@ -2143,281 +1610,9 @@ impl AppState {
         question: String,
         options: QueryAskOptions,
     ) -> Result<QueryAnswerResult, String> {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
-        const MAX_HISTORY_TURNS: usize = 6; // 最多保留最近 6 轮
-
-        let normalized_session_id = session_id.trim().to_string();
-        if normalized_session_id.is_empty() {
-            return Err("session_id 不能为空".to_string());
-        }
-
-        let normalized_question = question.trim().to_string();
-        if normalized_question.is_empty() {
-            return Err("问题不能为空".to_string());
-        }
-
-        let (mode, vault_path, default_top_k) = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            (guard.mode, guard.vault_path.clone(), guard.query_top_k)
-        };
-        let vault_path =
-            vault_path.ok_or_else(|| "请先调用 init_vault 初始化 Vault".to_string())?;
-        let wiki_dir = vault_path.join("wiki");
-        let db_path = vault_path.join(".app").join("meta.db");
-        let tokens = tokenize_query(&normalized_question);
-        let top_k = normalize_top_k(options.top_k.or(Some(default_top_k)));
-        let now = current_timestamp_ms();
-        db::create_ask_session(&db_path, &normalized_session_id, "新对话", &now)?;
-        let history =
-            db::list_recent_ask_session_turns(&db_path, &normalized_session_id, MAX_HISTORY_TURNS)?;
-
-        // 将用户问题加入会话历史（内存 + 持久化）。
-        let user_turn = crate::models::AskTurn {
-            role: "user".to_string(),
-            content: normalized_question.clone(),
-        };
-        let user_turn_db_id = db::append_ask_session_turn(
-            &db_path,
-            &normalized_session_id,
-            "user",
-            &normalized_question,
-            &now,
-            None,
-            None,
-        )?;
-        {
-            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            let turns = sessions.entry(normalized_session_id.clone()).or_default();
-            if turns.is_empty() && !history.is_empty() {
-                turns.extend(history.iter().cloned());
-            }
-            turns.push(user_turn);
-        }
-
-        // 注册取消标志
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        {
-            let mut flags = self
-                .ask_cancel_flags
-                .lock()
-                .expect("cancel_flags 锁已被污染");
-            flags.insert(normalized_session_id.clone(), cancel_flag.clone());
-        }
-
-        // 多路 RRF 融合检索
-        self.emit_progress("query_progress", "searching", "多路 RRF 检索中...");
-        let embedding_paths = if tokens.is_empty() {
-            Vec::new()
-        } else {
-            self.query_embedding_route_paths(&db_path, &normalized_question, top_k * 4)
-                .await
-        };
-        let extra_routes = if embedding_paths.is_empty() {
-            Vec::new()
-        } else {
-            vec![("embedding".to_string(), embedding_paths)]
-        };
-        let (matches, search_strategy, fts_error, search_debug) =
-            match search_wiki_matches_rrf_with_extra_routes(
-                &db_path,
-                &wiki_dir,
-                &tokens,
-                &normalized_question,
-                top_k,
-                &extra_routes,
-            ) {
-                Ok(result) => result,
-                Err(err) => {
-                    {
-                        let mut flags = self
-                            .ask_cancel_flags
-                            .lock()
-                            .expect("cancel_flags 锁已被污染");
-                        flags.remove(&normalized_session_id);
-                    }
-                    {
-                        let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-                        if let Some(turns) = sessions.get_mut(&normalized_session_id) {
-                            turns.pop();
-                        }
-                    }
-                    let _ = db::delete_ask_session_turn_by_id(&db_path, user_turn_db_id);
-                    return Err(err);
-                }
-            };
-
-        if let Some(err) = fts_error {
-            self.push_log(
-                LogLevel::Warn,
-                format!("FTS 查询失败，已降级为文件扫描: {}", err),
-            );
-        }
-
-        let citations = matches
-            .iter()
-            .map(|item| {
-                let display_path = friendly_display_path(std::path::Path::new(&item.page_path));
-                QueryCitation {
-                    page_path: item.page_path.clone(),
-                    display_path: Some(display_path),
-                    score: item.score,
-                    excerpt: item.excerpt.clone(),
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // LLM 合成（含历史 context）
-        self.emit_progress("query_progress", "generating", "正在合成回答（LLM）...");
-        let provider = self.get_llm_provider();
-        self.emit_progress(
-            "query_progress",
-            "answer_stream_start",
-            "开始流式输出回答...",
-        );
-
-        let cancel_for_closure = cancel_flag.clone();
-        let mut emit_chunk = |chunk: String| {
-            if cancel_for_closure.load(Ordering::Relaxed) {
-                return; // 已取消，静默丢弃 chunk
-            }
-            if !chunk.is_empty() {
-                self.emit_progress("query_progress", "answer_chunk", &chunk);
-            }
-        };
-
-        // 构建含历史的 prompt
-        let prompt = build_query_prompt_with_history(&normalized_question, &matches, &history);
-
-        // 直接调用 complete_stream（绕过 generate_query_answer_with_provider 以使用自定义 prompt）
-        let answer_strategy;
-        let answer = if let Some(p) = provider {
-            let streamed = p.complete_stream(&prompt, &mut emit_chunk).await;
-            match streamed {
-                Ok(raw) => {
-                    let trimmed = raw.trim().to_string();
-                    if trimmed.is_empty() {
-                        answer_strategy = "rule".to_string();
-                        build_query_answer(&normalized_question, &matches)
-                    } else {
-                        answer_strategy = "llm".to_string();
-                        trimmed
-                    }
-                }
-                Err(err) => {
-                    self.push_log(
-                        LogLevel::Warn,
-                        format!("LLM 流式生成失败: {}，已回退到规则回答", err),
-                    );
-                    answer_strategy = "rule".to_string();
-                    build_query_answer(&normalized_question, &matches)
-                }
-            }
-        } else {
-            answer_strategy = "rule".to_string();
-            build_query_answer(&normalized_question, &matches)
-        };
-
-        self.emit_progress("query_progress", "answer_stream_done", "回答输出完成。");
-
-        // 检查是否已取消
-        let was_cancelled = cancel_flag.load(Ordering::Relaxed);
-
-        // 清理取消标志
-        {
-            let mut flags = self
-                .ask_cancel_flags
-                .lock()
-                .expect("cancel_flags 锁已被污染");
-            flags.remove(&normalized_session_id);
-        }
-
-        if was_cancelled {
-            // 移除刚加入的用户轮，避免历史污染
-            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            if let Some(turns) = sessions.get_mut(&normalized_session_id) {
-                turns.pop();
-            }
-            let _ = db::delete_ask_session_turn_by_id(&db_path, user_turn_db_id);
-            return Err("查询已取消".to_string());
-        }
-
-        // 将助手回答加入会话历史
-        {
-            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            if let Some(turns) = sessions.get_mut(&normalized_session_id) {
-                turns.push(crate::models::AskTurn {
-                    role: "assistant".to_string(),
-                    content: answer.clone(),
-                });
-            }
-        }
-        let assistant_turn_citations_json =
-            serde_json::to_string(&citations).unwrap_or_else(|_| "[]".to_string());
-        let assistant_turn_meta_json = serde_json::to_string(&AskSessionTurnMeta {
-            mode,
-            search_strategy: Some(search_strategy.to_string()),
-            answer_strategy: Some(answer_strategy.clone()),
-            top_k: Some(top_k),
-            matched_pages: Some(matches.len()),
-            search_debug: search_debug.clone(),
-        })
-        .unwrap_or_else(|_| "{}".to_string());
-        if let Err(err) = db::append_ask_session_turn(
-            &db_path,
-            &normalized_session_id,
-            "assistant",
-            &answer,
-            &current_timestamp_ms(),
-            Some(&assistant_turn_citations_json),
-            Some(&assistant_turn_meta_json),
-        ) {
-            self.push_log(LogLevel::Warn, format!("持久化助手会话轮次失败: {}", err));
-        }
-
-        let matched_pages = matches
-            .iter()
-            .map(|item| item.page_path.clone())
-            .collect::<Vec<_>>();
-
-        self.push_log(
-            LogLevel::Info,
-            format!(
-                "会话 Query 完成: session={}, '{}', 命中 {} 页",
-                &normalized_session_id[..normalized_session_id.len().min(8)],
-                normalized_question,
-                matched_pages.len()
-            ),
-        );
-
-        self.record_outbox_event(
-            "query_session_answered",
-            serde_json::json!({
-                "session_id": normalized_session_id.clone(),
-                "question": normalized_question.clone(),
-                "matched_pages": matched_pages.clone(),
-                "search_strategy": search_strategy,
-                "answer_strategy": answer_strategy.clone(),
-                "top_k": top_k,
-                "search_debug": search_debug.clone(),
-            }),
-        );
-
-        Ok(QueryAnswerResult {
-            question: normalized_question,
-            answer,
-            citations,
-            matched_pages,
-            mode,
-            checked_at: current_timestamp_ms(),
-            search_strategy: search_strategy.to_string(),
-            answer_strategy,
-            search_debug,
-        })
+        ask_service::query_ask_session(self, session_id, question, options).await
     }
 
-    /// 注册 agent_chat 取消令牌（conversation_id -> token）
     pub fn store_chat_cancel_token(
         &self,
         conv_id: i64,
@@ -2429,7 +1624,6 @@ impl AppState {
             .insert(conv_id, token);
     }
 
-    /// 触发取消并移除令牌
     pub fn cancel_chat_token(&self, conv_id: i64) {
         use std::sync::atomic::Ordering;
         let mut map = self
@@ -2441,7 +1635,6 @@ impl AppState {
         }
     }
 
-    /// 移除已完成的取消令牌
     pub fn remove_chat_cancel_token(&self, conv_id: i64) {
         self.chat_cancellations
             .lock()
@@ -2449,7 +1642,6 @@ impl AppState {
             .remove(&conv_id);
     }
 
-    /// 注册写审批 channel（pending_id → oneshot Sender）
     pub fn register_chat_write_approval(
         &self,
         pending_id: i64,
@@ -2461,7 +1653,6 @@ impl AppState {
             .insert(pending_id, tx);
     }
 
-    /// 批准 chat 写操作：执行写盘并通知等待的 ReAct 循环
     pub fn approve_chat_write(&self, pending_id: i64) -> Result<(), String> {
         let result = self.approve_agent_write_impl(pending_id);
         let msg = result.unwrap_or_else(|e| format!("写操作失败: {e}"));
@@ -2476,7 +1667,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 拒绝 chat 写操作：不写盘并通知等待的 ReAct 循环
     pub fn reject_chat_write(&self, pending_id: i64) -> Result<(), String> {
         let _ = self.reject_agent_write_impl(pending_id);
         let tx = self
@@ -2490,9 +1680,6 @@ impl AppState {
         Ok(())
     }
 
-    // ── Shell approval (chat) ──────────────────────────────────────────────────
-
-    /// 登记待审批 shell 命令（approval 模式下由 exec_run_shell 调用）
     pub fn register_chat_shell_pending(&self, pending_id: i64, command: String, timeout_ms: u64) {
         self.chat_shell_pending
             .lock()
@@ -2500,7 +1687,6 @@ impl AppState {
             .insert(pending_id, (command, timeout_ms));
     }
 
-    /// 审批通过：执行 shell 命令，将结果发送到 ReAct 循环等待的 channel
     pub async fn approve_chat_shell_impl(&self, pending_id: i64) -> Result<(), String> {
         let (command, timeout_ms) = self
             .chat_shell_pending
@@ -2542,7 +1728,6 @@ impl AppState {
         Ok(())
     }
 
-    /// 审批拒绝：丢弃命令，通知 ReAct 循环
     pub fn reject_chat_shell_impl(&self, pending_id: i64) -> Result<(), String> {
         self.chat_shell_pending
             .lock()
@@ -2559,9 +1744,6 @@ impl AppState {
         Ok(())
     }
 
-    // ── MCP client management ──────────────────────────────────────────────────
-
-    /// Spawn an MCP server and register it in the active clients map.
     pub async fn spawn_mcp_client(
         &self,
         name: String,
@@ -2575,13 +1757,11 @@ impl AppState {
         Ok(())
     }
 
-    /// Stop (drop) a running MCP client.
     pub fn stop_mcp_client(&self, name: &str) {
         let mut clients = self.mcp_clients.lock().expect("mcp_clients 锁已被污染");
         clients.remove(name);
     }
 
-    /// Return the Arc for a given MCP client name, or None if not running.
     pub fn get_mcp_client(
         &self,
         name: &str,
@@ -2593,7 +1773,6 @@ impl AppState {
             .cloned()
     }
 
-    /// Return names of all currently running MCP clients.
     pub fn list_running_mcp_clients(&self) -> Vec<String> {
         self.mcp_clients
             .lock()
@@ -2603,51 +1782,12 @@ impl AppState {
             .collect()
     }
 
-    /// 取消正在进行的会话查询（软取消：停止 emit chunk）
     pub fn cancel_ask_session(&self, session_id: String) -> Result<(), String> {
-        use std::sync::atomic::Ordering;
-        let flags = self
-            .ask_cancel_flags
-            .lock()
-            .expect("cancel_flags 锁已被污染");
-        if let Some(flag) = flags.get(&session_id) {
-            flag.store(true, Ordering::Relaxed);
-        }
-        Ok(())
+        ask_service::cancel_ask_session(self, session_id)
     }
 
-    /// 清空会话历史（开启新对话）
     pub fn clear_ask_session(&self, session_id: String) -> Result<(), String> {
-        let normalized_session_id = session_id.trim().to_string();
-        if normalized_session_id.is_empty() {
-            return Ok(());
-        }
-
-        {
-            let mut sessions = self.ask_sessions.lock().expect("sessions 锁已被污染");
-            sessions.remove(&normalized_session_id);
-        }
-        {
-            let mut flags = self
-                .ask_cancel_flags
-                .lock()
-                .expect("cancel_flags 锁已被污染");
-            flags.remove(&normalized_session_id);
-        }
-
-        let vault_path = {
-            let guard = self.inner.lock().expect("状态锁已被污染");
-            guard.vault_path.clone()
-        };
-        let Some(vault_path) = vault_path else {
-            return Ok(());
-        };
-        let db_path = vault_path.join(".app").join("meta.db");
-        if !db_path.exists() {
-            return Ok(());
-        }
-        db::clear_ask_session_turns(&db_path, &normalized_session_id, &current_timestamp_ms())?;
-        Ok(())
+        ask_service::clear_ask_session(self, session_id)
     }
 
     // ── 配置 I/O 薄包装（实现在 config_service）─────────────────────────────

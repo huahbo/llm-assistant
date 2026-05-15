@@ -118,7 +118,7 @@ pub(super) fn search_wiki_matches(
     tokens: &[String],
     question: &str,
     limit: usize,
-) -> Result<Vec<WikiMatch>, String> {
+) -> Result<Vec<super::WikiMatch>, String> {
     let entries = match fs::read_dir(wiki_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -144,7 +144,7 @@ pub(super) fn search_wiki_matches_with_fts(
     limit: usize,
 ) -> Result<
     (
-        Vec<WikiMatch>,
+        Vec<super::WikiMatch>,
         &'static str,
         Option<String>,
         Option<QuerySearchDebug>,
@@ -263,7 +263,7 @@ pub(super) fn search_wiki_matches_rrf_with_extra_routes(
     extra_routes: &[(String, Vec<String>)],
 ) -> Result<
     (
-        Vec<WikiMatch>,
+        Vec<super::WikiMatch>,
         &'static str,
         Option<String>,
         Option<QuerySearchDebug>,
@@ -383,7 +383,7 @@ pub(super) fn search_wiki_matches_rrf(
     limit: usize,
 ) -> Result<
     (
-        Vec<WikiMatch>,
+        Vec<super::WikiMatch>,
         &'static str,
         Option<String>,
         Option<QuerySearchDebug>,
@@ -398,7 +398,7 @@ pub(super) fn search_wiki_matches_from_paths(
     tokens: &[String],
     question: &str,
     limit: usize,
-) -> Result<Vec<WikiMatch>, String> {
+) -> Result<Vec<super::WikiMatch>, String> {
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
@@ -444,7 +444,7 @@ pub(super) fn search_wiki_matches_from_paths(
         }
 
         let excerpt = pick_excerpt(&content, tokens);
-        results.push(WikiMatch {
+        results.push(super::WikiMatch {
             page_path: path.to_string_lossy().to_string(),
             score,
             excerpt,
@@ -736,7 +736,7 @@ fn trim_excerpt(input: &str, max_chars: usize) -> String {
     output
 }
 
-pub(super) fn build_query_prompt(question: &str, matches: &[WikiMatch]) -> String {
+pub(super) fn build_query_prompt(question: &str, matches: &[super::WikiMatch]) -> String {
     let mut lines = vec![
         "你是一个严格本地运行的 Wiki 助手。只能依据下方本地检索结果回答，不能编造。".to_string(),
         "如果证据不足，请明确说明不确定，并给出基于页面内容的保守建议。".to_string(),
@@ -764,7 +764,7 @@ pub(super) fn build_query_prompt(question: &str, matches: &[WikiMatch]) -> Strin
 /// 构建含历史上下文的 LLM prompt（多轮会话用）
 pub(super) fn build_query_prompt_with_history(
     question: &str,
-    matches: &[WikiMatch],
+    matches: &[super::WikiMatch],
     history: &[crate::models::AskTurn],
 ) -> String {
     let mut lines = vec![
@@ -804,7 +804,7 @@ pub(super) fn build_query_prompt_with_history(
     lines.join("\n")
 }
 
-pub(super) fn build_query_answer(question: &str, matches: &[WikiMatch]) -> String {
+pub(super) fn build_query_answer(question: &str, matches: &[super::WikiMatch]) -> String {
     if matches.is_empty() {
         return format!(
             "未在本地 Wiki 中检索到与\u{201c}{}\u{201d}直接相关的页面。建议先导入相关资料后再查询。",
@@ -915,13 +915,6 @@ pub(super) fn resolve_graph_node_label(
     db_title.to_string()
 }
 
-// ─── WikiMatch struct ─────────────────────────────────────────────────────────
-
-pub(super) struct WikiMatch {
-    pub page_path: String,
-    pub score: usize,
-    pub excerpt: String,
-}
 
 // ─── AppState method implementations ─────────────────────────────────────────
 
