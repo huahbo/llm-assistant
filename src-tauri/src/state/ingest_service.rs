@@ -1,4 +1,4 @@
-use super::AppState;
+﻿use super::AppState;
 use crate::{db, models::LogLevel};
 use flate2::read::ZlibDecoder;
 use std::{
@@ -1052,7 +1052,7 @@ fn is_supported_image_extension(ext: &str) -> bool {
     )
 }
 
-fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
+pub(super) fn validate_pdf_source_path(source_path: &Path) -> Result<(), String> {
     if !source_path.exists() {
         return Err(format!("PDF 文件不存在：{}", source_path.to_string_lossy()));
     }
@@ -1190,7 +1190,7 @@ fn extract_text_from_docx(source_path: &Path) -> Result<String, String> {
 }
 
 /// 按段落（<w:p>）提取 DOCX 文本，段落间用空行分隔，段内 <w:t> 拼接。
-fn extract_docx_paragraphs(xml: &str) -> String {
+pub(super) fn extract_docx_paragraphs(xml: &str) -> String {
     let mut paragraphs: Vec<String> = Vec::new();
     let mut offset = 0usize;
 
@@ -1254,7 +1254,7 @@ fn extract_text_from_pptx(source_path: &Path) -> Result<String, String> {
 
 /// 从路径中提取幻灯片编号数字，用于自然数排序。
 /// 例如 "ppt/slides/slide12.xml" -> 12，未匹配时返回 0。
-fn extract_slide_number(name: &str) -> u32 {
+pub(super) fn extract_slide_number(name: &str) -> u32 {
     // 匹配 "slide" 后面的数字，例如 "ppt/slides/slide12.xml" -> 12
     name.rfind("slide")
         .and_then(|pos| {
@@ -1266,7 +1266,7 @@ fn extract_slide_number(name: &str) -> u32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OcrProvider {
+pub(super) enum OcrProvider {
     Tesseract,
     Paddle,
 }
@@ -1281,7 +1281,7 @@ impl OcrProvider {
 }
 
 /// 归一化 OCR provider：非法值统一回退到 tesseract。
-fn normalize_ocr_provider(provider: Option<&str>) -> OcrProvider {
+pub(super) fn normalize_ocr_provider(provider: Option<&str>) -> OcrProvider {
     let normalized = provider
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1295,7 +1295,7 @@ fn normalize_ocr_provider(provider: Option<&str>) -> OcrProvider {
 }
 
 /// 根据首选 provider 生成执行顺序（主用失败后自动回退）。
-fn resolve_ocr_provider_order(primary: OcrProvider) -> [OcrProvider; 2] {
+pub(super) fn resolve_ocr_provider_order(primary: OcrProvider) -> [OcrProvider; 2] {
     match primary {
         OcrProvider::Tesseract => [OcrProvider::Tesseract, OcrProvider::Paddle],
         OcrProvider::Paddle => [OcrProvider::Paddle, OcrProvider::Tesseract],
@@ -1471,7 +1471,7 @@ fn run_paddle_ocr_command(source_path: &Path) -> Result<std::process::Output, St
         .map_err(|err| format_paddle_spawn_error(&err))
 }
 
-fn format_tesseract_spawn_error(err: &io::Error) -> String {
+pub(super) fn format_tesseract_spawn_error(err: &io::Error) -> String {
     if err.kind() == io::ErrorKind::NotFound {
         "未检测到 tesseract 命令，请先安装 Tesseract OCR 并加入 PATH".to_string()
     } else {
@@ -1606,7 +1606,7 @@ fn extract_quoted_segments(text: &str) -> Vec<String> {
     results
 }
 
-fn extract_xml_text_by_tag(xml: &str, tag_name: &str) -> String {
+pub(super) fn extract_xml_text_by_tag(xml: &str, tag_name: &str) -> String {
     let open_tag = format!("<{}", tag_name);
     let close_tag = format!("</{}>", tag_name);
     let mut values = Vec::new();
@@ -1741,7 +1741,7 @@ struct PdfOcrFallbackOutput {
 }
 
 /// 仅在"解析兼容/无文本/扫描件"类场景启用 PDF OCR 回退。
-fn should_fallback_to_pdf_ocr(error_message: &str) -> bool {
+pub(super) fn should_fallback_to_pdf_ocr(error_message: &str) -> bool {
     [
         "解析器暂不兼容",
         "未识别到可用文本",
@@ -1754,7 +1754,7 @@ fn should_fallback_to_pdf_ocr(error_message: &str) -> bool {
 }
 
 /// 拼装 PDF OCR 回退失败文案，统一包含安装指引。
-fn build_pdf_ocr_fallback_failure_message(parse_error: &str, ocr_error: &str) -> String {
+pub(super) fn build_pdf_ocr_fallback_failure_message(parse_error: &str, ocr_error: &str) -> String {
     format!(
         "PDF 文本解析失败：{}；自动 OCR 回退失败：{}。安装指引：请安装 Poppler（确保 `pdftoppm` 可执行并已加入 PATH）；并安装 tesseract 或 paddleocr（至少一种）并加入 PATH。",
         shorten_error_snippet(parse_error.trim(), 160),
@@ -1929,7 +1929,7 @@ fn load_pdf_document_with_fallback(
     ))
 }
 
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub(super) fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -1938,7 +1938,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub(super) fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(haystack.len());
     }
@@ -1948,7 +1948,7 @@ fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// 无法建模 PDF 结构时，直接从原始 stream 中提取可解码文本。
-fn extract_text_from_pdf_raw_streams(file_bytes: &[u8]) -> Option<String> {
+pub(super) fn extract_text_from_pdf_raw_streams(file_bytes: &[u8]) -> Option<String> {
     const STREAM_MARKER: &[u8] = b"stream";
     const ENDSTREAM_MARKER: &[u8] = b"endstream";
 
@@ -2011,7 +2011,7 @@ fn extract_text_from_pdf_raw_streams(file_bytes: &[u8]) -> Option<String> {
 }
 
 /// 为每个 stream 提供原始字节与 Flate 解压字节两个候选。
-fn decode_pdf_stream_candidates(stream_bytes: &[u8]) -> Vec<Vec<u8>> {
+pub(super) fn decode_pdf_stream_candidates(stream_bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut candidates = Vec::with_capacity(2);
     if !stream_bytes.is_empty() {
         candidates.push(stream_bytes.to_vec());
@@ -2105,7 +2105,7 @@ fn extract_text_from_pdf_fallback_ops(
     }
 }
 
-fn extract_text_from_pdf_operations(operations: &[lopdf::content::Operation]) -> String {
+pub(super) fn extract_text_from_pdf_operations(operations: &[lopdf::content::Operation]) -> String {
     let mut extracted = String::new();
 
     for operation in operations {
@@ -2145,7 +2145,7 @@ fn append_pdf_text_object(value: &lopdf::Object, output: &mut String) {
 }
 
 /// 生成基于微秒时间戳的短唯一字符串，用于临时文件命名。
-fn uuid_v4_short() -> String {
+pub(super) fn uuid_v4_short() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

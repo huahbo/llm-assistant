@@ -2,7 +2,7 @@ use super::AppState;
 use crate::{
     db,
     llm::{
-        LlmError, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider,
+        LlmError, LlmProvider, OllamaConfig, OpenAiConfig, OpenAiProvider,
         DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     },
     models::{

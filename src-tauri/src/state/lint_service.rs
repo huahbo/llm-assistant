@@ -300,7 +300,7 @@ pub fn lint_report(state: &AppState) -> LintReport {
                     continue;
                 }
                 if let Ok(file_content) = fs::read_to_string(&path) {
-                    if let Some(fm) = super::parse_wiki_frontmatter(&file_content) {
+                    if let Some(fm) = super::wiki_service::parse_wiki_frontmatter(&file_content) {
                         if fm.stale == Some(true) {
                             issues.push(LintIssue {
                                 code: "STALE_PAGE".to_string(),
@@ -811,7 +811,7 @@ const SEMANTIC_LINT_CODES: &[&str] = &[
 ///
 /// 格式要求：每行 `CODE|severity|message|path|suggestion`，
 /// 非法行静默跳过，最多返回 10 条。
-fn parse_semantic_lint_response(response: &str) -> Vec<LintIssue> {
+pub(super) fn parse_semantic_lint_response(response: &str) -> Vec<LintIssue> {
     response
         .lines()
         .filter_map(|line| {
@@ -856,7 +856,7 @@ fn parse_semantic_lint_response(response: &str) -> Vec<LintIssue> {
 }
 
 /// 将语义问题合并进规则 Lint 报告，更新统计与摘要。
-fn merge_lint_with_semantic(mut rules: LintReport, semantic: Vec<LintIssue>) -> LintReport {
+pub(super) fn merge_lint_with_semantic(mut rules: LintReport, semantic: Vec<LintIssue>) -> LintReport {
     if semantic.is_empty() {
         return rules;
     }

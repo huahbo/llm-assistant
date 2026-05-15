@@ -466,7 +466,7 @@ pub(super) fn search_wiki_matches_from_paths(
 /// 在 Markdown 文件内容中设置或移除 frontmatter 的 `stale` 字段。
 /// 如果 stale=true，确保 frontmatter 中有 `stale: true`；
 /// 如果 stale=false，移除 `stale:` 行（不写 `stale: false` 以保持简洁）。
-fn set_frontmatter_stale_field(content: &str, stale: bool) -> String {
+pub(super) fn set_frontmatter_stale_field(content: &str, stale: bool) -> String {
     // 定位 frontmatter 块：内容以 "---\n" 开头，找到第二个 "---"
     if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
         // 无 frontmatter：直接返回原内容（不修改）
@@ -693,7 +693,7 @@ pub(super) fn friendly_display_path(path: &Path) -> String {
     friendly_display_path_str(normalized.as_ref())
 }
 
-fn friendly_display_path_str(path: &str) -> String {
+pub(super) fn friendly_display_path_str(path: &str) -> String {
     if let Some(stripped) = path.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{}", stripped);
     }
@@ -826,7 +826,7 @@ pub(super) fn build_query_answer(question: &str, matches: &[super::WikiMatch]) -
 
 // ─── Free function helpers: title / slug / graph label ───────────────────────
 
-fn extract_markdown_h1_title(content: &str) -> Option<String> {
+pub(super) fn extract_markdown_h1_title(content: &str) -> Option<String> {
     content
         .lines()
         .find(|line| line.starts_with("# "))
@@ -835,7 +835,7 @@ fn extract_markdown_h1_title(content: &str) -> Option<String> {
 }
 
 /// 在 `wiki/` 目录中寻找可用 slug，必要时自动追加序号（`-2` 到 `-99`）。
-fn resolve_unique_wiki_slug(wiki_dir: &Path, base_slug: &str) -> Result<String, String> {
+pub(super) fn resolve_unique_wiki_slug(wiki_dir: &Path, base_slug: &str) -> Result<String, String> {
     let candidate = wiki_dir.join(format!("{}.md", base_slug));
     if !candidate.exists() {
         return Ok(base_slug.to_string());
@@ -877,7 +877,7 @@ pub(super) fn extract_wiki_display_name(display_source_path: &str) -> Option<Str
 }
 
 /// 判断标题是否为原始摄入 ID（格式：`ingest-{纯十进制数字}`）。
-fn is_raw_ingest_id(title: &str) -> bool {
+pub(super) fn is_raw_ingest_id(title: &str) -> bool {
     match title.strip_prefix("ingest-") {
         Some(rest) => !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()),
         None => false,
@@ -2027,7 +2027,7 @@ fn is_existing_wiki_page_target(vault_path: &Path, raw_path: &str) -> bool {
     canonical_target.starts_with(&canonical_root)
 }
 
-fn resolve_wiki_page_candidate(vault_path: &Path, raw_path: &str) -> Result<PathBuf, String> {
+pub(super) fn resolve_wiki_page_candidate(vault_path: &Path, raw_path: &str) -> Result<PathBuf, String> {
     let wiki_root = vault_path.join("wiki");
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {
@@ -2056,7 +2056,7 @@ fn resolve_wiki_page_candidate(vault_path: &Path, raw_path: &str) -> Result<Path
     })
 }
 
-fn prune_missing_index_links(vault_path: &Path) -> Result<usize, String> {
+pub(super) fn prune_missing_index_links(vault_path: &Path) -> Result<usize, String> {
     let index_path = vault_path.join("index.md");
     if !index_path.exists() {
         return Ok(0);
@@ -2071,7 +2071,7 @@ fn prune_missing_index_links(vault_path: &Path) -> Result<usize, String> {
     Ok(removed)
 }
 
-fn prune_missing_index_links_from_content(vault_path: &Path, content: &str) -> (String, usize) {
+pub(super) fn prune_missing_index_links_from_content(vault_path: &Path, content: &str) -> (String, usize) {
     let wiki_link_re =
         regex::Regex::new(r"\[\[([^|\]]+)(?:\|[^\]]+)?\]\]").expect("wiki link regex 应可编译");
     let markdown_link_re =
@@ -2125,7 +2125,7 @@ fn prune_missing_index_links_from_content(vault_path: &Path, content: &str) -> (
 }
 
 /// 计算字符串的简单哈希（FNV-1a 64-bit，用于生成 content_hash）。
-fn md5_simple(input: &str) -> u64 {
+pub(super) fn md5_simple(input: &str) -> u64 {
     let mut hash: u64 = 14695981039346656037u64;
     for byte in input.as_bytes() {
         hash ^= *byte as u64;

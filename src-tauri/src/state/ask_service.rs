@@ -3,7 +3,7 @@ use crate::{
     db,
     llm::{LlmError, LlmProvider},
     models::{
-        AppMode, AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem, AskSessionTurnMeta,
+        AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem, AskSessionTurnMeta,
         LogLevel, OutboxAckResult, OutboxEventItem, QueryAnswerResult, QueryAskOptions,
         QueryCitation, QuerySettings, SaveQueryAnswerInput, SaveQueryAnswerResult,
     },
