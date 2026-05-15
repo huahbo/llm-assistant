@@ -207,7 +207,7 @@ pub fn list_conversations(db_path: &Path, include_archived: bool) -> Result<Vec<
     let conn = open_conn(db_path)?;
     let sql = if include_archived {
         "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at, parent_conv_id, depth
-         FROM agent_conversations ORDER BY updated_at DESC"
+         FROM agent_conversations WHERE depth = 0 ORDER BY updated_at DESC"
     } else {
         "SELECT id, title, system_prompt, skill_key, memory_snapshot, archived, shell_mode, created_at, updated_at, parent_conv_id, depth
          FROM agent_conversations WHERE archived = 0 AND depth = 0 ORDER BY updated_at DESC"
@@ -741,6 +741,10 @@ mod tests {
         let visible = list_conversations(&path, false).unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, root_id);
+
+        // include_archived=true still excludes subagents
+        let all_visible = list_conversations(&path, true).unwrap();
+        assert_eq!(all_visible.len(), 1);
 
         // get_conversation should return parent linkage
         let child = get_conversation(&path, child_id).unwrap().unwrap();
