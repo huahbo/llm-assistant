@@ -1654,18 +1654,6 @@ impl AppState {
 
     // ── 配置 I/O 薄包装（实现在 config_service）─────────────────────────────
 
-    #[cfg(test)]
-    fn llm_status_input(
-        &self,
-    ) -> (
-        AppMode,
-        Option<String>,
-        Option<OpenAiConfig>,
-        Option<Arc<dyn LlmProvider>>,
-    ) {
-        config_service::llm_status_input(self)
-    }
-
     fn load_config(config_path: &Path) -> (AppConfig, Option<String>) {
         config_service::load_config(config_path)
     }
