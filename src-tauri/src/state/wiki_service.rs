@@ -736,94 +736,6 @@ fn trim_excerpt(input: &str, max_chars: usize) -> String {
     output
 }
 
-pub(super) fn build_query_prompt(question: &str, matches: &[super::WikiMatch]) -> String {
-    let mut lines = vec![
-        "你是一个严格本地运行的 Wiki 助手。只能依据下方本地检索结果回答，不能编造。".to_string(),
-        "如果证据不足，请明确说明不确定，并给出基于页面内容的保守建议。".to_string(),
-        format!("问题：{}", question),
-        "本地检索结果：".to_string(),
-    ];
-
-    if matches.is_empty() {
-        lines.push("(未命中任何本地页面)".to_string());
-    } else {
-        for (idx, item) in matches.iter().enumerate() {
-            lines.push(format!("{}. 页面：{}", idx + 1, item.page_path));
-            lines.push(format!("   相关度：{}", item.score));
-            lines.push(format!("   证据：{}", item.excerpt));
-        }
-    }
-
-    lines.push("回答要求：".to_string());
-    lines.push("- 使用中文简洁回答。".to_string());
-    lines.push("- 优先引用页面路径和检索证据。".to_string());
-    lines.push("- 如果无法确认答案，请直接说明。".to_string());
-    lines.join("\n")
-}
-
-/// 构建含历史上下文的 LLM prompt（多轮会话用）
-pub(super) fn build_query_prompt_with_history(
-    question: &str,
-    matches: &[super::WikiMatch],
-    history: &[crate::models::AskTurn],
-) -> String {
-    let mut lines = vec![
-        "你是一个严格本地运行的 Wiki 助手。只能依据下方本地检索结果回答，不能编造。".to_string(),
-        "如果证据不足，请明确说明不确定，并给出基于页面内容的保守建议。".to_string(),
-    ];
-
-    if !history.is_empty() {
-        lines.push("对话历史（供上下文参考）：".to_string());
-        for turn in history {
-            let prefix = if turn.role == "user" {
-                "用户"
-            } else {
-                "助手"
-            };
-            lines.push(format!("{}: {}", prefix, turn.content));
-        }
-    }
-
-    lines.push(format!("当前问题：{}", question));
-    lines.push("本地检索结果：".to_string());
-
-    if matches.is_empty() {
-        lines.push("(未命中任何本地页面)".to_string());
-    } else {
-        for (idx, item) in matches.iter().enumerate() {
-            lines.push(format!("{}. 页面：{}", idx + 1, item.page_path));
-            lines.push(format!("   相关度：{}", item.score));
-            lines.push(format!("   证据：{}", item.excerpt));
-        }
-    }
-
-    lines.push("回答要求：".to_string());
-    lines.push("- 使用中文简洁回答。".to_string());
-    lines.push("- 优先引用页面路径和检索证据。".to_string());
-    lines.push("- 如果无法确认答案，请直接说明。".to_string());
-    lines.join("\n")
-}
-
-pub(super) fn build_query_answer(question: &str, matches: &[super::WikiMatch]) -> String {
-    if matches.is_empty() {
-        return format!(
-            "未在本地 Wiki 中检索到与\u{201c}{}\u{201d}直接相关的页面。建议先导入相关资料后再查询。",
-            question
-        );
-    }
-
-    let mut lines = vec![
-        format!("问题：{}", question),
-        "基于本地检索，以下页面与问题最相关：".to_string(),
-    ];
-
-    for item in matches {
-        lines.push(format!("- {}（相关度：{}）", item.page_path, item.score));
-    }
-    lines.push("以上为本地规则检索结果（未调用云模型）。".to_string());
-    lines.join("\n")
-}
-
 // ─── Free function helpers: title / slug / graph label ───────────────────────
 
 pub(super) fn extract_markdown_h1_title(content: &str) -> Option<String> {
@@ -863,17 +775,6 @@ fn wiki_title_from_content(content: &str, fallback_path: &str) -> String {
                 .unwrap_or(fallback_path)
                 .to_string()
         })
-}
-
-/// 从显示路径提取有意义的 wiki 页面名称（供 ingest 命名使用）。
-/// 取文件 stem，排除内部临时文件（`llm_wiki_` 前缀）。
-pub(super) fn extract_wiki_display_name(display_source_path: &str) -> Option<String> {
-    std::path::Path::new(display_source_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && !s.starts_with("llm_wiki_"))
-        .map(str::to_string)
 }
 
 /// 判断标题是否为原始摄入 ID（格式：`ingest-{纯十进制数字}`）。

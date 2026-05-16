@@ -481,14 +481,6 @@ pub fn set_search_config(state: &AppState, cfg: SearchConfig) -> Result<(), Stri
     Ok(())
 }
 
-pub async fn search_web_cascade(
-    state: &AppState,
-    query: &str,
-    max_results: usize,
-) -> Result<Vec<WebSearchResult>, String> {
-    Ok(search_web_cascade_with_source(state, query, max_results).await?.0)
-}
-
 pub async fn search_web_cascade_with_source(
     state: &AppState,
     query: &str,

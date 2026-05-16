@@ -14,8 +14,8 @@ use crate::{
         AskSessionTurnItem, DefaultPaths, IngestPreview, IngestResult,
         KnowledgeGraphData, KnowledgeGraphDirection,
         KnowledgeSubgraphData, LintPatchApplyInput,
-        LintPatchApplyResult, LintPatchBatchApplyItemResult, LintPatchBatchApplyResult,
-        LintPatchBatchApplyStatus, LintPatchEventItem, LintPatchPreview,
+        LintPatchApplyResult, LintPatchBatchApplyResult,
+        LintPatchEventItem, LintPatchPreview,
         LintReport, LlmProviderConfig, LlmStatus, LogEntry, LogLevel,
         ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem, ProgressPayload,
         QueryAnswerResult, QueryAskOptions,
@@ -297,24 +297,12 @@ impl AppState {
         self.app_handle.get()
     }
 
-    fn load_search_config_from_path(config_path: &Path) -> crate::models::SearchConfig {
-        search_service::load_search_config_from_path(config_path)
-    }
-
     pub fn get_search_config(&self) -> crate::models::SearchConfig {
         search_service::get_search_config(self)
     }
 
     pub fn set_search_config(&self, cfg: crate::models::SearchConfig) -> Result<(), String> {
         search_service::set_search_config(self, cfg)
-    }
-
-    pub async fn search_web_cascade(
-        &self,
-        query: &str,
-        max_results: usize,
-    ) -> Result<Vec<crate::models::WebSearchResult>, String> {
-        search_service::search_web_cascade(self, query, max_results).await
     }
 
     pub async fn search_web_cascade_with_source(
@@ -589,21 +577,7 @@ impl AppState {
     }
 
 
-    async fn extract_entities(&self, content: &str) -> Vec<String> {
-        wiki_service::extract_entities(self, content).await
-    }
-
-    async fn update_related_pages_with_link(
-        &self,
-        db_path: &Path,
-        vault_path: &Path,
-        new_wiki_abs_path: &str,
-        new_wiki_title: &str,
-        entities: &[String],
-    ) -> Vec<String> {
-        wiki_service::update_related_pages_with_link(self, db_path, vault_path, new_wiki_abs_path, new_wiki_title, entities).await
-    }
-
+    #[cfg(test)]
     async fn generate_query_answer_with_provider(
         &self,
         question: &str,
@@ -685,18 +659,13 @@ impl AppState {
         wiki_service::wiki_page_citations(self, page_path)
     }
 
+    #[cfg(test)]
     pub fn lint_report(&self) -> LintReport {
         lint_service::lint_report(self)
     }
 
     pub fn preview_lint_patches(&self) -> LintPatchPreview {
         lint_service::preview_lint_patches(self)
-    }
-
-    pub fn lint_report_full_future(
-        &self,
-    ) -> impl std::future::Future<Output = LintReport> + Send + 'static {
-        lint_service::lint_report_full_future(self)
     }
 
     pub fn quick_lint_page_impl(
@@ -1702,14 +1671,6 @@ impl AppState {
         config_service::default_config_path()
     }
 
-    fn project_root() -> PathBuf {
-        config_service::project_root()
-    }
-
-    fn default_config_path_from_root(root: &Path) -> PathBuf {
-        config_service::default_config_path_from_root(root)
-    }
-
     fn serialize_config_full(config: &AppConfig) -> String {
         config_service::serialize_config_full(config)
     }
@@ -1720,20 +1681,6 @@ impl AppState {
         expected_snapshot: Option<&str>,
     ) -> Result<(), String> {
         config_service::write_config_file(config_path, serialized, expected_snapshot)
-    }
-
-    fn persist_config(
-        &self,
-        mode: AppMode,
-        vault_path: Option<&Path>,
-        query_top_k: usize,
-        expected_snapshot: Option<&str>,
-    ) -> Result<String, String> {
-        config_service::persist_config(self, mode, vault_path, query_top_k, expected_snapshot)
-    }
-
-    fn set_vault_path(&self, vault_path: PathBuf) -> Result<(), String> {
-        config_service::set_vault_path(self, vault_path)
     }
 
     fn push_log(&self, level: LogLevel, message: String) {
@@ -1876,27 +1823,6 @@ impl AppState {
             db::append_outbox_event(&db_path, event_type, &payload_json, &current_timestamp_ms())
         {
             self.push_log(LogLevel::Warn, format!("写入 outbox 事件失败: {}", err));
-        }
-    }
-
-    fn record_lint_patch_event(
-        &self,
-        vault_path: &Path,
-        issue_code: &str,
-        path: Option<&str>,
-        applied: bool,
-        message: &str,
-    ) {
-        let db_path = vault_path.join(".app").join("meta.db");
-        let timestamp_ms = current_timestamp_ms();
-
-        if let Err(err) =
-            db::insert_lint_patch_event(&db_path, issue_code, path, applied, message, &timestamp_ms)
-        {
-            self.push_log(
-                LogLevel::Warn,
-                format!("写入 lint_patch_events 失败: {}", err),
-            );
         }
     }
 
@@ -2131,15 +2057,16 @@ mod tests {
         build_searxng_search_params, detect_query_pref_language, normalize_searxng_base_url,
         parse_unresponsive_engines, searxng_base_root, validate_search_config, SearxngSearchParams,
     };
+    use super::ask_service::build_query_answer;
     use super::wiki_service::{
-        build_query_answer, friendly_display_path_str, is_raw_ingest_id, md5_simple,
+        friendly_display_path_str, is_raw_ingest_id, md5_simple,
         normalize_top_k, prune_missing_index_links, prune_missing_index_links_from_content,
         resolve_graph_node_label, search_wiki_matches_from_paths, search_wiki_matches_rrf,
         search_wiki_matches_rrf_with_extra_routes, search_wiki_matches_with_fts,
         set_frontmatter_stale_field, tokenize_query,
     };
     use crate::llm::LlmError;
-    use crate::models::{LintIssue, QueryCitation};
+    use crate::models::{LintIssue, LintPatchBatchApplyItemResult, LintPatchBatchApplyStatus, QueryCitation};
     use async_trait::async_trait;
     use rusqlite::{params, Connection};
     use std::{
