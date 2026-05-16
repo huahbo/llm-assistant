@@ -2034,3 +2034,942 @@ pub(super) fn md5_simple(input: &str) -> u64 {
     }
     hash
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{db, state::test_helpers::*};
+    use crate::models::{QueryCitation, SaveQueryAnswerInput};
+    use rusqlite::{params, Connection};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    // ── Phase 6a: Pure tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn is_raw_ingest_id_detects_timestamp_pattern() {
+        assert!(is_raw_ingest_id("ingest-1777101379565550500"));
+        assert!(is_raw_ingest_id("ingest-0"));
+        assert!(!is_raw_ingest_id("rust生命周期"));
+        assert!(!is_raw_ingest_id("ingest-abc123"));
+        assert!(!is_raw_ingest_id("ingest-123abc"));
+        assert!(!is_raw_ingest_id("ingest-"));
+        assert!(!is_raw_ingest_id(""));
+    }
+
+    #[test]
+    fn resolve_graph_node_label_preserves_meaningful_title() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: Some("rust生命周期".to_string()),
+            source: None,
+            raw: None,
+            imported_at: None,
+            entities: vec!["Rust".to_string()],
+            stale: None,
+        };
+        assert_eq!(
+            resolve_graph_node_label("rust生命周期", &fm),
+            "rust生命周期"
+        );
+    }
+
+    #[test]
+    fn resolve_graph_node_label_uses_first_entity_for_raw_id() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: Some("ingest-1777101379565550500".to_string()),
+            source: None,
+            raw: None,
+            imported_at: None,
+            entities: vec!["PINNs".to_string(), "Transformer".to_string()],
+            stale: None,
+        };
+        assert_eq!(
+            resolve_graph_node_label("ingest-1777101379565550500", &fm),
+            "PINNs"
+        );
+    }
+
+    #[test]
+    fn resolve_graph_node_label_falls_back_to_source_stem() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: None,
+            source: Some(r"E:\vault\research\大模型rag框架进展.md".to_string()),
+            raw: None,
+            imported_at: None,
+            entities: vec![],
+            stale: None,
+        };
+        assert_eq!(
+            resolve_graph_node_label("ingest-1776768806095623000", &fm),
+            "大模型rag框架进展"
+        );
+    }
+
+    #[test]
+    fn resolve_graph_node_label_skips_internal_source_path() {
+        let fm = crate::models::WikiPageFrontmatter {
+            title: None,
+            source: Some(r"C:\Temp\llm_wiki_preview_apply_123.md".to_string()),
+            raw: None,
+            imported_at: None,
+            entities: vec![],
+            stale: None,
+        };
+        assert_eq!(
+            resolve_graph_node_label("ingest-1776000000000000000", &fm),
+            "ingest-1776000000000000000"
+        );
+    }
+
+    #[test]
+    fn friendly_display_path_str_strips_windows_verbatim_prefix() {
+        assert_eq!(
+            friendly_display_path_str(r"\\?\C:\llm-wiki\vault\wiki\detail.md"),
+            r"C:\llm-wiki\vault\wiki\detail.md"
+        );
+        assert_eq!(
+            friendly_display_path_str(r"\\?\UNC\server\share\vault\wiki\detail.md"),
+            r"\\server\share\vault\wiki\detail.md"
+        );
+    }
+
+    #[test]
+    fn prune_missing_index_links_from_content_removes_only_missing_targets() {
+        let vault_dir = make_temp_dir("llm-wiki-prune-index-content");
+        let _guard = TempDirGuard(vault_dir.clone());
+        fs::create_dir_all(vault_dir.join("wiki")).expect("创建 wiki 目录失败");
+        fs::write(vault_dir.join("wiki").join("kept.md"), "# kept").expect("写入 kept 页面失败");
+
+        let content = [
+            "# Index",
+            "- [[wiki/kept.md|kept]]",
+            "- [[wiki/missing.md|missing]]",
+            "- [missing-md](wiki/missing2.md)",
+            "- [external](https://example.com)",
+        ]
+        .join("\n");
+
+        let (updated, removed) = prune_missing_index_links_from_content(&vault_dir, &content);
+        assert_eq!(removed, 2);
+        assert!(updated.contains("[[wiki/kept.md|kept]]"));
+        assert!(!updated.contains("[[wiki/missing.md|missing]]"));
+        assert!(!updated.contains("wiki/missing2.md"));
+        assert!(updated.contains("https://example.com"));
+    }
+
+    #[test]
+    fn search_wiki_matches_with_fts_prefers_fts_strategy() {
+        let vault_dir = make_temp_dir("llm-wiki-query-fts");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let wiki_dir = vault_dir.join("wiki");
+        let wiki_path = wiki_dir.join("fts-hit.md");
+        let content = "# FTS Hit\nRust backend with tauri integration.\n";
+        fs::write(&wiki_path, content).expect("写入 fts-hit 失败");
+        db::upsert_fts_page(&db_path, &wiki_path, "fts-hit", content).expect("写入 fts 索引失败");
+
+        let tokens = tokenize_query("Rust backend");
+        let (matches, strategy, fts_error, search_debug) =
+            search_wiki_matches_with_fts(&db_path, &wiki_dir, &tokens, "Rust backend", 3)
+                .expect("执行检索失败");
+
+        assert!(fts_error.is_none());
+        assert_eq!(strategy, "fts");
+        assert!(search_debug.is_some());
+        assert!(!matches.is_empty());
+        assert!(matches.iter().any(|item| item.page_path.ends_with("fts-hit.md")));
+    }
+
+    #[test]
+    fn tokenize_query_supports_cjk_segments_and_bigrams() {
+        let tokens = tokenize_query("这个项目的核心目标是什么？query v1");
+
+        assert!(tokens.iter().any(|item| item == "query"));
+        assert!(tokens.iter().any(|item| item == "这个项目的核心目标是什么"));
+        assert!(tokens.iter().any(|item| item == "核心"));
+        assert!(tokens.iter().any(|item| item == "目标"));
+    }
+
+    #[test]
+    fn tokenize_query_filters_stopwords() {
+        let tokens = tokenize_query("the 这个 项目 的 核心 目标 是 什么");
+
+        assert!(!tokens.iter().any(|item| item == "the"));
+        assert!(!tokens.iter().any(|item| item == "的"));
+        assert!(!tokens.iter().any(|item| item == "是"));
+        assert!(tokens.iter().any(|item| item == "项目"));
+        assert!(tokens.iter().any(|item| item == "核心"));
+    }
+
+    #[test]
+    fn search_wiki_matches_from_paths_applies_phrase_title_boost_and_deduplicates() {
+        let vault_dir = make_temp_dir("llm-wiki-query-rank");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let wiki_dir = vault_dir.join("wiki");
+        fs::create_dir_all(&wiki_dir).expect("创建 wiki 目录失败");
+
+        let high_path = wiki_dir.join("high.md");
+        let low_path = wiki_dir.join("low.md");
+        fs::write(
+            &high_path,
+            "# 核心目标\n这个项目的核心目标是什么 这是完整短语。\n",
+        )
+        .expect("写入 high.md 失败");
+        fs::write(&low_path, "# 其他说明\n这个 项目 核心 目标 分散出现。\n")
+            .expect("写入 low.md 失败");
+
+        let page_paths = vec![
+            high_path.to_string_lossy().to_string(),
+            high_path.to_string_lossy().to_string(),
+            low_path.to_string_lossy().to_string(),
+        ];
+        let question = "这个项目的核心目标是什么";
+        let tokens = tokenize_query(question);
+        let matches = search_wiki_matches_from_paths(&page_paths, &tokens, question, 5)
+            .expect("执行页面匹配失败");
+
+        assert_eq!(matches.len(), 2);
+        assert!(matches[0].page_path.ends_with("high.md"));
+        assert!(matches[0].score >= matches[1].score);
+    }
+
+    #[test]
+    fn search_wiki_matches_rrf_degrades_gracefully_on_empty_vault() {
+        let tmp = make_temp_dir("llm-wiki-rrf-degrade");
+        let _guard = TempDirGuard(tmp.clone());
+        let db_path = tmp.join("meta.db");
+        let wiki_dir = tmp.join("wiki");
+        fs::create_dir_all(&wiki_dir).unwrap();
+        let tokens = vec!["test".to_string()];
+        let result = search_wiki_matches_rrf(&db_path, &wiki_dir, &tokens, "test", 3);
+        assert!(result.is_ok());
+        let (matches, _, _, _) = result.unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn search_wiki_matches_rrf_accepts_embedding_extra_route() {
+        let tmp = make_temp_dir("llm-wiki-rrf-extra-route");
+        let _guard = TempDirGuard(tmp.clone());
+        let db_path = tmp.join("meta.db");
+        let wiki_dir = tmp.join("wiki");
+        fs::create_dir_all(&wiki_dir).unwrap();
+
+        let page_path = wiki_dir.join("embedding-only.md");
+        fs::write(&page_path, "# Embedding\n\nRust embedding recall path").unwrap();
+
+        let tokens = vec!["rust".to_string()];
+        let extra_routes = vec![(
+            "embedding".to_string(),
+            vec![page_path.to_string_lossy().to_string()],
+        )];
+        let result = search_wiki_matches_rrf_with_extra_routes(
+            &db_path,
+            &wiki_dir,
+            &tokens,
+            "rust",
+            3,
+            &extra_routes,
+        )
+        .expect("执行含 embedding 扩展路径的 RRF 失败");
+
+        assert_eq!(result.1, "rrf");
+        assert_eq!(result.0.len(), 1);
+        assert!(result.0[0].page_path.ends_with("embedding-only.md"));
+        let debug = result.3.expect("应返回检索调试信息");
+        assert!(debug.routes.iter().any(|item| item.route == "embedding"));
+    }
+
+    #[test]
+    fn set_frontmatter_stale_field_adds_stale_true() {
+        let content = "---\ntitle: 'Test'\nimported_at: '2026-01-01'\n---\n# Body\n";
+        let result = set_frontmatter_stale_field(content, true);
+        assert!(result.contains("stale: true"), "应包含 stale: true");
+        assert!(result.contains("title:"), "不应丢失 title");
+    }
+
+    #[test]
+    fn set_frontmatter_stale_field_removes_stale_on_false() {
+        let content = "---\ntitle: 'Test'\nstale: true\n---\n# Body\n";
+        let result = set_frontmatter_stale_field(content, false);
+        assert!(!result.contains("stale:"), "应移除 stale 字段");
+        assert!(result.contains("title:"), "不应丢失 title");
+    }
+
+    // ── Phase 6b: AppState tests ──────────────────────────────────────────────
+
+    #[test]
+    fn prune_missing_index_links_updates_file_and_returns_removed_count() {
+        let vault_dir = make_temp_dir("llm-wiki-prune-index-file");
+        let _guard = TempDirGuard(vault_dir.clone());
+        fs::create_dir_all(vault_dir.join("wiki")).expect("创建 wiki 目录失败");
+        fs::write(vault_dir.join("wiki").join("exists.md"), "# exists").expect("写入页面失败");
+        fs::write(
+            vault_dir.join("index.md"),
+            "- [[wiki/exists.md|exists]]\n- [[wiki/gone.md|gone]]\n",
+        )
+        .expect("写入 index 失败");
+
+        let removed = prune_missing_index_links(&vault_dir).expect("清理 index 链接失败");
+        assert_eq!(removed, 1);
+
+        let updated = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index 失败");
+        assert!(updated.contains("[[wiki/exists.md|exists]]"));
+        assert!(!updated.contains("[[wiki/gone.md|gone]]"));
+    }
+
+    #[test]
+    fn recent_wiki_pages_requires_initialized_vault() {
+        let vault_dir = make_temp_dir("llm-wiki-recent-wiki-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let result = state.recent_wiki_pages(10);
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("请先调用 init_vault 初始化 Vault".to_string())
+        );
+    }
+
+    #[test]
+    fn recent_wiki_pages_returns_db_rows() {
+        let vault_dir = make_temp_dir("llm-wiki-recent-wiki");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let wiki_a_path = vault_dir.join("wiki").join("a.md");
+        let wiki_b_path = vault_dir.join("wiki").join("b.md");
+        fs::write(&wiki_a_path, "# Wiki A\nContent A").expect("创建 wiki a 失败");
+        fs::write(&wiki_b_path, "# Wiki B\nContent B").expect("创建 wiki b 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-wiki", "source", "raw", "1"],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Wiki A", wiki_a_path.to_string_lossy().to_string(), "summary a", "1", "2"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Wiki B", wiki_b_path.to_string_lossy().to_string(), "summary b", "1", "3"],
+        )
+        .expect("写入 wiki_pages 失败");
+
+        let pages = state.recent_wiki_pages(10).expect("读取 recent wiki 失败");
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].title, "Wiki B");
+        assert_eq!(pages[1].title, "Wiki A");
+        assert_paths_semantically_equal(
+            &wiki_b_path,
+            pages[0].display_path.as_deref().expect("缺少显示路径"),
+        );
+        assert_paths_semantically_equal(
+            &wiki_a_path,
+            pages[1].display_path.as_deref().expect("缺少显示路径"),
+        );
+    }
+
+    #[test]
+    fn search_wiki_pages_filters_rows() {
+        let vault_dir = make_temp_dir("llm-wiki-search-wiki");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["hash-search", "source", "raw", "1"],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Rust Wiki", vault_dir.join("wiki").join("rust.md").to_string_lossy().to_string(), "rust topic", "1", "2"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "Tauri Wiki", vault_dir.join("wiki").join("tauri.md").to_string_lossy().to_string(), "desktop topic", "1", "3"],
+        )
+        .expect("写入 wiki_pages 失败");
+
+        let rust_pages = state.search_wiki_pages("rust".to_string(), 10).expect("搜索 wiki 页面失败");
+        assert_eq!(rust_pages.len(), 1);
+        assert_eq!(rust_pages[0].title, "Rust Wiki");
+
+        let all_pages = state.search_wiki_pages("   ".to_string(), 10).expect("读取最近 wiki 页面失败");
+        assert_eq!(all_pages.len(), 2);
+    }
+
+    #[test]
+    fn wiki_page_detail_requires_initialized_vault() {
+        let vault_dir = make_temp_dir("llm-wiki-page-detail-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let result = state.wiki_page_detail("wiki/a.md".to_string());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("请先调用 init_vault 初始化 Vault".to_string())
+        );
+    }
+
+    #[test]
+    fn wiki_page_detail_reads_markdown_content() {
+        let vault_dir = make_temp_dir("llm-wiki-page-detail");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("detail.md");
+        fs::write(&page_path, "# Detail Title\n\n正文内容。").expect("写入页面失败");
+
+        let detail = state
+            .wiki_page_detail(page_path.to_string_lossy().to_string())
+            .expect("读取页面详情失败");
+        assert_eq!(detail.title, "Detail Title");
+        assert!(detail.content.contains("正文内容"));
+        assert!(detail.frontmatter.is_none());
+        assert_paths_semantically_equal(&page_path, &detail.path);
+        assert_paths_semantically_equal(&page_path, &detail.display_path);
+    }
+
+    #[test]
+    fn wiki_page_detail_parses_frontmatter_fields() {
+        let vault_dir = make_temp_dir("llm-wiki-page-detail-frontmatter");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("detail-frontmatter.md");
+        fs::write(
+            &page_path,
+            r#"---
+title: "Detail Title"
+source: "E:\\llm-wiki\\source\\detail.md"
+raw: "raw/detail.md"
+imported_at: "2026-04-13T18:00:00+08:00"
+entities:
+  - "Rust"
+  - "SQLite"
+---
+# Detail Title
+
+正文内容。
+"#,
+        )
+        .expect("写入页面失败");
+
+        let detail = state
+            .wiki_page_detail(page_path.to_string_lossy().to_string())
+            .expect("读取页面详情失败");
+        let frontmatter = detail.frontmatter.expect("未解析到 frontmatter");
+        assert_eq!(frontmatter.title.as_deref(), Some("Detail Title"));
+        assert_eq!(frontmatter.source.as_deref(), Some(r"E:\llm-wiki\source\detail.md"));
+        assert_eq!(frontmatter.raw.as_deref(), Some("raw/detail.md"));
+        assert_eq!(frontmatter.imported_at.as_deref(), Some("2026-04-13T18:00:00+08:00"));
+        assert_eq!(
+            frontmatter.entities,
+            vec!["Rust".to_string(), "SQLite".to_string()]
+        );
+    }
+
+    #[test]
+    fn wiki_page_detail_accepts_wiki_relative_path() {
+        let vault_dir = make_temp_dir("llm-wiki-page-detail-relative");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("relative.md");
+        fs::write(&page_path, "# Relative Title\n\n相对路径页面。").expect("写入页面失败");
+
+        let detail = state
+            .wiki_page_detail("wiki/relative.md".to_string())
+            .expect("读取页面详情失败");
+        assert_eq!(detail.title, "Relative Title");
+        assert!(detail.content.contains("相对路径页面"));
+    }
+
+    #[test]
+    fn wiki_page_detail_rejects_outside_wiki_root() {
+        let vault_dir = make_temp_dir("llm-wiki-page-detail-safe");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let outside_path = vault_dir.join("outside.md");
+        fs::write(&outside_path, "# Outside").expect("写入外部文件失败");
+
+        let result = state.wiki_page_detail(outside_path.to_string_lossy().to_string());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("只允许读取 vault/wiki 目录下的页面".to_string())
+        );
+    }
+
+    #[test]
+    fn wiki_page_citations_requires_initialized_vault() {
+        let vault_dir = make_temp_dir("llm-wiki-page-citations-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let result = state.wiki_page_citations("wiki/a.md".to_string());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("请先调用 init_vault 初始化 Vault".to_string())
+        );
+    }
+
+    #[test]
+    fn wiki_page_citations_returns_rows_and_target_existence_flags() {
+        let vault_dir = make_temp_dir("llm-wiki-page-citations");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let target_path = vault_dir.join("wiki").join("detail.md");
+        fs::write(&target_path, "# Detail\n\n页面正文。").expect("写入页面失败");
+        let inside_cited_path = vault_dir.join("wiki").join("cited.md");
+        fs::write(&inside_cited_path, "# Cited\n\n被引用页面。").expect("写入引用页失败");
+        let outside_cited_path = vault_dir.join("outside-cited.md");
+        fs::write(&outside_cited_path, "# Outside\n\n外部页面。").expect("写入外部引用页失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                fs::canonicalize(&target_path).expect("规范化目标页失败").to_string_lossy().to_string(),
+                fs::canonicalize(&inside_cited_path).expect("规范化引用页失败").to_string_lossy().to_string(),
+                7_i64, "命中本地页面", "1"
+            ],
+        )
+        .expect("写入 citations 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                fs::canonicalize(&target_path).expect("规范化目标页失败").to_string_lossy().to_string(),
+                outside_cited_path.to_string_lossy().to_string(),
+                4_i64, "越界引用", "2"
+            ],
+        )
+        .expect("写入 citations 失败");
+
+        let citations = state
+            .wiki_page_citations(target_path.to_string_lossy().to_string())
+            .expect("读取页面引用失败");
+        assert_eq!(citations.len(), 2);
+        assert_eq!(citations[0].score, 7);
+        assert_eq!(citations[0].excerpt, "命中本地页面");
+        assert!(citations[0].target_exists);
+        assert_paths_semantically_equal(
+            &inside_cited_path,
+            citations[0].cited_page_display_path.as_deref().expect("缺少显示路径"),
+        );
+        assert_eq!(
+            citations[0].cited_page_path,
+            fs::canonicalize(&inside_cited_path).expect("规范化引用页失败").to_string_lossy().to_string()
+        );
+        assert_eq!(citations[1].score, 4);
+        assert_eq!(citations[1].excerpt, "越界引用");
+        assert!(!citations[1].target_exists);
+        assert_paths_semantically_equal(
+            &outside_cited_path,
+            citations[1].cited_page_display_path.as_deref().expect("缺少显示路径"),
+        );
+        assert_eq!(citations[1].cited_page_path, outside_cited_path.to_string_lossy());
+    }
+
+    #[test]
+    fn wiki_page_citations_rejects_outside_wiki_root() {
+        let vault_dir = make_temp_dir("llm-wiki-page-citations-safe");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let outside_path = vault_dir.join("outside.md");
+        fs::write(&outside_path, "# Outside").expect("写入外部文件失败");
+
+        let result = state.wiki_page_citations(outside_path.to_string_lossy().to_string());
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("只允许读取 vault/wiki 目录下的页面".to_string())
+        );
+    }
+
+    #[test]
+    fn save_query_answer_requires_initialized_vault() {
+        let vault_dir = make_temp_dir("llm-wiki-save-query-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let input = SaveQueryAnswerInput {
+            question: "q".to_string(),
+            answer: "a".to_string(),
+            citations: Vec::new(),
+            title: None,
+        };
+
+        let result = state.save_query_answer(input);
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("请先调用 init_vault 初始化 Vault".to_string())
+        );
+    }
+
+    #[test]
+    fn save_query_answer_writes_wiki_file_and_updates_db() {
+        let vault_dir = make_temp_dir("llm-wiki-save-query");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let input = SaveQueryAnswerInput {
+            question: "这个项目的核心目标是什么？".to_string(),
+            answer: "目标是构建 Windows 优先的个人 Wiki 桌面应用。".to_string(),
+            citations: vec![QueryCitation {
+                page_path: vault_dir.join("wiki").join("ingest-1.md").to_string_lossy().to_string(),
+                display_path: None,
+                score: 3,
+                excerpt: "本项目用于实现一个 Windows 优先的个人 Wiki 桌面应用".to_string(),
+            }],
+            title: Some("问答-核心目标".to_string()),
+        };
+        let result = state.save_query_answer(input).expect("保存 Query 结果失败");
+
+        assert!(PathBuf::from(&result.wiki_path).exists());
+        let index_content = fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        assert!(index_content.contains("问答-核心目标"));
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let page_paths = db::list_wiki_page_paths(&db_path).expect("读取 wiki_pages 失败");
+        assert!(page_paths.iter().any(|path| path == &result.wiki_path));
+    }
+
+    #[test]
+    fn get_page_embedding_similarities_returns_high_sim_pairs() {
+        let dir = make_temp_dir("llm-wiki-emb-sim");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        state.init_vault(dir.clone()).unwrap();
+
+        let db_path = dir.join(".app").join("meta.db");
+        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/c.md", &[0.0_f32, 1.0, 0.0]).unwrap();
+
+        let paths = vec![
+            "wiki/a.md".to_string(),
+            "wiki/b.md".to_string(),
+            "wiki/c.md".to_string(),
+        ];
+        let result = state.get_page_embedding_similarities(paths).unwrap();
+
+        assert!(result.contains_key("wiki/a.md||wiki/b.md"), "a-b 对应包含");
+        let sim = result["wiki/a.md||wiki/b.md"];
+        assert!((sim - 1.0).abs() < 1e-6, "a-b 相似度应为 1.0，实际: {}", sim);
+        assert!(!result.contains_key("wiki/a.md||wiki/c.md"), "a-c 直交不应包含");
+        assert!(!result.contains_key("wiki/b.md||wiki/c.md"), "b-c 直交不应包含");
+    }
+
+    #[test]
+    fn get_page_embedding_similarities_filters_to_requested_paths() {
+        let dir = make_temp_dir("llm-wiki-emb-sim-filter");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        state.init_vault(dir.clone()).unwrap();
+
+        let db_path = dir.join(".app").join("meta.db");
+        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/c.md", &[1.0_f32, 0.0]).unwrap();
+
+        let paths = vec!["wiki/a.md".to_string(), "wiki/b.md".to_string()];
+        let result = state.get_page_embedding_similarities(paths).unwrap();
+        assert!(result.contains_key("wiki/a.md||wiki/b.md"));
+        assert!(!result.keys().any(|k| k.contains("wiki/c.md")));
+    }
+
+    /// 验证 WikiPageDetail.content 字段可被 serde_json 正确序列化/反序列化（round-trip）
+    #[test]
+    fn test_wiki_page_detail_content_field_roundtrip() {
+        let detail = crate::models::WikiPageDetail {
+            title: "测试页面".to_string(),
+            path: "vault/test.md".to_string(),
+            display_path: "test.md".to_string(),
+            frontmatter: None,
+            content: "# Hello\n\nWorld".to_string(),
+            updated_at: "1000000".to_string(),
+        };
+        let json = serde_json::to_string(&detail).unwrap();
+        assert!(json.contains("Hello"));
+        let restored: crate::models::WikiPageDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.content, "# Hello\n\nWorld");
+    }
+
+    #[test]
+    fn save_wiki_page_records_previous_content_history() {
+        let vault_dir = make_temp_dir("llm-wiki-page-history");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("history.md");
+        fs::write(&page_path, "# History\nfirst version\n").expect("写入初始页面失败");
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                "# History\nsecond version\n",
+                None,
+            ))
+            .expect("第一次保存失败");
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                "# History\nthird version\n",
+                None,
+            ))
+            .expect("第二次保存失败");
+
+        let history = state
+            .list_wiki_page_history_impl(page_path.to_str().expect("页面路径不是 UTF-8"), Some(10))
+            .expect("读取历史列表失败");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].title, "History");
+
+        let latest = state
+            .get_wiki_page_history_entry_impl(history[0].id)
+            .expect("读取最新历史详情失败");
+        let older = state
+            .get_wiki_page_history_entry_impl(history[1].id)
+            .expect("读取较早历史详情失败");
+
+        assert_eq!(latest.content, "# History\nsecond version\n");
+        assert_eq!(older.content, "# History\nfirst version\n");
+        assert_eq!(
+            fs::read_to_string(&page_path).expect("读取当前页面失败"),
+            "# History\nthird version\n"
+        );
+    }
+
+    #[test]
+    fn restore_wiki_page_from_history_replaces_content() {
+        let vault_dir = make_temp_dir("llm-wiki-restore-history");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("restore-test.md");
+        let content_v1 = "# Restore Test\n版本一\n";
+        let content_v2 = "# Restore Test\n版本二\n";
+        let content_v3 = "# Restore Test\n版本三\n";
+
+        fs::write(&page_path, content_v1).expect("写入初始页面失败");
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                content_v2,
+                None,
+            ))
+            .expect("第一次保存失败");
+        runtime
+            .block_on(state.save_wiki_page_impl(
+                page_path.to_str().expect("页面路径不是 UTF-8"),
+                content_v3,
+                None,
+            ))
+            .expect("第二次保存失败");
+
+        let history = state
+            .list_wiki_page_history_impl(page_path.to_str().expect("页面路径不是 UTF-8"), Some(10))
+            .expect("读取历史列表失败");
+        assert_eq!(history.len(), 2, "应有 2 条历史记录");
+
+        let oldest = state
+            .get_wiki_page_history_entry_impl(history[1].id)
+            .expect("读取最旧历史详情失败");
+        assert_eq!(oldest.content, content_v1);
+
+        let result = runtime
+            .block_on(state.restore_wiki_page_from_history_impl(history[1].id))
+            .expect("恢复历史版本失败");
+        assert_eq!(result.path, page_path.to_str().expect("路径不是 UTF-8"));
+
+        let restored = fs::read_to_string(&page_path).expect("读取恢复后页面失败");
+        assert_eq!(restored, content_v1, "恢复后内容应与 v1 一致");
+
+        let history_after = state
+            .list_wiki_page_history_impl(page_path.to_str().expect("页面路径不是 UTF-8"), Some(10))
+            .expect("读取恢复后历史列表失败");
+        assert_eq!(history_after.len(), 3, "恢复操作应产生新的历史快照");
+    }
+
+    #[test]
+    fn save_wiki_page_checksum_mismatch_rejected() {
+        let vault_dir = make_temp_dir("llm-wiki-checksum-mismatch");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("checksum.md");
+        let original = "# Checksum Test\n原始内容\n";
+        fs::write(&page_path, original).expect("写入初始页面失败");
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        let wrong_hash = "deadbeef".to_string();
+        let result = runtime.block_on(state.save_wiki_page_impl(
+            page_path.to_str().expect("页面路径不是 UTF-8"),
+            "# Checksum Test\n新内容\n",
+            Some(&wrong_hash),
+        ));
+        assert!(result.is_err(), "checksum 不匹配应返回 Err");
+        assert!(
+            result.unwrap_err().contains("checksum_mismatch"),
+            "错误消息应包含 checksum_mismatch"
+        );
+
+        let current = fs::read_to_string(&page_path).expect("读取页面失败");
+        assert_eq!(current, original, "checksum 校验失败时文件不应被修改");
+    }
+
+    #[test]
+    fn save_wiki_page_checksum_match_accepted() {
+        let vault_dir = make_temp_dir("llm-wiki-checksum-match");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("checksum-ok.md");
+        let original = "# Checksum Test\n原始内容\n";
+        fs::write(&page_path, original).expect("写入初始页面失败");
+
+        let correct_hash = format!("{:x}", md5_simple(original));
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        let result = runtime.block_on(state.save_wiki_page_impl(
+            page_path.to_str().expect("页面路径不是 UTF-8"),
+            "# Checksum Test\n新内容\n",
+            Some(&correct_hash),
+        ));
+        assert!(result.is_ok(), "正确 checksum 应保存成功");
+
+        let current = fs::read_to_string(&page_path).expect("读取页面失败");
+        assert_eq!(current, "# Checksum Test\n新内容\n");
+    }
+
+    // ── quick_lint_page 测试 ──────────────────────────────────────────────────
+
+    #[cfg(test)]
+    mod quick_lint_tests {
+        use super::*;
+
+        fn make_vault_with_page(content: &str) -> (PathBuf, String) {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let dir = std::env::temp_dir()
+                .join(format!("llm-wiki-ql-{}-{}", std::process::id(), unique));
+            let wiki_dir = dir.join("wiki");
+            fs::create_dir_all(&wiki_dir).unwrap();
+            let page_path = wiki_dir.join("test-page.md");
+            fs::write(&page_path, content).unwrap();
+            let wiki_path = "wiki/test-page.md".to_string();
+            (dir, wiki_path)
+        }
+
+        fn make_state_for_vault(vault_dir: &Path) -> crate::state::AppState {
+            let config_path = vault_dir.join(".app").join("config.json");
+            let state = crate::state::AppState::new_with_path(config_path);
+            {
+                let mut inner = state.inner.lock().unwrap();
+                inner.vault_path = Some(vault_dir.to_path_buf());
+            }
+            state
+        }
+
+        #[test]
+        fn quick_lint_page_no_issues_when_links_exist() {
+            let (dir, wiki_path) = make_vault_with_page(
+                "---\ntitle: Test\nentities:\n  - Existing\n---\n\nSee [[Existing]]",
+            );
+            let _guard = TempDirGuard(dir.clone());
+            fs::write(dir.join("wiki").join("existing.md"), "").unwrap();
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl(&wiki_path).unwrap();
+            assert_eq!(result.issues_count, 0);
+            assert!(result.broken_links.is_empty());
+            assert!(result.missing_entity_pages.is_empty());
+        }
+
+        #[test]
+        fn quick_lint_page_detects_broken_link() {
+            let (dir, wiki_path) =
+                make_vault_with_page("---\ntitle: Test\n---\n\nSee [[NonExistentPage]]");
+            let _guard = TempDirGuard(dir.clone());
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl(&wiki_path).unwrap();
+            assert!(result.issues_count > 0);
+            assert!(!result.broken_links.is_empty());
+        }
+
+        #[test]
+        fn quick_lint_page_detects_missing_entity_page() {
+            let (dir, wiki_path) = make_vault_with_page(
+                "---\ntitle: Test\nentities:\n  - MissingEntity\n---\n\nContent here.",
+            );
+            let _guard = TempDirGuard(dir.clone());
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl(&wiki_path).unwrap();
+            assert!(!result.missing_entity_pages.is_empty());
+        }
+
+        #[test]
+        fn quick_lint_page_returns_empty_when_file_missing() {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "llm-wiki-ql-nofile-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            fs::create_dir_all(dir.join("wiki")).unwrap();
+            let _guard = TempDirGuard(dir.clone());
+
+            let state = make_state_for_vault(&dir);
+            let result = state.quick_lint_page_impl("wiki/does-not-exist.md").unwrap();
+            assert_eq!(result.issues_count, 0);
+        }
+    }
+}
