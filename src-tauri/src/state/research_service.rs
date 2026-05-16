@@ -786,3 +786,259 @@ pub async fn delete_research_task(
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{db, state::test_helpers::*};
+    use std::path::PathBuf;
+
+    // ─── Deep Research pipeline unit tests ───────────────────────────────────
+
+    #[test]
+    fn parse_learnings_standard_format() {
+        let text =
+            "LEARNING: LLMs use attention mechanisms\nFOLLOWUP: how does multi-head attention work";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert_eq!(learnings, vec!["LLMs use attention mechanisms"]);
+        assert_eq!(followups, vec!["how does multi-head attention work"]);
+    }
+
+    #[test]
+    fn parse_learnings_markdown_bold() {
+        let text = "**LEARNING:** transformers replaced RNNs\n**FOLLOWUP:** what are the main transformer variants";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert_eq!(learnings, vec!["transformers replaced RNNs"]);
+        assert_eq!(followups, vec!["what are the main transformer variants"]);
+    }
+
+    #[test]
+    fn parse_learnings_list_prefix() {
+        let text = "- LEARNING: attention is O(n^2)\n- FOLLOWUP: sparse attention methods";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert_eq!(learnings, vec!["attention is O(n^2)"]);
+        assert_eq!(followups, vec!["sparse attention methods"]);
+    }
+
+    #[test]
+    fn parse_learnings_numbered_list() {
+        let text = "1. LEARNING: GPT uses decoder-only\n2. FOLLOWUP: encoder-decoder models";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert_eq!(learnings, vec!["GPT uses decoder-only"]);
+        assert_eq!(followups, vec!["encoder-decoder models"]);
+    }
+
+    #[test]
+    fn parse_learnings_lowercase_tag() {
+        let text =
+            "learning: BERT is bidirectional\nfollowup: how does masked language modeling work";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert_eq!(learnings, vec!["BERT is bidirectional"]);
+        assert_eq!(followups, vec!["how does masked language modeling work"]);
+    }
+
+    #[test]
+    fn parse_learnings_mixed_formats() {
+        let text = "LEARNING: finding A\n- learning: finding B\n**LEARNING:** finding C\nFOLLOWUP: query X\n1. followup: query Y";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert_eq!(learnings.len(), 3);
+        assert_eq!(followups.len(), 2);
+        assert!(learnings.contains(&"finding A".to_string()));
+        assert!(learnings.contains(&"finding B".to_string()));
+        assert!(learnings.contains(&"finding C".to_string()));
+    }
+
+    #[test]
+    fn parse_learnings_fallback_on_unstructured_output() {
+        let text = "The sky is blue\nWater is wet\n\n# Header (should be skipped)";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        assert!(followups.is_empty());
+        assert!(learnings.contains(&"The sky is blue".to_string()));
+        assert!(learnings.contains(&"Water is wet".to_string()));
+        assert!(!learnings.iter().any(|l| l.starts_with('#')));
+    }
+
+    #[test]
+    fn parse_learnings_empty_input() {
+        let (learnings, followups) = parse_learnings_and_followups("");
+        assert!(learnings.is_empty());
+        assert!(followups.is_empty());
+    }
+
+    #[test]
+    fn parse_learnings_skips_empty_content_after_tag() {
+        let text = "LEARNING:   \nFOLLOWUP:";
+        let (learnings, followups) = parse_learnings_and_followups(text);
+        let _ = (learnings, followups);
+    }
+
+    #[test]
+    fn make_research_slug_ascii() {
+        assert_eq!(make_research_slug("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn make_research_slug_deduplicates_dashes() {
+        assert_eq!(make_research_slug("hello   world"), "hello-world");
+    }
+
+    #[test]
+    fn make_research_slug_trims_dashes() {
+        assert_eq!(make_research_slug("  hello  "), "hello");
+    }
+
+    #[test]
+    fn make_research_slug_unicode_becomes_dashes() {
+        let slug = make_research_slug("大模型 RAG");
+        assert!(!slug.contains(' '));
+        assert!(slug.len() <= 50);
+    }
+
+    #[test]
+    fn make_research_slug_max_50_chars() {
+        let long = "a".repeat(100);
+        assert_eq!(make_research_slug(&long).len(), 50);
+    }
+
+    #[test]
+    fn strip_think_tags_removes_think_block() {
+        let input = "before<think>internal reasoning</think>after";
+        assert_eq!(strip_think_tags(input), "beforeafter");
+    }
+
+    #[test]
+    fn strip_think_tags_removes_thinking_block() {
+        let input = "<thinking>step 1\nstep 2</thinking>result";
+        assert_eq!(strip_think_tags(input), "result");
+    }
+
+    #[test]
+    fn strip_think_tags_unclosed_tag_removes_to_end() {
+        let input = "start<think>incomplete";
+        assert_eq!(strip_think_tags(input), "start");
+    }
+
+    #[test]
+    fn strip_think_tags_no_tags_unchanged() {
+        let input = "plain text with no tags";
+        assert_eq!(strip_think_tags(input), input);
+    }
+
+    // ─── DB research task CRUD tests ─────────────────────────────────────────
+
+    fn make_research_db() -> (PathBuf, rusqlite::Connection, impl Drop) {
+        let dir = make_temp_dir("llm-wiki-research-db");
+        let guard = TempDirGuard(dir.clone());
+        let db_path = dir.join("meta.db");
+        db::ensure_meta_db(&db_path).expect("ensure_meta_db 失败");
+        let conn = rusqlite::Connection::open(&db_path).expect("打开数据库失败");
+        (db_path, conn, guard)
+    }
+
+    #[test]
+    fn research_task_create_and_list() {
+        let (_path, conn, _guard) = make_research_db();
+        let id =
+            db::db_create_research_task(&conn, "test topic", 2, 3, "100").expect("create 失败");
+        assert!(id > 0);
+
+        let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
+        assert_eq!(tasks.len(), 1);
+        let t = &tasks[0];
+        assert_eq!(t.topic, "test topic");
+        assert_eq!(t.status, "queued");
+        assert_eq!(t.depth, 2);
+        assert_eq!(t.breadth, 3);
+        assert_eq!(t.web_results_count, 0);
+        assert!(t.sub_queries.is_empty());
+    }
+
+    #[test]
+    fn research_task_update_to_done() {
+        let (_path, conn, _guard) = make_research_db();
+        let id =
+            db::db_create_research_task(&conn, "update test", 1, 2, "100").expect("create 失败");
+
+        let queries = serde_json::to_string(&vec!["q1", "q2"]).unwrap();
+        db::db_update_research_task(
+            &conn,
+            id,
+            "done",
+            &queries,
+            5,
+            Some("/path/to/file.md"),
+            None,
+            "200",
+        )
+        .expect("update 失败");
+
+        let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
+        let t = &tasks[0];
+        assert_eq!(t.status, "done");
+        assert_eq!(t.web_results_count, 5);
+        assert_eq!(t.saved_path.as_deref(), Some("/path/to/file.md"));
+        assert_eq!(t.sub_queries, vec!["q1", "q2"]);
+    }
+
+    #[test]
+    fn research_task_cancel_changes_queued_to_cancelled() {
+        let (_path, conn, _guard) = make_research_db();
+        let id =
+            db::db_create_research_task(&conn, "cancel test", 1, 1, "100").expect("create 失败");
+
+        db::db_cancel_research_task(&conn, id, "200").expect("cancel 失败");
+
+        let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
+        assert_eq!(tasks[0].status, "cancelled");
+    }
+
+    #[test]
+    fn research_task_cancel_is_idempotent_on_done() {
+        let (_path, conn, _guard) = make_research_db();
+        let id = db::db_create_research_task(&conn, "idempotent test", 1, 1, "100")
+            .expect("create 失败");
+
+        db::db_update_research_task(&conn, id, "done", "[]", 3, Some("/p.md"), None, "150")
+            .expect("update 失败");
+
+        db::db_cancel_research_task(&conn, id, "200").expect("cancel 失败");
+
+        let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
+        assert_eq!(tasks[0].status, "done", "done 任务不应被 cancel 覆盖");
+        assert_eq!(tasks[0].web_results_count, 3, "web_results_count 不应被重置");
+        assert_eq!(tasks[0].saved_path.as_deref(), Some("/p.md"), "saved_path 不应被清空");
+    }
+
+    #[test]
+    fn research_task_delete_removes_row() {
+        let (_path, conn, _guard) = make_research_db();
+        let id =
+            db::db_create_research_task(&conn, "delete test", 1, 1, "100").expect("create 失败");
+
+        db::db_delete_research_task(&conn, id).expect("delete 失败");
+
+        let task = db::db_get_research_task(&conn, id).expect("get 失败");
+        assert!(task.is_none(), "删除后任务应不存在");
+    }
+
+    #[test]
+    fn research_task_delete_missing_returns_error() {
+        let (_path, conn, _guard) = make_research_db();
+        let err = db::db_delete_research_task(&conn, 99999).expect_err("不存在任务应报错");
+        assert!(err.contains("研究任务不存在"), "错误信息应包含不存在提示");
+    }
+
+    #[test]
+    fn research_task_cancel_is_idempotent_on_already_cancelled() {
+        let (_path, conn, _guard) = make_research_db();
+        let id =
+            db::db_create_research_task(&conn, "double cancel", 1, 1, "100").expect("create 失败");
+
+        db::db_cancel_research_task(&conn, id, "200").expect("第一次 cancel 失败");
+        db::db_cancel_research_task(&conn, id, "300").expect("第二次 cancel 失败");
+
+        let tasks = db::db_list_research_tasks(&conn).expect("list 失败");
+        assert_eq!(tasks[0].status, "cancelled");
+        assert_eq!(tasks[0].updated_at, "200");
+    }
+}

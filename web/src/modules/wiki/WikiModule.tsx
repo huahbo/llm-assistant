@@ -1565,25 +1565,19 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
               <p className="new-page-modal__hint">
                 输入主题，AI 将参考现有知识库生成结构化初稿。
               </p>
-              <input
-                className="new-page-modal__input"
-                type="text"
-                placeholder="例如：量子纠缠、黑洞蒸发、Rust 生命周期…"
-                value={newPageTopic}
-                onChange={(event) => setNewPageTopic(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void handleCreatePageWithAi();
-                }}
-                disabled={newPageCreating}
-                autoFocus
-              />
-              {newPageResult && (
-                <div className="new-page-modal__result">
-                  <p className="new-page-modal__result-title">✅ 已创建：{newPageResult.title}</p>
-                  <pre className="new-page-modal__preview">{newPageResult.content_preview}</pre>
-                </div>
-              )}
-              <div className="new-page-modal__actions">
+              <div className="new-page-modal__row">
+                <input
+                  className="new-page-modal__input"
+                  type="text"
+                  placeholder="例如：量子纠缠、黑洞蒸发、Rust 生命周期…"
+                  value={newPageTopic}
+                  onChange={(event) => setNewPageTopic(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void handleCreatePageWithAi();
+                  }}
+                  disabled={newPageCreating}
+                  autoFocus
+                />
                 <button
                   className="new-page-modal__btn new-page-modal__btn--primary"
                   onClick={() => void handleCreatePageWithAi()}
@@ -1591,6 +1585,14 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
                 >
                   {newPageCreating ? "AI 生成中…" : "生成页面"}
                 </button>
+              </div>
+              {newPageResult && (
+                <div className="new-page-modal__result">
+                  <p className="new-page-modal__result-title">✅ 已创建：{newPageResult.title}</p>
+                  <pre className="new-page-modal__preview">{newPageResult.content_preview}</pre>
+                </div>
+              )}
+              <div className="new-page-modal__actions">
                 {newPageResult && (
                   <button className="new-page-modal__btn" onClick={handleUseNewWikiPageResult}>
                     查看页面

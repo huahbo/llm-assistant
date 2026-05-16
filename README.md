@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.2 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.3 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -23,6 +23,19 @@
 ---
 
 ## 最近更新（H9–H14 + 修复）
+
+### v0.2.3（代码质量 + 体验修复）
+
+#### Chat：历史工具调用显示
+- 重载历史对话时，AI 工具调用卡片（`run_shell` / `search_wiki` / `spawn_subagent` 等）与流式阶段视觉完全一致
+- `Message` 结构体新增 `tool_calls` 字段，`list_messages` 解析后直达前端
+
+#### 代码质量
+- **state/ 测试全模块拆分**：136 个 state.rs 测试迁移至对应 service 文件（`wiki_service` / `ask_service` / `graph_service` / `agent_service`），`state.rs` 仅保留 2 个跨服务集成测试
+- **编译警告清零**：消除全部 7 条 Rust 警告（unused import / dead_code / deprecated）
+- **测试基线**：268 通过，0 失败
+
+---
 
 ### v0.2.2（H14 + 今日修复）
 
@@ -190,7 +203,7 @@ cargo tauri build
 ### 测试
 
 ```powershell
-# Rust 单测（263 项）
+# Rust 单测（268 项）
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # 前端类型检查
@@ -206,7 +219,8 @@ llm-wiki/
 ├── src-tauri/              # Rust 后端（Tauri v2）
 │   └── src/
 │       ├── commands.rs     # Tauri 命令注册入口
-│       ├── state.rs        # 业务逻辑（ingest/query/lint/search/shell/agent）
+│       ├── state.rs        # AppState 入口 + 公共工具函数
+│       ├── state/          # 业务逻辑子模块（H16 拆分，12 个 service 文件）
 │       ├── db.rs           # SQLite（FTS5 + embedding + 队列 + shell 审计）
 │       ├── vault.rs        # Markdown Vault 读写
 │       ├── models.rs       # 数据模型

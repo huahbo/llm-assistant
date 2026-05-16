@@ -547,3 +547,85 @@ pub fn approve_research_queries(state: &AppState, task_id: i64, queries: Vec<Str
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SearchConfig;
+
+    #[test]
+    fn normalize_searxng_base_url_adds_http_when_missing_scheme() {
+        assert_eq!(
+            normalize_searxng_base_url("localhost:8080"),
+            "http://localhost:8080"
+        );
+    }
+
+    #[test]
+    fn normalize_searxng_base_url_keeps_https() {
+        assert_eq!(
+            normalize_searxng_base_url("https://searx.local/"),
+            "https://searx.local"
+        );
+    }
+
+    #[test]
+    fn searxng_base_root_strips_search_suffix() {
+        assert_eq!(
+            searxng_base_root("http://127.0.0.1:8080/search/"),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn detect_query_pref_language_prefers_zh_for_cjk() {
+        assert_eq!(detect_query_pref_language("大模型 RAG 架构"), "zh-CN");
+    }
+
+    #[test]
+    fn detect_query_pref_language_uses_auto_for_latin() {
+        assert_eq!(detect_query_pref_language("rust async runtime"), "auto");
+    }
+
+    #[test]
+    fn build_searxng_search_params_contains_all_fallback() {
+        let params = build_searxng_search_params("rust ownership model");
+        assert!(params
+            .iter()
+            .any(|p| p.language == "all" && p.categories == "general,news"));
+        assert!(params.iter().any(|p| p.safesearch == "0"));
+    }
+
+    #[test]
+    fn parse_unresponsive_engines_supports_string_and_object() {
+        let data = serde_json::json!({
+            "unresponsive_engines": [
+                "google too many requests",
+                {"name": "brave", "reason": "access denied"},
+                {"engine": "duckduckgo"},
+                null
+            ]
+        });
+        let parsed = parse_unresponsive_engines(&data);
+        assert!(parsed.iter().any(|s| s.contains("google")));
+        assert!(parsed.iter().any(|s| s.contains("brave (access denied)")));
+        assert!(parsed.iter().any(|s| s == "duckduckgo"));
+    }
+
+    #[test]
+    fn validate_search_config_rejects_missing_searxng_url() {
+        let mut cfg = SearchConfig::default();
+        cfg.search_provider = "searxng".to_string();
+        cfg.searxng_url = "   ".to_string();
+        let err = validate_search_config(&cfg).expect_err("应拒绝空 searxng 地址");
+        assert!(err.contains("SearXNG"));
+    }
+
+    #[test]
+    fn validate_search_config_accepts_valid_searxng_url() {
+        let mut cfg = SearchConfig::default();
+        cfg.search_provider = "searxng".to_string();
+        cfg.searxng_url = "localhost:8080".to_string();
+        assert!(validate_search_config(&cfg).is_ok());
+    }
+}

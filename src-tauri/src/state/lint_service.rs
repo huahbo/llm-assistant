@@ -1555,3 +1555,486 @@ fn record_lint_patch_event(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::test_helpers::*;
+    use crate::models::{
+        AppMode, LintIssue, LintPatchApplyInput, LintPatchBatchApplyStatus, LintReport,
+        LintSeverityStats,
+    };
+    use rusqlite::{params, Connection};
+    use std::{collections::BTreeSet, fs, path::PathBuf};
+
+    // ── AppState lint tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn lint_report_defaults_severity_stats_when_uninitialized() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let report = state.lint_report();
+        assert_eq!(report.summary, "Vault 未初始化");
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(report.severity_stats.error, 1);
+        assert_eq!(report.severity_stats.warning, 0);
+        assert_eq!(report.severity_stats.info, 0);
+    }
+
+    #[test]
+    fn preview_lint_patches_returns_uninitialized_vault_suggestion() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-preview-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let preview = state.preview_lint_patches();
+        assert_eq!(preview.total, 1);
+        assert_eq!(preview.suggestions.len(), 1);
+        let suggestion = &preview.suggestions[0];
+        assert_eq!(suggestion.issue_code, "VAULT_NOT_INITIALIZED");
+        assert_eq!(suggestion.title, "初始化 Vault");
+        assert!(suggestion.patch_preview.contains("init_vault"));
+    }
+
+    #[test]
+    fn apply_lint_patch_supports_orphan_wiki_page_and_writes_log() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-orphan");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let orphan_path = vault_dir.join("wiki").join("orphan.md");
+        let orphan_path_str = orphan_path.to_string_lossy().to_string();
+        fs::write(&orphan_path, "# Orphan\n\n孤页内容。").expect("写入 orphan 页面失败");
+
+        let result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "ORPHAN_WIKI_PAGE".to_string(),
+                path: Some(orphan_path.to_string_lossy().to_string()),
+            })
+            .expect("应用 lint 补丁失败");
+
+        assert!(result.applied);
+        assert_eq!(result.issue_code, "ORPHAN_WIKI_PAGE");
+        assert_eq!(result.path.as_deref(), Some(orphan_path_str.as_str()));
+        assert!(result.touched_paths.iter().any(|path| path.ends_with("index.md")));
+
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        assert!(index_content.contains("[[wiki/orphan.md|orphan]]"));
+
+        let recent_log = state.recent_logs(1);
+        assert_eq!(recent_log.len(), 1);
+        assert!(recent_log[0].message.contains("ORPHAN_WIKI_PAGE"));
+    }
+
+    #[test]
+    fn apply_lint_patch_supports_missing_index_entry_and_appends_link() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-missing-index");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_path = vault_dir.join("wiki").join("standalone.md");
+        fs::write(&page_path, "# Standalone\n\n页面内容。").expect("写入页面失败");
+
+        let result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "MISSING_INDEX_ENTRY".to_string(),
+                path: Some(page_path.to_string_lossy().to_string()),
+            })
+            .expect("应用 lint 补丁失败");
+
+        assert!(result.applied);
+        assert_eq!(result.issue_code, "MISSING_INDEX_ENTRY");
+        assert!(result.touched_paths.iter().any(|path| path.ends_with("index.md")));
+
+        let index_content =
+            fs::read_to_string(vault_dir.join("index.md")).expect("读取 index.md 失败");
+        assert!(index_content.contains("[[wiki/standalone.md|standalone]]"));
+    }
+
+    #[test]
+    fn apply_lint_patch_records_event_and_recent_query_returns_latest() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-event");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let orphan_path = vault_dir.join("wiki").join("event-note.md");
+        let orphan_path_str = orphan_path.to_string_lossy().to_string();
+        fs::write(&orphan_path, "# Event Note\n\n页面内容。").expect("写入页面失败");
+
+        let result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "ORPHAN_WIKI_PAGE".to_string(),
+                path: Some(orphan_path.to_string_lossy().to_string()),
+            })
+            .expect("应用 lint 补丁失败");
+        assert!(result.applied);
+
+        let events = state
+            .recent_lint_patch_events(10)
+            .expect("读取 lint 补丁事件失败");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].issue_code, "ORPHAN_WIKI_PAGE");
+        assert_eq!(events[0].path.as_deref(), Some(orphan_path_str.as_str()));
+        assert!(events[0].applied);
+        assert!(events[0].message.contains("已将页面加入 index.md"));
+        assert!(!events[0].created_at.is_empty());
+    }
+
+    #[test]
+    fn apply_lint_patches_batch_summarizes_success_and_failure() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-batch");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let success_path = vault_dir.join("wiki").join("batch-note.md");
+        fs::write(&success_path, "# Batch Note\n\n页面内容。").expect("写入页面失败");
+
+        let result = state
+            .apply_lint_patches_batch(vec![
+                LintPatchApplyInput {
+                    issue_code: "ORPHAN_WIKI_PAGE".to_string(),
+                    path: Some(success_path.to_string_lossy().to_string()),
+                },
+                LintPatchApplyInput {
+                    issue_code: "TASK_QUERY_FAILED".to_string(),
+                    path: None,
+                },
+            ])
+            .expect("批量应用 lint 补丁失败");
+
+        assert_eq!(result.total, 2);
+        assert_eq!(result.success, 1);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.items.len(), 2);
+        assert!(matches!(result.items[0].status, LintPatchBatchApplyStatus::Success));
+        assert!(result.items[0].applied);
+        assert!(matches!(result.items[1].status, LintPatchBatchApplyStatus::Failed));
+        assert!(!result.items[1].applied);
+        assert!(result.items[1].error.is_some());
+
+        let recent_log = state.recent_logs(1);
+        assert_eq!(recent_log.len(), 1);
+        assert!(recent_log[0].message.contains("批量应用 Lint 补丁完成"));
+        assert!(recent_log[0].message.contains("total=2"));
+        assert!(recent_log[0].message.contains("success=1"));
+        assert!(recent_log[0].message.contains("failed=1"));
+        assert!(recent_log[0].message.contains("skipped=0"));
+    }
+
+    #[test]
+    fn apply_lint_patch_rejects_unsupported_issue_code() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-unsupported");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let result = state.apply_lint_patch(LintPatchApplyInput {
+            issue_code: "TASK_QUERY_FAILED".to_string(),
+            path: None,
+        });
+
+        assert!(result.is_err());
+        assert_eq!(result.err(), Some("暂不支持自动应用，请手动处理".to_string()));
+    }
+
+    #[test]
+    fn lint_report_detects_missing_index_entries_orphans_and_db_mismatches() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-pages");
+        let _guard = TempDirGuard(vault_dir.clone());
+
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let present_path = vault_dir.join("wiki").join("present.md");
+        let orphan_path = vault_dir.join("wiki").join("orphan.md");
+        fs::write(&present_path, "# present\n").expect("写入 present 失败");
+        fs::write(&orphan_path, "# orphan\n").expect("写入 orphan 失败");
+
+        fs::write(
+            vault_dir.join("index.md"),
+            "# Index\n\n## Imported Pages\n- [[wiki/present.md|present]]\n- [[wiki/missing.md|missing]]\n",
+        )
+        .expect("写入 index.md 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "hash-1",
+                vault_dir.join("source.md").to_string_lossy().to_string(),
+                vault_dir.join("raw").join("source.md").to_string_lossy().to_string(),
+                "1"
+            ],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "present", present_path.to_string_lossy().to_string(), "present summary", "1", "1"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                present_path.to_string_lossy().to_string(),
+                vault_dir.join("wiki").join("missing-cited.md").to_string_lossy().to_string(),
+                3_i64, "missing citation", "1"
+            ],
+        )
+        .expect("写入 citations 失败");
+
+        let report = state.lint_report();
+        let codes: BTreeSet<_> = report.issues.iter().map(|issue| issue.code.as_str()).collect();
+
+        assert!(codes.contains("MISSING_INDEX_ENTRY"));
+        assert!(codes.contains("orphan"));
+        assert!(codes.contains("DB_MISSING_PAGE_RECORD"));
+        assert!(codes.contains("BROKEN_CITATION"));
+        assert!(!codes.contains("VAULT_NOT_INITIALIZED"));
+        assert_eq!(report.severity_stats.error, 1);
+        assert_eq!(report.severity_stats.warning, 3);
+        assert_eq!(report.severity_stats.info, 0);
+    }
+
+    #[test]
+    fn lint_report_detects_wikilink_level_broken_orphan_and_xref_missing() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-wikilink-level");
+        let _guard = TempDirGuard(vault_dir.clone());
+
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_a = vault_dir.join("wiki").join("a.md");
+        let page_b = vault_dir.join("wiki").join("b.md");
+        let page_orphan = vault_dir.join("wiki").join("orphan.md");
+
+        fs::write(&page_a, "# A\n\n[[wiki/missing.md|missing]]\n[[wiki/b.md|B]]\n")
+            .expect("写入 a.md 失败");
+        fs::write(&page_b, "# B\n\n页面 B 内容。\n").expect("写入 b.md 失败");
+        fs::write(&page_orphan, "# Orphan\n\n孤页内容。\n").expect("写入 orphan.md 失败");
+
+        fs::write(
+            vault_dir.join("index.md"),
+            "# Index\n\n## Imported Pages\n- [[wiki/a.md|a]]\n- [[wiki/b.md|b]]\n",
+        )
+        .expect("写入 index.md 失败");
+
+        let report = state.lint_report();
+        let codes: BTreeSet<_> = report.issues.iter().map(|issue| issue.code.as_str()).collect();
+
+        assert!(codes.contains("broken_wikilink"));
+        assert!(codes.contains("xref_missing"));
+        assert!(codes.contains("orphan"));
+    }
+
+    #[test]
+    fn apply_lint_patch_supports_broken_wikilink_and_xref_missing() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-apply-wikilink-level");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let page_a = vault_dir.join("wiki").join("a.md");
+        let page_b = vault_dir.join("wiki").join("b.md");
+        fs::write(&page_a, "# A\n\n[[wiki/missing.md|缺失页]]\n[[wiki/b.md|B]]\n")
+            .expect("写入 a.md 失败");
+        fs::write(&page_b, "# B\n\n页面 B 内容。\n").expect("写入 b.md 失败");
+
+        let broken_result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "broken_wikilink".to_string(),
+                path: Some(page_a.to_string_lossy().to_string()),
+            })
+            .expect("应用 broken_wikilink 补丁失败");
+        assert!(broken_result.applied);
+
+        let page_a_content = fs::read_to_string(&page_a).expect("读取 a.md 失败");
+        assert!(!page_a_content.contains("[[wiki/missing.md|缺失页]]"));
+        assert!(page_a_content.contains("缺失页"));
+
+        let xref_result = state
+            .apply_lint_patch(LintPatchApplyInput {
+                issue_code: "xref_missing".to_string(),
+                path: Some(page_a.to_string_lossy().to_string()),
+            })
+            .expect("应用 xref_missing 补丁失败");
+        assert!(xref_result.applied);
+
+        let page_b_content = fs::read_to_string(&page_b).expect("读取 b.md 失败");
+        assert!(page_b_content.contains("[[wiki/a.md|a]]"));
+    }
+
+    #[test]
+    fn preview_lint_patches_total_matches_suggestions_for_multiple_issues() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-preview-multi");
+        let _guard = TempDirGuard(vault_dir.clone());
+
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let present_path = vault_dir.join("wiki").join("present.md");
+        let orphan_path = vault_dir.join("wiki").join("orphan.md");
+        fs::write(&present_path, "# present\n").expect("写入 present 失败");
+        fs::write(&orphan_path, "# orphan\n").expect("写入 orphan 失败");
+
+        fs::write(
+            vault_dir.join("index.md"),
+            "# Index\n\n## Imported Pages\n- [[wiki/present.md|present]]\n- [[wiki/missing.md|missing]]\n",
+        )
+        .expect("写入 index.md 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "hash-preview",
+                vault_dir.join("source.md").to_string_lossy().to_string(),
+                vault_dir.join("raw").join("source.md").to_string_lossy().to_string(),
+                "1"
+            ],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![source_id, "present", present_path.to_string_lossy().to_string(), "present summary", "1", "1"],
+        )
+        .expect("写入 wiki_pages 失败");
+        conn.execute(
+            "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                present_path.to_string_lossy().to_string(),
+                vault_dir.join("wiki").join("missing-cited.md").to_string_lossy().to_string(),
+                3_i64, "missing citation", "1"
+            ],
+        )
+        .expect("写入 citations 失败");
+
+        let report = state.lint_report();
+        let preview = state.preview_lint_patches();
+
+        assert_eq!(preview.total, preview.suggestions.len());
+        assert_eq!(preview.total, report.issues.len());
+        assert!(preview.suggestions.iter().any(|item| item.issue_code == "BROKEN_CITATION"));
+        assert!(preview.suggestions.iter().any(|item| item.issue_code == "MISSING_INDEX_ENTRY"));
+    }
+
+    #[test]
+    fn lint_report_flags_stale_pending_tasks() {
+        let vault_dir = make_temp_dir("llm-wiki-lint-tasks");
+        let _guard = TempDirGuard(vault_dir.clone());
+
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        conn.execute(
+            "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "hash-2",
+                vault_dir.join("source.md").to_string_lossy().to_string(),
+                vault_dir.join("raw").join("source.md").to_string_lossy().to_string(),
+                "1"
+            ],
+        )
+        .expect("写入 sources 失败");
+        let source_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO tasks (source_id, kind, status, raw_path, wiki_path, error, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7)",
+            params![
+                source_id, "ingest_markdown", "queued",
+                vault_dir.join("raw").join("source.md").to_string_lossy().to_string(),
+                vault_dir.join("wiki").join("stale.md").to_string_lossy().to_string(),
+                "1", "1"
+            ],
+        )
+        .expect("写入 tasks 失败");
+
+        let report = state.lint_report();
+
+        assert!(report.issues.iter().any(|issue| issue.code == "STALE_PENDING_TASK"));
+        assert_eq!(report.severity_stats.error, 0);
+        assert_eq!(report.severity_stats.warning, 1);
+        assert_eq!(report.severity_stats.info, 0);
+    }
+
+    // ── 语义 Lint 解析测试 ────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_semantic_lint_response_parses_valid_lines() {
+        let input = "SEMANTIC_CONTRADICTION|warning|page A 与 page B 矛盾|wiki/a.md|对齐两页内容\n\
+                     SEMANTIC_STALE|info|结论可能已过时||更新至最新信息\n\
+                     NO_ISSUES";
+        let issues = parse_semantic_lint_response(input);
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].code, "SEMANTIC_CONTRADICTION");
+        assert_eq!(issues[0].severity, "warning");
+        assert_eq!(issues[0].path, Some("wiki/a.md".to_string()));
+        assert_eq!(issues[1].code, "SEMANTIC_STALE");
+        assert_eq!(issues[1].severity, "info");
+        assert_eq!(issues[1].path, None);
+    }
+
+    #[test]
+    fn parse_semantic_lint_response_rejects_invalid_codes() {
+        let input = "INVALID_CODE|warning|some message|wiki/a.md|fix it\n\
+                     SEMANTIC_COVERAGE_GAP|info|缺少 Rust 语言页面||新建 wiki/rust.md";
+        let issues = parse_semantic_lint_response(input);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "SEMANTIC_COVERAGE_GAP");
+    }
+
+    #[test]
+    fn parse_semantic_lint_response_handles_no_issues() {
+        let issues = parse_semantic_lint_response("NO_ISSUES");
+        assert!(issues.is_empty());
+
+        let issues2 = parse_semantic_lint_response("");
+        assert!(issues2.is_empty());
+    }
+
+    #[test]
+    fn parse_semantic_lint_response_caps_at_ten() {
+        let line = "SEMANTIC_STALE|info|old conclusion||update it\n";
+        let input = line.repeat(15);
+        let issues = parse_semantic_lint_response(&input);
+        assert_eq!(issues.len(), 10);
+    }
+
+    #[test]
+    fn merge_lint_with_semantic_updates_stats_and_summary() {
+        let rules = LintReport {
+            mode: AppMode::Hybrid,
+            checked_at: "0".to_string(),
+            summary: "初始".to_string(),
+            issues: vec![],
+            severity_stats: LintSeverityStats {
+                error: 0,
+                warning: 1,
+                info: 0,
+            },
+        };
+        let semantic = vec![LintIssue {
+            code: "SEMANTIC_STALE".to_string(),
+            severity: "warning".to_string(),
+            message: "过时".to_string(),
+            path: None,
+            suggestion: "更新".to_string(),
+        }];
+        let merged = merge_lint_with_semantic(rules, semantic);
+        assert_eq!(merged.issues.len(), 1);
+        assert_eq!(merged.severity_stats.warning, 2);
+        assert!(merged.summary.contains("1 个问题"));
+    }
+}

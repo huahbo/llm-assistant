@@ -1,6 +1,156 @@
 /* Wiki 面板样式 */
 
 /* =========================================================
+   AI 新建页面浮层
+   ========================================================= */
+
+.new-page-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 800;
+}
+
+.new-page-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 28px 32px 24px;
+  width: 580px;
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.new-page-modal__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.new-page-modal__title::before {
+  content: "✨";
+  font-size: 16px;
+}
+
+.new-page-modal__hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin: -4px 0 2px;
+}
+
+/* input + 生成按钮同行 */
+.new-page-modal__row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.new-page-modal__input {
+  flex: 1;
+  height: 40px;
+  padding: 0 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-page);
+  color: var(--text);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.new-page-modal__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+
+.new-page-modal__input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 结果预览区 */
+.new-page-modal__result {
+  background: var(--success-bg);
+  border: 1px solid #6ee7b7;
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.new-page-modal__result-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--success);
+}
+
+.new-page-modal__preview {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: "Cascadia Code", monospace;
+  white-space: pre-wrap;
+  max-height: 110px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* 底部操作行 */
+.new-page-modal__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.new-page-modal__btn {
+  height: 36px;
+  padding: 0 20px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  border: 1.5px solid var(--border);
+  background: var(--bg-muted);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+
+.new-page-modal__btn:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.new-page-modal__btn--primary {
+  background: var(--accent-grad);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+  padding: 0 22px;
+}
+
+.new-page-modal__btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.new-page-modal__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* =========================================================
    Wiki Panel
    ========================================================= */
 

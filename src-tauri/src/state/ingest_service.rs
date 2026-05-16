@@ -2234,3 +2234,414 @@ fn is_stopword(token: &str) -> bool {
 
     ZH_STOPWORDS.contains(&token) || EN_STOPWORDS.contains(&token)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{db, state::test_helpers::*};
+    use std::{
+        fs,
+        io,
+        path::{Path, PathBuf},
+    };
+
+    // ── validate_pdf_source_path ──────────────────────────────────────────────
+
+    #[test]
+    fn validate_pdf_source_path_rejects_missing_file() {
+        let missing = std::env::temp_dir().join(format!("missing-{}.pdf", uuid_v4_short()));
+        let err = validate_pdf_source_path(&missing).expect_err("缺失文件应报错");
+        assert!(err.contains("PDF 文件不存在"));
+    }
+
+    #[test]
+    fn validate_pdf_source_path_rejects_non_pdf_extension() {
+        let dir = make_temp_dir("llm-wiki-pdf-validate-ext");
+        let _guard = TempDirGuard(dir.clone());
+        let txt_path = dir.join("note.txt");
+        fs::write(&txt_path, "plain text").expect("写入测试文件失败");
+        let err = validate_pdf_source_path(&txt_path).expect_err("非 PDF 扩展名应报错");
+        assert!(err.contains("仅支持 .pdf"));
+    }
+
+    #[test]
+    fn validate_pdf_source_path_rejects_directory() {
+        let dir = make_temp_dir("llm-wiki-pdf-validate-dir");
+        let _guard = TempDirGuard(dir.clone());
+        let err = validate_pdf_source_path(&dir).expect_err("目录路径应报错");
+        assert!(err.contains("不是文件"));
+    }
+
+    #[test]
+    fn validate_pdf_source_path_accepts_uppercase_pdf_extension() {
+        let dir = make_temp_dir("llm-wiki-pdf-validate-uppercase");
+        let _guard = TempDirGuard(dir.clone());
+        let upper_pdf_path = dir.join("note.PDF");
+        fs::write(&upper_pdf_path, "placeholder").expect("写入测试文件失败");
+        let result = validate_pdf_source_path(&upper_pdf_path);
+        assert!(result.is_ok(), "大写扩展名 .PDF 应通过校验");
+    }
+
+    // ── OcrProvider ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_ocr_provider_falls_back_to_tesseract_on_invalid_value() {
+        assert_eq!(normalize_ocr_provider(None), OcrProvider::Tesseract);
+        assert_eq!(normalize_ocr_provider(Some("")), OcrProvider::Tesseract);
+        assert_eq!(normalize_ocr_provider(Some("invalid-provider")), OcrProvider::Tesseract);
+        assert_eq!(normalize_ocr_provider(Some("paddle")), OcrProvider::Paddle);
+        assert_eq!(normalize_ocr_provider(Some(" TESSERACT ")), OcrProvider::Tesseract);
+    }
+
+    #[test]
+    fn resolve_ocr_provider_order_matches_expected_fallback_sequence() {
+        assert_eq!(
+            resolve_ocr_provider_order(OcrProvider::Tesseract),
+            [OcrProvider::Tesseract, OcrProvider::Paddle]
+        );
+        assert_eq!(
+            resolve_ocr_provider_order(OcrProvider::Paddle),
+            [OcrProvider::Paddle, OcrProvider::Tesseract]
+        );
+    }
+
+    // ── XML extraction ────────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_xml_text_by_tag_reads_docx_minimal_sample() {
+        let xml = r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>你好&amp;Rust</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">  Wiki  </w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"#;
+        let text = extract_xml_text_by_tag(xml, "w:t");
+        assert!(text.contains("你好&Rust"));
+        assert!(text.contains("Wiki"));
+    }
+
+    #[test]
+    fn extract_xml_text_by_tag_reads_pptx_minimal_sample() {
+        let xml = r#"
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <a:t>Hello</a:t>
+    <a:t>Slide&#32;1</a:t>
+  </p:cSld>
+</p:sld>
+"#;
+        let text = extract_xml_text_by_tag(xml, "a:t");
+        assert!(text.contains("Hello"));
+        assert!(text.contains("Slide 1"));
+    }
+
+    #[test]
+    fn test_extract_slide_number_natural_sort() {
+        assert_eq!(extract_slide_number("ppt/slides/slide1.xml"), 1);
+        assert_eq!(extract_slide_number("ppt/slides/slide10.xml"), 10);
+        assert_eq!(extract_slide_number("ppt/slides/slide2.xml"), 2);
+        assert!(
+            extract_slide_number("ppt/slides/slide10.xml")
+                > extract_slide_number("ppt/slides/slide2.xml")
+        );
+    }
+
+    #[test]
+    fn test_extract_docx_paragraphs_preserves_paragraph_breaks() {
+        let xml = r#"<w:body>
+        <w:p><w:r><w:t>第一段</w:t></w:r></w:p>
+        <w:p><w:r><w:t>第二段</w:t></w:r><w:r><w:t>续文</w:t></w:r></w:p>
+        <w:p></w:p>
+    </w:body>"#;
+        let result = extract_docx_paragraphs(xml);
+        assert!(result.contains("第一段"));
+        assert!(result.contains("第二段"));
+        assert!(result.contains("\n\n") || result.lines().count() >= 2);
+    }
+
+    // ── Tesseract error formatting ────────────────────────────────────────────
+
+    #[test]
+    fn format_tesseract_spawn_error_returns_readable_message_when_missing() {
+        let error = io::Error::new(io::ErrorKind::NotFound, "not found");
+        let message = format_tesseract_spawn_error(&error);
+        assert!(message.contains("未检测到 tesseract"));
+        assert!(message.contains("PATH"));
+    }
+
+    // ── PDF text extraction ───────────────────────────────────────────────────
+
+    #[test]
+    fn extract_text_from_pdf_operations_extracts_simple_text() {
+        let content = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("BT", vec![]),
+                lopdf::content::Operation::new(
+                    "Tj",
+                    vec![lopdf::Object::String(
+                        b"Hello PDF".to_vec(),
+                        lopdf::StringFormat::Literal,
+                    )],
+                ),
+                lopdf::content::Operation::new(
+                    "TJ",
+                    vec![lopdf::Object::Array(vec![
+                        lopdf::Object::String(b"Fallback ".to_vec(), lopdf::StringFormat::Literal),
+                        lopdf::Object::Integer(-120),
+                        lopdf::Object::String(b"Works".to_vec(), lopdf::StringFormat::Literal),
+                    ])],
+                ),
+                lopdf::content::Operation::new("ET", vec![]),
+            ],
+        };
+        let encoded = content.encode().expect("编码 PDF 操作失败");
+        let decoded = lopdf::content::Content::decode(&encoded).expect("解码 PDF 操作失败");
+        let extracted = extract_text_from_pdf_operations(&decoded.operations);
+        assert!(extracted.contains("Hello PDF"));
+        assert!(extracted.contains("Fallback Works"));
+    }
+
+    #[test]
+    fn extract_text_from_pdf_raw_streams_extracts_text_from_flate_stream() {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+
+        let content = lopdf::content::Content {
+            operations: vec![
+                lopdf::content::Operation::new("BT", vec![]),
+                lopdf::content::Operation::new(
+                    "Tj",
+                    vec![lopdf::Object::String(
+                        b"Gradient Tensor".to_vec(),
+                        lopdf::StringFormat::Literal,
+                    )],
+                ),
+                lopdf::content::Operation::new("ET", vec![]),
+            ],
+        };
+        let encoded = content.encode().expect("编码内容流失败");
+        let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
+        compressor.write_all(&encoded).expect("压缩内容流失败");
+        let compressed = compressor.finish().expect("完成压缩失败");
+
+        let mut pseudo_pdf = Vec::new();
+        pseudo_pdf.extend_from_slice(b"%PDF-1.4\n1 0 obj\n<< /Length ");
+        pseudo_pdf.extend_from_slice(compressed.len().to_string().as_bytes());
+        pseudo_pdf.extend_from_slice(b" /Filter /FlateDecode >>\nstream\n");
+        pseudo_pdf.extend_from_slice(&compressed);
+        pseudo_pdf.extend_from_slice(b"\nendstream\n%%EOF");
+
+        let extracted =
+            extract_text_from_pdf_raw_streams(&pseudo_pdf).expect("应能从 Flate stream 提取文本");
+        assert!(extracted.contains("Gradient Tensor"));
+    }
+
+    #[test]
+    fn decode_pdf_stream_candidates_supports_trailing_newline() {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+
+        let payload = b"BT\n(Hello Stream)\nTj\nET";
+        let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
+        compressor.write_all(payload).expect("压缩 payload 失败");
+        let mut compressed = compressor.finish().expect("完成压缩失败");
+        compressed.extend_from_slice(b"\r\n");
+
+        let candidates = decode_pdf_stream_candidates(&compressed);
+        assert!(candidates.iter().any(|candidate| {
+            let text = String::from_utf8_lossy(candidate);
+            text.contains("Hello Stream")
+        }));
+    }
+
+    #[test]
+    fn should_fallback_to_pdf_ocr_matches_supported_error_patterns() {
+        assert!(should_fallback_to_pdf_ocr(
+            "提取 PDF 文本失败：未识别到可用文本，可能是扫描件或字体编码不兼容"
+        ));
+        assert!(should_fallback_to_pdf_ocr(
+            "读取 PDF 失败：当前解析器暂不兼容该文件结构"
+        ));
+        assert!(!should_fallback_to_pdf_ocr(
+            "读取 PDF 原始字节失败：permission denied"
+        ));
+    }
+
+    #[test]
+    fn build_pdf_ocr_fallback_failure_message_contains_install_hints() {
+        let message = build_pdf_ocr_fallback_failure_message(
+            "读取 PDF 失败：当前解析器暂不兼容该文件结构",
+            "未检测到 pdftoppm 命令",
+        );
+        assert!(message.contains("自动 OCR 回退失败"));
+        assert!(message.contains("Poppler"));
+        assert!(message.contains("pdftoppm"));
+        assert!(message.contains("tesseract"));
+        assert!(message.contains("paddleocr"));
+    }
+
+    #[test]
+    fn find_subsequence_returns_expected_offsets() {
+        let bytes = b"abc%PDF-1.4...%%EOFtail";
+        assert_eq!(find_subsequence(bytes, b"%PDF-"), Some(3));
+        assert_eq!(rfind_subsequence(bytes, b"%%EOF"), Some(14));
+        assert_eq!(find_subsequence(bytes, b"not-found"), None);
+    }
+
+    // ── AppState integration tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn ingest_file_impl_rejects_unsupported_extension() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-file-unsupported");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let unsupported = vault_dir.join("sample.xyz");
+        fs::write(&unsupported, "unsupported").expect("写入测试文件失败");
+
+        let err = state
+            .ingest_file_impl(unsupported.to_string_lossy().as_ref(), None)
+            .await
+            .expect_err("不支持扩展名应返回错误");
+        assert!(err.contains("不支持的文件扩展名"));
+        assert!(err.contains("md/markdown/pdf/docx/pptx/txt"));
+    }
+
+    #[tokio::test]
+    async fn apply_ingest_preview_returns_error_when_preview_id_missing() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-preview-missing");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let err = state
+            .apply_ingest_preview("preview-not-exists")
+            .await
+            .expect_err("不存在的 preview_id 应返回错误");
+        assert!(err.contains("未找到预览缓存"));
+    }
+
+    #[tokio::test]
+    async fn preview_ingest_file_then_apply_succeeds_and_consumes_cache() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-preview-apply");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("初始化 Vault 失败");
+
+        let source_path = vault_dir.join("preview-source.md");
+        fs::write(&source_path, "# Preview Source\n\nRust ingest preview")
+            .expect("写入预览源文件失败");
+
+        let preview = state
+            .preview_ingest_file("file", source_path.to_string_lossy().as_ref(), None)
+            .await
+            .expect("生成 ingest preview 失败");
+        assert!(!preview.preview_id.trim().is_empty());
+
+        let result = state
+            .apply_ingest_preview(&preview.preview_id)
+            .await
+            .expect("应用 ingest preview 失败");
+        assert!(!result.wiki_path.trim().is_empty());
+        assert!(
+            Path::new(&result.wiki_path).exists(),
+            "落盘后 wiki 页面应存在"
+        );
+
+        let err = state
+            .apply_ingest_preview(&preview.preview_id)
+            .await
+            .expect_err("同一个 preview_id 第二次 apply 应失败");
+        assert!(err.contains("未找到预览缓存"));
+    }
+
+    #[tokio::test]
+    async fn ingest_pdf_impl_rejects_invalid_pdf_content_with_readable_error() {
+        let vault_dir = make_temp_dir("llm-wiki-ingest-pdf-invalid");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let invalid_pdf_path = vault_dir.join("invalid.pdf");
+        fs::write(&invalid_pdf_path, "this is not a real pdf").expect("写入伪 PDF 文件失败");
+
+        let err = state
+            .ingest_pdf_impl(invalid_pdf_path.to_string_lossy().as_ref())
+            .await
+            .expect_err("非法 PDF 内容应返回错误");
+        assert!(err.contains("读取 PDF 失败"));
+        assert!(err.contains("解析器暂不兼容"));
+    }
+
+    #[test]
+    fn default_paths_point_to_project_root_targets() {
+        let vault_dir = make_temp_dir("llm-wiki-default-paths");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+        let paths = state.default_paths();
+        assert_eq!(paths.vault_path, root.join("vault").to_string_lossy());
+        #[cfg(windows)]
+        assert_eq!(paths.ingest_source_path, r"E:\llm-wiki\test-llm.md");
+        #[cfg(not(windows))]
+        assert_eq!(
+            paths.ingest_source_path,
+            root.join("test-llm.md").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn ingest_queue_stale_running_reset_on_vault_init() {
+        let vault_dir = make_temp_dir("llm-wiki-restart-recovery");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("init_vault 失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("打开数据库失败");
+
+        db::db_enqueue_ingest(&conn, "file", "/some/path.md", "100").expect("enqueue 失败");
+        let items = db::db_list_ingest_queue(&conn).expect("list 失败");
+        let id = items[0].id;
+        let now = crate::state::current_timestamp_ms();
+        db::db_update_ingest_queue_status(&conn, id, "running", None, &now)
+            .expect("set running 失败");
+
+        state.init_vault(vault_dir.clone()).expect("第二次 init_vault 失败");
+
+        let items = db::db_list_ingest_queue(&conn).expect("list after restart 失败");
+        assert_eq!(items[0].status, "queued", "重启后 running 任务应被重置为 queued");
+    }
+
+    #[test]
+    fn init_vault_with_template_rejects_path_traversal() {
+        let dir = make_temp_dir("llm-wiki-state-template-traversal");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        let vault_dir = dir.join("vault");
+        fs::create_dir_all(&vault_dir).unwrap();
+        let result = state.init_vault_with_template(
+            vault_dir,
+            "schema content".to_string(),
+            "purpose content".to_string(),
+            vec!["../../../etc".to_string()],
+        );
+        assert!(result.is_err(), "路径遍历应被拒绝");
+        assert!(result.unwrap_err().contains("非法目录路径"));
+    }
+
+    #[test]
+    fn init_vault_with_template_rejects_oversized_content() {
+        let dir = make_temp_dir("llm-wiki-state-template-size");
+        let _guard = TempDirGuard(dir.clone());
+        let state = make_test_state(&dir);
+        let vault_dir = dir.join("vault");
+        fs::create_dir_all(&vault_dir).unwrap();
+        let big = "x".repeat(513 * 1024);
+        let result = state.init_vault_with_template(vault_dir, big, "ok".to_string(), vec![]);
+        assert!(result.is_err(), "超大 schema 内容应被拒绝");
+        assert!(result.unwrap_err().contains("512 KB"));
+    }
+}

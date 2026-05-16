@@ -968,3 +968,186 @@ pub fn recent_logs(state: &AppState, limit: usize) -> Vec<LogEntry> {
     let guard = state.inner.lock().expect("状态锁已被污染");
     guard.logs.iter().rev().take(limit).cloned().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::test_helpers::*;
+    use crate::models::{AppMode, LlmProviderConfig};
+    use crate::llm::LlmError;
+    use std::{fs, path::{Path, PathBuf}};
+
+    #[test]
+    fn default_config_path_points_to_project_root_runtime_dir() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let path = default_config_path();
+
+        assert_eq!(path, root.join(".runtime").join("app-config.json"));
+    }
+
+    #[test]
+    fn llm_health_error_message_maps_known_errors() {
+        assert_eq!(
+            llm_health_error_message(&LlmError::Timeout),
+            "本地 Ollama 健康检查超时"
+        );
+        assert_eq!(
+            llm_health_error_message(&LlmError::ModelNotFound("mistral".to_string())),
+            "本地 Ollama 未找到模型：mistral"
+        );
+    }
+
+    #[test]
+    fn build_llm_status_formats_expected_fields() {
+        let status = build_llm_status(
+            "ollama",
+            "http://localhost:11434",
+            "llama3:8b",
+            AppMode::StrictLocal,
+            true,
+            "本地 Ollama 可用".to_string(),
+        );
+
+        assert_eq!(status.provider, "ollama");
+        assert_eq!(status.base_url, "http://localhost:11434");
+        assert_eq!(status.model, "llama3:8b");
+        assert!(status.healthy);
+        assert_eq!(status.message, "本地 Ollama 可用");
+        assert_eq!(status.mode, AppMode::StrictLocal);
+    }
+
+    #[test]
+    fn load_config_compatibly_reads_legacy_openai_fields() {
+        let dir = make_temp_dir("llm-wiki-config-legacy");
+        let _guard = TempDirGuard(dir.clone());
+        let config_path = dir.join("app-config.json");
+        fs::write(
+            &config_path,
+            r#"{
+  "mode": "Hybrid",
+  "vault_path": "C:/wiki",
+  "query_top_k": 5,
+  "openai_api_key": "sk-legacy",
+  "openai_provider_name": "DeepSeek",
+  "openai_model": "deepseek-chat"
+}"#,
+        )
+        .expect("写入旧配置失败");
+
+        let (config, snapshot) = load_config(&config_path);
+
+        assert_eq!(
+            snapshot.as_deref().map(str::trim),
+            Some(
+                r#"{
+  "mode": "Hybrid",
+  "vault_path": "C:/wiki",
+  "query_top_k": 5,
+  "openai_api_key": "sk-legacy",
+  "openai_provider_name": "DeepSeek",
+  "openai_model": "deepseek-chat"
+}"#
+            )
+        );
+        assert_eq!(config.mode, AppMode::Hybrid);
+        assert_eq!(config.vault_path.as_deref(), Some("C:/wiki"));
+        assert_eq!(config.query_top_k, Some(5));
+        assert_eq!(config.cloud_api_key.as_deref(), Some("sk-legacy"));
+        assert_eq!(config.cloud_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(config.cloud_provider_name.as_deref(), Some("DeepSeek"));
+        assert!(config.cloud_base_url.is_none());
+        assert!(config.active_provider.is_none());
+    }
+
+    #[test]
+    fn provider_aliases_are_canonicalized_and_default_urls_are_derived() {
+        assert_eq!(
+            normalize_cloud_provider_name(Some("  DeepSeek Chat  ")).as_deref(),
+            Some("deepseek")
+        );
+        assert_eq!(
+            normalize_cloud_provider_name(Some("GLM-4")).as_deref(),
+            Some("glm")
+        );
+        assert_eq!(
+            normalize_cloud_provider_name(Some("zhipu ai")).as_deref(),
+            Some("glm")
+        );
+        assert_eq!(
+            normalize_cloud_provider_name(Some("MiniMax abab6.5")).as_deref(),
+            Some("minimax")
+        );
+        assert_eq!(display_cloud_provider_name("deepseek"), "DeepSeek");
+        assert_eq!(display_cloud_provider_name("glm"), "GLM");
+        assert_eq!(display_cloud_provider_name("minimax"), "MiniMax");
+
+        let cases = [
+            ("deepseek", Some("https://api.deepseek.com/v1")),
+            ("glm", Some("https://open.bigmodel.cn/api/paas/v4")),
+            ("zhipu", Some("https://open.bigmodel.cn/api/paas/v4")),
+            ("minimax", Some("https://api.minimax.chat/v1")),
+        ];
+
+        for (provider_name, expected_base_url) in cases {
+            assert_eq!(
+                normalize_cloud_base_url(Some(provider_name), None).as_deref(),
+                expected_base_url
+            );
+            assert_eq!(
+                effective_cloud_base_url(Some(provider_name), None),
+                expected_base_url.unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn llm_status_input_prefers_ollama_when_active_provider_is_ollama_in_hybrid() {
+        let vault_dir = make_temp_dir("llm-wiki-provider-route-ollama");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        {
+            let mut guard = state.inner.lock().expect("状态锁已被污染");
+            guard.mode = AppMode::Hybrid;
+            guard.cloud_api_key = Some("sk-test".to_string());
+            guard.cloud_model = Some("gpt-4o-mini".to_string());
+            guard.active_provider = Some("ollama".to_string());
+        }
+
+        let (_mode, _cloud_provider_name, cloud_config, ollama_provider) =
+            llm_status_input(&state);
+        assert!(cloud_config.is_none());
+        assert!(ollama_provider.is_some());
+    }
+
+    #[test]
+    fn set_llm_config_falls_back_to_ollama_when_cloud_selected_without_key() {
+        let vault_dir = make_temp_dir("llm-wiki-provider-fallback");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let saved = set_llm_config(
+            &state,
+            LlmProviderConfig {
+                cloud_api_key: "".to_string(),
+                cloud_base_url: "".to_string(),
+                cloud_model: "gpt-4o-mini".to_string(),
+                cloud_provider_name: "DeepSeek".to_string(),
+                active_provider: "cloud".to_string(),
+                ollama_model: "".to_string(),
+                ollama_base_url: "".to_string(),
+                embed_ollama_model: "".to_string(),
+                embed_ollama_base_url: "".to_string(),
+            },
+        )
+        .expect("保存 LLM 配置失败");
+
+        assert_eq!(saved.active_provider, "ollama");
+    }
+}

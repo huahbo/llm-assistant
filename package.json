@@ -1,6 +1,6 @@
 {
   "name": "llm-wiki-desktop",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "private": true,
   "description": "A+C 路线个人 Wiki 桌面应用（Windows 优先）",
   "workspaces": [
