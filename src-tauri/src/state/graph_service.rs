@@ -227,3 +227,193 @@ pub fn get_knowledge_subgraph_impl(
         links,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::state::test_helpers::*;
+    use crate::models::KnowledgeGraphDirection;
+    use rusqlite::{params, Connection};
+    use std::{collections::BTreeSet, fs, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn get_knowledge_graph_returns_err_when_no_vault() {
+        let tmp = std::env::temp_dir().join(format!(
+            "llm-wiki-kg-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let config_path = tmp.join("app-config.json");
+        let state = crate::state::AppState::new_with_path(config_path);
+        let result = state.get_knowledge_graph_impl();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_knowledge_subgraph_returns_err_when_no_vault() {
+        let tmp = std::env::temp_dir().join(format!(
+            "llm-wiki-subgraph-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let config_path = tmp.join("app-config.json");
+        let state = crate::state::AppState::new_with_path(config_path);
+        let result = state.get_knowledge_subgraph_impl(
+            "wiki/a.md".to_string(),
+            1,
+            KnowledgeGraphDirection::Both,
+            10,
+            10,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_knowledge_subgraph_respects_direction_and_hop() {
+        let vault_dir = make_temp_dir("llm-wiki-subgraph-direction");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let wiki_dir = vault_dir.join("wiki");
+        let page_a = wiki_dir.join("a.md");
+        let page_b = wiki_dir.join("b.md");
+        let page_c = wiki_dir.join("c.md");
+        let page_d = wiki_dir.join("d.md");
+        fs::write(&page_a, "# A").expect("写入 A 页面失败");
+        fs::write(&page_b, "# B").expect("写入 B 页面失败");
+        fs::write(&page_c, "# C").expect("写入 C 页面失败");
+        fs::write(&page_d, "# D").expect("写入 D 页面失败");
+
+        let page_a = fs::canonicalize(&page_a).expect("规范化 A 页面失败");
+        let page_b = fs::canonicalize(&page_b).expect("规范化 B 页面失败");
+        let page_c = fs::canonicalize(&page_c).expect("规范化 C 页面失败");
+        let page_d = fs::canonicalize(&page_d).expect("规范化 D 页面失败");
+
+        let db_path = vault_dir.join(".app").join("meta.db");
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        for (idx, (title, path)) in [
+            ("A", &page_a),
+            ("B", &page_b),
+            ("C", &page_c),
+            ("D", &page_d),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO sources (content_hash, source_path, raw_path, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    format!("test-hash-{}", idx),
+                    format!("source://{}", idx),
+                    path.to_string_lossy().to_string(),
+                    "1"
+                ],
+            )
+            .expect("写入 sources 失败");
+            let source_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO wiki_pages (source_id, title, path, summary, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    source_id,
+                    title,
+                    path.to_string_lossy().to_string(),
+                    format!("summary {}", title),
+                    "1",
+                    "1"
+                ],
+            )
+            .expect("写入 wiki_pages 失败");
+        }
+
+        for (source, target) in [(&page_a, &page_b), (&page_b, &page_c), (&page_d, &page_b)] {
+            conn.execute(
+                "INSERT INTO citations (page_path, cited_page_path, score, excerpt, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    source.to_string_lossy().to_string(),
+                    target.to_string_lossy().to_string(),
+                    1_i64,
+                    "edge",
+                    "1"
+                ],
+            )
+            .expect("写入 citations 失败");
+        }
+
+        let out_graph = state
+            .get_knowledge_subgraph_impl(
+                page_b.to_string_lossy().to_string(),
+                1,
+                KnowledgeGraphDirection::Out,
+                50,
+                50,
+            )
+            .expect("查询 out 子图失败");
+        let out_nodes = out_graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            out_nodes,
+            BTreeSet::from([
+                page_b.to_string_lossy().to_string(),
+                page_c.to_string_lossy().to_string(),
+            ])
+        );
+
+        let in_graph = state
+            .get_knowledge_subgraph_impl(
+                page_b.to_string_lossy().to_string(),
+                1,
+                KnowledgeGraphDirection::In,
+                50,
+                50,
+            )
+            .expect("查询 in 子图失败");
+        let in_nodes = in_graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            in_nodes,
+            BTreeSet::from([
+                page_a.to_string_lossy().to_string(),
+                page_b.to_string_lossy().to_string(),
+                page_d.to_string_lossy().to_string(),
+            ])
+        );
+
+        let both_graph = state
+            .get_knowledge_subgraph_impl(
+                page_b.to_string_lossy().to_string(),
+                2,
+                KnowledgeGraphDirection::Both,
+                50,
+                50,
+            )
+            .expect("查询 both 子图失败");
+        let both_nodes = both_graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            both_nodes,
+            BTreeSet::from([
+                page_a.to_string_lossy().to_string(),
+                page_b.to_string_lossy().to_string(),
+                page_c.to_string_lossy().to_string(),
+                page_d.to_string_lossy().to_string(),
+            ])
+        );
+    }
+}
