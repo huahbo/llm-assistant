@@ -1075,3 +1075,268 @@ pub fn clear_ask_session(state: &AppState, session_id: String) -> Result<(), Str
     db::clear_ask_session_turns(&db_path, &normalized_session_id, &super::current_timestamp_ms())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::test_helpers::*;
+    use crate::models::{AppConfig, QueryAskOptions, QueryAnswerResult};
+    use crate::{db, llm::LlmProvider};
+    use crate::state::WikiMatch;
+    use std::{fs, sync::{Arc, Mutex}};
+
+    #[tokio::test]
+    async fn query_ask_rejects_empty_question() {
+        let vault_dir = make_temp_dir("llm-wiki-query-empty");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let result = state.query_ask("   ".to_string()).await;
+        assert!(result.is_err());
+        assert_eq!(result.err(), Some("问题不能为空".to_string()));
+    }
+
+    #[test]
+    fn query_answer_result_defaults_missing_search_strategy() {
+        let value = serde_json::json!({
+            "question": "Q",
+            "answer": "A",
+            "citations": [],
+            "matched_pages": [],
+            "mode": "Hybrid",
+            "checked_at": "1",
+            "answer_strategy": "rule"
+        });
+
+        let result: QueryAnswerResult =
+            serde_json::from_value(value).expect("反序列化 QueryAnswerResult 失败");
+
+        assert_eq!(result.search_strategy, "empty");
+        assert_eq!(result.answer_strategy, "rule");
+    }
+
+    #[tokio::test]
+    async fn query_ask_requires_initialized_vault() {
+        let vault_dir = make_temp_dir("llm-wiki-query-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+
+        let result = state.query_ask("rust wiki".to_string()).await;
+        assert!(result.is_err());
+        assert_eq!(
+            result.err(),
+            Some("请先调用 init_vault 初始化 Vault".to_string())
+        );
+    }
+
+    #[test]
+    fn generate_query_answer_with_provider_uses_llm_strategy_and_prompt() {
+        let vault_dir = make_temp_dir("llm-wiki-query-llm");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let prompt_log = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn LlmProvider> = Arc::new(MockQueryProvider::new(
+            "本地 LLM 合成回答",
+            prompt_log.clone(),
+        ));
+        let matches = vec![WikiMatch {
+            page_path: vault_dir
+                .join("wiki")
+                .join("prompt.md")
+                .to_string_lossy()
+                .to_string(),
+            score: 7,
+            excerpt: "核心证据片段".to_string(),
+        }];
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        let (answer, strategy) = runtime.block_on(async {
+            state
+                .generate_query_answer_with_provider(
+                    "核心目标是什么",
+                    &matches,
+                    Some(provider),
+                    None,
+                )
+                .await
+        });
+
+        assert_eq!(strategy, "llm");
+        assert_eq!(answer, "本地 LLM 合成回答");
+
+        let prompts = prompt_log.lock().expect("读取 prompt 失败");
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("核心目标是什么"));
+        assert!(prompts[0].contains("prompt.md"));
+        assert!(prompts[0].contains("核心证据片段"));
+    }
+
+    #[test]
+    fn generate_query_answer_with_provider_falls_back_to_rule_on_empty_response() {
+        let vault_dir = make_temp_dir("llm-wiki-query-fallback");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        let prompt_log = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn LlmProvider> =
+            Arc::new(MockQueryProvider::new("   ", prompt_log.clone()));
+        let matches = vec![WikiMatch {
+            page_path: vault_dir
+                .join("wiki")
+                .join("fallback.md")
+                .to_string_lossy()
+                .to_string(),
+            score: 3,
+            excerpt: "回退证据".to_string(),
+        }];
+        let expected = build_query_answer("需要回退吗", &matches);
+
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio runtime 失败");
+        let (answer, strategy) = runtime.block_on(async {
+            state
+                .generate_query_answer_with_provider("需要回退吗", &matches, Some(provider), None)
+                .await
+        });
+
+        assert_eq!(strategy, "rule");
+        assert_eq!(answer, expected);
+
+        let prompts = prompt_log.lock().expect("读取 prompt 失败");
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("fallback.md"));
+    }
+
+    #[tokio::test]
+    async fn query_ask_with_options_applies_top_k_clamp() {
+        let vault_dir = make_temp_dir("llm-wiki-query-topk");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        for idx in 0..4 {
+            let page_path = vault_dir.join("wiki").join(format!("page-{}.md", idx));
+            fs::write(
+                &page_path,
+                format!("# 页面{}\n这个项目的核心目标是什么。\n", idx),
+            )
+            .expect("写入测试页面失败");
+            let db_path = vault_dir.join(".app").join("meta.db");
+            db::upsert_fts_page(
+                &db_path,
+                &page_path,
+                &format!("page-{}", idx),
+                "这个项目的核心目标是什么。",
+            )
+            .expect("写入 fts 索引失败");
+        }
+
+        let result = state
+            .query_ask_with_options(
+                "这个项目的核心目标是什么".to_string(),
+                QueryAskOptions { top_k: Some(1) },
+            )
+            .await
+            .expect("query_ask_with_options 应返回成功");
+        assert_eq!(result.matched_pages.len(), 1);
+        assert_eq!(result.search_strategy, "rrf");
+        assert!(result
+            .citations
+            .iter()
+            .all(|item| item.display_path.is_some()));
+
+        let result = state
+            .query_ask_with_options(
+                "这个项目的核心目标是什么".to_string(),
+                QueryAskOptions { top_k: Some(99) },
+            )
+            .await
+            .expect("query_ask_with_options 应返回成功");
+        assert!(result.matched_pages.len() <= 8); // QUERY_TOP_K_MAX = 8
+        assert_eq!(result.search_strategy, "rrf");
+        assert!(result
+            .citations
+            .iter()
+            .all(|item| item.display_path.is_some()));
+    }
+
+    #[test]
+    fn set_query_top_k_persists_to_runtime_config() {
+        let vault_dir = make_temp_dir("llm-wiki-query-settings");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+
+        let settings = state.set_query_top_k(6).expect("设置 top_k 失败");
+        assert_eq!(settings.top_k, 6);
+
+        let config_raw = fs::read_to_string(vault_dir.join(".runtime").join("app-config.json"))
+            .expect("读取运行时配置失败");
+        let config: AppConfig = serde_json::from_str(&config_raw).expect("解析运行时配置失败");
+        assert_eq!(config.query_top_k, Some(6));
+    }
+
+    #[tokio::test]
+    async fn query_ask_with_options_uses_persisted_default_top_k() {
+        let vault_dir = make_temp_dir("llm-wiki-query-default-topk");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state(&vault_dir);
+        state
+            .init_vault(vault_dir.clone())
+            .expect("初始化 Vault 失败");
+        state.set_query_top_k(2).expect("设置 top_k 失败");
+
+        for idx in 0..4 {
+            let page_path = vault_dir
+                .join("wiki")
+                .join(format!("topk-default-{}.md", idx));
+            fs::write(
+                &page_path,
+                format!("# 页面{}\nquery default topk 测试。\n", idx),
+            )
+            .expect("写入测试页面失败");
+            let db_path = vault_dir.join(".app").join("meta.db");
+            db::upsert_fts_page(
+                &db_path,
+                &page_path,
+                &format!("topk-default-{}", idx),
+                "query default topk 测试。",
+            )
+            .expect("写入 fts 索引失败");
+        }
+
+        let result = state
+            .query_ask_with_options("query default topk".to_string(), QueryAskOptions::default())
+            .await
+            .expect("query_ask_with_options 应返回成功");
+        assert_eq!(result.matched_pages.len(), 2);
+        assert_eq!(result.search_strategy, "rrf");
+    }
+
+    #[test]
+    fn clear_ask_session_removes_history() {
+        let state = crate::state::AppState::new();
+        {
+            let mut sessions = state.ask_sessions.lock().unwrap();
+            sessions.insert(
+                "sess1".to_string(),
+                vec![crate::models::AskTurn {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+            );
+        }
+        state.clear_ask_session("sess1".to_string()).unwrap();
+        let sessions = state.ask_sessions.lock().unwrap();
+        assert!(sessions.get("sess1").map(|v| v.is_empty()).unwrap_or(true));
+    }
+
+    #[test]
+    fn cancel_ask_session_noop_when_no_flag() {
+        let state = crate::state::AppState::new();
+        let result = state.cancel_ask_session("nonexistent".to_string());
+        assert!(result.is_ok());
+    }
+}
