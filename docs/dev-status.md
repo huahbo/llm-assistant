@@ -10,7 +10,28 @@
 2. 查看下方 §活跃 TODO
 3. 阅读最新 5 条 git log 了解背景
 
-## 本轮快讯（2026-05-15，Claude Code）— 收口
+## 本轮快讯（2026-05-16，Claude Code）— H10/H12/H13 完成审计
+
+### H10 MCP 动态装载 已完成（实现早于计划）
+- `agent_chat/mcp.rs`：完整 MCP client（JSON-RPC 2.0 over stdio，initialize 握手，list_tools / call_tool）
+- `agent_chat/db.rs`：MCP server CRUD + `sync_mcp_tools` + `get_tool_handler_kind`
+- `agent_chat/commands.rs`：`list/upsert/delete_mcp_server` + `reload_mcp_server_tools` Tauri 命令
+- `state/chat_service.rs`：`spawn/stop/get/list_running_mcp_clients`
+- `agent_chat/tools.rs`：`exec_mcp_or_unknown` 路由至对应 MCP 服务器
+- `SettingsModule.tsx`：MCP 服务器配置区（添加/连接/删除/状态）
+- 新增 4 条 MCP CRUD 测试（268 通过）
+
+### H12 本地嵌入 已完成（Phase A + C，Phase B ONNX 保留可选）
+- `state/ingest_service.rs`：入库后异步触发 `embed_page`，写入 `page_embeddings`
+- `state/wiki_service.rs`：`search_wiki_pages_hybrid` — FTS5 + Ollama 向量 RRF，Ollama 不可用时自动降级
+- `agent_chat/tools.rs`：`exec_search_wiki` 调用混合检索
+- `SettingsModule.tsx`：Embedding 模型 / Base URL 配置区
+
+### H13 图谱双向联动 已完成（全部三个 Phase）
+- `contexts/GraphBridgeContext.tsx`：`highlightedPaths / chatPrefill / askPrefill` + `extractWikiPaths`
+- `GraphModule.tsx`：消费 `highlightedPaths` 高亮节点；右键菜单"问这个"→ `setChatPrefill`，"检索相关"→ `setAskPrefill`
+- `ChatModule.tsx`：AI 响应完成后提取 wiki 路径更新高亮；消费 `chatPrefill` 预填输入框
+- `AskModule.tsx`：消费 `askPrefill` 预填并执行搜索
 
 ### 历史工具调用显示 已完成
 - `Message` 结构体新增 `tool_calls: Option<serde_json::Value>`（解析自 `tool_calls_json`）
@@ -55,10 +76,10 @@
 
 ---
 
-## 验证基线（2026-05-15）
+## 验证基线（2026-05-16）
 
 ```powershell
-cd src-tauri; cargo test    # 264 通过 ✅
+cd src-tauri; cargo test    # 268 通过 ✅
 cd ../web; npm run typecheck # 零错误 ✅
 ```
 
@@ -68,11 +89,11 @@ cd ../web; npm run typecheck # 零错误 ✅
 
 | commit | 描述 |
 |--------|------|
+| *(待提交)* | test(agent_chat): 补充 H10 MCP CRUD 测试 +4 |
+| `52d6b31` | docs: 收口 — 更新 dev-status，历史工具调用已完成，基线 264 |
 | `31df6c8` | feat(chat): 对话重载时显示历史工具调用记录 |
 | `612e8c5` | refactor(agent): exec_read_wiki 直接读文件而非解析格式化字符串 |
 | `09d3808` | feat(agent): 跨会话消息内容搜索 |
-| `81b1062` | feat(agent): read_wiki 支持 start_char 翻页 |
-| `163d67a` | feat(agent): 新增 list_wiki_pages 工具 |
 
 ---
 
@@ -82,16 +103,16 @@ cd ../web; npm run typecheck # 零错误 ✅
 |--------|------|------|------|
 | 🟢 1 | **历史工具调用显示** | 已完成（2026-05-15） | `buildDisplayGroups` 将 DB 消息重组为 ToolGroup 展示段；typecheck ✅ 264测试 ✅ |
 | 🔴 2 | **前端 typecheck 验证** | 已确认 ✅ | `npm run typecheck` 零错误 |
-| 🟡 3 | **H10 MCP 扩展** | 计划已有 (`docs/h10-mcp-plan.md` 若有) | MCP server 动态装载 |
-| 🟡 4 | **H12 ONNX 本地推理** | 未开始 | 离线向量嵌入，不依赖 Ollama |
-| 🟡 5 | **H13 图谱双向联动** | 未开始 | 从对话/Agent 结果自动更新知识图谱 |
+| 🟢 3 | **H10 MCP 扩展** | 已完成（2026-05-16 审计确认） | Phase A(ToolRegistry) 跳过，Phase B+C 全实现 |
+| 🟢 4 | **H12 本地嵌入** | 已完成（Phase A+C，ONNX Phase B 保留可选） | Ollama + RRF，ingest 自动 embed |
+| 🟢 5 | **H13 图谱双向联动** | 已完成（2026-05-16 审计确认） | 全三个 Phase 均实现 |
 | 🟢 6 | **打包发布 (P22)** | 未开始 | `npm run tauri build` —— 需先确认 typecheck ✅ |
 
 ---
 
 ## 关键架构约束
 
-- **测试基线**：264 通过（2026-05-15）
+- **测试基线**：268 通过（2026-05-16）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**

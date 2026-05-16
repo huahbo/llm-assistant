@@ -831,4 +831,87 @@ mod tests {
         assert_eq!(msgs[0].tool_calls_json.as_deref(), Some(tool_calls_json));
         assert!(msgs[0].content.is_none());
     }
+
+    #[test]
+    fn test_mcp_server_upsert_and_list() {
+        let (_f, path) = setup_db();
+        upsert_mcp_server(&path, "filesystem", "npx", r#"["-y","@mcp/fs"]"#, "{}", true, "2026-01-01").unwrap();
+        let servers = list_mcp_servers(&path).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "filesystem");
+        assert_eq!(servers[0].command, "npx");
+        assert_eq!(servers[0].args, vec!["-y", "@mcp/fs"]);
+        // Upsert again should update, not duplicate
+        upsert_mcp_server(&path, "filesystem", "node", "[]", "{}", true, "2026-01-02").unwrap();
+        let servers2 = list_mcp_servers(&path).unwrap();
+        assert_eq!(servers2.len(), 1);
+        assert_eq!(servers2[0].command, "node");
+    }
+
+    #[test]
+    fn test_mcp_server_get_and_delete() {
+        let (_f, path) = setup_db();
+        upsert_mcp_server(&path, "myserver", "cmd.exe", "[]", "{}", true, "2026-01-01").unwrap();
+        let found = get_mcp_server(&path, "myserver").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().command, "cmd.exe");
+        let missing = get_mcp_server(&path, "nonexistent").unwrap();
+        assert!(missing.is_none());
+        delete_mcp_server(&path, "myserver").unwrap();
+        let after_delete = list_mcp_servers(&path).unwrap();
+        assert!(after_delete.is_empty());
+    }
+
+    #[test]
+    fn test_sync_mcp_tools_and_handler_kind() {
+        let (_f, path) = setup_db();
+        upsert_mcp_server(&path, "math", "python", "[]", "{}", true, "2026-01-01").unwrap();
+        let tools = vec![
+            crate::agent_chat::mcp::McpToolDef {
+                server_name: "math".to_string(),
+                tool_name: "add".to_string(),
+                description: "Add two numbers".to_string(),
+                parameters_schema: r#"{"type":"object","properties":{}}"#.to_string(),
+            },
+        ];
+        sync_mcp_tools(&path, "math", &tools).unwrap();
+        // Tool should be discoverable via handler_kind
+        let kind = get_tool_handler_kind(&path, "add").unwrap();
+        assert_eq!(kind, Some("mcp:math".to_string()));
+        // Enabled tools list should include "add"
+        let all_tools = list_enabled_tools(&path).unwrap();
+        assert!(all_tools.iter().any(|t| t.name == "add"));
+        // Deleting the server should cascade-remove its tools
+        delete_mcp_server(&path, "math").unwrap();
+        let after = get_tool_handler_kind(&path, "add").unwrap();
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn test_sync_mcp_tools_replaces_on_reload() {
+        let (_f, path) = setup_db();
+        upsert_mcp_server(&path, "srv", "exe", "[]", "{}", true, "2026-01-01").unwrap();
+        let old_tools = vec![
+            crate::agent_chat::mcp::McpToolDef {
+                server_name: "srv".to_string(),
+                tool_name: "old_tool".to_string(),
+                description: "old".to_string(),
+                parameters_schema: "{}".to_string(),
+            },
+        ];
+        sync_mcp_tools(&path, "srv", &old_tools).unwrap();
+        assert!(get_tool_handler_kind(&path, "old_tool").unwrap().is_some());
+        // Re-sync with new tools replaces old
+        let new_tools = vec![
+            crate::agent_chat::mcp::McpToolDef {
+                server_name: "srv".to_string(),
+                tool_name: "new_tool".to_string(),
+                description: "new".to_string(),
+                parameters_schema: "{}".to_string(),
+            },
+        ];
+        sync_mcp_tools(&path, "srv", &new_tools).unwrap();
+        assert!(get_tool_handler_kind(&path, "old_tool").unwrap().is_none());
+        assert!(get_tool_handler_kind(&path, "new_tool").unwrap().is_some());
+    }
 }
