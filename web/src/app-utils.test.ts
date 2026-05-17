@@ -1575,6 +1575,8 @@ describe("云端 Provider 配置辅助函数", () => {
         ollama_base_url: "",
         embed_ollama_model: "",
         embed_ollama_base_url: "",
+        embed_backend: "onnx",
+        embed_onnx_model: "multilingual-e5-small",
       }),
     ).resolves.toBeNull();
   });

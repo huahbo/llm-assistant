@@ -585,3 +585,44 @@
   line-height: 1.5;
 }
 
+/* =========================================================
+   Embed Status Card
+   ========================================================= */
+
+.embed-status-card {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.embed-status-card__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.embed-status-card__label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 600;
+}
+
+.embed-status-card__value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+@media (max-width: 600px) {
+  .embed-status-card {
+    grid-template-columns: 1fr;
+  }
+}
+

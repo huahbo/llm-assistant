@@ -413,6 +413,22 @@ impl AppState {
             .join(model_name)
     }
 
+    /// 解析 onnxruntime DLL 路径：打包资源目录优先，开发时回退 CARGO_MANIFEST_DIR。
+    fn resolve_ort_dylib_path(&self) -> std::path::PathBuf {
+        if let Some(handle) = self.app_handle.get() {
+            if let Ok(resource_dir) = handle.path().resource_dir() {
+                let resource_dir: std::path::PathBuf = resource_dir;
+                let bundled = resource_dir.join("onnxruntime.dll");
+                if bundled.exists() {
+                    return bundled;
+                }
+            }
+        }
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("onnxruntime.dll")
+    }
+
     /// 初始化 Embed Provider（应用 setup 完成后调用一次）。
     /// 三路选择：onnx → ollama → disabled(noop)。
     pub fn init_embed_provider(&self) {
@@ -429,6 +445,14 @@ impl AppState {
 
         let provider: Arc<dyn EmbedProvider> = match backend.as_str() {
             "onnx" => {
+                // 运行时动态加载 ORT DLL（load-dynamic feature）
+                // 优先使用已有环境变量，否则自动探测打包资源目录和开发路径
+                if std::env::var("ORT_DYLIB_PATH").is_err() {
+                    let dll_path = self.resolve_ort_dylib_path();
+                    if dll_path.exists() {
+                        std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+                    }
+                }
                 let model_dir = self.resolve_onnx_model_dir(&onnx_model);
                 match crate::llm::OnnxEmbedder::from_resource_dir(&model_dir) {
                     Ok(embedder) => {

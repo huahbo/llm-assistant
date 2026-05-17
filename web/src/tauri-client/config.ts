@@ -2,6 +2,7 @@ import type {
   AppOverview,
   BackendAppMode,
   DefaultPaths,
+  EmbedStatus,
   LlmProviderConfig,
   LlmStatus,
   LogEntry,
@@ -39,6 +40,12 @@ type RawLlmProviderConfig = {
   openai_base_url?: string | null;
   openai_model?: string | null;
   openai_provider_name?: string | null;
+  ollama_model?: string | null;
+  ollama_base_url?: string | null;
+  embed_ollama_model?: string | null;
+  embed_ollama_base_url?: string | null;
+  embed_backend?: string | null;
+  embed_onnx_model?: string | null;
 };
 
 // ── LlmStatusSummary interface ────────────────────────────────────────────────
@@ -140,10 +147,12 @@ export const normalizeLlmProviderConfig = (
     cloud_model: cloudModel,
     cloud_provider_name: cloudProviderName,
     active_provider: activeProvider,
-    ollama_model: "",
-    ollama_base_url: "",
-    embed_ollama_model: "",
-    embed_ollama_base_url: "",
+    ollama_model: source.ollama_model?.trim() ?? "",
+    ollama_base_url: source.ollama_base_url?.trim() ?? "",
+    embed_ollama_model: source.embed_ollama_model?.trim() ?? "",
+    embed_ollama_base_url: source.embed_ollama_base_url?.trim() ?? "",
+    embed_backend: source.embed_backend?.trim() ?? "onnx",
+    embed_onnx_model: source.embed_onnx_model?.trim() ?? "multilingual-e5-small",
   };
 };
 
@@ -361,4 +370,24 @@ export async function getClipServerStatus(): Promise<string> {
   if (!isTauriRuntime()) return "";
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("get_clip_server_status");
+}
+
+// ── Embedding ─────────────────────────────────────────────────────────────────
+
+/** 获取 Embedding 后端状态（backend_id、维度、已索引页数、健康状态）。 */
+export async function getEmbedStatus(): Promise<EmbedStatus | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<EmbedStatus>("get_embed_status");
+  } catch {
+    return null;
+  }
+}
+
+/** 触发全量重建向量索引。返回已处理页数，失败时抛出。 */
+export async function rebuildEmbeddings(): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<number>("rebuild_embeddings");
 }

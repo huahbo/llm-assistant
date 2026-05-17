@@ -18,6 +18,7 @@ import {
   upsertMcpServer,
 } from "../../tauri-client";
 import type { McpServerConfig } from "../../types";
+import EmbeddingPanel from "./EmbeddingPanel";
 import {
   buildCloudProviderPresetConfig,
   cloudProviderPresets,
@@ -68,6 +69,8 @@ export default function SettingsModule({
   const [llmConfigOllamaBaseUrl, setLlmConfigOllamaBaseUrl] = useState("");
   const [llmConfigEmbedModel, setLlmConfigEmbedModel] = useState("nomic-embed-text:latest");
   const [llmConfigEmbedBaseUrl, setLlmConfigEmbedBaseUrl] = useState("");
+  const [llmConfigEmbedBackend, setLlmConfigEmbedBackend] = useState("onnx");
+  const [llmConfigEmbedOnnxModel, setLlmConfigEmbedOnnxModel] = useState("multilingual-e5-small");
   const [llmConfigSaving, setLlmConfigSaving] = useState(false);
 
   // MCP 服务器配置状态
@@ -163,6 +166,8 @@ export default function SettingsModule({
         setLlmConfigOllamaBaseUrl(llmConfigResult.ollama_base_url ?? "");
         setLlmConfigEmbedModel(llmConfigResult.embed_ollama_model || "nomic-embed-text:latest");
         setLlmConfigEmbedBaseUrl(llmConfigResult.embed_ollama_base_url ?? "");
+        setLlmConfigEmbedBackend(llmConfigResult.embed_backend || "onnx");
+        setLlmConfigEmbedOnnxModel(llmConfigResult.embed_onnx_model || "multilingual-e5-small");
       }
     })();
   }, []);
@@ -208,6 +213,8 @@ export default function SettingsModule({
         ollama_base_url: llmConfigOllamaBaseUrl.trim(),
         embed_ollama_model: llmConfigEmbedModel.trim(),
         embed_ollama_base_url: llmConfigEmbedBaseUrl.trim(),
+        embed_backend: llmConfigEmbedBackend,
+        embed_onnx_model: llmConfigEmbedOnnxModel,
       };
 
       const result = await saveLlmConfig(nextConfig);
@@ -400,6 +407,13 @@ export default function SettingsModule({
           </p>
         </div>
       </section>
+      <EmbeddingPanel
+        llmConfig={llmConfig}
+        embedBackend={llmConfigEmbedBackend}
+        embedOnnxModel={llmConfigEmbedOnnxModel}
+        onEmbedBackendChange={setLlmConfigEmbedBackend}
+        onEmbedOnnxModelChange={setLlmConfigEmbedOnnxModel}
+      />
       <section className="panel">
         <div className="section-head">
           <h2>拖拽行为</h2>
