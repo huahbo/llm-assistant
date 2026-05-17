@@ -1,7 +1,7 @@
 ﻿use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -44,7 +44,7 @@ mod test_helpers;
 
 /// Noop Embedder：embed_backend = "disabled" 或 ONNX 初始化失败时使用。
 /// 所有 embed() 调用返回 EmbedError::Unavailable，应用层已有降级（仅 FTS5）。
-struct NoopEmbedder;
+pub(super) struct NoopEmbedder;
 
 #[async_trait::async_trait]
 impl EmbedProvider for NoopEmbedder {
@@ -77,8 +77,8 @@ pub struct AppState {
     config_path: PathBuf,
     /// LLM Provider（延迟初始化，存储 trait 对象以支持多后端与 Mock）
     llm_provider: OnceLock<Arc<dyn LlmProvider>>,
-    /// Embed Provider（应用启动后由 init_embed_provider 注入，支持 ONNX / Ollama / Noop）
-    embed_provider: OnceLock<Arc<dyn EmbedProvider>>,
+    /// Embed Provider（RwLock 支持配置保存后热更新，初始值为 NoopEmbedder）
+    embed_provider: RwLock<Arc<dyn EmbedProvider>>,
     /// Tauri AppHandle（应用启动后由 setup hook 注入，用于 emit 进度事件）
     app_handle: OnceLock<AppHandle>,
     /// 会话历史（in-memory，session_id -> 轮次列表）
@@ -209,7 +209,7 @@ impl AppState {
             }),
             config_path,
             llm_provider: OnceLock::new(),
-            embed_provider: OnceLock::new(),
+            embed_provider: RwLock::new(Arc::new(NoopEmbedder)),
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
@@ -303,7 +303,7 @@ impl AppState {
             }),
             config_path,
             llm_provider: OnceLock::new(),
-            embed_provider: OnceLock::new(),
+            embed_provider: RwLock::new(Arc::new(NoopEmbedder)),
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
@@ -482,15 +482,15 @@ impl AppState {
             }
         };
 
-        let _ = self.embed_provider.set(provider);
+        *self.embed_provider.write().expect("embed_provider 写锁已被污染") = provider;
     }
 
-    /// 获取 Embedding 专用 Provider（Phase 4：ONNX / Ollama / Noop 三路选择）。
+    /// 获取 Embedding 专用 Provider（ONNX / Ollama / Noop 三路，支持热更新）。
     pub(crate) fn get_embed_provider(&self) -> Arc<dyn EmbedProvider> {
         self.embed_provider
-            .get()
-            .cloned()
-            .unwrap_or_else(|| Arc::new(NoopEmbedder) as Arc<dyn EmbedProvider>)
+            .read()
+            .expect("embed_provider 读锁已被污染")
+            .clone()
     }
 
     /// 获取 LLM Provider，按模式路由：
@@ -2278,7 +2278,7 @@ mod tests {
     fn init_embed_provider_disabled_backend_uses_noop() {
         let vault_dir = make_temp_dir("embed-disabled");
         let _guard = TempDirGuard(vault_dir.clone());
-        let mut state = make_test_state_bare(&vault_dir);
+        let state = make_test_state_bare(&vault_dir);
         // 注入 embed_backend = "disabled"
         state.inner.lock().expect("锁失败").embed_backend = Some("disabled".to_string());
         state.init_embed_provider();
@@ -2291,7 +2291,7 @@ mod tests {
     fn init_embed_provider_onnx_missing_model_falls_back_to_noop() {
         let vault_dir = make_temp_dir("embed-onnx-missing");
         let _guard = TempDirGuard(vault_dir.clone());
-        let mut state = make_test_state_bare(&vault_dir);
+        let state = make_test_state_bare(&vault_dir);
         {
             let mut guard = state.inner.lock().expect("锁失败");
             guard.embed_backend = Some("onnx".to_string());

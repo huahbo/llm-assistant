@@ -6,16 +6,28 @@ type EmbeddingPanelProps = {
   llmConfig: LlmProviderConfig | null;
   embedBackend: string;
   embedOnnxModel: string;
+  embedOllamaModel: string;
+  embedOllamaBaseUrl: string;
   onEmbedBackendChange: (value: string) => void;
   onEmbedOnnxModelChange: (value: string) => void;
+  onEmbedOllamaModelChange: (value: string) => void;
+  onEmbedOllamaBaseUrlChange: (value: string) => void;
+  onSaveConfig: () => Promise<void>;
+  saving: boolean;
 };
 
 export default function EmbeddingPanel({
   llmConfig,
   embedBackend,
   embedOnnxModel,
+  embedOllamaModel,
+  embedOllamaBaseUrl,
   onEmbedBackendChange,
   onEmbedOnnxModelChange,
+  onEmbedOllamaModelChange,
+  onEmbedOllamaBaseUrlChange,
+  onSaveConfig,
+  saving,
 }: EmbeddingPanelProps) {
   const [status, setStatus] = useState<EmbedStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
@@ -104,6 +116,36 @@ export default function EmbeddingPanel({
               </select>
             </div>
           )}
+          {embedBackend === "ollama" && (
+            <>
+              <div className="dev-panel__field">
+                <label className="dev-panel__label" htmlFor="embed-ollama-model">Embedding 模型（Ollama）</label>
+                <input
+                  id="embed-ollama-model"
+                  className="dev-panel__input"
+                  type="text"
+                  value={embedOllamaModel}
+                  onChange={(e) => onEmbedOllamaModelChange(e.target.value)}
+                  placeholder="nomic-embed-text:latest"
+                  disabled={!isTauri}
+                  spellCheck={false}
+                />
+              </div>
+              <div className="dev-panel__field">
+                <label className="dev-panel__label" htmlFor="embed-ollama-base-url">Ollama Base URL（可选）</label>
+                <input
+                  id="embed-ollama-base-url"
+                  className="dev-panel__input"
+                  type="text"
+                  value={embedOllamaBaseUrl}
+                  onChange={(e) => onEmbedOllamaBaseUrlChange(e.target.value)}
+                  placeholder="http://localhost:11434（默认）"
+                  disabled={!isTauri}
+                  spellCheck={false}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <div className="settings-panel__section-title" style={{ marginTop: 16 }}>当前状态</div>
@@ -142,6 +184,15 @@ export default function EmbeddingPanel({
         <div className="settings-panel__save" style={{ marginTop: 16, gap: 8, display: "flex", alignItems: "center", flexWrap: "wrap" }}>
           <button
             type="button"
+            className="dev-panel__button dev-panel__button--accent"
+            onClick={() => void onSaveConfig()}
+            disabled={saving || !isTauri}
+            title="保存嵌入后端配置（同时保存 LLM 配置）"
+          >
+            {saving ? "保存中…" : "保存嵌入配置"}
+          </button>
+          <button
+            type="button"
             className="dev-panel__button"
             onClick={() => void loadStatus()}
             disabled={statusLoading || !isTauri}
@@ -150,7 +201,7 @@ export default function EmbeddingPanel({
           </button>
           <button
             type="button"
-            className="dev-panel__button dev-panel__button--accent"
+            className="dev-panel__button"
             onClick={() => void handleRebuild()}
             disabled={rebuilding || !isTauri || embedBackend === "disabled"}
             title="对所有 Wiki 页面重新生成向量并写入数据库"

@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::models::{
     AgentDraftConflictInfo, AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem,
@@ -357,17 +357,25 @@ pub fn get_llm_config(state: State<'_, AppState>) -> LlmProviderConfig {
     state.get_llm_config()
 }
 
-/// 保存云端 Provider 配置。
+/// 保存云端 Provider 配置，并在后台非阻塞地重新初始化 Embed Provider。
 #[tauri::command]
-pub fn set_llm_config(
+pub async fn set_llm_config(
     config: LlmProviderConfig,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<LlmProviderConfig, String> {
     eprintln!(
         "[set_llm_config] called with active_provider={}, cloud_provider_name={}",
         config.active_provider, config.cloud_provider_name
     );
-    state.set_llm_config(config)
+    let result = state.set_llm_config(config)?;
+    // embed 配置变更后在后台重新初始化（ONNX 加载可能耗时，不阻塞命令返回）
+    let app2 = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let s: State<'_, AppState> = app2.state();
+        s.init_embed_provider();
+    });
+    Ok(result)
 }
 
 /// 读取默认 OCR Provider 配置。

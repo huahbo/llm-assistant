@@ -363,33 +363,6 @@ export default function SettingsModule({
               />
             </div>
           </div>
-          <div className="settings-panel__section-title">本地 Ollama（Embedding 专用）</div>
-          <div className="settings-panel__fields">
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="embed-ollama-model">Embedding 模型（本地 Ollama）</label>
-              <input
-                id="embed-ollama-model"
-                className="dev-panel__input"
-                type="text"
-                value={llmConfigEmbedModel}
-                onChange={(event) => setLlmConfigEmbedModel(event.target.value)}
-                placeholder="nomic-embed-text:latest"
-                spellCheck={false}
-              />
-            </div>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="embed-ollama-base-url">Embedding Ollama Base URL（可选）</label>
-              <input
-                id="embed-ollama-base-url"
-                className="dev-panel__input"
-                type="text"
-                value={llmConfigEmbedBaseUrl}
-                onChange={(event) => setLlmConfigEmbedBaseUrl(event.target.value)}
-                placeholder="http://localhost:11434（默认）"
-                spellCheck={false}
-              />
-            </div>
-          </div>
           <div className="settings-panel__save">
             <button
               type="button"
@@ -411,8 +384,14 @@ export default function SettingsModule({
         llmConfig={llmConfig}
         embedBackend={llmConfigEmbedBackend}
         embedOnnxModel={llmConfigEmbedOnnxModel}
+        embedOllamaModel={llmConfigEmbedModel}
+        embedOllamaBaseUrl={llmConfigEmbedBaseUrl}
         onEmbedBackendChange={setLlmConfigEmbedBackend}
         onEmbedOnnxModelChange={setLlmConfigEmbedOnnxModel}
+        onEmbedOllamaModelChange={setLlmConfigEmbedModel}
+        onEmbedOllamaBaseUrlChange={setLlmConfigEmbedBaseUrl}
+        onSaveConfig={handleSaveLlmConfig}
+        saving={llmConfigSaving}
       />
       <section className="panel">
         <div className="section-head">
