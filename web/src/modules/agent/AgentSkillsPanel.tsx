@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { AgentSkillItem } from "../../types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -59,6 +59,17 @@ export default function AgentSkillsPanel({
   const [promptInput, setPromptInput] = useState("");
   const [presetOpen, setPresetOpen] = useState(false);
   const presetRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!presetOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (presetRef.current && !presetRef.current.contains(e.target as Node)) {
+        setPresetOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [presetOpen]);
 
   // Open modal for creating a new skill
   const openNewModal = () => {

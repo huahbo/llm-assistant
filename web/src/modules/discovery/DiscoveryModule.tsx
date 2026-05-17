@@ -62,13 +62,17 @@ export default function DiscoveryModule() {
   };
 
   const isInstalled = (qualifiedName: string) =>
-    installed.some((s) => s.name === qualifiedName || s.args.includes(qualifiedName));
+    installed.some((s) => s.name === qualifiedName);
+
+  const releaseInstalling = (qualifiedName: string) =>
+    setInstalling((prev) => { const next = new Set(prev); next.delete(qualifiedName); return next; });
 
   const handleInstallClick = async (server: SmitheryServer) => {
     setInstalling((prev) => new Set(prev).add(server.qualified_name));
     try {
       const detail = await getMcpRegistryServer(server.qualified_name);
       if (detail.required_env_keys.length > 0) {
+        // Keep installing lock until user confirms/cancels the env dialog
         setEnvDialog({
           server,
           command: detail.command,
@@ -78,15 +82,11 @@ export default function DiscoveryModule() {
         });
       } else {
         await doInstall(server.display_name || server.qualified_name, detail.command, detail.args, {});
+        releaseInstalling(server.qualified_name);
       }
     } catch (e) {
       alert(`获取安装配置失败：${String(e)}`);
-    } finally {
-      setInstalling((prev) => {
-        const next = new Set(prev);
-        next.delete(server.qualified_name);
-        return next;
-      });
+      releaseInstalling(server.qualified_name);
     }
   };
 
@@ -112,19 +112,15 @@ export default function DiscoveryModule() {
     for (const { key, value } of envDialog.entries) {
       if (key.trim()) env[key.trim()] = value;
     }
-    const name = envDialog.server.display_name || envDialog.server.qualified_name;
-    setInstalling((prev) => new Set(prev).add(envDialog.server.qualified_name));
+    const { server, command, args } = envDialog;
+    const name = server.display_name || server.qualified_name;
     setEnvDialog(null);
     try {
-      await doInstall(name, envDialog.command, envDialog.args, env);
+      await doInstall(name, command, args, env);
     } catch (e) {
       alert(`安装失败：${String(e)}`);
     } finally {
-      setInstalling((prev) => {
-        const next = new Set(prev);
-        next.delete(envDialog?.server.qualified_name ?? "");
-        return next;
-      });
+      releaseInstalling(server.qualified_name);
     }
   };
 
@@ -252,7 +248,7 @@ export default function DiscoveryModule() {
 
       {/* Env 配置对话框 */}
       {envDialog && (
-        <div className="discovery__overlay" onClick={() => setEnvDialog(null)}>
+        <div className="discovery__overlay" onClick={() => { releaseInstalling(envDialog.server.qualified_name); setEnvDialog(null); }}>
           <div className="discovery__dialog" onClick={(e) => e.stopPropagation()}>
             <h3 className="discovery__dialog-title">配置环境变量</h3>
             <p className="discovery__dialog-hint">
@@ -280,7 +276,7 @@ export default function DiscoveryModule() {
               留空的字段不会写入配置，可安装后在「Settings → MCP 服务器」中补填。
             </p>
             <div className="discovery__dialog-actions">
-              <button className="discovery__btn" onClick={() => setEnvDialog(null)}>取消</button>
+              <button className="discovery__btn" onClick={() => { releaseInstalling(envDialog.server.qualified_name); setEnvDialog(null); }}>取消</button>
               <button className="discovery__btn discovery__btn--primary" onClick={() => void handleEnvConfirm()}>
                 确认安装
               </button>

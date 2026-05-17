@@ -7,31 +7,33 @@
 use crate::models::{SmitheryServer, SmitheryServerDetail};
 
 const REGISTRY_BASE: &str = "https://registry.smithery.ai";
-const USER_AGENT: &str = "llm-wiki-desktop/0.2.3";
+const USER_AGENT: &str = concat!("llm-wiki-desktop/", env!("CARGO_PKG_VERSION"));
 const TIMEOUT_SECS: u64 = 10;
 
-/// 对查询参数值做 percent-encode（不依赖外部 crate）。
+/// Percent-encode a single byte as `%XX`.
+#[inline]
+fn encode_byte(out: &mut String, byte: u8) {
+    out.push('%');
+    out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
+    out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+}
+
+/// Percent-encode query-string value（space → `+`）。
 fn percent_encode_query(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for byte in s.bytes() {
         match byte {
-            // RFC 3986 unreserved chars：保留原样
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char);
             }
-            // 空格 → +（query string 惯例）
             b' ' => out.push('+'),
-            other => {
-                out.push('%');
-                out.push(char::from_digit((other >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                out.push(char::from_digit((other & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
-            }
+            other => encode_byte(&mut out, other),
         }
     }
     out
 }
 
-/// 对路径段做 percent-encode（`@` 和 `/` 需要编码，供 qualified_name 使用）。
+/// Percent-encode a URL path segment（`@` / `/` / space all encoded）。
 fn percent_encode_path(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for byte in s.bytes() {
@@ -39,11 +41,7 @@ fn percent_encode_path(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char);
             }
-            other => {
-                out.push('%');
-                out.push(char::from_digit((other >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                out.push(char::from_digit((other & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
-            }
+            other => encode_byte(&mut out, other),
         }
     }
     out
@@ -80,7 +78,7 @@ pub async fn search_smithery_servers(
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("网络请求失败：{e}"))?;
+        .map_err(|e| format!("响应解析失败：{e}"))?;
 
     let servers_arr = body
         .get("servers")
@@ -155,7 +153,7 @@ pub async fn get_smithery_server_detail(
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("网络请求失败：{e}"))?;
+        .map_err(|e| format!("响应解析失败：{e}"))?;
 
     let display_name = body
         .get("displayName")
