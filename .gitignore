@@ -56,3 +56,10 @@ refer_project/
 # ------------------------------
 .deepseek/
 $null
+
+# ------------------------------
+# ONNX embedding model files (~100MB+, not committed)
+# Run scripts/download-embed-models.ps1 to fetch locally
+# ------------------------------
+src-tauri/resources/embed-models/*
+!src-tauri/resources/embed-models/.gitkeep
