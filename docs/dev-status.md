@@ -10,112 +10,75 @@
 2. 查看下方 §活跃 TODO
 3. 阅读最新 5 条 git log 了解背景
 
-## 本轮快讯（2026-05-16，Claude Code）— H10/H12/H13 完成审计
+---
 
-### H10 MCP 动态装载 已完成（实现早于计划）
-- `agent_chat/mcp.rs`：完整 MCP client（JSON-RPC 2.0 over stdio，initialize 握手，list_tools / call_tool）
-- `agent_chat/db.rs`：MCP server CRUD + `sync_mcp_tools` + `get_tool_handler_kind`
-- `agent_chat/commands.rs`：`list/upsert/delete_mcp_server` + `reload_mcp_server_tools` Tauri 命令
-- `state/chat_service.rs`：`spawn/stop/get/list_running_mcp_clients`
-- `agent_chat/tools.rs`：`exec_mcp_or_unknown` 路由至对应 MCP 服务器
-- `SettingsModule.tsx`：MCP 服务器配置区（添加/连接/删除/状态）
-- 新增 4 条 MCP CRUD 测试（268 通过）
+## 本轮快讯（2026-05-17，Claude Code）— H17 MCP 市场 + Skill UX 完成
 
-### H12 本地嵌入 已完成（Phase A + C，Phase B ONNX 保留可选）
-- `state/ingest_service.rs`：入库后异步触发 `embed_page`，写入 `page_embeddings`
-- `state/wiki_service.rs`：`search_wiki_pages_hybrid` — FTS5 + Ollama 向量 RRF，Ollama 不可用时自动降级
-- `agent_chat/tools.rs`：`exec_search_wiki` 调用混合检索
-- `SettingsModule.tsx`：Embedding 模型 / Base URL 配置区
-
-### H13 图谱双向联动 已完成（全部三个 Phase）
-- `contexts/GraphBridgeContext.tsx`：`highlightedPaths / chatPrefill / askPrefill` + `extractWikiPaths`
-- `GraphModule.tsx`：消费 `highlightedPaths` 高亮节点；右键菜单"问这个"→ `setChatPrefill`，"检索相关"→ `setAskPrefill`
-- `ChatModule.tsx`：AI 响应完成后提取 wiki 路径更新高亮；消费 `chatPrefill` 预填输入框
-- `AskModule.tsx`：消费 `askPrefill` 预填并执行搜索
-
-### 历史工具调用显示 已完成
-- `Message` 结构体新增 `tool_calls: Option<serde_json::Value>`（解析自 `tool_calls_json`）
-- `list_messages` 构建时顺带解析，Tauri 序列化直达前端
-- `MessageThread.tsx` 新增 `buildDisplayGroups`：将 DB 消息（含 tool/tool_calls）重组为带 ToolGroup 的展示段
-- 历史对话重载后，工具调用卡片与流式阶段视觉一致
-
-
-
-### H11 Swarm 子代理层级追踪 已完成
-- `agent_conversations` 表新增 `parent_conv_id INTEGER` / `depth INTEGER NOT NULL DEFAULT 0`
-- SQLite 幂等迁移（`let _ = conn.execute("ALTER TABLE ...")`）
-- `list_conversations` 两个分支均加 `WHERE depth = 0`，子代理会话不出现在主列表
-- 新增 `list_child_conversations` / `get_conv_depth` DB 函数
-- `exec_spawn_subagent` 改用结构化深度检测（max depth 2，即根→子→孙三层）
-- 新增 Tauri 命令：`list_child_conversations`
-- 新增测试：`test_depth_tracking_and_list_excludes_subagents`
-
-### H11 list_wiki_pages 工具 已完成
-- 新增工具 `list_wiki_pages`，支持 `path_prefix` 过滤，最多返回 100 条
-- 工具描述已注入 seed tools（9 个工具）
-
-### H11 read_wiki 分页 已完成
-- `exec_read_wiki` 新增 `start_char` 参数，8000 字符分块输出
-- 重构：直接 `fs::read_to_string` 读文件，不再解析格式化字符串（防止内容含 `content=` 时截断）
-
-### H11 search_wiki 混合检索 已完成
-- `exec_search_wiki` 改为 `async fn`，调用 `search_wiki_pages_hybrid`（FTS5 + Ollama 向量 RRF）
-- Ollama 不可用时优雅降级到 FTS5
-
-### 跨会话消息搜索 已完成
-- DB 新增 `search_messages(query, limit)` — LIKE 搜索 user/assistant 消息，JOIN conversations，只返回 depth=0 的对话
-- 新增 Tauri 命令 `search_chat_messages`
-- 前端 `ConversationList` 新增消息搜索结果区（防抖 300ms，2+ 字符触发）
-
-### 对话导出功能 已完成
-- 新增 Tauri 命令 `export_conversation_markdown` — 格式化 user/assistant 消息为 Markdown
-- `MessageThread` 新增"导出"按钮（复制到剪贴板）和"存入 Wiki"按钮（保存到 `chat-exports/`）
-
-### spawn_subagent 工具卡片渲染 已完成
-- `ToolCallCard` 特判 `spawn_subagent`，显示 🤖 图标 + 子对话 conv badge + 可滚动摘要
+- **MCP 市场**：Smithery Registry 搜索 + 一键安装 + Env Key 对话框
+- **Skill UX 重设计**：preset / clipboard 两种工作流
+- **v0.2.4 质量修复**：268 测试全绿，typecheck 零错误，origin/main 同步
+- **最新 commit**：d4c2761（2026-05-17）
 
 ---
 
-## 验证基线（2026-05-16）
+## 验证基线（2026-05-17）
 
 ```powershell
-cd src-tauri; cargo test    # 268 通过 ✅
-cd ../web; npm run typecheck # 零错误 ✅
+cd E:\llm-wiki\src-tauri; cargo test    # 268 通过 0 失败
+cd E:\llm-wiki\web; npm run typecheck   # 零错误
 ```
 
 ---
 
-## 最新提交（main 分支，最近 5 条）
+## 已完成功能总览
 
-| commit | 描述 |
-|--------|------|
-| *(待提交)* | test(agent_chat): 补充 H10 MCP CRUD 测试 +4 |
-| `52d6b31` | docs: 收口 — 更新 dev-status，历史工具调用已完成，基线 264 |
-| `31df6c8` | feat(chat): 对话重载时显示历史工具调用记录 |
-| `612e8c5` | refactor(agent): exec_read_wiki 直接读文件而非解析格式化字符串 |
-| `09d3808` | feat(agent): 跨会话消息内容搜索 |
+### 基础层（P0–P16）
+
+- LLM Provider trait：Ollama + OpenAI-compatible + Hybrid 路由
+- Ingest 全链路：md/pdf/url/docx/pptx/txt/图片 OCR，多格式路由，持久化队列（重启恢复/重试/取消）
+- Wiki CRUD：保存/删除/重命名/内联编辑/Markdown 渲染/Ctrl+S
+- Ask/Query：FTS5 + 向量 RRF 四路混合检索，多轮流式会话，历史持久化
+- Lint：语义 lint（LLM 矛盾/陈旧）+ 结构 lint（断链/孤儿），摄入后快速结构 Lint 通知卡
+- Graph：可视化图谱，Global/Local 模式，洞察层（孤立/桥接/异常连接）
+- Outbox 事件流，页面变更历史 + 恢复，Vault 统计仪表盘
+- Deep Research 全链路（多查询 web 搜索→综合→写回 Wiki，任务管理 + 进度流）
+- Web Clipper（Chrome 扩展 + 本地 HTTP 服务端口 19827）
+- SearXNG 本地搜索（四级联搜，Windows 配置模板 + 自检脚本）
+- 摄入 HITL 审核（preview_ingest_file / apply_ingest_preview）
+
+### 高阶功能（H6–H17）
+
+- **H6-S2**：Agent 多轮工具循环（run_shell/search_wiki/read_wiki/write_wiki 审批）
+- **H7**：App.tsx 架构拆分（5 个 Context + 9 个模块，消除 9500 行单组件）
+- **H8**：ReAct 流式对话 Agent（多轮 LLM + 工具循环，chat_stream，工具卡折叠）
+- **H9**：Chat UI 优化（web_search 四级联搜，fetch_url，代码块主题，重复消息修复）
+- **H10**：MCP 动态装载（JSON-RPC stdio，upsert/delete/reload 命令，SettingsModule UI）
+- **H11**：Swarm 子代理（层级追踪 max depth 2，list_wiki_pages，read_wiki 分页，search_wiki 混合）
+- **H12**：本地嵌入（Ollama embed_page，FTS5 + 向量 RRF，Ollama 不可用自动降级）
+- **H13**：图谱双向联动（GraphBridgeContext，右键"问这个"/"检索相关"，AI 回复高亮）
+- **H14-H15**：跨会话消息搜索，对话导出（Markdown + 存 Wiki），spawn_subagent 工具卡
+- **H16**：state.rs 12 阶段重构（state/ 子模块体系，12 个 service 文件）
+- **H17**：MCP 市场（Smithery Registry 搜索 + 一键安装 + Env Key 对话框）+ Skill UX 重设计（preset/clipboard）
 
 ---
 
-## 活跃 TODO（按优先级）
+## 活跃 TODO
 
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| 🟢 1 | **历史工具调用显示** | 已完成（2026-05-15） | `buildDisplayGroups` 将 DB 消息重组为 ToolGroup 展示段；typecheck ✅ 264测试 ✅ |
-| 🔴 2 | **前端 typecheck 验证** | 已确认 ✅ | `npm run typecheck` 零错误 |
-| 🟢 3 | **H10 MCP 扩展** | 已完成（2026-05-16 审计确认） | Phase A(ToolRegistry) 跳过，Phase B+C 全实现 |
-| 🟢 4 | **H12 本地嵌入** | 已完成（Phase A+C，ONNX Phase B 保留可选） | Ollama + RRF，ingest 自动 embed |
-| 🟢 5 | **H13 图谱双向联动** | 已完成（2026-05-16 审计确认） | 全三个 Phase 均实现 |
-| 🟢 6 | **打包发布 (P22)** | 未开始 | `npm run tauri build` —— 需先确认 typecheck ✅ |
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| Pre | **search.ts 可靠性修复** | 5 处裸 invoke() 无超时包装 |
+| H21 | **全局命令面板 Ctrl+K** | 页面搜索 + 操作跳转 |
+| H22 | **Wiki 知识导出** | Markdown 包 + 静态 HTML 包 |
+| H23 | **Wiki 内联 AI 辅助编辑** | 选中文字→续写/改写/扩写 |
 
 ---
 
 ## 关键架构约束
 
-- **测试基线**：268 通过（2026-05-16）
+- **测试基线**：268 通过（2026-05-17，v0.2.4）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**
-- **子代理深度限制**：最大 depth 2（根 0 → 子 1 → 孙 2），`exec_spawn_subagent` 以 DB `depth` 字段判断，不用标题前缀
+- **子代理深度限制**：max depth 2（根→子→孙），`exec_spawn_subagent` 以 DB `depth` 字段判断
 - **审批约束**：write_wiki/edit_wiki 写盘必须经用户确认
-- **state.rs 模块化**：H16 完成 12 阶段拆分，现为 `state/` 子模块体系（wiki/ingest/lint/graph/ask/chat/agent/research_service 等）
+- **state/ 子模块体系**：H16 完成 12 阶段拆分，现为 12 个 service 文件

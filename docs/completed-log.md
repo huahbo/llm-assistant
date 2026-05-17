@@ -111,3 +111,24 @@
 | Direction-G-PageHistory | 页面变更历史（保存前快照 + 历史列表 + 当前/历史行级 diff） | ✅ `src-tauri/src/{db,models,state,commands,main}.rs` + `web/src/{App,tauri-client,types,styles,app-utils.test}.ts(x)`（170 Rust / 169 前端 / build 通过，2026-04-25，**Codex + 子代理尝试后主控串行收口**） |
 | RiskFix-G-Restore | 历史版本「一键恢复到此版本」+ 保存接口 checksum 编辑基线 | ✅ `src-tauri/src/{state,commands,main}.rs` + `web/src/{App,tauri-client,styles,app-utils.test}.ts(x)`（173 Rust / 174 前端，2026-04-25，**Claude Code 并行子代理** 收口） |
 | Fix-GraphNodeLabel | 图谱节点命名修复：ingest-{timestamp} → 语义标题（entities[0] / source stem）；摄入时 wiki_title 也改用语义名称；清理 extract_wiki_display_name 冗余分支 | ✅ `src-tauri/src/{vault,state}.rs`（183 Rust / 174 前端，2026-04-25，**Claude Code** 实施） |
+
+## H8–H17 完成记录（2026-05-07 ~ 2026-05-17）
+
+| 优先级 | 功能 | 状态 |
+|--------|------|------|
+| H8-C1 | `LlmProvider.chat_stream` trait + `ChatMessage/ChatStreamEvent` 类型定义 | ✅ `src-tauri/src/llm/provider.rs` + `models.rs` |
+| H8-C2 | OpenAI/Ollama `chat_stream` 实现（SSE deltas 累积器） | ✅ `src-tauri/src/llm/openai.rs` + `llm/ollama.rs` |
+| H8-C3 | `agent_chat` 模块：DB schema（conversations/messages/tools）+ CRUD + 内置工具种子 | ✅ `src-tauri/src/agent_chat/mod.rs` + `db.rs` |
+| H8-C4 | ReAct 主循环（多轮 LLM→工具→观察），流式 Tauri 事件 emit | ✅ `src-tauri/src/agent_chat/commands.rs` + `stream_parser.rs` |
+| H8-C5 | 对话 UI（MessageBubble + ToolGroup 折叠，useChatStream reducer 状态机） | ✅ `web/src/modules/agent/AgentChat.tsx` + `useChatStream.ts` |
+| H9-A | Windows 系统提示注入 + reasoning_content 修复 + 对话列表时间修复 | ✅ `src-tauri/src/agent_chat/commands.rs` + `web/src/modules/agent/` |
+| H9-B | web_search 四级联搜（SearXNG→Tavily→Brave→DuckDuckGo）+ fetch_url 工具 | ✅ `src-tauri/src/state.rs` + `models.rs` + `web/src/modules/agent/SearchConfigPanel.tsx` |
+| H9-C | ToolGroup 折叠组件 + 重复消息根因修复（message_id 实时跟踪） | ✅ `web/src/modules/agent/MessageBubble.tsx` + `useChatStream.ts` + `agent.css` |
+| H10 | MCP 动态装载（JSON-RPC 2.0 stdio，upsert/delete/reload 命令，Settings UI） | ✅ `src-tauri/src/mcp/` + `web/src/modules/agent/AgentStudio.tsx` + `mcp.ts` |
+| H11 | Swarm 子代理（层级追踪 depth≤2，list_wiki_pages/read_wiki 分页/search_wiki 混合） | ✅ `src-tauri/src/agent_chat/tools.rs` + `commands.rs` |
+| H12 | 本地嵌入（Ollama embed_page，FTS5+向量 RRF 四路，不可用自动降级） | ✅ `src-tauri/src/search.rs` + `db.rs` + `state.rs` |
+| H13 | 图谱双向联动（GraphBridgeContext，右键"问这个"/"检索相关"，AI 回复高亮） | ✅ `web/src/modules/graph/` + `web/src/App.tsx` |
+| H14-misc | 跨会话消息搜索，对话导出 Markdown/存 Wiki，spawn_subagent 工具卡渲染，历史工具调用显示 | ✅ `src-tauri/src/agent_chat/commands.rs` + `web/src/modules/agent/` |
+| H16 | state.rs 12 阶段拆分（state/ 子模块，12 个 service 文件），测试全迁移，警告清零 | ✅ `src-tauri/src/state/` + `src-tauri/src/agent_chat/` |
+| H17 | MCP 市场（DiscoveryModule，Smithery Registry，一键安装，Env Key 对话框）+ Skill UX 重设计（预设/剪贴板/activeSkillKey 删除修复） | ✅ `web/src/modules/discovery/` + `src-tauri/src/agent_chat/registry.rs` + `web/src/modules/agent/AgentSkillsPanel.tsx` |
+| H17-QualityFix | registry.rs USER_AGENT 改用 `env!`，encode_byte 共享函数，JSON 解析错误提示修正；DiscoveryModule installing 锁修复，isInstalled 精确匹配；AgentSkillsPanel presetRef click-outside 事件绑定 | ✅ `src-tauri/src/agent_chat/registry.rs` + `web/src/modules/discovery/` + `web/src/modules/agent/AgentSkillsPanel.tsx`（v0.2.4） |
