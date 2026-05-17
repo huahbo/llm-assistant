@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod db;
 pub mod mcp;
+pub mod registry;
 pub mod runtime;
 pub mod tools;
 

@@ -1,4 +1,4 @@
-import type { McpServerConfig } from "../types";
+import type { McpServerConfig, SmitheryServer, SmitheryServerDetail } from "../types";
 import { isTauriRuntime, withTimeout } from "./base";
 
 // ── MCP 服务器管理 ────────────────────────────────────────────────────────────
@@ -35,4 +35,18 @@ export async function reloadMcpServerTools(name: string): Promise<string[]> {
     invoke<string[]>("reload_mcp_server_tools", { name }),
     30_000,
   );
+}
+
+// ── Smithery Registry ─────────────────────────────────────────────────────────
+
+export async function searchMcpRegistry(query: string, pageSize = 20): Promise<SmitheryServer[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SmitheryServer[]>("search_mcp_registry", { query, pageSize });
+}
+
+export async function getMcpRegistryServer(qualifiedName: string): Promise<SmitheryServerDetail> {
+  if (!isTauriRuntime()) throw new Error("非 Tauri 环境");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SmitheryServerDetail>("get_mcp_registry_server", { qualifiedName });
 }

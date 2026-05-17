@@ -163,6 +163,8 @@ fn main() {
             agent_chat::commands::upsert_mcp_server,
             agent_chat::commands::delete_mcp_server,
             agent_chat::commands::reload_mcp_server_tools,
+            agent_chat::commands::search_mcp_registry,
+            agent_chat::commands::get_mcp_registry_server,
         ])
         .run(tauri::generate_context!())
         .expect("应用启动失败");

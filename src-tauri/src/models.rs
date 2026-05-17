@@ -1154,3 +1154,25 @@ pub struct FileChunk {
     pub char_count: usize,
     pub truncated: bool,
 }
+
+/// Smithery MCP Registry 服务器列表项（H17）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SmitheryServer {
+    pub qualified_name: String,
+    pub display_name: String,
+    pub description: String,
+    pub verified: bool,
+    pub use_count: u64,
+    pub icon_url: Option<String>,
+}
+
+/// Smithery MCP Registry 服务器详情（H17）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SmitheryServerDetail {
+    pub qualified_name: String,
+    pub display_name: String,
+    pub description: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub required_env_keys: Vec<String>,
+}

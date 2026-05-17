@@ -318,6 +318,24 @@ pub async fn reload_mcp_server_tools(
     Ok(tool_names)
 }
 
+// ── MCP Registry（H17）────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn search_mcp_registry(
+    query: String,
+    page_size: Option<u32>,
+) -> Result<Vec<crate::models::SmitheryServer>, String> {
+    let size = page_size.unwrap_or(20).clamp(5, 50);
+    super::registry::search_smithery_servers(&query, size).await
+}
+
+#[tauri::command]
+pub async fn get_mcp_registry_server(
+    qualified_name: String,
+) -> Result<crate::models::SmitheryServerDetail, String> {
+    super::registry::get_smithery_server_detail(&qualified_name).await
+}
+
 // ── 内部：system prompt 构建 ───────────────────────────────────────────────────
 
 fn build_system_prompt(

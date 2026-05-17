@@ -346,9 +346,6 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
   // 技能面板
   const [agentSkills, setAgentSkills] = useState<AgentSkillItem[]>([]);
   const [agentSkillsLoading, setAgentSkillsLoading] = useState(false);
-  const [agentSkillKeyInput, setAgentSkillKeyInput] = useState("");
-  const [agentSkillPromptInput, setAgentSkillPromptInput] = useState("");
-  const [agentSkillComposerOpen, setAgentSkillComposerOpen] = useState(false);
   const [agentActiveSkillKey, setAgentActiveSkillKey] = useState<string>(
     () => readAgentActiveSkillKeyFromStorage(),
   );
@@ -378,7 +375,6 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
   const [agentRunMutatingId, setAgentRunMutatingId] = useState<number | null>(null);
   const [agentContextOpen, setAgentContextOpen] = useState<boolean>(false);
   const [agentMemoryPanelOpen, setAgentMemoryPanelOpen] = useState<boolean>(true);
-  const [agentSkillPanelOpen, setAgentSkillPanelOpen] = useState<boolean>(false);
   // 面板分割比例
   const [agentLeftRatio, setAgentLeftRatio] = useState(0.54);
 
@@ -1594,23 +1590,18 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
     }
   };
 
-  const handleUpsertAgentSkill = async () => {
-    const skillKey = agentSkillKeyInput.trim();
-    const promptTemplate = agentSkillPromptInput.trim();
-    if (!skillKey || !promptTemplate) {
+  const handleUpsertAgentSkill = async (skillKey: string, promptTemplate: string) => {
+    if (!skillKey.trim() || !promptTemplate.trim()) {
       setAgentStatusMessage("技能键与模板内容不能为空。");
       return;
     }
     setAgentActionRunning(true);
     try {
-      const item = await upsertAgentSkill(skillKey, promptTemplate);
+      const item = await upsertAgentSkill(skillKey.trim(), promptTemplate.trim());
       if (!item) {
         setAgentStatusMessage("保存技能模板失败，请检查后端。");
         return;
       }
-      setAgentSkillKeyInput("");
-      setAgentSkillPromptInput("");
-      setAgentSkillComposerOpen(false);
       setAgentActiveSkillKey(item.skill_key);
       setAgentStatusMessage(`技能模板「${item.skill_key}」已保存（v${item.version}）。`);
       await loadAgentSkillsData();
@@ -1620,6 +1611,10 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
   };
 
   const handleDeleteAgentSkill = async (id: number, skillKey: string) => {
+    // 立即清除 active 状态，避免 localStorage 在异步期间残留脏数据
+    if (agentActiveSkillKey === skillKey) {
+      setAgentActiveSkillKey("");
+    }
     setAgentActionRunning(true);
     try {
       const ok = await deleteAgentSkill(id);
@@ -1701,23 +1696,12 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
                     onUpsertMemory={handleUpsertAgentMemory}
                   />
                   <AgentSkillsPanel
-                    panelOpen={agentSkillPanelOpen}
-                    onTogglePanel={() => setAgentSkillPanelOpen((prev) => !prev)}
                     skills={agentSkills}
                     skillsLoading={agentSkillsLoading}
-                    actionRunning={agentActionRunning}
-                    isTauri={isTauriRuntime()}
                     activeSkillKey={agentActiveSkillKey}
                     setActiveSkillKey={setAgentActiveSkillKey}
-                    composerOpen={agentSkillComposerOpen}
-                    onToggleComposer={() => setAgentSkillComposerOpen((prev) => !prev)}
-                    skillKeyInput={agentSkillKeyInput}
-                    setSkillKeyInput={setAgentSkillKeyInput}
-                    skillPromptInput={agentSkillPromptInput}
-                    setSkillPromptInput={setAgentSkillPromptInput}
                     onUpsertSkill={handleUpsertAgentSkill}
                     onDeleteSkill={handleDeleteAgentSkill}
-                    formatTimestamp={formatLintCheckedAt}
                   />
                 </div>
               ) : null}

@@ -15,6 +15,7 @@ export type ModuleId =
   | "graph"
   | "operations"
   | "settings"
+  | "discovery"
   | "research"
   | "agent"
   | "chat";
@@ -730,4 +731,22 @@ export interface McpServerConfig {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface SmitheryServer {
+  qualified_name: string;
+  display_name: string;
+  description: string;
+  verified: boolean;
+  use_count: number;
+  icon_url: string | null;
+}
+
+export interface SmitheryServerDetail {
+  qualified_name: string;
+  display_name: string;
+  description: string;
+  command: string;
+  args: string[];
+  required_env_keys: string[];
 }

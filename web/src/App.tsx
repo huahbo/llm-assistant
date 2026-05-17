@@ -9,6 +9,7 @@ import ResearchModule from "./modules/research/ResearchModule";
 import SettingsModule from "./modules/settings/SettingsModule";
 import WikiModule, { type WikiModuleHandle } from "./modules/wiki/WikiModule";
 import GraphModule from "./modules/graph/GraphModule";
+import DiscoveryModule from "./modules/discovery/DiscoveryModule";
 import { useVault } from "./contexts/VaultContext";
 import { useMode } from "./contexts/ModeContext";
 import { useToast } from "./contexts/ToastContext";
@@ -228,7 +229,10 @@ export default function App() {
     {
       id: "system",
       title: "系统",
-      items: [{ id: "settings", icon: "⚙", label: "设置" }],
+      items: [
+        { id: "discovery", icon: "🔌", label: "MCP 市场" },
+        { id: "settings", icon: "⚙", label: "设置" },
+      ],
     },
   ];
 
@@ -475,6 +479,13 @@ export default function App() {
           {appReady && activeModule === "graph" && (
             <ErrorBoundary label="Graph">
               <GraphModule handleOpenWikiPage={handleOpenWikiPage} />
+            </ErrorBoundary>
+          )}
+
+          {/* ---- Discovery（MCP 市场）模块 ---- */}
+          {appReady && activeModule === "discovery" && (
+            <ErrorBoundary label="Discovery">
+              <DiscoveryModule />
             </ErrorBoundary>
           )}
 
