@@ -12,8 +12,17 @@ use super::provider::{LlmError, LlmProvider};
 use super::stream_parser::StreamAccumulator;
 use super::types::{ChatCompletion, ChatMessage, StreamEvent, ToolSchema};
 
-/// 默认请求超时时间（秒）；综合报告等长文生成需要更多时间
+/// 非流式请求超时（秒）
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// 流式请求超时（秒）；长报告生成可能需要数分钟
+const MAX_STREAM_TIMEOUT_SECS: u64 = 600;
+/// 默认最大输出 token 数；DeepSeek/OpenAI 若不传此字段会默认 ~4096
+const DEFAULT_MAX_TOKENS: u32 = 32768;
+
+fn default_max_tokens() -> u32 {
+    DEFAULT_MAX_TOKENS
+}
+
 /// 默认模型（兼顾性能与成本）
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
 /// 默认 API 基础地址（可替换为兼容端点）
@@ -52,6 +61,9 @@ pub struct OpenAiConfig {
     pub base_url: String,
     /// 请求超时时间（秒）
     pub timeout_secs: u64,
+    /// 最大输出 token 数（发送给模型的 max_tokens 参数）
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
     /// 所属预设（可选）
     pub preset: Option<ProviderPreset>,
 }
@@ -69,6 +81,7 @@ impl OpenAiConfig {
             model,
             base_url,
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            max_tokens: DEFAULT_MAX_TOKENS,
             preset,
         }
     }
@@ -87,6 +100,7 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<PromptMessage<'a>>,
     stream: bool,
+    max_tokens: u32,
 }
 
 // ── chat_stream wire types ─────────────────────────────────────────────────────
@@ -113,6 +127,7 @@ struct ChatRequestMulti<'r> {
     /// 直接序列化 types::ChatMessage（已有 skip_serializing_if 属性）
     messages: &'r [ChatMessage],
     stream: bool,
+    max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolSchemaWire<'r>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,8 +206,10 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     /// 创建新的 OpenAI Provider 实例
     pub fn new(config: OpenAiConfig) -> Self {
+        // 仅设置连接超时；读取超时在各请求上按类型单独设置，
+        // 避免 120s 总超时截断长流式输出。
         let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("创建 HTTP 客户端失败");
 
@@ -241,13 +258,14 @@ impl LlmProvider for OpenAiProvider {
                 content: prompt,
             }],
             stream: false,
+            max_tokens: self.config.max_tokens,
         };
 
         let response = self
             .client
             .post(&url)
-            // Bearer 认证
             .bearer_auth(&self.config.api_key)
+            .timeout(Duration::from_secs(self.config.timeout_secs))
             .json(&request_body)
             .send()
             .await
@@ -354,12 +372,14 @@ impl LlmProvider for OpenAiProvider {
                 content: prompt,
             }],
             stream: true,
+            max_tokens: self.config.max_tokens,
         };
 
         let mut response = self
             .client
             .post(&url)
             .bearer_auth(&self.config.api_key)
+            .timeout(Duration::from_secs(MAX_STREAM_TIMEOUT_SECS))
             .json(&request_body)
             .send()
             .await
@@ -474,6 +494,7 @@ impl LlmProvider for OpenAiProvider {
             model: &self.config.model,
             messages,
             stream: true,
+            max_tokens: self.config.max_tokens,
             tools: tools_wire,
             tool_choice,
         };
@@ -482,6 +503,7 @@ impl LlmProvider for OpenAiProvider {
             .client
             .post(&url)
             .bearer_auth(&self.config.api_key)
+            .timeout(Duration::from_secs(MAX_STREAM_TIMEOUT_SECS))
             .json(&request_body)
             .send()
             .await
@@ -552,6 +574,7 @@ mod tests {
         assert_eq!(config.model, DEFAULT_OPENAI_MODEL);
         assert_eq!(config.base_url, DEFAULT_OPENAI_BASE_URL);
         assert_eq!(config.timeout_secs, DEFAULT_TIMEOUT_SECS);
+        assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
     }
 
     #[test]
