@@ -51,6 +51,8 @@ pub fn initialize_vault(vault_path: &Path, mode: AppMode) -> Result<VaultInitRes
         default_ocr_provider: None,
         embed_ollama_model: None,
         embed_ollama_base_url: None,
+        embed_backend: None,
+        embed_onnx_model: None,
         shell_policy: None,
     })
     .map_err(|err| format!("序列化 Vault 配置失败: {}", err))?;

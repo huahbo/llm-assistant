@@ -275,6 +275,8 @@ pub(super) fn persist_config(
             ollama_base_url: guard.ollama_base_url.clone(),
             embed_ollama_model: guard.embed_ollama_model.clone(),
             embed_ollama_base_url: guard.embed_ollama_base_url.clone(),
+            embed_backend: guard.embed_backend.clone(),
+            embed_onnx_model: guard.embed_onnx_model.clone(),
             shell_policy: Some(guard.shell_policy.clone()),
         }
     };
@@ -529,6 +531,8 @@ pub fn get_llm_config(state: &AppState) -> LlmProviderConfig {
         .clone()
         .unwrap_or_else(|| "nomic-embed-text:latest".to_string());
     let embed_ollama_base_url = guard.embed_ollama_base_url.clone().unwrap_or_default();
+    let embed_backend = guard.embed_backend.clone().unwrap_or_else(|| "onnx".to_string());
+    let embed_onnx_model = guard.embed_onnx_model.clone().unwrap_or_else(|| "multilingual-e5-small".to_string());
     let has_cloud_key = !cloud_api_key.trim().is_empty();
     let active_provider =
         resolve_active_provider(mode, guard.active_provider.as_deref(), has_cloud_key, None);
@@ -543,6 +547,8 @@ pub fn get_llm_config(state: &AppState) -> LlmProviderConfig {
         ollama_base_url,
         embed_ollama_model,
         embed_ollama_base_url,
+        embed_backend,
+        embed_onnx_model,
     }
 }
 
@@ -616,6 +622,16 @@ pub fn set_llm_config(
             None
         } else {
             Some(config.embed_ollama_base_url.trim().to_string())
+        };
+        guard.embed_backend = if config.embed_backend.trim().is_empty() {
+            None
+        } else {
+            Some(config.embed_backend.trim().to_string())
+        };
+        guard.embed_onnx_model = if config.embed_onnx_model.trim().is_empty() {
+            None
+        } else {
+            Some(config.embed_onnx_model.trim().to_string())
         };
     }
 
@@ -1144,6 +1160,8 @@ mod tests {
                 ollama_base_url: "".to_string(),
                 embed_ollama_model: "".to_string(),
                 embed_ollama_base_url: "".to_string(),
+                embed_backend: "onnx".to_string(),
+                embed_onnx_model: "multilingual-e5-small".to_string(),
             },
         )
         .expect("保存 LLM 配置失败");

@@ -60,4 +60,35 @@ foreach ($f in $files) {
 
 Write-Host "`n=== 完成 ===" -ForegroundColor Cyan
 Write-Host "文件已下载到: $dest"
+Write-Host ""
+
+# ── 下载 onnxruntime DLL（load-dynamic 模式需要）────────────────────────
+$ortVersion = "1.20.1"
+$ortDll = Join-Path $PSScriptRoot "..\src-tauri\resources\onnxruntime.dll"
+if (-not (Test-Path $ortDll)) {
+    Write-Host "=== 下载 onnxruntime.dll v$ortVersion ===" -ForegroundColor Cyan
+    $ortZipUrl = "https://github.com/microsoft/onnxruntime/releases/download/v$ortVersion/onnxruntime-win-x64-$ortVersion.zip"
+    $ortZip = Join-Path $env:TEMP "onnxruntime-win-x64-$ortVersion.zip"
+    try {
+        Write-Host "  下载 onnxruntime zip..."
+        Invoke-WebRequest -Uri $ortZipUrl -OutFile $ortZip -UseBasicParsing
+        $tmpDir = Join-Path $env:TEMP "ort-extract"
+        Expand-Archive -Path $ortZip -DestinationPath $tmpDir -Force
+        $dllSrc = Get-ChildItem $tmpDir -Filter "onnxruntime.dll" -Recurse | Select-Object -First 1
+        if ($dllSrc) {
+            Copy-Item $dllSrc.FullName -Destination $ortDll
+            Write-Host "  完成: onnxruntime.dll -> src-tauri/resources/" -ForegroundColor Green
+        } else {
+            Write-Warning "  未在 zip 中找到 onnxruntime.dll"
+        }
+        Remove-Item $ortZip, $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "  onnxruntime.dll 下载失败: $_"
+        Write-Host "  可手动从 https://github.com/microsoft/onnxruntime/releases 下载并放到 src-tauri/resources/"
+    }
+} else {
+    Write-Host "  onnxruntime.dll 已存在，跳过" -ForegroundColor Gray
+}
+
+Write-Host ""
 Write-Host "如需另一个模型，重新执行: .\scripts\download-embed-models.ps1 -Model bge-small-zh-v1.5"

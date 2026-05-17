@@ -457,6 +457,18 @@ export interface LlmProviderConfig {
   embed_ollama_model: string;
   /** Embedding 专用 Ollama Base URL（空字符串时与 ollama_base_url 相同） */
   embed_ollama_base_url: string;
+  /** Embedding 后端：onnx | ollama | disabled */
+  embed_backend: string;
+  /** ONNX 模型名：multilingual-e5-small | bge-small-zh-v1.5 */
+  embed_onnx_model: string;
+}
+
+/** Embedding 后端状态 */
+export interface EmbedStatus {
+  backend_id: string;
+  dimension: number;
+  indexed_count: number;
+  healthy: boolean;
 }
 
 export interface KnowledgeGraphNode {

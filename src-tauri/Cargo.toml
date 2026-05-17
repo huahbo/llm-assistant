@@ -22,7 +22,7 @@ tiny_http = "0.12"
 chrono = "0.4"
 zip = "0.6"
 pulldown-cmark = "0.11"
-ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 tokenizers = "0.20"
 ndarray = "0.16"
 

@@ -801,9 +801,11 @@ async fn complete_ingest_with_precomputed_analysis(
     // 截取前 2000 字；multilingual-e5-small 上限 512 token，中文约 1.5 token/字，2000 字 ≈ 1300 token 需截断
     // OnnxEmbedder 内部会按 max_input_tokens 截断，这里取 2000 字作为粗粒度保护
     let embed_content: String = source_content.chars().take(2000).collect();
+    let embed_backend_id = embed_provider.backend_id();
+    let embed_dim = embed_provider.dimension();
     match embed_provider.embed(&embed_content).await {
         Ok(embedding) => {
-            if let Err(err) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding) {
+            if let Err(err) = db::upsert_embedding(&db_path, &result.wiki_path, &embedding, &embed_backend_id, embed_dim) {
                 state.push_log(LogLevel::Warn, format!("写入向量数据库失败: {}", err));
             }
         }

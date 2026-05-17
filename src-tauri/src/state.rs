@@ -3,7 +3,7 @@
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     db,
@@ -42,6 +42,20 @@ pub use research_service::strip_think_tags;
 #[cfg(test)]
 mod test_helpers;
 
+/// Noop Embedder：embed_backend = "disabled" 或 ONNX 初始化失败时使用。
+/// 所有 embed() 调用返回 EmbedError::Unavailable，应用层已有降级（仅 FTS5）。
+struct NoopEmbedder;
+
+#[async_trait::async_trait]
+impl EmbedProvider for NoopEmbedder {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, crate::llm::EmbedError> {
+        Err(crate::llm::EmbedError::Unavailable)
+    }
+    fn dimension(&self) -> usize { 0 }
+    fn backend_id(&self) -> String { "noop".to_string() }
+    async fn health_check(&self) -> bool { false }
+}
+
 const STALE_PENDING_TASK_THRESHOLD_MS: u128 = 24 * 60 * 60 * 1000;
 const QUERY_TOP_K_MIN: usize = 1;
 const QUERY_TOP_K_MAX: usize = 8;
@@ -63,6 +77,8 @@ pub struct AppState {
     config_path: PathBuf,
     /// LLM Provider（延迟初始化，存储 trait 对象以支持多后端与 Mock）
     llm_provider: OnceLock<Arc<dyn LlmProvider>>,
+    /// Embed Provider（应用启动后由 init_embed_provider 注入，支持 ONNX / Ollama / Noop）
+    embed_provider: OnceLock<Arc<dyn EmbedProvider>>,
     /// Tauri AppHandle（应用启动后由 setup hook 注入，用于 emit 进度事件）
     app_handle: OnceLock<AppHandle>,
     /// 会话历史（in-memory，session_id -> 轮次列表）
@@ -126,6 +142,10 @@ struct AppStateData {
     embed_ollama_model: Option<String>,
     /// Embedding 专用 Ollama Base URL
     embed_ollama_base_url: Option<String>,
+    /// Embedding 后端（"onnx" | "ollama" | "disabled"）
+    embed_backend: Option<String>,
+    /// ONNX 模型名（"multilingual-e5-small" | "bge-small-zh-v1.5"）
+    embed_onnx_model: Option<String>,
     /// Shell 策略配置（安全与能力平衡）。
     shell_policy: ShellPolicyConfig,
     /// Agent 写入审批队列（run_id -> 待处理条目）
@@ -182,11 +202,14 @@ impl AppState {
                 ollama_base_url: config.ollama_base_url,
                 embed_ollama_model: config.embed_ollama_model,
                 embed_ollama_base_url: config.embed_ollama_base_url,
+                embed_backend: config.embed_backend,
+                embed_onnx_model: config.embed_onnx_model,
                 shell_policy: config.shell_policy.unwrap_or_default(),
                 pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path,
             llm_provider: OnceLock::new(),
+            embed_provider: OnceLock::new(),
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
@@ -225,6 +248,8 @@ impl AppState {
             ollama_base_url: config.ollama_base_url.clone(),
             embed_ollama_model: config.embed_ollama_model.clone(),
             embed_ollama_base_url: config.embed_ollama_base_url.clone(),
+            embed_backend: config.embed_backend.clone(),
+            embed_onnx_model: config.embed_onnx_model.clone(),
             shell_policy: config.shell_policy.clone(),
         });
         let mut runtime_snapshot = config_snapshot.clone();
@@ -271,11 +296,14 @@ impl AppState {
                 ollama_base_url: config.ollama_base_url,
                 embed_ollama_model: config.embed_ollama_model,
                 embed_ollama_base_url: config.embed_ollama_base_url,
+                embed_backend: config.embed_backend,
+                embed_onnx_model: config.embed_onnx_model,
                 shell_policy: config.shell_policy.unwrap_or_default(),
                 pending_agent_writes: std::collections::HashMap::new(),
             }),
             config_path,
             llm_provider: OnceLock::new(),
+            embed_provider: OnceLock::new(),
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
@@ -368,36 +396,77 @@ impl AppState {
             .clone()
     }
 
-    /// 获取 Embedding 专用 Provider：始终使用本地模型，不走云端 LLM。
-    /// Phase 2：仍返回 OllamaProvider；Phase 4 升级为 ONNX / Ollama / Noop 三路选择。
-    pub(crate) fn get_embed_provider(&self) -> Arc<dyn EmbedProvider> {
-        let (embed_model, embed_base_url, fallback_base_url) = {
+    /// 解析 ONNX 模型目录：打包资源优先，开发时回退 CARGO_MANIFEST_DIR。
+    fn resolve_onnx_model_dir(&self, model_name: &str) -> std::path::PathBuf {
+        if let Some(handle) = self.app_handle.get() {
+            if let Ok(resource_dir) = handle.path().resource_dir() {
+                let resource_dir: std::path::PathBuf = resource_dir;
+                let bundled = resource_dir.join("embed-models").join(model_name);
+                if bundled.join("onnx/model.onnx").exists() {
+                    return bundled;
+                }
+            }
+        }
+        // 开发期路径（cargo test / dev run）
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/embed-models")
+            .join(model_name)
+    }
+
+    /// 初始化 Embed Provider（应用 setup 完成后调用一次）。
+    /// 三路选择：onnx → ollama → disabled(noop)。
+    pub fn init_embed_provider(&self) {
+        let (backend, onnx_model, embed_model, embed_base_url, fallback_base_url) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             (
+                guard.embed_backend.clone().unwrap_or_else(|| "onnx".to_string()),
+                guard.embed_onnx_model.clone().unwrap_or_else(|| "multilingual-e5-small".to_string()),
                 guard.embed_ollama_model.clone(),
                 guard.embed_ollama_base_url.clone(),
                 guard.ollama_base_url.clone(),
             )
         };
-        let mut config = OllamaConfig::default();
-        // embed 模型优先 embed_ollama_model，未配置时用 nomic-embed-text:latest
-        let model = embed_model
-            .as_deref()
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or("nomic-embed-text:latest");
-        config.model = model.to_string();
-        // base_url 优先 embed_ollama_base_url，其次 ollama_base_url，最后默认值
-        let base_url = embed_base_url
-            .as_deref()
-            .filter(|u| !u.trim().is_empty())
-            .or_else(|| {
-                fallback_base_url
-                    .as_deref()
-                    .filter(|u| !u.trim().is_empty())
-            })
-            .unwrap_or(&config.base_url);
-        config.base_url = base_url.to_string();
-        Arc::new(OllamaProvider::new(config)) as Arc<dyn EmbedProvider>
+
+        let provider: Arc<dyn EmbedProvider> = match backend.as_str() {
+            "onnx" => {
+                let model_dir = self.resolve_onnx_model_dir(&onnx_model);
+                match crate::llm::OnnxEmbedder::from_resource_dir(&model_dir) {
+                    Ok(embedder) => {
+                        self.push_log(LogLevel::Info, format!("ONNX Embed 已加载：{}", onnx_model));
+                        Arc::new(embedder) as Arc<dyn EmbedProvider>
+                    }
+                    Err(e) => {
+                        self.push_log(LogLevel::Warn, format!("ONNX 加载失败，已回退 Noop（{}）", e));
+                        Arc::new(NoopEmbedder) as Arc<dyn EmbedProvider>
+                    }
+                }
+            }
+            "ollama" => {
+                let mut config = OllamaConfig::default();
+                let model = embed_model.as_deref().filter(|m| !m.trim().is_empty()).unwrap_or("nomic-embed-text:latest");
+                config.model = model.to_string();
+                let base_url = embed_base_url.as_deref().filter(|u| !u.trim().is_empty())
+                    .or_else(|| fallback_base_url.as_deref().filter(|u| !u.trim().is_empty()))
+                    .unwrap_or(&config.base_url);
+                config.base_url = base_url.to_string();
+                self.push_log(LogLevel::Info, format!("Ollama Embed 已配置：{}", model));
+                Arc::new(OllamaProvider::new(config)) as Arc<dyn EmbedProvider>
+            }
+            _ => {
+                self.push_log(LogLevel::Info, "Embed 后端已禁用（Noop）".to_string());
+                Arc::new(NoopEmbedder) as Arc<dyn EmbedProvider>
+            }
+        };
+
+        let _ = self.embed_provider.set(provider);
+    }
+
+    /// 获取 Embedding 专用 Provider（Phase 4：ONNX / Ollama / Noop 三路选择）。
+    pub(crate) fn get_embed_provider(&self) -> Arc<dyn EmbedProvider> {
+        self.embed_provider
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(NoopEmbedder) as Arc<dyn EmbedProvider>)
     }
 
     /// 获取 LLM Provider，按模式路由：
@@ -1870,6 +1939,27 @@ impl AppState {
         paths: Vec<String>,
     ) -> Result<std::collections::HashMap<String, f64>, String> {
         ingest_service::get_page_embedding_similarities(self, paths)
+    }
+
+    pub async fn get_embed_status(&self) -> crate::models::EmbedStatus {
+        let provider = self.get_embed_provider();
+        let backend_id = provider.backend_id();
+        let dimension = provider.dimension();
+        let healthy = provider.health_check().await;
+        let indexed_count = self
+            .outbox_db_path()
+            .and_then(|p| db::count_embeddings(&p).ok())
+            .unwrap_or(0);
+        crate::models::EmbedStatus {
+            backend_id,
+            dimension,
+            indexed_count,
+            healthy,
+        }
+    }
+
+    pub async fn rebuild_embeddings(&self) -> Result<usize, String> {
+        wiki_service::rebuild_embeddings(self).await
     }
 
     pub fn start_queue_worker(handle: tauri::AppHandle) {

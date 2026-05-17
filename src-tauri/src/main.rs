@@ -24,6 +24,8 @@ fn main() {
             let app_handle = app.handle().clone();
             // 注入 AppHandle，供后续 emit 进度事件使用
             app.state::<AppState>().set_app_handle(app_handle.clone());
+            // 初始化 Embed Provider（ONNX / Ollama / Noop 三路路由，依赖 AppHandle）
+            app.state::<AppState>().init_embed_provider();
             // 启动时清理孤立 wiki 页面（文件已删但 DB 记录残留）
             app.state::<AppState>().purge_orphaned_wiki_pages();
             // 启动持久化 ingest 队列 worker
@@ -145,6 +147,8 @@ fn main() {
             commands::read_file_for_chat,
             commands::open_external_url,
             commands::install_skill_from_url,
+            commands::get_embed_status,
+            commands::rebuild_embeddings,
             agent_chat::commands::create_conversation,
             agent_chat::commands::list_conversations,
             agent_chat::commands::search_chat_messages,

@@ -10,6 +10,7 @@
 
 pub mod embed_provider;
 pub mod ollama;
+pub mod onnx_embed;
 pub mod openai;
 pub mod provider;
 pub mod stream_parser;
@@ -18,6 +19,8 @@ pub mod types;
 // 重导出常用类型，方便外部使用
 #[allow(unused_imports)]
 pub use embed_provider::{EmbedError, EmbedProvider};
+#[allow(unused_imports)]
+pub use onnx_embed::OnnxEmbedder;
 #[allow(unused_imports)]
 pub use ollama::{OllamaConfig, OllamaProvider};
 #[allow(unused_imports)]

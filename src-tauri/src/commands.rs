@@ -7,7 +7,7 @@ use crate::models::{
     KnowledgeGraphDirection, KnowledgeSubgraphData, LintPatchApplyInput, LintPatchApplyResult,
     LintPatchBatchApplyResult, LintPatchEventItem, LintPatchPreview, LintReport, LlmProviderConfig,
     LlmStatus, LogEntry, ModeChangeResult, NewPageResult, OutboxAckResult, OutboxEventItem,
-    PageQuickLint, QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem,
+    EmbedStatus, PageQuickLint, QueryAnswerResult, QueryAskOptions, QuerySettings, ResearchTaskItem,
     SaveQueryAnswerInput, SaveQueryAnswerResult, SearchConfig, ShellAuditEvent, ShellPolicyConfig,
     ShellResult, ShellSessionInfo, VaultInitResult, VaultStats, WikiPageCitationItem,
     WikiPageDetail, WikiPageHistoryDetail, WikiPageHistoryItem, WikiPageItem,
@@ -1184,3 +1184,16 @@ pub async fn install_skill_from_url(
     let skill = state.upsert_agent_skill_impl(&name, &system_prompt)?;
     Ok(skill.id)
 }
+
+/// 返回 Embed 后端当前状态（后端 ID、维度、索引数量、健康状态）。
+#[tauri::command]
+pub async fn get_embed_status(state: State<'_, AppState>) -> Result<EmbedStatus, String> {
+    Ok(state.get_embed_status().await)
+}
+
+/// 重建所有页面的 Embedding 索引（切换后端后调用）。
+#[tauri::command]
+pub async fn rebuild_embeddings(state: State<'_, AppState>) -> Result<usize, String> {
+    state.rebuild_embeddings().await
+}
+

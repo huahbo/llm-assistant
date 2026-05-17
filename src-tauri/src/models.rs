@@ -75,6 +75,12 @@ pub struct AppConfig {
     /// Embedding 专用 Ollama Base URL（默认与 ollama_base_url 相同）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed_ollama_base_url: Option<String>,
+    /// Embedding 后端（"onnx" | "ollama" | "disabled"，默认 "onnx"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_backend: Option<String>,
+    /// ONNX 模型名（"multilingual-e5-small" / "bge-small-zh-v1.5"，默认前者）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_onnx_model: Option<String>,
     /// Shell 策略配置（H6-S3：能力最大化与安全收敛）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_policy: Option<ShellPolicyConfig>,
@@ -96,6 +102,8 @@ impl Default for AppConfig {
             ollama_base_url: None,
             embed_ollama_model: None,
             embed_ollama_base_url: None,
+            embed_backend: None,
+            embed_onnx_model: None,
             shell_policy: None,
         }
     }
@@ -256,6 +264,12 @@ pub struct LlmProviderConfig {
     /// Embedding 专用 Ollama Base URL（默认与 ollama_base_url 相同）
     #[serde(default)]
     pub embed_ollama_base_url: String,
+    /// Embedding 后端（"onnx" | "ollama" | "disabled"）
+    #[serde(default)]
+    pub embed_backend: String,
+    /// ONNX 模型名（"multilingual-e5-small" | "bge-small-zh-v1.5"）
+    #[serde(default)]
+    pub embed_onnx_model: String,
 }
 
 /// 应用总览。
@@ -1153,6 +1167,19 @@ pub struct FileChunk {
     pub content: String,
     pub char_count: usize,
     pub truncated: bool,
+}
+
+/// Embedding 后端状态（Phase 5 — Settings UI 用）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbedStatus {
+    /// 后端标识，如 "onnx:multilingual-e5-small" / "ollama:nomic-embed-text" / "noop"
+    pub backend_id: String,
+    /// 向量维度（0 = noop 或未知）
+    pub dimension: usize,
+    /// 已索引页面数量
+    pub indexed_count: usize,
+    /// 后端是否健康可用
+    pub healthy: bool,
 }
 
 /// Smithery MCP Registry 服务器列表项（H17）。

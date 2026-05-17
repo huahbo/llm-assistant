@@ -1525,16 +1525,18 @@ pub async fn save_wiki_page_impl(
             let embed_db_path = db_path.clone();
             let embed_path = path.to_string();
             let embed_content: String = content.chars().take(2000).collect();
+            let embed_backend_id = embed_provider.backend_id();
+            let embed_dim = embed_provider.dimension();
             tokio::spawn(async move {
                 match embed_provider.embed(&embed_content).await {
                     Ok(embedding) => {
                         if let Err(e) =
-                            db::upsert_embedding(&embed_db_path, &embed_path, &embedding)
+                            db::upsert_embedding(&embed_db_path, &embed_path, &embedding, &embed_backend_id, embed_dim)
                         {
                             eprintln!("[embed] 向量索引写入失败（忽略）: {e}");
                         }
                     }
-                    Err(_) => {} // Ollama 不可用时静默跳过
+                    Err(_) => {} // Embed 不可用时静默跳过
                 }
             });
         }
@@ -2303,6 +2305,70 @@ pub fn export_wiki_html_zip_impl(state: &AppState, dest_path: String) -> Result<
     Ok(pages.len() as u32)
 }
 
+/// 重建所有页面的 Embedding（切换后端后调用）。
+/// 遍历 wiki_pages 表，对每个页面重新 embed 并写入 page_embeddings。
+/// 返回成功索引的页面数。
+pub async fn rebuild_embeddings(state: &AppState) -> Result<usize, String> {
+    use crate::db;
+    use crate::models::LogLevel;
+
+    let (vault_path, db_path) = {
+        let guard = state.inner.lock().expect("状态锁已被污染");
+        let vp = guard
+            .vault_path
+            .clone()
+            .ok_or_else(|| "请先初始化 Vault".to_string())?;
+        let dp = vp.join(".app").join("meta.db");
+        (vp, dp)
+    };
+
+    let pages = db::list_all_wiki_pages(&db_path)
+        .map_err(|e| format!("读取 wiki_pages 列表失败: {}", e))?;
+
+    let total = pages.len();
+    state.push_log(
+        LogLevel::Info,
+        format!("开始重建 Embedding 索引，共 {} 个页面", total),
+    );
+    state.emit_progress("rebuild_embeddings_progress", "start", &format!("开始重建，共 {} 页", total));
+
+    let embed_provider = state.get_embed_provider();
+    let backend_id = embed_provider.backend_id();
+    let dim = embed_provider.dimension();
+    let mut success = 0usize;
+
+    for (i, page) in pages.iter().enumerate() {
+        let page_file = vault_path.join(&page.path);
+        let content = match std::fs::read_to_string(&page_file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let embed_content: String = content.chars().take(2000).collect();
+        match embed_provider.embed(&embed_content).await {
+            Ok(embedding) => {
+                if db::upsert_embedding(&db_path, &page.path, &embedding, &backend_id, dim).is_ok() {
+                    success += 1;
+                }
+            }
+            Err(_) => {}
+        }
+        if (i + 1) % 10 == 0 || i + 1 == total {
+            state.emit_progress(
+                "rebuild_embeddings_progress",
+                "progress",
+                &format!("{}/{}", i + 1, total),
+            );
+        }
+    }
+
+    state.push_log(
+        LogLevel::Info,
+        format!("Embedding 重建完成：{}/{} 页成功", success, total),
+    );
+    state.emit_progress("rebuild_embeddings_progress", "done", &format!("完成：{}/{}", success, total));
+    Ok(success)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2943,9 +3009,9 @@ entities:
         state.init_vault(dir.clone()).unwrap();
 
         let db_path = dir.join(".app").join("meta.db");
-        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0, 0.0]).unwrap();
-        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0, 0.0]).unwrap();
-        db::upsert_embedding(&db_path, "wiki/c.md", &[0.0_f32, 1.0, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0, 0.0], "test", 3).unwrap();
+        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0, 0.0], "test", 3).unwrap();
+        db::upsert_embedding(&db_path, "wiki/c.md", &[0.0_f32, 1.0, 0.0], "test", 3).unwrap();
 
         let paths = vec![
             "wiki/a.md".to_string(),
@@ -2969,9 +3035,9 @@ entities:
         state.init_vault(dir.clone()).unwrap();
 
         let db_path = dir.join(".app").join("meta.db");
-        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0]).unwrap();
-        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0]).unwrap();
-        db::upsert_embedding(&db_path, "wiki/c.md", &[1.0_f32, 0.0]).unwrap();
+        db::upsert_embedding(&db_path, "wiki/a.md", &[1.0_f32, 0.0], "test", 2).unwrap();
+        db::upsert_embedding(&db_path, "wiki/b.md", &[1.0_f32, 0.0], "test", 2).unwrap();
+        db::upsert_embedding(&db_path, "wiki/c.md", &[1.0_f32, 0.0], "test", 2).unwrap();
 
         let paths = vec!["wiki/a.md".to_string(), "wiki/b.md".to_string()];
         let result = state.get_page_embedding_similarities(paths).unwrap();

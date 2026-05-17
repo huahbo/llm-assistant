@@ -250,7 +250,13 @@ pub struct PageEmbeddingRecord {
 }
 
 /// 将页面路径及其向量（二进制 BLOB 格式）插入或更新到 `page_embeddings` 表中。
-pub fn upsert_embedding(db_path: &Path, page_path: &str, embedding: &[f32]) -> Result<(), String> {
+pub fn upsert_embedding(
+    db_path: &Path,
+    page_path: &str,
+    embedding: &[f32],
+    backend_id: &str,
+    dim: usize,
+) -> Result<(), String> {
     let conn = open_connection(db_path)?;
     init_schema(&conn)?;
 
@@ -262,16 +268,28 @@ pub fn upsert_embedding(db_path: &Path, page_path: &str, embedding: &[f32]) -> R
 
     conn.execute(
         r#"
-        INSERT INTO page_embeddings (page_path, embedding_blob)
-        VALUES (?1, ?2)
+        INSERT INTO page_embeddings (page_path, embedding_blob, backend_id, dim)
+        VALUES (?1, ?2, ?3, ?4)
         ON CONFLICT(page_path) DO UPDATE SET
-            embedding_blob = excluded.embedding_blob
+            embedding_blob = excluded.embedding_blob,
+            backend_id = excluded.backend_id,
+            dim = excluded.dim
         "#,
-        params![page_path, blob],
+        params![page_path, blob, backend_id, dim as i64],
     )
     .map_err(|err| format!("写入 page_embeddings 失败: {}", err))?;
 
     Ok(())
+}
+
+/// 统计已索引的 Embedding 数量。
+pub fn count_embeddings(db_path: &Path) -> Result<usize, String> {
+    let conn = open_connection(db_path)?;
+    init_schema(&conn)?;
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM page_embeddings", [], |row| row.get(0))
+        .map_err(|err| format!("统计 page_embeddings 失败: {}", err))?;
+    Ok(count as usize)
 }
 
 /// 读取页面 Embedding 列表（按页面路径排序）。
@@ -1589,11 +1607,47 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
     ensure_ask_session_turns_quality(conn)?;
     ensure_agent_runs_quality(conn)?;
     ensure_ingest_queue_quality(conn)?;
+    ensure_page_embeddings_quality(conn)?;
 
     // agent_chat 表与内置工具种子（幂等）
     crate::agent_chat::db::ensure_schema(conn)?;
     crate::agent_chat::db::seed_builtin_tools(conn)?;
 
+    Ok(())
+}
+
+/// page_embeddings 表质量保障：补齐 backend_id / dim 字段（H12 ONNX 升级迁移）。
+fn ensure_page_embeddings_quality(conn: &Connection) -> Result<(), String> {
+    let mut has_backend_id = false;
+    let mut has_dim = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(page_embeddings)")
+        .map_err(|err| format!("读取 page_embeddings 表结构失败: {}", err))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("读取 page_embeddings 字段失败: {}", err))?;
+    for row in rows {
+        let name = row.map_err(|err| format!("读取 page_embeddings 字段失败: {}", err))?;
+        if name == "backend_id" {
+            has_backend_id = true;
+        } else if name == "dim" {
+            has_dim = true;
+        }
+    }
+    if !has_backend_id {
+        conn.execute(
+            "ALTER TABLE page_embeddings ADD COLUMN backend_id TEXT NOT NULL DEFAULT 'legacy'",
+            [],
+        )
+        .map_err(|err| format!("补齐 page_embeddings.backend_id 失败: {}", err))?;
+    }
+    if !has_dim {
+        conn.execute(
+            "ALTER TABLE page_embeddings ADD COLUMN dim INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|err| format!("补齐 page_embeddings.dim 失败: {}", err))?;
+    }
     Ok(())
 }
 
@@ -3947,8 +4001,8 @@ mod tests {
         let db_path = dir.join("meta.db");
         ensure_meta_db(&db_path).expect("初始化数据库失败");
 
-        upsert_embedding(&db_path, "wiki/a.md", &[0.1, 0.2, 0.3]).expect("写入 embedding 失败");
-        upsert_embedding(&db_path, "wiki/b.md", &[0.4, 0.5, 0.6]).expect("写入 embedding 失败");
+        upsert_embedding(&db_path, "wiki/a.md", &[0.1, 0.2, 0.3], "test", 3).expect("写入 embedding 失败");
+        upsert_embedding(&db_path, "wiki/b.md", &[0.4, 0.5, 0.6], "test", 3).expect("写入 embedding 失败");
 
         let items = list_embeddings(&db_path, 10).expect("读取 embedding 列表失败");
         assert_eq!(items.len(), 2);
