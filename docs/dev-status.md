@@ -12,12 +12,14 @@
 
 ---
 
-## 本轮快讯（2026-05-17，Claude Code）— H17 MCP 市场 + Skill UX 完成
+## 本轮快讯（2026-05-17，Claude Code）— H21/H22/H23 完成
 
-- **MCP 市场**：Smithery Registry 搜索 + 一键安装 + Env Key 对话框
-- **Skill UX 重设计**：preset / clipboard 两种工作流
-- **v0.2.4 质量修复**：268 测试全绿，typecheck 零错误，origin/main 同步
-- **最新 commit**：d4c2761（2026-05-17）
+- **Pre**：search.ts 6 处裸 invoke() 包装 withTimeout
+- **H21 全局命令面板**：Ctrl+K，模糊搜索 Wiki 页面 + 操作命令 + 最近访问
+- **H22 Wiki 知识导出**：Markdown ZIP + 静态 HTML ZIP（pulldown-cmark 渲染，[[link]] 转换）
+- **H23 Wiki 内联 AI 辅助**：选中文字 → 续写/改写/扩写，流式预览 + 接受/拒绝
+- **268 测试全绿，typecheck 零错误**
+- **最新 commit**：fd4ecda（2026-05-17）
 
 ---
 
@@ -59,6 +61,9 @@ cd E:\llm-wiki\web; npm run typecheck   # 零错误
 - **H14-H15**：跨会话消息搜索，对话导出（Markdown + 存 Wiki），spawn_subagent 工具卡
 - **H16**：state.rs 12 阶段重构（state/ 子模块体系，12 个 service 文件）
 - **H17**：MCP 市场（Smithery Registry 搜索 + 一键安装 + Env Key 对话框）+ Skill UX 重设计（preset/clipboard）
+- **H21**：全局命令面板 Ctrl+K（CommandPalette.tsx，3类结果，键盘导航，最近访问 localStorage）
+- **H22**：Wiki 知识导出（export_wiki_markdown_zip / export_wiki_html_zip，Operations 导出 Tab）
+- **H23**：Wiki 内联 AI 辅助编辑（ai_assist_wiki_edit，SelectionToolbar，AiAssistPreview，流式）
 
 ---
 
@@ -66,16 +71,14 @@ cd E:\llm-wiki\web; npm run typecheck   # 零错误
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| Pre | **search.ts 可靠性修复** | 5 处裸 invoke() 无超时包装 |
-| H21 | **全局命令面板 Ctrl+K** | 页面搜索 + 操作跳转 |
-| H22 | **Wiki 知识导出** | Markdown 包 + 静态 HTML 包 |
-| H23 | **Wiki 内联 AI 辅助编辑** | 选中文字→续写/改写/扩写 |
+| P22 | **打包发布** | `npm run tauri:build`，生成 .msi/.exe 安装包 |
+| H10A | ToolRegistry trait 重构 | 可选优化 |
 
 ---
 
 ## 关键架构约束
 
-- **测试基线**：268 通过（2026-05-17，v0.2.4）
+- **测试基线**：268 通过（2026-05-17，v0.2.4，commit fd4ecda）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**
