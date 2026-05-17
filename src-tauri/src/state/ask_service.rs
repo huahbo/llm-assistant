@@ -1,7 +1,7 @@
 use super::AppState;
 use crate::{
     db,
-    llm::{LlmError, LlmProvider},
+    llm::LlmProvider,
     models::{
         AskSessionItem, AskSessionSearchHitItem, AskSessionTurnItem, AskSessionTurnMeta,
         LogLevel, OutboxAckResult, OutboxEventItem, QueryAnswerResult, QueryAskOptions,
@@ -229,9 +229,9 @@ pub(super) async fn query_embedding_route_paths(
         Err(err) => {
             let hint = if matches!(
                 err,
-                LlmError::ModelNotFound(_) | LlmError::ConnectionFailed(_)
+                crate::llm::EmbedError::InitFailed(_) | crate::llm::EmbedError::Unavailable
             ) {
-                "（Ollama 未启动或缺少 nomic-embed-text:latest）"
+                "（Embed 服务未就绪）"
             } else {
                 ""
             };

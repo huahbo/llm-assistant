@@ -795,10 +795,11 @@ async fn complete_ingest_with_precomputed_analysis(
     state.emit_progress(
         "ingest_progress",
         "embedding",
-        "正在向量化（本地 Ollama）...",
+        "正在向量化...",
     );
     let embed_provider = state.get_embed_provider();
-    // nomic-embed-text 上限 8192 token；中文约 2-3 token/字，2000 字 ≈ 5000 token，安全边界
+    // 截取前 2000 字；multilingual-e5-small 上限 512 token，中文约 1.5 token/字，2000 字 ≈ 1300 token 需截断
+    // OnnxEmbedder 内部会按 max_input_tokens 截断，这里取 2000 字作为粗粒度保护
     let embed_content: String = source_content.chars().take(2000).collect();
     match embed_provider.embed(&embed_content).await {
         Ok(embedding) => {
@@ -809,9 +810,9 @@ async fn complete_ingest_with_precomputed_analysis(
         Err(err) => {
             let hint = if matches!(
                 err,
-                crate::llm::LlmError::ModelNotFound(_) | crate::llm::LlmError::ConnectionFailed(_)
+                crate::llm::EmbedError::InitFailed(_) | crate::llm::EmbedError::Unavailable
             ) {
-                "（请确认 Ollama 已启动且已拉取 nomic-embed-text:latest 模型）"
+                "（Embed 服务未就绪，请确认 ONNX 模型文件存在或 Ollama 已启动）"
             } else {
                 ""
             };

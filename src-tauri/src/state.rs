@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     db,
-    llm::{LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider, DEFAULT_OPENAI_MODEL},
+    llm::{EmbedProvider, LlmProvider, OllamaConfig, OllamaProvider, OpenAiConfig, OpenAiProvider, DEFAULT_OPENAI_MODEL},
     models::{
         AgentDraftItem, AgentMemoryItem, AgentRunEventItem, AgentRunItem, AgentSkillItem,
         AppConfig, AppMode, AppOverview, AskSessionItem, AskSessionSearchHitItem,
@@ -368,9 +368,9 @@ impl AppState {
             .clone()
     }
 
-    /// 获取 Embedding 专用 Provider：始终使用本地 Ollama embedding 模型，不走云端。
-    /// 默认模型：nomic-embed-text:latest；可在 Settings 中配置 embed_ollama_model。
-    fn get_embed_provider(&self) -> Arc<dyn LlmProvider> {
+    /// 获取 Embedding 专用 Provider：始终使用本地模型，不走云端 LLM。
+    /// Phase 2：仍返回 OllamaProvider；Phase 4 升级为 ONNX / Ollama / Noop 三路选择。
+    pub(crate) fn get_embed_provider(&self) -> Arc<dyn EmbedProvider> {
         let (embed_model, embed_base_url, fallback_base_url) = {
             let guard = self.inner.lock().expect("状态锁已被污染");
             (
@@ -397,7 +397,7 @@ impl AppState {
             })
             .unwrap_or(&config.base_url);
         config.base_url = base_url.to_string();
-        Arc::new(OllamaProvider::new(config))
+        Arc::new(OllamaProvider::new(config)) as Arc<dyn EmbedProvider>
     }
 
     /// 获取 LLM Provider，按模式路由：

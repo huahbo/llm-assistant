@@ -635,6 +635,37 @@ impl LlmProvider for OllamaProvider {
     }
 }
 
+// ── EmbedProvider 实现 ────────────────────────────────────────────────────────
+
+use crate::llm::embed_provider::{EmbedError, EmbedProvider};
+
+#[async_trait]
+impl EmbedProvider for OllamaProvider {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        LlmProvider::embed(self, text).await.map_err(|e| match e {
+            LlmError::ConnectionFailed(m) => EmbedError::InitFailed(m),
+            LlmError::ModelNotFound(m) => {
+                EmbedError::InitFailed(format!("Ollama 模型未拉取: {}", m))
+            }
+            LlmError::Timeout => EmbedError::InferenceFailed("请求超时".to_string()),
+            LlmError::InvalidResponse(m) => EmbedError::InferenceFailed(m),
+        })
+    }
+
+    fn dimension(&self) -> usize {
+        // nomic-embed-text 默认 768 维；Phase 4 切换 ONNX 后通过 backend_id 校验维度
+        768
+    }
+
+    fn backend_id(&self) -> String {
+        format!("ollama:{}", self.config.model)
+    }
+
+    async fn health_check(&self) -> bool {
+        LlmProvider::health_check(self).await.unwrap_or(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

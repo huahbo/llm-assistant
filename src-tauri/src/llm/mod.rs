@@ -8,6 +8,7 @@
 //! - `ollama`: Ollama 本地 LLM 服务实现
 //! - `openai`: OpenAI 云端 LLM 服务实现（Hybrid 模式）
 
+pub mod embed_provider;
 pub mod ollama;
 pub mod openai;
 pub mod provider;
@@ -15,6 +16,8 @@ pub mod stream_parser;
 pub mod types;
 
 // 重导出常用类型，方便外部使用
+#[allow(unused_imports)]
+pub use embed_provider::{EmbedError, EmbedProvider};
 #[allow(unused_imports)]
 pub use ollama::{OllamaConfig, OllamaProvider};
 #[allow(unused_imports)]
