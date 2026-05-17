@@ -965,6 +965,39 @@ pub fn get_vault_stats(state: State<'_, AppState>) -> Result<VaultStats, String>
     state.get_vault_stats_impl()
 }
 
+/// Wiki 内联 AI 辅助编辑（续写/改写/扩写），通过 ai_assist_chunk 事件流式回传。
+#[tauri::command]
+pub async fn ai_assist_wiki_edit(
+    action: String,
+    selected_text: String,
+    context: String,
+    page_title: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    state
+        .ai_assist_wiki_edit(&app_handle, action, selected_text, context, page_title)
+        .await
+}
+
+/// 导出全部 Wiki 为 Markdown ZIP 包，返回导出页面数。
+#[tauri::command]
+pub fn export_wiki_markdown_zip(
+    dest_path: String,
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
+    state.export_wiki_markdown_zip(dest_path)
+}
+
+/// 导出全部 Wiki 为静态 HTML ZIP 包，返回导出页面数。
+#[tauri::command]
+pub fn export_wiki_html_zip(
+    dest_path: String,
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
+    state.export_wiki_html_zip(dest_path)
+}
+
 /// AI 辅助新建 Wiki 页面（根据主题查找相关页面、调用 LLM 生成初稿并写入 vault）。
 #[tauri::command]
 pub async fn create_wiki_page_with_ai(

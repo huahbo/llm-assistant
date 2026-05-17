@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -30,6 +31,15 @@ import {
   fetchRecentWikiPages,
 } from "../../tauri-client";
 import { useToast } from "../../contexts/ToastContext";
+import SelectionToolbar from "./SelectionToolbar";
+import AiAssistPreview from "./AiAssistPreview";
+import {
+  aiAssistWikiEdit,
+  listenAiAssistChunk,
+  listenAiAssistDone,
+  listenAiAssistError,
+  type AssistAction,
+} from "../../tauri-client/ai-assist";
 import {
   simpleHash,
   buildFrontmatterCopyText,
@@ -160,6 +170,12 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
   const [wikiSaveRunning, setWikiSaveRunning] = useState(false);
   const [wikiSaveError, setWikiSaveError] = useState("");
   const [wikiDeleteRunning, setWikiDeleteRunning] = useState(false);
+
+  // ── AI assist state ───────────────────────────────────────────────────────
+  const [assistSelectedText, setAssistSelectedText] = useState("");
+  const [assistText, setAssistText] = useState("");
+  const [assistLoading, setAssistLoading] = useState(false);
+  const [assistError, setAssistError] = useState("");
 
   // ── rename state ───────────────────────────────────────────────────────────
   const [wikiRenameMode, setWikiRenameMode] = useState(false);
@@ -598,6 +614,64 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
   const collapseAllWikiFolders = () => {
     setWikiTreeCollapsedFolders(new Set(wikiTreeFolderKeys));
   };
+
+  // ── AI assist ─────────────────────────────────────────────────────────────
+
+  const handleAssistAction = useCallback(async (action: AssistAction) => {
+    if (!wikiEditorRef.current) return;
+    const ta = wikiEditorRef.current;
+    const selected = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+    const context = ta.value.substring(
+      Math.max(0, ta.selectionStart - 500),
+      Math.min(ta.value.length, ta.selectionEnd + 500),
+    );
+    const title = wikiPageDetail?.title ?? "";
+
+    setAssistText("");
+    setAssistError("");
+    setAssistLoading(true);
+
+    const unlistenChunk = await listenAiAssistChunk(({ chunk }) => {
+      setAssistText((prev) => prev + chunk);
+    });
+    const unlistenDone = await listenAiAssistDone(() => {
+      setAssistLoading(false);
+    });
+    const unlistenError = await listenAiAssistError(({ error }) => {
+      setAssistError(error);
+      setAssistLoading(false);
+    });
+
+    try {
+      await aiAssistWikiEdit(action, selected, context, title);
+    } catch (err) {
+      setAssistError(String(err));
+      setAssistLoading(false);
+    } finally {
+      unlistenChunk();
+      unlistenDone();
+      unlistenError();
+    }
+  }, [wikiPageDetail]);
+
+  const handleAssistAccept = useCallback(() => {
+    if (!wikiEditorRef.current || !assistText) return;
+    const ta = wikiEditorRef.current;
+    const before = ta.value.substring(0, ta.selectionEnd);
+    const after = ta.value.substring(ta.selectionEnd);
+    const newContent = before + assistText + after;
+    setWikiEditContent(newContent);
+    setAssistText("");
+    setAssistError("");
+    setAssistSelectedText("");
+  }, [assistText]);
+
+  const handleAssistReject = useCallback(() => {
+    setAssistText("");
+    setAssistError("");
+    setAssistSelectedText("");
+    setAssistLoading(false);
+  }, []);
 
   // ── edit ───────────────────────────────────────────────────────────────────
 
@@ -1370,6 +1444,18 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
                 event.currentTarget.value,
               );
             }}
+            onMouseUp={(event) => {
+              const ta = event.currentTarget;
+              const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd).trim();
+              setAssistSelectedText(sel);
+              if (!sel) { setAssistText(""); setAssistError(""); }
+            }}
+            onSelect={(event) => {
+              const ta = event.currentTarget;
+              const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd).trim();
+              setAssistSelectedText(sel);
+              if (!sel) { setAssistText(""); setAssistError(""); }
+            }}
             onScroll={() => {
               if (!wikiAutocompleteOpen || !wikiEditorRef.current) return;
               updateWikiAutocompletePosition(wikiEditorRef.current.selectionStart);
@@ -1407,6 +1493,21 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
               )}
             </div>
           )}
+          {assistSelectedText && !assistText && !assistLoading && !assistError ? (
+            <SelectionToolbar
+              onAction={(action) => { void handleAssistAction(action); }}
+              disabled={assistLoading}
+            />
+          ) : null}
+          {(assistText || assistLoading || assistError) ? (
+            <AiAssistPreview
+              text={assistText}
+              loading={assistLoading}
+              error={assistError}
+              onAccept={handleAssistAccept}
+              onReject={handleAssistReject}
+            />
+          ) : null}
         </div>
       ) : (
         <div

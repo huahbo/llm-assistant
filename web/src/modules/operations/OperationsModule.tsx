@@ -9,9 +9,10 @@ import {
   deleteIngestItem,
   getVaultStats,
 } from "../../tauri-client";
+import { exportWikiMarkdownZip, exportWikiHtmlZip } from "../../tauri-client/export";
 import { useMode } from "../../contexts/ModeContext";
 
-type OperationsTab = "queue" | "stats";
+type OperationsTab = "queue" | "stats" | "export";
 
 type OperationsModuleProps = {
   /** When App.tsx navigates here after enqueueing, it can request a specific tab. */
@@ -42,6 +43,8 @@ export default function OperationsModule({
   >([]);
   const [vaultStats, setVaultStats] = useState<VaultStats | null>(null);
   const [vaultStatsLoading, setVaultStatsLoading] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string>("");
+  const [exportBusy, setExportBusy] = useState(false);
 
   // When App.tsx changes requestedTab (e.g. after enqueueing), honour it.
   useEffect(() => {
@@ -106,12 +109,30 @@ export default function OperationsModule({
     }
   }, []);
 
+  const handleExport = useCallback(async (kind: "markdown" | "html") => {
+    setExportBusy(true);
+    setExportStatus("");
+    try {
+      const count =
+        kind === "markdown" ? await exportWikiMarkdownZip() : await exportWikiHtmlZip();
+      if (count === null) {
+        setExportStatus("已取消");
+      } else {
+        setExportStatus(`导出完成，共 ${count} 个页面`);
+      }
+    } catch (err) {
+      setExportStatus(`导出失败：${String(err)}`);
+    } finally {
+      setExportBusy(false);
+    }
+  }, []);
+
   // When the module becomes active, load data for the current tab.
   useEffect(() => {
     if (!isActive) return;
     if (operationsTab === "queue") {
       void refreshQueue();
-    } else {
+    } else if (operationsTab === "stats") {
       void loadVaultStats();
     }
   }, [isActive]); // intentionally only trigger on activation change
@@ -144,14 +165,73 @@ export default function OperationsModule({
           >
             运行统计
           </button>
+          <button
+            type="button"
+            className={`operations-tabs__item${operationsTab === "export" ? " operations-tabs__item--active" : ""}`}
+            onClick={() => {
+              setOperationsTab("export");
+              setExportStatus("");
+            }}
+          >
+            导出
+          </button>
         </div>
         <p className="operations-tabs__hint">
           {operationsTab === "queue"
             ? "查看摄入任务进度，支持取消与失败重试。"
-            : "查看知识库规模、近期增长与引用分布。"}
+            : operationsTab === "stats"
+              ? "查看知识库规模、近期增长与引用分布。"
+              : "将 Wiki 知识库导出为 Markdown 包或静态 HTML 包。"}
         </p>
         <div className="operations-content">
-          {operationsTab === "queue" ? (
+          {operationsTab === "export" ? (
+            <div className="export-panel">
+              <p className="export-panel__desc">
+                选择导出格式，系统将打开保存对话框，生成 ZIP 文件到指定位置。
+              </p>
+              <div className="export-panel__actions">
+                <div className="export-card">
+                  <div className="export-card__icon">📦</div>
+                  <div className="export-card__body">
+                    <h3 className="export-card__title">Markdown 包</h3>
+                    <p className="export-card__desc">
+                      导出全部 Wiki 页面为 .md 文件，保留原始目录结构，可直接用于其他工具。
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      disabled={exportBusy}
+                      onClick={() => { void handleExport("markdown"); }}
+                    >
+                      {exportBusy ? "导出中…" : "导出为 Markdown 包"}
+                    </button>
+                  </div>
+                </div>
+                <div className="export-card">
+                  <div className="export-card__icon">🌐</div>
+                  <div className="export-card__body">
+                    <h3 className="export-card__title">静态 HTML 包</h3>
+                    <p className="export-card__desc">
+                      导出全部 Wiki 页面为可离线阅读的 HTML 文件，含 index.html 目录页，Wiki 链接自动转换为相对路径。
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      disabled={exportBusy}
+                      onClick={() => { void handleExport("html"); }}
+                    >
+                      {exportBusy ? "导出中…" : "导出为静态 HTML 包"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {exportStatus && (
+                <p className={`export-panel__status${exportStatus.startsWith("导出失败") ? " export-panel__status--error" : ""}`}>
+                  {exportStatus}
+                </p>
+              )}
+            </div>
+          ) : operationsTab === "queue" ? (
             <QueuePanel
               queue={ingestQueue}
               onRefresh={() => {
@@ -167,7 +247,7 @@ export default function OperationsModule({
                 void deleteQueueItem(id);
               }}
             />
-          ) : (
+          ) : operationsTab === "stats" ? (
             <div className="stats-module">
               <div className="stats-module__header">
                 <h2 className="stats-module__title">知识库统计</h2>
@@ -253,7 +333,7 @@ export default function OperationsModule({
                 </p>
               )}
             </div>
-          )}
+          ) : null}
         </div>
       </section>
     </>

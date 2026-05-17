@@ -10,6 +10,7 @@ import SettingsModule from "./modules/settings/SettingsModule";
 import WikiModule, { type WikiModuleHandle } from "./modules/wiki/WikiModule";
 import GraphModule from "./modules/graph/GraphModule";
 import DiscoveryModule from "./modules/discovery/DiscoveryModule";
+import CommandPalette from "./modules/palette/CommandPalette";
 import { useVault } from "./contexts/VaultContext";
 import { useMode } from "./contexts/ModeContext";
 import { useToast } from "./contexts/ToastContext";
@@ -57,6 +58,20 @@ export default function App() {
   const [dropMode, setDropMode] = useState<DropMode>(() => readDropModeFromStorage());
   // Wiki 模块通过 ref 暴露 openPage 方法，供跨模块调用
   const wikiModuleRef = useRef<WikiModuleHandle | null>(null);
+
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // 全局 Ctrl+K 打开命令面板
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
 
   // 当前激活的导航模块（来自 ModeContext）
   const { activeModule, navigateTo: setActiveModule } = useMode();
@@ -526,6 +541,11 @@ export default function App() {
         </div>
       </div>
     </div>
+    <CommandPalette
+      open={paletteOpen}
+      onClose={() => setPaletteOpen(false)}
+      onOpenWikiPage={handleOpenWikiPage}
+    />
     </div>
   );
 }

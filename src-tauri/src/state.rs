@@ -647,6 +647,33 @@ impl AppState {
         wiki_service::search_wiki_paths(self, query)
     }
 
+    pub async fn ai_assist_wiki_edit(
+        &self,
+        app_handle: &tauri::AppHandle,
+        action: String,
+        selected_text: String,
+        context: String,
+        page_title: String,
+    ) -> Result<(), String> {
+        wiki_service::ai_assist_wiki_edit(
+            self,
+            app_handle,
+            &action,
+            &selected_text,
+            &context,
+            &page_title,
+        )
+        .await
+    }
+
+    pub fn export_wiki_markdown_zip(&self, dest_path: String) -> Result<u32, String> {
+        wiki_service::export_wiki_markdown_zip_impl(self, dest_path)
+    }
+
+    pub fn export_wiki_html_zip(&self, dest_path: String) -> Result<u32, String> {
+        wiki_service::export_wiki_html_zip_impl(self, dest_path)
+    }
+
     pub fn wiki_page_detail(&self, page_path: String) -> Result<WikiPageDetail, String> {
         wiki_service::wiki_page_detail(self, page_path)
     }

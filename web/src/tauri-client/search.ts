@@ -148,7 +148,7 @@ export async function cancelAskSession(sessionId: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
 
   try {
-    await invoke("cancel_ask_session", { sessionId });
+    await withTimeout(invoke("cancel_ask_session", { sessionId }), 10_000);
   } catch {
     // 忽略错误
   }
@@ -163,7 +163,7 @@ export async function clearAskSession(sessionId: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
 
   try {
-    await invoke("clear_ask_session", { sessionId });
+    await withTimeout(invoke("clear_ask_session", { sessionId }), 10_000);
   } catch {
     // 忽略错误
   }
@@ -246,7 +246,7 @@ export async function renameAskSession(sessionId: string, title: string): Promis
   }
   const { invoke } = await import("@tauri-apps/api/core");
   try {
-    await invoke("rename_ask_session", { sessionId, title });
+    await withTimeout(invoke("rename_ask_session", { sessionId, title }), 10_000);
     return true;
   } catch {
     return false;
@@ -260,7 +260,7 @@ export async function deleteAskSession(sessionId: string): Promise<boolean> {
   }
   const { invoke } = await import("@tauri-apps/api/core");
   try {
-    await invoke("delete_ask_session", { sessionId });
+    await withTimeout(invoke("delete_ask_session", { sessionId }), 10_000);
     return true;
   } catch {
     return false;
@@ -303,7 +303,7 @@ export async function saveAskHistory(question: string): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
-    await invoke("save_ask_history", { question });
+    await withTimeout(invoke("save_ask_history", { question }), 10_000);
   } catch {
     // 历史保存失败不阻断主流程
   }
@@ -393,7 +393,7 @@ export async function listenResearchStreamChunk(
 export async function approveResearchQueries(taskId: number, queries: string[]): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke("approve_research_queries", { taskId, queries });
+  return withTimeout(invoke("approve_research_queries", { taskId, queries }), 30_000);
 }
 
 /** 启动研究任务，返回 task_id。非 Tauri 环境返回 -1。 */

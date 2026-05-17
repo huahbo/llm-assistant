@@ -16,6 +16,7 @@ import "./modules/settings/settings.css";
 import "./modules/graph/graph.css";
 import "./modules/agent/agent.css";
 import "./modules/chat/chat.css";
+import "./modules/palette/palette.css";
 
 // 拦截所有外部 http(s) 链接，防止 Tauri WebView 直接导航替换 App 界面
 document.addEventListener(

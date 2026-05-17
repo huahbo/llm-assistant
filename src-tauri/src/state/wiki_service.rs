@@ -2035,6 +2035,274 @@ pub(super) fn md5_simple(input: &str) -> u64 {
     hash
 }
 
+// ─── Wiki 内联 AI 辅助编辑 ───────────────────────────────────────────────────
+
+/// Wiki 内联 AI 辅助编辑：续写 / 改写 / 扩写，流式 emit `ai_assist_chunk` 事件。
+pub async fn ai_assist_wiki_edit(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    action: &str,
+    selected_text: &str,
+    context: &str,
+    page_title: &str,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let provider = state
+        .get_llm_provider()
+        .ok_or_else(|| "LLM Provider 未配置，请先在设置中配置模型".to_string())?;
+
+    let prompt = build_assist_prompt(action, selected_text, context, page_title)?;
+
+    let app = app_handle.clone();
+    let result = provider
+        .complete_stream(&prompt, &mut |chunk| {
+            let _ = app.emit("ai_assist_chunk", serde_json::json!({ "chunk": chunk }));
+        })
+        .await;
+
+    match result {
+        Ok(_) => {
+            let _ = app_handle.emit("ai_assist_done", serde_json::json!({}));
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = app_handle.emit("ai_assist_error", serde_json::json!({ "error": &msg }));
+            Err(msg)
+        }
+    }
+}
+
+fn build_assist_prompt(
+    action: &str,
+    selected_text: &str,
+    context: &str,
+    page_title: &str,
+) -> Result<String, String> {
+    let prompt = match action {
+        "continue" => format!(
+            "You are a writing assistant helping to continue text in a document titled '{title}'.\n\
+             Here is the document context:\n\n{ctx}\n\n\
+             Continue writing naturally after the last sentence. \
+             Output only the continuation text, no preamble or explanation. \
+             Write in the same language and style as the existing text.",
+            title = page_title,
+            ctx = context.chars().take(2000).collect::<String>(),
+        ),
+        "rewrite" => format!(
+            "Rewrite the following text to be clearer, more concise, and better structured. \
+             Output only the rewritten text with no preamble or explanation. \
+             Preserve the original meaning and language:\n\n{text}",
+            text = selected_text,
+        ),
+        "expand" => format!(
+            "Expand the following text/bullet points into a well-written, detailed paragraph or section. \
+             Output only the expanded text with no preamble or explanation. \
+             Write in the same language as the input:\n\n{text}",
+            text = selected_text,
+        ),
+        other => return Err(format!("未知操作类型: {other}")),
+    };
+    Ok(prompt)
+}
+
+// ─── Wiki 知识导出 ────────────────────────────────────────────────────────────
+
+struct ExportPage {
+    abs_path: PathBuf,
+    /// 相对于 wiki/ 根的 zip 内路径，如 "notes/topic.md"
+    zip_rel: String,
+    title: String,
+}
+
+/// 递归收集 wiki 目录下所有 .md 文件。
+fn collect_export_pages(base: &Path, dir: &Path) -> Result<Vec<ExportPage>, String> {
+    let mut pages = Vec::new();
+    collect_export_pages_inner(base, dir, &mut pages)?;
+    Ok(pages)
+}
+
+fn collect_export_pages_inner(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<ExportPage>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("读取目录失败: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("目录条目读取失败: {e}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_export_pages_inner(base, &path, out)?;
+        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+            let rel = path
+                .strip_prefix(base)
+                .map_err(|e| format!("路径处理失败: {e}"))?;
+            let zip_rel = rel.to_string_lossy().replace('\\', "/");
+            let title = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().replace(['-', '_'], " "))
+                .unwrap_or_else(|| "Untitled".into());
+            out.push(ExportPage { abs_path: path, zip_rel, title });
+        }
+    }
+    Ok(())
+}
+
+/// 将 Markdown 渲染为 HTML 页面（含 wiki 链接转换）。
+fn render_page_html(md: &str, title: &str, depth: usize) -> String {
+    use pulldown_cmark::{html, Options, Parser};
+    use regex::Regex;
+
+    let wiki_link_re = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
+    let md_linked = wiki_link_re.replace_all(md, |caps: &regex::Captures| {
+        let link = &caps[1];
+        let href = format!("{}.html", link.replace(' ', "%20"));
+        format!("[{link}]({href})")
+    });
+
+    let mut html_body = String::new();
+    html::push_html(&mut html_body, Parser::new_ext(&md_linked, Options::all()));
+
+    let back = "../".repeat(depth) + "index.html";
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>{t}</title>
+<style>
+body{{font-family:system-ui,sans-serif;max-width:820px;margin:2rem auto;padding:0 1.2rem;line-height:1.7;color:#1e293b;}}
+pre{{background:#f5f5f5;padding:1rem;overflow:auto;border-radius:4px;}}
+code{{background:#f0f0f0;padding:.1em .3em;border-radius:3px;font-size:.9em;}}
+a{{color:#6366f1;}}blockquote{{border-left:3px solid #ccc;margin:0;padding-left:1rem;color:#666;}}
+.back{{font-size:.85em;margin-bottom:1.5rem;}}
+</style></head>
+<body>
+<p class="back"><a href="{back}">← 返回目录</a></p>
+{body}
+</body></html>"#,
+        t = html_escape(title),
+        back = back,
+        body = html_body,
+    )
+}
+
+fn build_wiki_index_html(pages: &[ExportPage]) -> String {
+    let rows: String = pages
+        .iter()
+        .map(|p| {
+            let html_path = p.zip_rel.replace(".md", ".html");
+            format!(
+                r#"    <li><a href="{}">{}</a></li>"#,
+                html_escape(&html_path),
+                html_escape(&p.title)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>LLM Wiki 知识库</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:820px;margin:2rem auto;padding:0 1.2rem;}}
+a{{color:#6366f1;}}li{{margin:.3rem 0;}}h1{{margin-bottom:.5rem;}}p{{color:#64748b;margin-bottom:1.5rem;}}
+</style></head>
+<body>
+<h1>LLM Wiki 知识库</h1>
+<p>共 {count} 个页面</p>
+<ul>
+{rows}
+</ul>
+</body></html>"#,
+        count = pages.len(),
+        rows = rows,
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// 导出全部 Wiki 为 Markdown ZIP 包，返回导出页面数。
+pub fn export_wiki_markdown_zip_impl(state: &AppState, dest_path: String) -> Result<u32, String> {
+    use std::io::Write;
+
+    let vault_path = {
+        let guard = state.inner.lock().expect("状态锁已被污染");
+        guard.vault_path.clone().ok_or_else(|| "请先初始化 Vault".to_string())?
+    };
+    let wiki_dir = vault_path.join("wiki");
+    if !wiki_dir.exists() {
+        return Ok(0);
+    }
+
+    let pages = collect_export_pages(&wiki_dir, &wiki_dir)?;
+
+    let file =
+        fs::File::create(&dest_path).map_err(|e| format!("创建 ZIP 文件失败: {e}"))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for page in &pages {
+        let content = fs::read(&page.abs_path).map_err(|e| format!("读取文件失败: {e}"))?;
+        zip.start_file(&page.zip_rel, opts)
+            .map_err(|e| format!("写入 {} 失败: {e}", page.zip_rel))?;
+        zip.write_all(&content)
+            .map_err(|e| format!("写入 {} 内容失败: {e}", page.zip_rel))?;
+    }
+
+    zip.finish().map_err(|e| format!("完成 ZIP 失败: {e}"))?;
+    Ok(pages.len() as u32)
+}
+
+/// 导出全部 Wiki 为静态 HTML ZIP 包（含 index.html），返回导出页面数。
+pub fn export_wiki_html_zip_impl(state: &AppState, dest_path: String) -> Result<u32, String> {
+    use std::io::Write;
+
+    let vault_path = {
+        let guard = state.inner.lock().expect("状态锁已被污染");
+        guard.vault_path.clone().ok_or_else(|| "请先初始化 Vault".to_string())?
+    };
+    let wiki_dir = vault_path.join("wiki");
+    if !wiki_dir.exists() {
+        return Ok(0);
+    }
+
+    let pages = collect_export_pages(&wiki_dir, &wiki_dir)?;
+
+    let file =
+        fs::File::create(&dest_path).map_err(|e| format!("创建 ZIP 文件失败: {e}"))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // index.html
+    let index_html = build_wiki_index_html(&pages);
+    zip.start_file("index.html", opts)
+        .map_err(|e| format!("写入 index.html 失败: {e}"))?;
+    zip.write_all(index_html.as_bytes())
+        .map_err(|e| format!("写入 index.html 内容失败: {e}"))?;
+
+    // 每个页面的 HTML
+    for page in &pages {
+        let md = fs::read_to_string(&page.abs_path).unwrap_or_default();
+        let depth = page.zip_rel.matches('/').count();
+        let html = render_page_html(&md, &page.title, depth);
+        let html_path = page.zip_rel.replace(".md", ".html");
+        zip.start_file(&html_path, opts)
+            .map_err(|e| format!("写入 {} 失败: {e}", html_path))?;
+        zip.write_all(html.as_bytes())
+            .map_err(|e| format!("写入 {} 内容失败: {e}", html_path))?;
+    }
+
+    zip.finish().map_err(|e| format!("完成 ZIP 失败: {e}"))?;
+    Ok(pages.len() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
