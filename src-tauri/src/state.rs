@@ -2241,4 +2241,128 @@ mod tests {
         );
     }
 
+    // ── NoopEmbedder 行为测试 ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn noop_embedder_embed_returns_unavailable_error() {
+        let noop = NoopEmbedder;
+        let result = noop.embed("hello").await;
+        assert!(
+            matches!(result, Err(crate::llm::EmbedError::Unavailable)),
+            "NoopEmbedder.embed 应返回 Unavailable，实际: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn noop_embedder_health_check_returns_false() {
+        let noop = NoopEmbedder;
+        assert!(!noop.health_check().await, "NoopEmbedder.health_check 应返回 false");
+    }
+
+    #[test]
+    fn noop_embedder_dimension_is_zero() {
+        let noop = NoopEmbedder;
+        assert_eq!(noop.dimension(), 0, "NoopEmbedder.dimension 应为 0");
+    }
+
+    #[test]
+    fn noop_embedder_backend_id_is_noop() {
+        let noop = NoopEmbedder;
+        assert_eq!(noop.backend_id(), "noop", "NoopEmbedder.backend_id 应为 \"noop\"");
+    }
+
+    // ── init_embed_provider 路由测试 ─────────────────────────────────────────────
+
+    #[test]
+    fn init_embed_provider_disabled_backend_uses_noop() {
+        let vault_dir = make_temp_dir("embed-disabled");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let mut state = make_test_state_bare(&vault_dir);
+        // 注入 embed_backend = "disabled"
+        state.inner.lock().expect("锁失败").embed_backend = Some("disabled".to_string());
+        state.init_embed_provider();
+        let provider = state.get_embed_provider();
+        assert_eq!(provider.backend_id(), "noop", "disabled 后端应路由到 NoopEmbedder");
+        assert_eq!(provider.dimension(), 0);
+    }
+
+    #[test]
+    fn init_embed_provider_onnx_missing_model_falls_back_to_noop() {
+        let vault_dir = make_temp_dir("embed-onnx-missing");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let mut state = make_test_state_bare(&vault_dir);
+        {
+            let mut guard = state.inner.lock().expect("锁失败");
+            guard.embed_backend = Some("onnx".to_string());
+            guard.embed_onnx_model = Some("nonexistent-model-xyz".to_string());
+        }
+        state.init_embed_provider();
+        let provider = state.get_embed_provider();
+        assert_eq!(provider.backend_id(), "noop", "模型文件缺失时应回退到 NoopEmbedder");
+    }
+
+    #[test]
+    fn get_embed_provider_returns_noop_when_not_initialized() {
+        let vault_dir = make_temp_dir("embed-uninit");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        // 未调用 init_embed_provider，expect noop 默认值
+        let provider = state.get_embed_provider();
+        assert_eq!(provider.backend_id(), "noop");
+    }
+
+    // ── get_embed_status 测试 ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_embed_status_returns_sensible_noop_status() {
+        let vault_dir = make_temp_dir("embed-status");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let state = make_test_state_bare(&vault_dir);
+        state.init_vault(vault_dir.clone()).expect("Vault 初始化失败");
+        state.inner.lock().expect("锁失败").embed_backend = Some("disabled".to_string());
+        state.init_embed_provider();
+        let status = state.get_embed_status().await;
+        assert_eq!(status.backend_id, "noop");
+        assert_eq!(status.dimension, 0);
+        assert!(!status.healthy);
+    }
+
+    // ── count_embeddings DB 测试 ─────────────────────────────────────────────────
+
+    #[test]
+    fn count_embeddings_empty_db_returns_zero() {
+        let vault_dir = make_temp_dir("embed-count");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let db_path = vault_dir.join("wiki.db");
+        let count = crate::db::count_embeddings(&db_path).expect("count_embeddings 失败");
+        assert_eq!(count, 0, "空库应返回 0");
+    }
+
+    #[test]
+    fn count_embeddings_after_upsert_returns_correct_count() {
+        let vault_dir = make_temp_dir("embed-count2");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let db_path = vault_dir.join("wiki.db");
+        crate::db::upsert_embedding(&db_path, "wiki/a.md", &[0.1f32, 0.2, 0.3], "test-backend", 3)
+            .expect("upsert 失败");
+        crate::db::upsert_embedding(&db_path, "wiki/b.md", &[0.4f32, 0.5, 0.6], "test-backend", 3)
+            .expect("upsert 失败");
+        let count = crate::db::count_embeddings(&db_path).expect("count 失败");
+        assert_eq!(count, 2, "两次 upsert 后应为 2");
+    }
+
+    #[test]
+    fn count_embeddings_upsert_same_path_deduplicates() {
+        let vault_dir = make_temp_dir("embed-count3");
+        let _guard = TempDirGuard(vault_dir.clone());
+        let db_path = vault_dir.join("wiki.db");
+        crate::db::upsert_embedding(&db_path, "wiki/a.md", &[0.1f32], "test", 1)
+            .expect("upsert 1 失败");
+        crate::db::upsert_embedding(&db_path, "wiki/a.md", &[0.2f32], "test", 1)
+            .expect("upsert 2 失败");
+        let count = crate::db::count_embeddings(&db_path).expect("count 失败");
+        assert_eq!(count, 1, "同路径 upsert 两次应去重为 1");
+    }
+
 }
