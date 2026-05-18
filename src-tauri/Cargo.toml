@@ -22,7 +22,9 @@ tiny_http = "0.12"
 chrono = "0.4"
 zip = "0.6"
 pulldown-cmark = "0.11"
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+# 显式 default-features=false 并固定 api-20 — 我们用的 onnxruntime.dll 1.20.1 只支持 API≤20。
+# 若启用 default features，ort 会要求 api-24（GetApi(24) 返回 null → ort 内部死锁）。
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "api-20", "ndarray"] }
 tokenizers = "0.20"
 ndarray = "0.16"
 

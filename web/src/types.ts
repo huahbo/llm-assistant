@@ -471,6 +471,8 @@ export interface EmbedStatus {
   healthy: boolean;
   /** ONNX 模型期望目录，仅 backend=onnx 且未初始化时有值 */
   model_dir?: string | null;
+  /** 最近一次 ONNX 初始化错误（用于显示具体失败原因） */
+  last_error?: string | null;
 }
 
 export interface KnowledgeGraphNode {

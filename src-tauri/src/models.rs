@@ -1182,6 +1182,8 @@ pub struct EmbedStatus {
     pub healthy: bool,
     /// ONNX 模型期望目录（仅 backend=onnx 且未初始化时有值，供 UI 提示用户放置模型文件）
     pub model_dir: Option<String>,
+    /// 最近一次 ONNX 初始化错误（用于 UI 显示具体失败原因，None 表示无错误）
+    pub last_error: Option<String>,
 }
 
 /// Smithery MCP Registry 服务器列表项（H17）。

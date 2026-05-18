@@ -103,6 +103,7 @@ pub(crate) fn make_test_state_bare(vault_dir: &Path) -> AppState {
         config_path: vault_dir.join(".runtime").join("app-config.json"),
         llm_provider: OnceLock::new(),
         embed_provider: RwLock::new(Arc::new(super::NoopEmbedder)),
+        last_embed_error: Mutex::new(None),
         app_handle: OnceLock::new(),
         ask_sessions: Mutex::new(std::collections::HashMap::new()),
         ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),

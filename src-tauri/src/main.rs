@@ -176,6 +176,15 @@ fn main() {
             agent_chat::commands::search_mcp_registry,
             agent_chat::commands::get_mcp_registry_server,
         ])
-        .run(tauri::generate_context!())
-        .expect("应用启动失败");
+        .build(tauri::generate_context!())
+        .expect("应用启动失败")
+        .run(|_app_handle, event| {
+            // 退出请求时强制终止进程：std::thread::spawn 启动的后台线程
+            // （clip_server / queue_worker / embed init 等）是非守护线程，
+            // 默认会阻止进程退出。这里在 ExitRequested 后用 std::process::exit
+            // 立即退出，让 `cargo tauri dev` 终端能正常释放。
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                std::process::exit(0);
+            }
+        });
 }

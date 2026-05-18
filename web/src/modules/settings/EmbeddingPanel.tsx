@@ -182,6 +182,14 @@ export default function EmbeddingPanel({
                 </span>
               </div>
             )}
+            {status.last_error && (
+              <div className="embed-status-card__row" style={{ gridColumn: "1 / -1" }}>
+                <span className="embed-status-card__label">错误详情</span>
+                <span className="embed-status-card__value" style={{ fontSize: "0.82em", wordBreak: "break-all", color: "var(--error)" }}>
+                  {status.last_error}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <p className="dev-panel__hint">
@@ -193,7 +201,21 @@ export default function EmbeddingPanel({
           <button
             type="button"
             className="dev-panel__button dev-panel__button--accent"
-            onClick={() => void onSaveConfig()}
+            onClick={async () => {
+              await onSaveConfig();
+              // 后台 spawn_blocking 重新初始化 ONNX 可能耗时 5-10 秒，轮询状态直到 backend_id 变化或出错
+              for (let i = 0; i < 12; i++) {
+                await new Promise((r) => setTimeout(r, 1200));
+                if (!mountedRef.current) return;
+                try {
+                  const s = await getEmbedStatus();
+                  if (mountedRef.current) setStatus(s);
+                  if (s.backend_id !== "noop" || s.last_error) break;
+                } catch {
+                  break;
+                }
+              }
+            }}
             disabled={saving || !isTauri}
             title="保存嵌入后端配置（同时保存 LLM 配置）"
           >

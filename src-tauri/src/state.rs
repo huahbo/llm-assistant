@@ -79,6 +79,8 @@ pub struct AppState {
     llm_provider: OnceLock<Arc<dyn LlmProvider>>,
     /// Embed Provider（RwLock 支持配置保存后热更新，初始值为 NoopEmbedder）
     embed_provider: RwLock<Arc<dyn EmbedProvider>>,
+    /// Embed 初始化最近一次错误（供 UI 展示，None 表示成功）
+    last_embed_error: Mutex<Option<String>>,
     /// Tauri AppHandle（应用启动后由 setup hook 注入，用于 emit 进度事件）
     app_handle: OnceLock<AppHandle>,
     /// 会话历史（in-memory，session_id -> 轮次列表）
@@ -210,6 +212,7 @@ impl AppState {
             config_path,
             llm_provider: OnceLock::new(),
             embed_provider: RwLock::new(Arc::new(NoopEmbedder)),
+            last_embed_error: Mutex::new(None),
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
@@ -304,6 +307,7 @@ impl AppState {
             config_path,
             llm_provider: OnceLock::new(),
             embed_provider: RwLock::new(Arc::new(NoopEmbedder)),
+            last_embed_error: Mutex::new(None),
             app_handle: OnceLock::new(),
             ask_sessions: Mutex::new(std::collections::HashMap::new()),
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
@@ -449,6 +453,43 @@ impl AppState {
             .join("onnxruntime.dll")
     }
 
+    /// 初始化 ONNX Runtime（load-dynamic 模式）。
+    /// 进程级别只做一次（OnceLock），避免重复加载 DLL。
+    fn init_ort_runtime(&self) -> Result<(), String> {
+        use std::sync::OnceLock;
+        static ORT_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+
+        ORT_INIT
+            .get_or_init(|| {
+                let dll_path = self.resolve_ort_dylib_path();
+                if !dll_path.exists() {
+                    let err = format!("onnxruntime.dll 不存在: {}", dll_path.display());
+                    eprintln!("[embed-init] {}", err);
+                    return Err(err);
+                }
+                eprintln!("[embed-init] DLL path: {}", dll_path.display());
+                // 兼容性兜底：同时设 ORT_DYLIB_PATH，便于 ort 内部 fallback 使用
+                std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+
+                match ort::init_from(dll_path.to_string_lossy().as_ref()) {
+                    Ok(builder) => {
+                        let committed = builder.commit();
+                        eprintln!(
+                            "[embed-init] ort runtime initialized OK (newly_committed={})",
+                            committed
+                        );
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let err = format!("ort::init_from 失败: {}", e);
+                        eprintln!("[embed-init] {}", err);
+                        Err(err)
+                    }
+                }
+            })
+            .clone()
+    }
+
     /// 初始化 Embed Provider（应用 setup 完成后调用一次）。
     /// 三路选择：onnx → ollama → disabled(noop)。
     pub fn init_embed_provider(&self) {
@@ -462,24 +503,42 @@ impl AppState {
                 guard.ollama_base_url.clone(),
             )
         };
+        eprintln!(
+            "[embed-init] starting: backend={}, onnx_model={}",
+            backend, onnx_model
+        );
+
+        let mut init_error: Option<String> = None;
 
         let provider: Arc<dyn EmbedProvider> = match backend.as_str() {
             "onnx" => {
-                // 运行时动态加载 ORT DLL（load-dynamic feature）
-                // 优先使用已有环境变量，否则自动探测打包资源目录和开发路径
-                if std::env::var("ORT_DYLIB_PATH").is_err() {
-                    let dll_path = self.resolve_ort_dylib_path();
-                    if dll_path.exists() {
-                        std::env::set_var("ORT_DYLIB_PATH", &dll_path);
-                    }
-                }
-                let model_dir = self.resolve_onnx_model_dir(&onnx_model);
-                match crate::llm::OnnxEmbedder::from_resource_dir(&model_dir) {
+                // 1. 显式初始化 ORT 运行时（OnceLock 保证幂等）
+                let onnx_provider = self
+                    .init_ort_runtime()
+                    .and_then(|_| {
+                        let model_dir = self.resolve_onnx_model_dir(&onnx_model);
+                        eprintln!("[embed-init] Model dir: {}", model_dir.display());
+                        let onnx_file = model_dir.join("onnx").join("model.onnx");
+                        let tok_file = model_dir.join("tokenizer.json");
+                        if !onnx_file.exists() {
+                            return Err(format!("模型文件缺失: {}", onnx_file.display()));
+                        }
+                        if !tok_file.exists() {
+                            return Err(format!("tokenizer.json 缺失: {}", tok_file.display()));
+                        }
+                        crate::llm::OnnxEmbedder::from_resource_dir(&model_dir)
+                            .map_err(|e| e.to_string())
+                    });
+
+                match onnx_provider {
                     Ok(embedder) => {
+                        eprintln!("[embed-init] OnnxEmbedder ready: {}", onnx_model);
                         self.push_log(LogLevel::Info, format!("ONNX Embed 已加载：{}", onnx_model));
                         Arc::new(embedder) as Arc<dyn EmbedProvider>
                     }
                     Err(e) => {
+                        eprintln!("[embed-init] FAILED, fallback to Noop: {}", e);
+                        init_error = Some(e.clone());
                         self.push_log(LogLevel::Warn, format!("ONNX 加载失败，已回退 Noop（{}）", e));
                         Arc::new(NoopEmbedder) as Arc<dyn EmbedProvider>
                     }
@@ -503,6 +562,7 @@ impl AppState {
         };
 
         *self.embed_provider.write().expect("embed_provider 写锁已被污染") = provider;
+        *self.last_embed_error.lock().expect("last_embed_error 锁已污染") = init_error;
     }
 
     /// 获取 Embedding 专用 Provider（ONNX / Ollama / Noop 三路，支持热更新）。
@@ -2009,12 +2069,18 @@ impl AppState {
                 None
             }
         };
+        let last_error = self
+            .last_embed_error
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
         crate::models::EmbedStatus {
             backend_id,
             dimension,
             indexed_count,
             healthy,
             model_dir,
+            last_error,
         }
     }
 
