@@ -469,6 +469,8 @@ export interface EmbedStatus {
   dimension: number;
   indexed_count: number;
   healthy: boolean;
+  /** ONNX 模型期望目录，仅 backend=onnx 且未初始化时有值 */
+  model_dir?: string | null;
 }
 
 export interface KnowledgeGraphNode {

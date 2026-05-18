@@ -1180,6 +1180,8 @@ pub struct EmbedStatus {
     pub indexed_count: usize,
     /// 后端是否健康可用
     pub healthy: bool,
+    /// ONNX 模型期望目录（仅 backend=onnx 且未初始化时有值，供 UI 提示用户放置模型文件）
+    pub model_dir: Option<String>,
 }
 
 /// Smithery MCP Registry 服务器列表项（H17）。

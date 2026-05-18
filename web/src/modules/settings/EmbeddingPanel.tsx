@@ -174,6 +174,14 @@ export default function EmbeddingPanel({
                 {status.healthy ? "正常" : (currentBackend === "disabled" ? "已关闭" : "异常")}
               </span>
             </div>
+            {status.model_dir && (
+              <div className="embed-status-card__row" style={{ gridColumn: "1 / -1" }}>
+                <span className="embed-status-card__label">模型目录</span>
+                <span className="embed-status-card__value" style={{ fontSize: "0.82em", wordBreak: "break-all", color: "var(--text-muted)" }}>
+                  {status.model_dir}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <p className="dev-panel__hint">
@@ -215,7 +223,9 @@ export default function EmbeddingPanel({
 
         <p className="settings-panel__hint" style={{ marginTop: 10 }}>
           {embedBackend === "onnx"
-            ? "ONNX 后端在本机 CPU 上推理，无需外部服务。模型文件需通过 scripts/download-embed-models.ps1 下载（~450 MB）。"
+            ? status?.model_dir
+              ? `ONNX 模型未找到。请将模型文件（onnx/model.onnx、tokenizer.json 等）放至：${status.model_dir}。开发者可运行 scripts/download-embed-models.ps1 自动下载（~450 MB）。`
+              : "ONNX 后端在本机 CPU 上推理，无需外部服务。"
             : embedBackend === "ollama"
               ? "Ollama 后端使用本地 Ollama 服务生成向量，请确保 Ollama 已启动且已拉取 Embedding 模型。"
               : "Embedding 已关闭，语义搜索功能不可用。"}

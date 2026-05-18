@@ -396,18 +396,38 @@ impl AppState {
             .clone()
     }
 
-    /// 解析 ONNX 模型目录：打包资源优先，开发时回退 CARGO_MANIFEST_DIR。
+    /// 解析 ONNX 模型目录：打包资源 → AppData → 开发期 CARGO_MANIFEST_DIR。
     fn resolve_onnx_model_dir(&self, model_name: &str) -> std::path::PathBuf {
         if let Some(handle) = self.app_handle.get() {
+            // 1. 打包资源目录（将来可 bundle 轻量模型）
             if let Ok(resource_dir) = handle.path().resource_dir() {
-                let resource_dir: std::path::PathBuf = resource_dir;
                 let bundled = resource_dir.join("embed-models").join(model_name);
                 if bundled.join("onnx/model.onnx").exists() {
                     return bundled;
                 }
             }
+            // 2. AppData 目录（已安装 App 用户手动下载的模型）
+            if let Ok(app_data_dir) = handle.path().app_data_dir() {
+                let user_dir = app_data_dir.join("embed-models").join(model_name);
+                if user_dir.join("onnx/model.onnx").exists() {
+                    return user_dir;
+                }
+            }
         }
-        // 开发期路径（cargo test / dev run）
+        // 3. 开发期路径（cargo test / dev run）
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/embed-models")
+            .join(model_name)
+    }
+
+    /// 返回 ONNX 模型的期望安装目录（供 UI 提示"请将模型放至此处"）。
+    /// 已安装 App 返回 AppData 路径；开发期返回 CARGO_MANIFEST_DIR 路径。
+    fn expected_onnx_model_dir(&self, model_name: &str) -> std::path::PathBuf {
+        if let Some(handle) = self.app_handle.get() {
+            if let Ok(app_data_dir) = handle.path().app_data_dir() {
+                return app_data_dir.join("embed-models").join(model_name);
+            }
+        }
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources/embed-models")
             .join(model_name)
@@ -1974,11 +1994,27 @@ impl AppState {
             .outbox_db_path()
             .and_then(|p| db::count_embeddings(&p).ok())
             .unwrap_or(0);
+        // 仅当配置为 onnx 但尚未初始化时，暴露期望模型目录供 UI 提示用户下载
+        let model_dir = {
+            let (config_backend, onnx_model) = {
+                let guard = self.inner.lock().expect("状态锁已被污染");
+                (
+                    guard.embed_backend.clone().unwrap_or_else(|| "onnx".to_string()),
+                    guard.embed_onnx_model.clone().unwrap_or_else(|| "multilingual-e5-small".to_string()),
+                )
+            };
+            if config_backend == "onnx" && backend_id == "noop" {
+                Some(self.expected_onnx_model_dir(&onnx_model).to_string_lossy().to_string())
+            } else {
+                None
+            }
+        };
         crate::models::EmbedStatus {
             backend_id,
             dimension,
             indexed_count,
             healthy,
+            model_dir,
         }
     }
 

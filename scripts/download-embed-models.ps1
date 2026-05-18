@@ -1,10 +1,15 @@
 # download-embed-models.ps1
-# 下载 ONNX embedding 模型文件到 src-tauri/resources/embed-models/
+# 下载 ONNX embedding 模型文件
+# 开发者（源码目录）：放到 src-tauri/resources/embed-models/
+# 已安装用户：放到 %APPDATA%\com.llmwiki.desktop\embed-models\
+#
 # 用法: .\scripts\download-embed-models.ps1
 # 用法（指定模型）: .\scripts\download-embed-models.ps1 -Model bge-small-zh-v1.5
+# 用法（指定目标）: .\scripts\download-embed-models.ps1 -Dest "C:\path\to\embed-models"
 
 param(
-    [string]$Model = "multilingual-e5-small"
+    [string]$Model = "multilingual-e5-small",
+    [string]$Dest  = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +32,17 @@ if (-not $models.ContainsKey($Model)) {
 
 $repo  = $models[$Model].repo
 $files = $models[$Model].files
-$dest  = Join-Path $PSScriptRoot "..\src-tauri\resources\embed-models\$Model"
+
+# 自动检测目标目录：优先 -Dest 参数；其次看是否在源码目录；最后用 AppData
+if ($Dest -ne "") {
+    $dest = Join-Path $Dest $Model
+} elseif (Test-Path (Join-Path $PSScriptRoot "..\src-tauri")) {
+    # 开发者环境（存在 src-tauri 目录）
+    $dest = Join-Path $PSScriptRoot "..\src-tauri\resources\embed-models\$Model"
+} else {
+    # 已安装 App 用户 → AppData
+    $dest = Join-Path $env:APPDATA "com.llmwiki.desktop\embed-models\$Model"
+}
 
 New-Item -ItemType Directory -Force $dest | Out-Null
 

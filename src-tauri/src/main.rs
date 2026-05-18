@@ -24,8 +24,11 @@ fn main() {
             let app_handle = app.handle().clone();
             // 注入 AppHandle，供后续 emit 进度事件使用
             app.state::<AppState>().set_app_handle(app_handle.clone());
-            // 初始化 Embed Provider（ONNX / Ollama / Noop 三路路由，依赖 AppHandle）
-            app.state::<AppState>().init_embed_provider();
+            // 初始化 Embed Provider（后台线程，ONNX 加载最长数秒，不阻塞窗口渲染）
+            let handle_for_embed = app_handle.clone();
+            std::thread::spawn(move || {
+                handle_for_embed.state::<AppState>().init_embed_provider();
+            });
             // 启动时清理孤立 wiki 页面（文件已删但 DB 记录残留）
             app.state::<AppState>().purge_orphaned_wiki_pages();
             // 启动持久化 ingest 队列 worker
