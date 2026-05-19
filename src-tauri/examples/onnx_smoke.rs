@@ -1,45 +1,67 @@
-//! ONNX 加载冒烟测试 — 验证 ort + onnxruntime.dll + 模型文件配套是否正常。
-//!
-//! 用法：
-//!   cargo run --no-default-features --example onnx_smoke
-//!
-//! 关键背景：ort 2.0.0-rc.12 默认启用 api-24，但官方 ONNX Runtime 1.20.x DLL
-//! 只支持到 API 版本 20。版本不匹配时 `ort::api()` 会在 OnceLock 死锁。
-//! 修复：Cargo.toml 中设 `default-features = false, features = ["api-20", ...]`。
+//! ONNX 全链路 smoke test：验证 ort+DLL+模型+tokenizer+token_type_ids 完整推理。
 
 use std::path::PathBuf;
 use std::time::Instant;
+use ort::value::Tensor;
+use tokenizers::Tokenizer;
 
 fn main() {
     let dll = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/onnxruntime.dll");
     std::env::set_var("ORT_DYLIB_PATH", &dll);
-    eprintln!("=== ONNX runtime smoke test ===");
-    eprintln!("DLL: {}", dll.display());
+    eprintln!("=== ONNX full pipeline smoke test ===");
 
-    let t = Instant::now();
-    let _api = ort::api();
-    eprintln!("[{:.3}s] ort::api() OK", t.elapsed().as_secs_f32());
-
-    let t = Instant::now();
-    ort::environment::Environment::current().expect("Environment::current FAIL");
-    eprintln!("[{:.3}s] Environment::current OK", t.elapsed().as_secs_f32());
-
-    let model_path = std::env::var("APPDATA")
+    let model_dir = std::env::var("APPDATA")
         .ok()
-        .map(|d| PathBuf::from(d).join("com.llmwiki.desktop/embed-models/multilingual-e5-small/onnx/model.onnx"))
-        .filter(|p| p.exists())
+        .map(|d| PathBuf::from(d).join("com.llmwiki.desktop/embed-models/multilingual-e5-small"))
+        .filter(|p| p.join("onnx/model.onnx").exists())
         .or_else(|| {
-            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/embed-models/multilingual-e5-small/onnx/model.onnx");
-            if p.exists() { Some(p) } else { None }
+            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/embed-models/multilingual-e5-small");
+            if p.join("onnx/model.onnx").exists() { Some(p) } else { None }
         })
-        .expect("model.onnx not found in AppData or dev path");
-    eprintln!("model: {}", model_path.display());
+        .expect("model dir not found");
+    eprintln!("model dir: {}", model_dir.display());
 
     let t = Instant::now();
-    let _session = ort::session::Session::builder()
-        .and_then(|mut b| b.commit_from_file(&model_path))
-        .expect("Session creation FAIL");
-    eprintln!("[{:.3}s] Session OK", t.elapsed().as_secs_f32());
+    let mut session = ort::session::Session::builder().unwrap()
+        .commit_from_file(model_dir.join("onnx/model.onnx")).unwrap();
+    eprintln!("[{:.3}s] session loaded", t.elapsed().as_secs_f32());
+
+    // 探测 input 名
+    let input_names: Vec<String> = session.inputs().iter().map(|o| o.name().to_string()).collect();
+    eprintln!("model inputs: {:?}", input_names);
+    let needs_token_type = input_names.iter().any(|n| n == "token_type_ids");
+    eprintln!("needs token_type_ids: {}", needs_token_type);
+
+    let t = Instant::now();
+    let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json")).unwrap();
+    eprintln!("[{:.3}s] tokenizer loaded", t.elapsed().as_secs_f32());
+
+    let text = "passage: 这是一段测试文本，用于验证 ONNX embedding 完整推理链路。";
+    let encoding = tokenizer.encode(text, true).unwrap();
+    let ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
+    let mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
+    let seq_len = ids.len();
+    eprintln!("seq_len: {}", seq_len);
+
+    let ids_t = Tensor::<i64>::from_array(([1usize, seq_len], ids)).unwrap();
+    let mask_t = Tensor::<i64>::from_array(([1usize, seq_len], mask)).unwrap();
+
+    let mut inputs: Vec<(&'static str, ort::value::Value)> = vec![
+        ("input_ids", ids_t.into()),
+        ("attention_mask", mask_t.into()),
+    ];
+    if needs_token_type {
+        let zeros: Vec<i64> = vec![0; seq_len];
+        let z_t = Tensor::<i64>::from_array(([1usize, seq_len], zeros)).unwrap();
+        inputs.push(("token_type_ids", z_t.into()));
+    }
+
+    let t = Instant::now();
+    let outputs = session.run(inputs).expect("inference failed");
+    eprintln!("[{:.3}s] inference OK, outputs={}", t.elapsed().as_secs_f32(), outputs.len());
+
+    let (shape, _data) = outputs[0].try_extract_tensor::<f32>().unwrap();
+    eprintln!("output shape: {:?}", &shape[..]);
 
     eprintln!("=== PASS ===");
 }

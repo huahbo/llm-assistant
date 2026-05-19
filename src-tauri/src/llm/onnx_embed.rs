@@ -27,6 +27,9 @@ pub struct OnnxEmbedder {
     tokenizer: Tokenizer,
     model_dim: usize,
     backend_id_str: String,
+    /// 模型期望的输入名集合（构造时探测）。
+    /// 例如 multilingual-e5-small (Xenova 版) 需要 token_type_ids，纯 RoBERTa 不需要。
+    expects_token_type_ids: bool,
 }
 
 impl std::fmt::Debug for OnnxEmbedder {
@@ -76,6 +79,13 @@ impl OnnxEmbedder {
         // 从模型输出元数据推断向量维度
         let model_dim = detect_model_dim(&session);
 
+        // 探测模型期望的输入名（Xenova 版 multilingual-e5-small 需要 token_type_ids，
+        // 而纯 sentence-transformers 导出版可能不需要）
+        let expects_token_type_ids = session
+            .inputs()
+            .iter()
+            .any(|outlet| outlet.name() == "token_type_ids");
+
         // 加载 tokenizer
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| EmbedError::InitFailed(format!("加载 tokenizer 失败: {e}")))?;
@@ -85,6 +95,7 @@ impl OnnxEmbedder {
             tokenizer,
             model_dim,
             backend_id_str: format!("onnx:{}", model_name),
+            expects_token_type_ids,
         })
     }
 
@@ -123,11 +134,20 @@ impl OnnxEmbedder {
             .lock()
             .map_err(|e| EmbedError::InferenceFailed(format!("获取 session 锁失败: {e}")))?;
 
+        // 按模型实际需要的 input 集动态构造输入。Xenova 版 multilingual-e5-small
+        // 期望 token_type_ids（全 0，单段语义），sentence-transformers 原生导出可能不需要。
+        let mut inputs: Vec<(&'static str, ort::value::Value)> = Vec::with_capacity(3);
+        inputs.push(("input_ids", ids_tensor.into()));
+        inputs.push(("attention_mask", mask_tensor.into()));
+        if self.expects_token_type_ids {
+            let token_type_ids: Vec<i64> = vec![0; seq_len];
+            let token_type_tensor = Tensor::<i64>::from_array(([1_usize, seq_len], token_type_ids))
+                .map_err(|e| EmbedError::InferenceFailed(format!("创建 token_type_ids tensor 失败: {e}")))?;
+            inputs.push(("token_type_ids", token_type_tensor.into()));
+        }
+
         let outputs = session
-            .run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-            ])
+            .run(inputs)
             .map_err(|e| EmbedError::InferenceFailed(format!("ONNX 推理失败: {e}")))?;
 
         // 6. 提取 last_hidden_state，shape: [1, seq_len, hidden_dim]
