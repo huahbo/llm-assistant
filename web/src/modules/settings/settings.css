@@ -508,7 +508,7 @@
   border: 1px solid var(--border);
 }
 
-.log-item--info    { border-left-color: var(--info);    background: var(--info-bg); }
+.log-item--info    { border-left-color: var(--info);    background: var(--accent-light); }
 .log-item--warn    { border-left-color: var(--warning); background: var(--warning-bg); }
 .log-item--error   { border-left-color: var(--error);   background: var(--error-bg); }
 
