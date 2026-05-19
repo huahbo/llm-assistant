@@ -400,17 +400,28 @@ impl AppState {
             .clone()
     }
 
-    /// 解析 ONNX 模型目录：打包资源 → AppData → 开发期 CARGO_MANIFEST_DIR。
+    /// 解析 ONNX 模型目录：打包资源 → 开发期源码目录 → AppData（已安装用户下载）。
+    /// 开发期（cargo tauri dev）优先从 src-tauri/resources/embed-models/ 加载，
+    /// 方便直接把模型放在源码仓库路径下，不依赖 C 盘 AppData。
     fn resolve_onnx_model_dir(&self, model_name: &str) -> std::path::PathBuf {
         if let Some(handle) = self.app_handle.get() {
-            // 1. 打包资源目录（将来可 bundle 轻量模型）
+            // 1. 打包资源目录（tauri bundle 打包时嵌入的模型）
             if let Ok(resource_dir) = handle.path().resource_dir() {
                 let bundled = resource_dir.join("embed-models").join(model_name);
                 if bundled.join("onnx/model.onnx").exists() {
                     return bundled;
                 }
             }
-            // 2. AppData 目录（已安装 App 用户手动下载的模型）
+        }
+        // 2. 开发期源码路径（CARGO_MANIFEST_DIR 编译期确定，已安装 App 此路径不存在会自动跳过）
+        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/embed-models")
+            .join(model_name);
+        if dev_path.join("onnx/model.onnx").exists() {
+            return dev_path;
+        }
+        if let Some(handle) = self.app_handle.get() {
+            // 3. AppData 目录（已安装 App 用户手动下载的模型）
             if let Ok(app_data_dir) = handle.path().app_data_dir() {
                 let user_dir = app_data_dir.join("embed-models").join(model_name);
                 if user_dir.join("onnx/model.onnx").exists() {
@@ -418,23 +429,26 @@ impl AppState {
                 }
             }
         }
-        // 3. 开发期路径（cargo test / dev run）
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/embed-models")
-            .join(model_name)
+        // 回退：返回开发期路径（OnnxEmbedder::from_resource_dir 会报具体缺失错误）
+        dev_path
     }
 
     /// 返回 ONNX 模型的期望安装目录（供 UI 提示"请将模型放至此处"）。
-    /// 已安装 App 返回 AppData 路径；开发期返回 CARGO_MANIFEST_DIR 路径。
+    /// 开发期优先显示源码仓库路径；已安装 App 显示 AppData 路径。
     fn expected_onnx_model_dir(&self, model_name: &str) -> std::path::PathBuf {
+        // 开发期：源码目录存在则提示放那里
+        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/embed-models");
+        if dev_path.exists() {
+            return dev_path.join(model_name);
+        }
+        // 已安装 App：提示 AppData
         if let Some(handle) = self.app_handle.get() {
             if let Ok(app_data_dir) = handle.path().app_data_dir() {
                 return app_data_dir.join("embed-models").join(model_name);
             }
         }
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/embed-models")
-            .join(model_name)
+        dev_path.join(model_name)
     }
 
     /// 解析 onnxruntime DLL 路径：打包资源目录优先，开发时回退 CARGO_MANIFEST_DIR。

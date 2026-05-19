@@ -1131,12 +1131,12 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
               borderRadius: "12px",
               background:
                 clipServerOnline === false
-                  ? "var(--color-warning-bg, #fffbe6)"
-                  : "var(--color-success-bg, #ecfdf5)",
+                  ? "var(--warning-bg)"
+                  : "var(--success-bg)",
               color:
                 clipServerOnline === false
-                  ? "var(--color-warning-text, #7c5a00)"
-                  : "var(--color-success, #065f46)",
+                  ? "var(--warning)"
+                  : "var(--success)",
               fontSize: "12px",
               fontWeight: 600,
             }}
@@ -1149,7 +1149,7 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
         <p
           style={{
             marginBottom: "12px",
-            color: "var(--color-text-2, #555)",
+            color: "var(--text-muted)",
             fontSize: "13px",
           }}
         >
@@ -1158,7 +1158,7 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
         </p>
         <div
           style={{
-            background: "var(--color-bg-2, #f5f5f5)",
+            background: "var(--bg-muted)",
             borderRadius: "8px",
             padding: "12px 16px",
           }}
@@ -1174,7 +1174,7 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
             <li>扩展安装后点击工具栏中的 📚 图标即可剪藏当前页面</li>
           </ol>
         </div>
-        <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--color-text-3, #888)" }}>
+        <p style={{ marginTop: "10px", fontSize: "12px", color: "var(--text-muted)" }}>
           ℹ️ 确保应用保持运行，扩展通过 HTTP 与本应用通信（端口 {CLIP_SERVER_PORT}）
         </p>
       </section>
