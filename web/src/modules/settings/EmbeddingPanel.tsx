@@ -210,7 +210,7 @@ export default function EmbeddingPanel({
                 try {
                   const s = await getEmbedStatus();
                   if (mountedRef.current) setStatus(s);
-                  if (s.backend_id !== "noop" || s.last_error) break;
+                  if (!s || s.backend_id !== "noop" || s.last_error) break;
                 } catch {
                   break;
                 }

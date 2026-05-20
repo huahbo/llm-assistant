@@ -817,6 +817,127 @@
   cursor: not-allowed;
 }
 
+/* ── URL 上下文卡片 ───────────────────────────────────────────────────────── */
+
+.chat-inputbar__url-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-bottom: 2px;
+}
+
+@keyframes url-ctx-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.chat-inputbar__url-loading {
+  font-size: 12px;
+  color: var(--accent);
+  padding: 3px 2px;
+  animation: url-ctx-pulse 1.4s ease-in-out infinite;
+}
+
+.url-ctx-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  overflow: hidden;
+  font-size: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.url-ctx-card__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-muted);
+  transition: background 0.15s;
+}
+
+.url-ctx-card__header:hover {
+  background: var(--accent-light);
+}
+
+.url-ctx-card__domain {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.url-ctx-card__toggle {
+  font-size: 9px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.url-ctx-card__remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.url-ctx-card__remove:hover {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.url-ctx-card__title {
+  padding: 5px 10px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top: 1px solid var(--border-light);
+}
+
+.url-ctx-card__body {
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border-light);
+}
+
+.url-ctx-card__summary {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.url-ctx-card__meta {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── + 弹出菜单 ───────────────────────────────────────────────────────────── */
 
 .plus-menu {

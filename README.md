@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.3 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.5 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -22,7 +22,42 @@
 
 ---
 
-## 最近更新（H9–H14 + 修复）
+## 最近更新（H21–H24）
+
+### v0.2.5（H24 — 无头浏览器服务 + URL 上下文卡片）
+
+#### 无头浏览器服务（`browser` 模块）
+- 新增 `src-tauri/src/browser/mod.rs`：统一 URL 内容抓取服务
+  - **Chrome 优先 → Edge 次之 → 静态 HTTP 三级兜底**（`headless_chrome` CDP + `reqwest`）
+  - `spawn_blocking` + `catch_unwind` 双重隔离同步 CDP 调用，防 panic 穿透
+  - 顺手修复旧 `html_to_text` 中 `\1` 反向引用 bug（Rust regex 不支持）
+- `ingest_service.rs` URL 抓取层重构：删除临时 Edge `--dump-dom` 实现，改调 `crate::browser`
+- 新增 Tauri 命令 `fetch_url_context` → 返回 `UrlContextCard`（标题/摘要/域名/字数/抓取方式）
+
+#### Chat — URL 上下文卡片
+- **粘贴 URL** 时自动触发 `fetch_url_context`，渲染可折叠**「页面摘要卡片」**
+  - 默认折叠展示：域名 + 页面标题
+  - 展开后：前 300 字摘要 + 字符数 + 抓取方式
+  - 点 × 一键移除
+- **发送时**自动将卡片内容作为页面上下文注入消息前缀，AI 直接读取页面内容
+- **测试基线**：284 通过（新增 3 个 browser 单元测试），0 失败
+
+---
+
+### v0.2.4（H21/H22/H23）
+
+#### H21：全局命令面板
+- `Ctrl+K` 唤出模糊搜索面板：Wiki 页面 + 操作命令 + 最近访问，键盘完全操控
+
+#### H22：Wiki 知识导出
+- **Markdown ZIP**：导出全部 Wiki 页面为标准 Markdown 压缩包
+- **静态 HTML ZIP**：`pulldown-cmark` 渲染 + `[[wiki-link]]` 自动转换为 HTML 相对链接，可直接在浏览器中浏览
+
+#### H23：Wiki 内联 AI 辅助
+- 选中 Wiki 文字 → 弹出操作菜单：**续写 / 改写 / 扩写**
+- 流式预览窗口，支持接受/拒绝，不污染原文直到确认
+
+---
 
 ### v0.2.3（代码质量 + 体验修复）
 
@@ -31,8 +66,8 @@
 - `Message` 结构体新增 `tool_calls` 字段，`list_messages` 解析后直达前端
 
 #### 代码质量
-- **state/ 测试全模块拆分**：136 个 state.rs 测试迁移至对应 service 文件（`wiki_service` / `ask_service` / `graph_service` / `agent_service`），`state.rs` 仅保留 2 个跨服务集成测试
-- **编译警告清零**：消除全部 7 条 Rust 警告（unused import / dead_code / deprecated）
+- **state/ 测试全模块拆分**：136 个 state.rs 测试迁移至对应 service 文件，`state.rs` 仅保留跨服务集成测试
+- **编译警告清零**：消除全部 Rust 警告（unused import / dead_code / deprecated）
 - **测试基线**：268 通过，0 失败
 
 ---
@@ -203,7 +238,7 @@ cargo tauri build
 ### 测试
 
 ```powershell
-# Rust 单测（268 项）
+# Rust 单测（284 项）
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # 前端类型检查
@@ -221,6 +256,8 @@ llm-wiki/
 │       ├── commands.rs     # Tauri 命令注册入口
 │       ├── state.rs        # AppState 入口 + 公共工具函数
 │       ├── state/          # 业务逻辑子模块（H16 拆分，12 个 service 文件）
+│       ├── browser/        # 无头浏览器服务（CDP + reqwest，H24）
+│       │   └── mod.rs      # fetch_url / FetchResult / html_to_text
 │       ├── db.rs           # SQLite（FTS5 + embedding + 队列 + shell 审计）
 │       ├── vault.rs        # Markdown Vault 读写
 │       ├── models.rs       # 数据模型
@@ -256,8 +293,9 @@ llm-wiki/
 │       │   ├── agent.ts    # Agent 运行 / 草稿 / 记忆 / 技能
 │       │   ├── config.ts   # LLM / OCR / Vault 配置
 │       │   ├── dialog.ts   # 文件/文件夹选择对话框
-│       │   └── mcp.ts      # MCP 服务器管理
-│       ├── tauri-client.ts # barrel re-export（10 行）
+│       │   ├── mcp.ts      # MCP 服务器管理
+│       │   └── browser.ts  # URL 上下文抓取（fetch_url_context）
+│       ├── tauri-client.ts # barrel re-export（11 行）
 │       ├── contexts/       # React Context（GraphBridgeContext 等）
 │       ├── App.tsx
 │       ├── types.ts
