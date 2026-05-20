@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatStreamSegment, ChatStreamingMessage } from "../../types";
+import type { UrlContextCard as UrlContextCardData } from "../../tauri-client";
 import { listChatMessages, approveChatShell, rejectChatShell, exportConversationMarkdown, saveWikiPage } from "../../tauri-client";
 import MessageBubble from "./MessageBubble";
 import ChatInputBar from "./ChatInputBar";
@@ -97,6 +98,7 @@ export default function MessageThread({
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
+  const [urlCards, setUrlCards] = useState<UrlContextCardData[]>([]);
   const [shellApproval, setShellApproval] = useState<ShellApprovalPayload | null>(null);
   const [shellCountdown, setShellCountdown] = useState(30);
   const [exportLabel, setExportLabel] = useState("导出");
@@ -113,6 +115,7 @@ export default function MessageThread({
   useEffect(() => {
     setMessages([]);
     setPendingUserMsg(null);
+    setUrlCards([]);
     setShellApproval(null);
     void loadMessages(conversationId);
   }, [conversationId]);
@@ -281,6 +284,9 @@ export default function MessageThread({
         conversationId={conversationId}
         shellMode={shellMode}
         onShellModeChange={onShellModeChange}
+        urlCards={urlCards}
+        onUrlCardAdded={(card) => setUrlCards(prev => [...prev, card])}
+        onUrlCardRemoved={(url) => setUrlCards(prev => prev.filter(c => c.url !== url))}
       />
     </div>
   );

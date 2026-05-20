@@ -838,6 +838,61 @@
   animation: url-ctx-pulse 1.4s ease-in-out infinite;
 }
 
+/* /fetch slash command 提示条 */
+.chat-inputbar__slash-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  animation: url-ctx-pulse 0s; /* reset */
+}
+
+.chat-inputbar__slash-hint-icon {
+  flex-shrink: 0;
+}
+
+.chat-inputbar__slash-hint-url {
+  flex: 1;
+  color: var(--accent);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.chat-inputbar__slash-hint-tip {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.chat-inputbar__slash-hint-btn {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.chat-inputbar__slash-hint-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.chat-inputbar__slash-hint-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .url-ctx-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);

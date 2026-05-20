@@ -100,18 +100,29 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
   }, [prefillText]);
 
   const [urlFetching, setUrlFetching] = useState(false);
+  const [slashCmd, setSlashCmd] = useState<{ url: string } | null>(null);
 
-  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const text = e.clipboardData.getData("text").trim();
-    if (!text.startsWith("http://") && !text.startsWith("https://")) return;
-    try { new URL(text); } catch { return; }
-    if (urlCards.some(c => c.url === text)) return;
+  // /fetch <url> 或 /url <url> slash command 检测
+  const SLASH_CMD_RE = /^\/(?:fetch|url|抓取)\s+(https?:\/\/\S+)$/i;
+
+  const handleChange = () => {
+    const val = textareaRef.current?.value ?? "";
+    const match = val.trim().match(SLASH_CMD_RE);
+    setSlashCmd(match ? { url: match[1] } : null);
+  };
+
+  const executeSlashFetch = async () => {
+    if (!slashCmd || urlFetching) return;
+    const url = slashCmd.url;
+    if (textareaRef.current) textareaRef.current.value = "";
+    setSlashCmd(null);
+    if (urlCards.some(c => c.url === url)) return;
     setUrlFetching(true);
     try {
-      const card = await fetchUrlContext(text);
+      const card = await fetchUrlContext(url);
       onUrlCardAdded?.(card);
     } catch {
-      // 抓取失败时静默降级，不打扰用户正常粘贴
+      // 抓取失败静默降级
     } finally {
       setUrlFetching(false);
     }
@@ -132,13 +143,24 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
     const finalText = buildMessageWithFiles(text, fileChunks);
     if (textareaRef.current) textareaRef.current.value = "";
     setFileChunks([]);
+    setSlashCmd(null);
     onSend(finalText);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape" && slashCmd) {
+      e.preventDefault();
+      if (textareaRef.current) textareaRef.current.value = "";
+      setSlashCmd(null);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (slashCmd) {
+        void executeSlashFetch();
+      } else {
+        handleSend();
+      }
     }
   };
 
@@ -175,7 +197,22 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
             ))}
           </div>
         )}
-        {urlFetching && (
+        {slashCmd && (
+          <div className="chat-inputbar__slash-hint">
+            <span className="chat-inputbar__slash-hint-icon">🔗</span>
+            <span className="chat-inputbar__slash-hint-url">{slashCmd.url}</span>
+            <span className="chat-inputbar__slash-hint-tip">Enter 抓取摘要 · Esc 取消</span>
+            <button
+              className="chat-inputbar__slash-hint-btn"
+              onClick={() => void executeSlashFetch()}
+              disabled={urlFetching}
+            >
+              {urlFetching ? "抓取中…" : "抓取"}
+            </button>
+          </div>
+        )}
+
+        {urlFetching && !slashCmd && (
           <div className="chat-inputbar__url-loading">正在抓取页面内容…</div>
         )}
 
@@ -183,10 +220,10 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
           ref={textareaRef}
           className="chat-inputbar__textarea"
           rows={3}
-          placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
+          placeholder="输入消息… (Enter 发送，/fetch <url> 抓取页面，Shift+Enter 换行)"
           disabled={isStreaming || disabled}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
+          onChange={handleChange}
         />
 
         <div className="chat-inputbar__row chat-inputbar__row--actions">
