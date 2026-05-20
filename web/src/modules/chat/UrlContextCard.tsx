@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import type { UrlContextCard as UrlContextCardData } from "../../tauri-client";
 import { openExternalUrl, enqueueIngest } from "../../tauri-client";
 
@@ -12,6 +14,11 @@ export default function UrlContextCard({ card, onRemove, onPrefill }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [copyLabel, setCopyLabel] = useState("复制摘要");
   const [ingestLabel, setIngestLabel] = useState("摄入Wiki");
+
+  const renderedSummary = useMemo(() => {
+    const raw = marked.parse(card.summary) as string;
+    return DOMPurify.sanitize(raw);
+  }, [card.summary]);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -58,9 +65,10 @@ export default function UrlContextCard({ card, onRemove, onPrefill }: Props) {
       <div className="url-ctx-card__title">{card.title || card.url}</div>
       {expanded && (
         <div className="url-ctx-card__body">
-          <div className="url-ctx-card__summary">
-            {card.summary}{card.summary.length >= 3000 ? "…" : ""}
-          </div>
+          <div
+            className="url-ctx-card__summary"
+            dangerouslySetInnerHTML={{ __html: renderedSummary }}
+          />
           <div className="url-ctx-card__meta">
             {card.charCount.toLocaleString()} 字符 · {card.fetchMethod}
           </div>

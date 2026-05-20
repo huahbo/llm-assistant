@@ -16,7 +16,10 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchResult {
     pub title: String,
+    /// 纯文本（供 LLM 摘要摄入）
     pub text: String,
+    /// Markdown 格式（供 UI 卡片渲染）
+    pub markdown: String,
     pub url: String,
     pub domain: String,
     pub char_count: usize,
@@ -142,6 +145,7 @@ fn do_cdp_fetch(
         ));
     }
 
+    let markdown = html_to_markdown(&content);
     let title = extract_title(&content);
     let domain = extract_domain(url);
     let char_count = text.len();
@@ -150,6 +154,7 @@ fn do_cdp_fetch(
     Ok(FetchResult {
         title,
         text,
+        markdown,
         url: url.to_string(),
         domain,
         char_count,
@@ -186,6 +191,7 @@ async fn fetch_with_http(url: &str) -> Result<FetchResult, String> {
         .map_err(|e| format!("读取响应体失败：{}", e))?;
 
     let text = html_to_text(&html);
+    let markdown = html_to_markdown(&html);
     let title = extract_title(&html);
     let domain = extract_domain(url);
     let char_count = text.len();
@@ -193,6 +199,7 @@ async fn fetch_with_http(url: &str) -> Result<FetchResult, String> {
     Ok(FetchResult {
         title,
         text,
+        markdown,
         url: url.to_string(),
         domain,
         char_count,
@@ -294,6 +301,127 @@ pub(crate) fn html_to_text(html: &str) -> String {
     let text = ws_re.replace_all(&text, " ");
     let text = nl_re.replace_all(&text, "\n\n");
     text.trim().to_string()
+}
+
+/// 将 HTML 转为 Markdown，保留标题/列表/加粗等结构，供 UI 卡片渲染。
+///
+/// 转换顺序：
+/// 1. 剔除 script/style/head/noscript/template/svg/nav/header/footer/aside/form
+/// 2. 标题 → `#` / `##` / `###` / `####`
+/// 3. 行内格式 → `**bold**` / `*em*` / `` `code` ``
+/// 4. 列表项 → `- …`
+/// 5. 块级标签 → 换行
+/// 6. 剥除剩余标签
+/// 7. HTML 实体解码
+/// 8. 空白整理
+pub(crate) fn html_to_markdown(html: &str) -> String {
+    use regex::Regex;
+
+    // ── 1. 噪声块 ────────────────────────────────────────────────────────────
+    let script_re  = Regex::new(r"(?si)<script[^>]*>.*?</script\s*>").expect("re");
+    let style_re   = Regex::new(r"(?si)<style[^>]*>.*?</style\s*>").expect("re");
+    let head_re    = Regex::new(r"(?si)<head[^>]*>.*?</head\s*>").expect("re");
+    let ns_re      = Regex::new(r"(?si)<noscript[^>]*>.*?</noscript\s*>").expect("re");
+    let tpl_re     = Regex::new(r"(?si)<template[^>]*>.*?</template\s*>").expect("re");
+    let svg_re     = Regex::new(r"(?si)<svg[^>]*>.*?</svg\s*>").expect("re");
+    let nav_re     = Regex::new(r"(?si)<nav[^>]*>.*?</nav\s*>").expect("re");
+    let hdr_re     = Regex::new(r"(?si)<header[^>]*>.*?</header\s*>").expect("re");
+    let ftr_re     = Regex::new(r"(?si)<footer[^>]*>.*?</footer\s*>").expect("re");
+    let aside_re   = Regex::new(r"(?si)<aside[^>]*>.*?</aside\s*>").expect("re");
+    let form_re    = Regex::new(r"(?si)<form[^>]*>.*?</form\s*>").expect("re");
+
+    // ── 2. 标题 ──────────────────────────────────────────────────────────────
+    let h1_re = Regex::new(r"(?si)<h1[^>]*>(.*?)</h1\s*>").expect("re");
+    let h2_re = Regex::new(r"(?si)<h2[^>]*>(.*?)</h2\s*>").expect("re");
+    let h3_re = Regex::new(r"(?si)<h3[^>]*>(.*?)</h3\s*>").expect("re");
+    let h4_re = Regex::new(r"(?si)<h4[^>]*>(.*?)</h4\s*>").expect("re");
+
+    // ── 3. 行内格式 ──────────────────────────────────────────────────────────
+    let strong_re = Regex::new(r"(?si)<strong[^>]*>(.*?)</strong\s*>").expect("re");
+    let b_re      = Regex::new(r"(?si)<b[^>]*>(.*?)</b\s*>").expect("re");
+    let em_re     = Regex::new(r"(?si)<em[^>]*>(.*?)</em\s*>").expect("re");
+    let i_re      = Regex::new(r"(?si)<i[^>]*>(.*?)</i\s*>").expect("re");
+    let code_re   = Regex::new(r"(?si)<code[^>]*>(.*?)</code\s*>").expect("re");
+
+    // ── 4. 列表项 ────────────────────────────────────────────────────────────
+    let li_re = Regex::new(r"(?si)<li[^>]*>(.*?)</li\s*>").expect("re");
+
+    // ── 5. 块级标签 → 换行 ───────────────────────────────────────────────────
+    let p_re      = Regex::new(r"(?si)</?p[^>]*>").expect("re");
+    let div_re    = Regex::new(r"(?si)<div[^>]*>").expect("re");
+    let br_re     = Regex::new(r"(?si)<br\s*/?>").expect("re");
+    let hr_re     = Regex::new(r"(?si)<hr[^>]*>").expect("re");
+    let ul_ol_re  = Regex::new(r"(?si)</?[uo]l[^>]*>").expect("re");
+    let section_re= Regex::new(r"(?si)</?(?:section|article|main|figure)[^>]*>").expect("re");
+
+    // ── 6. 剩余标签 ──────────────────────────────────────────────────────────
+    let tag_re = Regex::new(r"<[^>]+>").expect("re");
+
+    // ── 7. 空白 ──────────────────────────────────────────────────────────────
+    let ws_re = Regex::new(r"[ \t]{2,}").expect("re");
+    let nl_re = Regex::new(r"\n{4,}").expect("re");
+
+    // ── 应用转换 ─────────────────────────────────────────────────────────────
+    let t = script_re.replace_all(html, "");
+    let t = style_re.replace_all(&t, "");
+    let t = head_re.replace_all(&t, "");
+    let t = ns_re.replace_all(&t, "");
+    let t = tpl_re.replace_all(&t, "");
+    let t = svg_re.replace_all(&t, "");
+    let t = nav_re.replace_all(&t, "");
+    let t = hdr_re.replace_all(&t, "");
+    let t = ftr_re.replace_all(&t, "");
+    let t = aside_re.replace_all(&t, "");
+    let t = form_re.replace_all(&t, "");
+
+    // 标题
+    let t = h1_re.replace_all(&t, "\n\n# $1\n\n");
+    let t = h2_re.replace_all(&t, "\n\n## $1\n\n");
+    let t = h3_re.replace_all(&t, "\n\n### $1\n\n");
+    let t = h4_re.replace_all(&t, "\n\n#### $1\n\n");
+
+    // 行内
+    let t = strong_re.replace_all(&t, "**$1**");
+    let t = b_re.replace_all(&t, "**$1**");
+    let t = em_re.replace_all(&t, "*$1*");
+    let t = i_re.replace_all(&t, "*$1*");
+    let t = code_re.replace_all(&t, "`$1`");
+
+    // 列表项
+    let t = li_re.replace_all(&t, "\n- $1");
+
+    // 块级
+    let t = p_re.replace_all(&t, "\n\n");
+    let t = div_re.replace_all(&t, "\n");
+    let t = br_re.replace_all(&t, "\n");
+    let t = hr_re.replace_all(&t, "\n\n---\n\n");
+    let t = ul_ol_re.replace_all(&t, "\n");
+    let t = section_re.replace_all(&t, "\n");
+
+    // 剥除剩余标签
+    let t = tag_re.replace_all(&t, "");
+
+    // 实体解码
+    let t = t
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#x27;", "'")
+        .replace("&#x2F;", "/")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&ldquo;", "\u{201C}")
+        .replace("&rdquo;", "\u{201D}")
+        .replace("&lsquo;", "\u{2018}")
+        .replace("&rsquo;", "\u{2019}");
+
+    // 空白整理
+    let t = ws_re.replace_all(&t, " ");
+    let t = nl_re.replace_all(&t, "\n\n\n");
+    t.trim().to_string()
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────────────
