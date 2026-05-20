@@ -205,9 +205,9 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
         )}
         {slashCmd && (
           <div className="chat-inputbar__slash-hint">
-            <span className="chat-inputbar__slash-hint-icon">🔗</span>
+            <code className="chat-inputbar__slash-kw">/fetch</code>
             <span className="chat-inputbar__slash-hint-url">{slashCmd.url}</span>
-            <span className="chat-inputbar__slash-hint-tip">Enter 抓取摘要 · Esc 取消</span>
+            <span className="chat-inputbar__slash-hint-tip">Enter 抓取 · Esc 取消</span>
             <button
               className="chat-inputbar__slash-hint-btn"
               onClick={() => void executeSlashFetch()}

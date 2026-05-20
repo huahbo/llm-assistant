@@ -59,7 +59,7 @@ export default function UrlContextCard({ card, onRemove, onPrefill }: Props) {
       {expanded && (
         <div className="url-ctx-card__body">
           <div className="url-ctx-card__summary">
-            {card.summary}{card.summary.length >= 600 ? "…" : ""}
+            {card.summary}{card.summary.length >= 1200 ? "…" : ""}
           </div>
           <div className="url-ctx-card__meta">
             {card.charCount.toLocaleString()} 字符 · {card.fetchMethod}

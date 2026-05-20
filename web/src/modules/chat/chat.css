@@ -856,6 +856,18 @@
   animation: url-ctx-pulse 0s; /* reset */
 }
 
+.chat-inputbar__slash-kw {
+  flex-shrink: 0;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  background: var(--accent);
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
 .chat-inputbar__slash-hint-icon {
   flex-shrink: 0;
 }
