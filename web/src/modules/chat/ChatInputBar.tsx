@@ -193,6 +193,12 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
                 key={card.url}
                 card={card}
                 onRemove={() => onUrlCardRemoved?.(card.url)}
+                onPrefill={(text) => {
+                  if (textareaRef.current) {
+                    textareaRef.current.value = text;
+                    textareaRef.current.focus();
+                  }
+                }}
               />
             ))}
           </div>
@@ -218,7 +224,7 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
 
         <textarea
           ref={textareaRef}
-          className="chat-inputbar__textarea"
+          className={`chat-inputbar__textarea${slashCmd ? " chat-inputbar__textarea--slash-active" : ""}`}
           rows={3}
           placeholder="输入消息… (Enter 发送，/fetch <url> 抓取页面，Shift+Enter 换行)"
           disabled={isStreaming || disabled}

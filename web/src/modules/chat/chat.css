@@ -593,6 +593,11 @@
   background: var(--bg-card);
 }
 
+.chat-inputbar__textarea--slash-active {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
 .chat-inputbar__row {
   display: flex;
   justify-content: flex-end;
@@ -901,6 +906,12 @@
   overflow: hidden;
   font-size: 12px;
   box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+
+.url-ctx-card:hover {
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 
 .url-ctx-card__header {
@@ -976,13 +987,11 @@
 }
 
 .url-ctx-card__summary {
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 11px;
-  line-height: 1.55;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  line-height: 1.6;
+  user-select: text;
+  cursor: text;
 }
 
 .url-ctx-card__meta {
@@ -991,6 +1000,48 @@
   color: var(--text-muted);
   opacity: 0.65;
   font-variant-numeric: tabular-nums;
+}
+
+.url-ctx-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-light);
+}
+
+.url-ctx-card__action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  font-size: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.url-ctx-card__action-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.url-ctx-card__action-btn--primary {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.url-ctx-card__action-btn--primary:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* ── + 弹出菜单 ───────────────────────────────────────────────────────────── */
