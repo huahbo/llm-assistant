@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.5 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.6 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -23,6 +23,35 @@
 ---
 
 ## 最近更新（H21–H24）
+
+### v0.2.6（URL 上下文卡片交互增强 + Markdown 渲染）
+
+#### Chat — `/fetch` 指令与卡片全交互
+- **`/fetch <url>` 斜杠指令**：输入框检测到 `/fetch`（或 `/url` / `/抓取`）后弹出带高亮的提示条；
+  Enter 抓取，Esc 取消；`/fetch` 关键字在提示条内以 accent 徽章显示，与 URL 文字区分
+- 输入框在斜杠指令激活时自动加 accent 色边框+阴影（视觉反馈）
+- **卡片全交互**（展开后）：
+  - 📋 **复制摘要** — 写入剪贴板，2 s 反馈
+  - 🔗 **打开链接** — 系统默认浏览器打开
+  - 📥 **摄入 Wiki** — 加入摄入队列，3 s 反馈
+  - 💬 **直接提问** — 以「关于「标题」（url），」预填输入框，焦点跳到文本域
+- 摘要文字**可选中复制**；卡片 hover 时上移 1 px + 加深阴影
+- 同一会话重复 `/fetch` 同一 URL 时**刷新**卡片（原有卡片先移除再重建）
+- 抓取失败改为显示 5 秒红色错误条，不再静默吞噬
+
+#### 摘要 Markdown 渲染管线
+- 后端新增 `html_to_markdown()`：剔除 `<nav>/<header>/<footer>/<aside>/<form>/<svg>` 噪声块，
+  `<h1-h4>` → `# ## ### ####`，`<strong>/<em>/<code>/<li>` → 行内/列表 Markdown
+- `FetchResult` 新增 `markdown` 字段（与纯文本 `text` 字段并存）；
+  摘要上限扩至 **3000 字符**，高度上限 **400 px 可滚动**
+- 前端用 `marked.parse` + `DOMPurify.sanitize` 渲染，样式作用域限定在卡片内（紧凑 11 px 字号）
+
+#### Bug 修复
+- 正则词边界修复：`<b[^>]*>` 错误匹配 `<body>`，`<i[^>]*>` 匹配 `<img>/<input>/<iframe>`，
+  导致整段 body 被误包入 `**…**` 使 `marked` 解析崩溃 → 全部加 `\b` 词边界
+- 修复重复 URL 早退：同一 URL 已存在时静默 `return`，用户无任何响应
+
+---
 
 ### v0.2.5（H24 — 无头浏览器服务 + URL 上下文卡片）
 
@@ -257,7 +286,7 @@ llm-wiki/
 │       ├── state.rs        # AppState 入口 + 公共工具函数
 │       ├── state/          # 业务逻辑子模块（H16 拆分，12 个 service 文件）
 │       ├── browser/        # 无头浏览器服务（CDP + reqwest，H24）
-│       │   └── mod.rs      # fetch_url / FetchResult / html_to_text
+│       │   └── mod.rs      # fetch_url / FetchResult / html_to_text / html_to_markdown
 │       ├── db.rs           # SQLite（FTS5 + embedding + 队列 + shell 审计）
 │       ├── vault.rs        # Markdown Vault 读写
 │       ├── models.rs       # 数据模型
