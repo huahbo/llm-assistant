@@ -65,7 +65,7 @@ const QUERY_RRF_K: f64 = 60.0;
 const QUERY_ROUTE_DEBUG_TOP_CANDIDATES: usize = 5;
 
 /// 默认摘要最大 token 数量
-const LLM_SUMMARY_MAX_TOKENS: usize = 200;
+const LLM_SUMMARY_MAX_TOKENS: usize = 1200;
 /// AAAK-lite：记忆值总字符数超过此阈值时触发压缩。
 const MEMORY_COMPRESS_THRESHOLD_CHARS: usize = 2000;
 /// 草稿生成时注入的最大记忆条数（run + global 各自上限）。

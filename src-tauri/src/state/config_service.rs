@@ -469,7 +469,7 @@ pub fn llm_status_future(
 }
 
 pub async fn generate_summary(state: &AppState, content: &str) -> String {
-    const MAX_INPUT_CHARS: usize = 8000;
+    const MAX_INPUT_CHARS: usize = 16000;
     let truncated_content: String = content.chars().take(MAX_INPUT_CHARS).collect();
     let content = truncated_content.as_str();
 
