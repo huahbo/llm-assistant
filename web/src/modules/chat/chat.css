@@ -1004,6 +1004,9 @@
   line-height: 1.6;
   user-select: text;
   cursor: text;
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .url-ctx-card__meta {
