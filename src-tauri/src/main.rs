@@ -2,6 +2,7 @@
 
 mod agent_chat;
 mod agent_loop;
+mod browser;
 mod agent_policy;
 mod agent_runtime;
 mod agent_tools;
@@ -21,6 +22,12 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
+            // decorations=false 时 Windows 任务栏图标需手动注入
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(icon) = app.default_window_icon() {
+                    let _ = window.set_icon(icon.clone());
+                }
+            }
             let app_handle = app.handle().clone();
             // 注入 AppHandle，供后续 emit 进度事件使用
             app.state::<AppState>().set_app_handle(app_handle.clone());
@@ -175,6 +182,7 @@ fn main() {
             agent_chat::commands::reload_mcp_server_tools,
             agent_chat::commands::search_mcp_registry,
             agent_chat::commands::get_mcp_registry_server,
+            commands::fetch_url_context,
         ])
         .build(tauri::generate_context!())
         .expect("应用启动失败")

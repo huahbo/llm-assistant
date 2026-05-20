@@ -27,6 +27,7 @@ pulldown-cmark = "0.11"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "api-20", "ndarray"] }
 tokenizers = "0.20"
 ndarray = "0.16"
+headless_chrome = "1.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -12,7 +12,19 @@
 
 ---
 
-## 本轮快讯（2026-05-17，Claude Code）— H21/H22/H23 完成
+## 本轮快讯（2026-05-20，Claude Code）— H24 进行中
+
+- **H24 无头浏览器服务**：正在并行实施 4 路子任务
+  - [A] `src-tauri/src/browser/mod.rs` — CDP 服务模块（headless_chrome + reqwest 兜底）
+  - [B] `ingest_service.rs` 重构 — 删旧 Edge 临时实现，改调 crate::browser
+  - [C] `commands.rs + main.rs` — 新增 fetch_url_context Tauri 命令
+  - [D] 前端 — UrlContextCard 组件 + ChatInputBar URL paste 检测
+- 详见：`docs/实施计划-H24-浏览器服务.md`
+- **基线（2026-05-17）**：268 测试全绿，typecheck 零错误，最新 commit fd4ecda
+
+---
+
+## 上轮快讯（2026-05-17，Claude Code）— H21/H22/H23 完成
 
 - **Pre**：search.ts 6 处裸 invoke() 包装 withTimeout
 - **H21 全局命令面板**：Ctrl+K，模糊搜索 Wiki 页面 + 操作命令 + 最近访问

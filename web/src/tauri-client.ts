@@ -8,3 +8,4 @@ export * from "./tauri-client/agent";
 export * from "./tauri-client/config";
 export * from "./tauri-client/dialog";
 export * from "./tauri-client/mcp";
+export * from "./tauri-client/browser";

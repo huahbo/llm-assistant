@@ -449,38 +449,10 @@ pub async fn ingest_url_impl(
         }),
     );
 
-    // 1. 用 reqwest 拉取 URL 文本（超时 30s）
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| {
-            let message = format!("构建 HTTP 客户端失败：{e}");
-            state.record_ingest_failed_event(&source_url, &message);
-            message
-        })?;
-
-    let response = client
-        .get(&source_url)
-        .header("User-Agent", "llm-wiki/1.0")
-        .send()
-        .await
-        .map_err(|e| {
-            let message = format!("拉取 URL 失败：{e}");
-            state.record_ingest_failed_event(&source_url, &message);
-            message
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let message = format!("URL 请求失败，HTTP {status}");
-        state.record_ingest_failed_event(&source_url, &message);
-        return Err(message);
-    }
-
-    let text = response.text().await.map_err(|e| {
-        let message = format!("读取响应内容失败：{e}");
-        state.record_ingest_failed_event(&source_url, &message);
-        message
+    // 1. 拉取 URL 内容（通过 browser 模块统一抓取）
+    let text = fetch_url_content(state, &source_url).await.map_err(|e| {
+        state.record_ingest_failed_event(&source_url, &e);
+        e
     })?;
 
     if text.trim().is_empty() {
@@ -489,7 +461,7 @@ pub async fn ingest_url_impl(
         return Err(message);
     }
 
-    // 2. 将文本写入临时 Markdown 文件，复用 ingest_markdown
+    // 2. 将纯文本写入临时 Markdown 文件，复用 ingest_markdown
     let tmp_path = std::env::temp_dir().join(format!("llm_wiki_url_{}.md", uuid_v4_short()));
     tokio::fs::write(&tmp_path, &text).await.map_err(|e| {
         let message = format!("写入临时文件失败：{e}");
@@ -757,6 +729,7 @@ async fn complete_ingest_with_precomputed_analysis(
         Some(llm_summary),
         entities,
         display_name.as_deref(),
+        Some(display_source_path),
     ) {
         Ok(result) => {
             state.push_log(
@@ -888,7 +861,7 @@ async fn load_preview_source_content(
     ocr_provider: Option<&str>,
 ) -> Result<String, String> {
     match source_type {
-        "url" => fetch_preview_url_content(source_path).await,
+        "url" => fetch_url_content(state, source_path).await,
         "markdown" | "md" => {
             let path = PathBuf::from(source_path);
             validate_ingest_source_path(&path)?;
@@ -963,33 +936,25 @@ fn extract_preview_pdf_text(state: &AppState, source_path: &Path) -> Result<Stri
     }
 }
 
-async fn fetch_preview_url_content(source_url: &str) -> Result<String, String> {
+async fn fetch_url_content(state: &AppState, source_url: &str) -> Result<String, String> {
     let trimmed = source_url.trim();
     if trimmed.is_empty() {
         return Err("URL 不能为空".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|err| format!("构建 HTTP 客户端失败：{}", err))?;
-    let response = client
-        .get(trimmed)
-        .header("User-Agent", "llm-wiki/1.0")
-        .send()
-        .await
-        .map_err(|err| format!("拉取 URL 失败：{}", err))?;
-    if !response.status().is_success() {
-        return Err(format!("URL 请求失败，HTTP {}", response.status()));
-    }
-    let text = response
-        .text()
-        .await
-        .map_err(|err| format!("读取响应内容失败：{}", err))?;
-    if text.trim().is_empty() {
-        return Err("URL 返回内容为空".to_string());
-    }
-    Ok(text)
+    let result = crate::browser::fetch_url(trimmed, Default::default()).await?;
+
+    state.push_log(
+        LogLevel::Info,
+        format!(
+            "URL 抓取完成：method={} chars={} title={}",
+            result.fetch_method,
+            result.char_count,
+            result.title.chars().take(40).collect::<String>()
+        ),
+    );
+
+    Ok(result.text)
 }
 
 /// 将提取后的纯文本写入临时 Markdown，再复用 ingest_markdown。

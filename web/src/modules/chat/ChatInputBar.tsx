@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { FileChunk } from "../../tauri-client";
 import { setConvShellMode } from "../../tauri-client";
+import UrlContextCard from "./UrlContextCard";
+import type { UrlContextCard as UrlContextCardData } from "../../tauri-client";
+import { fetchUrlContext } from "../../tauri-client";
 import PlusMenu from "./PlusMenu";
 import McpGallery from "./McpGallery";
 import SkillInstaller from "./SkillInstaller";
@@ -25,6 +28,9 @@ interface Props {
   conversationId?: number;
   shellMode?: ShellMode;
   onShellModeChange?: (mode: ShellMode) => void;
+  urlCards?: UrlContextCardData[];
+  onUrlCardAdded?: (card: UrlContextCardData) => void;
+  onUrlCardRemoved?: (url: string) => void;
 }
 
 const CHAR_LIMIT = 40_000;
@@ -71,7 +77,7 @@ function ChatModal({ title, onClose, children }: ModalProps) {
 
 // ── 主组件 ────────────────────────────────────────────────────────────────────
 
-export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, prefillText, conversationId, shellMode = "off", onShellModeChange }: Props) {
+export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, prefillText, conversationId, shellMode = "off", onShellModeChange, urlCards = [], onUrlCardAdded, onUrlCardRemoved }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const appliedPrefillRef = useRef<string>("");
   const [showPlus, setShowPlus] = useState(false);
@@ -93,9 +99,36 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
     textareaRef.current.focus();
   }, [prefillText]);
 
+  const [urlFetching, setUrlFetching] = useState(false);
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = e.clipboardData.getData("text").trim();
+    if (!text.startsWith("http://") && !text.startsWith("https://")) return;
+    try { new URL(text); } catch { return; }
+    if (urlCards.some(c => c.url === text)) return;
+    setUrlFetching(true);
+    try {
+      const card = await fetchUrlContext(text);
+      onUrlCardAdded?.(card);
+    } catch {
+      // 抓取失败时静默降级，不打扰用户正常粘贴
+    } finally {
+      setUrlFetching(false);
+    }
+  };
+
   const handleSend = () => {
-    const text = textareaRef.current?.value.trim() ?? "";
-    if ((!text && fileChunks.length === 0) || isStreaming) return;
+    const rawText = textareaRef.current?.value.trim() ?? "";
+    if ((!rawText && fileChunks.length === 0 && urlCards.length === 0) || isStreaming) return;
+
+    let text = rawText;
+    if (urlCards.length > 0) {
+      const ctxBlock = urlCards
+        .map(c => `[页面上下文: ${c.url}]\n标题：${c.title}\n摘要：${c.summary}`)
+        .join("\n\n---\n\n");
+      text = ctxBlock + (rawText ? "\n\n---\n\n" + rawText : "");
+    }
+
     const finalText = buildMessageWithFiles(text, fileChunks);
     if (textareaRef.current) textareaRef.current.value = "";
     setFileChunks([]);
@@ -131,6 +164,21 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
           </div>
         )}
 
+        {urlCards.length > 0 && (
+          <div className="chat-inputbar__url-cards">
+            {urlCards.map(card => (
+              <UrlContextCard
+                key={card.url}
+                card={card}
+                onRemove={() => onUrlCardRemoved?.(card.url)}
+              />
+            ))}
+          </div>
+        )}
+        {urlFetching && (
+          <div className="chat-inputbar__url-loading">正在抓取页面内容…</div>
+        )}
+
         <textarea
           ref={textareaRef}
           className="chat-inputbar__textarea"
@@ -138,6 +186,7 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
           placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
           disabled={isStreaming || disabled}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
         />
 
         <div className="chat-inputbar__row chat-inputbar__row--actions">

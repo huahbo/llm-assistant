@@ -1205,3 +1205,34 @@ pub async fn rebuild_embeddings(state: State<'_, AppState>) -> Result<usize, Str
     state.rebuild_embeddings().await
 }
 
+// ── 无头浏览器 URL 上下文抓取 ────────────────────────────────────────────────
+
+/// Agent 对话中 URL 粘贴时抓取页面摘要，返回给前端展示卡片。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlContextCard {
+    pub title: String,
+    pub summary: String,
+    pub url: String,
+    pub domain: String,
+    pub char_count: usize,
+    pub fetch_method: String,
+}
+
+#[tauri::command]
+pub async fn fetch_url_context(url: String) -> Result<UrlContextCard, String> {
+    if url.trim().is_empty() {
+        return Err("URL 不能为空".to_string());
+    }
+    let result = crate::browser::fetch_url(&url, Default::default()).await?;
+    let summary: String = result.text.chars().take(300).collect();
+    Ok(UrlContextCard {
+        title: result.title,
+        summary,
+        url: result.url,
+        domain: result.domain,
+        char_count: result.char_count,
+        fetch_method: result.fetch_method,
+    })
+}
+
