@@ -1225,7 +1225,7 @@ pub async fn fetch_url_context(url: String) -> Result<UrlContextCard, String> {
         return Err("URL 不能为空".to_string());
     }
     let result = crate::browser::fetch_url(&url, Default::default()).await?;
-    let summary: String = result.text.chars().take(1200).collect();
+    let summary: String = result.text.chars().take(3000).collect();
     Ok(UrlContextCard {
         title: result.title,
         summary,
