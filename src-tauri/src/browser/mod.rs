@@ -331,20 +331,21 @@ pub(crate) fn html_to_markdown(html: &str) -> String {
     let form_re    = Regex::new(r"(?si)<form[^>]*>.*?</form\s*>").expect("re");
 
     // ── 2. 标题 ──────────────────────────────────────────────────────────────
-    let h1_re = Regex::new(r"(?si)<h1[^>]*>(.*?)</h1\s*>").expect("re");
-    let h2_re = Regex::new(r"(?si)<h2[^>]*>(.*?)</h2\s*>").expect("re");
-    let h3_re = Regex::new(r"(?si)<h3[^>]*>(.*?)</h3\s*>").expect("re");
-    let h4_re = Regex::new(r"(?si)<h4[^>]*>(.*?)</h4\s*>").expect("re");
+    let h1_re = Regex::new(r"(?si)<h1\b[^>]*>(.*?)</h1\s*>").expect("re");
+    let h2_re = Regex::new(r"(?si)<h2\b[^>]*>(.*?)</h2\s*>").expect("re");
+    let h3_re = Regex::new(r"(?si)<h3\b[^>]*>(.*?)</h3\s*>").expect("re");
+    let h4_re = Regex::new(r"(?si)<h4\b[^>]*>(.*?)</h4\s*>").expect("re");
 
     // ── 3. 行内格式 ──────────────────────────────────────────────────────────
-    let strong_re = Regex::new(r"(?si)<strong[^>]*>(.*?)</strong\s*>").expect("re");
-    let b_re      = Regex::new(r"(?si)<b[^>]*>(.*?)</b\s*>").expect("re");
-    let em_re     = Regex::new(r"(?si)<em[^>]*>(.*?)</em\s*>").expect("re");
-    let i_re      = Regex::new(r"(?si)<i[^>]*>(.*?)</i\s*>").expect("re");
-    let code_re   = Regex::new(r"(?si)<code[^>]*>(.*?)</code\s*>").expect("re");
+    // 注意：用 \b 词边界防止 <b> 匹配 <body>/<button>，<i> 匹配 <img>/<input> 等
+    let strong_re = Regex::new(r"(?si)<strong\b[^>]*>(.*?)</strong\s*>").expect("re");
+    let b_re      = Regex::new(r"(?si)<b\b[^>]*>(.*?)</b\s*>").expect("re");
+    let em_re     = Regex::new(r"(?si)<em\b[^>]*>(.*?)</em\s*>").expect("re");
+    let i_re      = Regex::new(r"(?si)<i\b[^>]*>(.*?)</i\s*>").expect("re");
+    let code_re   = Regex::new(r"(?si)<code\b[^>]*>(.*?)</code\s*>").expect("re");
 
     // ── 4. 列表项 ────────────────────────────────────────────────────────────
-    let li_re = Regex::new(r"(?si)<li[^>]*>(.*?)</li\s*>").expect("re");
+    let li_re = Regex::new(r"(?si)<li\b[^>]*>(.*?)</li\s*>").expect("re");
 
     // ── 5. 块级标签 → 换行 ───────────────────────────────────────────────────
     let p_re      = Regex::new(r"(?si)</?p[^>]*>").expect("re");

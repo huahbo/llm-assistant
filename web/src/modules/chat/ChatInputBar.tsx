@@ -100,6 +100,7 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
   }, [prefillText]);
 
   const [urlFetching, setUrlFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [slashCmd, setSlashCmd] = useState<{ url: string } | null>(null);
 
   // /fetch <url> 或 /url <url> slash command 检测
@@ -116,13 +117,19 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
     const url = slashCmd.url;
     if (textareaRef.current) textareaRef.current.value = "";
     setSlashCmd(null);
-    if (urlCards.some(c => c.url === url)) return;
+    setFetchError(null);
+    // 已有该 URL 的卡片时先移除，让用户可以刷新
+    if (urlCards.some(c => c.url === url)) {
+      onUrlCardRemoved?.(url);
+    }
     setUrlFetching(true);
     try {
       const card = await fetchUrlContext(url);
       onUrlCardAdded?.(card);
-    } catch {
-      // 抓取失败静默降级
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setFetchError(`抓取失败：${msg}`);
+      setTimeout(() => setFetchError(null), 5000);
     } finally {
       setUrlFetching(false);
     }
@@ -220,6 +227,9 @@ export default function ChatInputBar({ isStreaming, onSend, onCancel, disabled, 
 
         {urlFetching && !slashCmd && (
           <div className="chat-inputbar__url-loading">正在抓取页面内容…</div>
+        )}
+        {fetchError && (
+          <div className="chat-inputbar__url-error">{fetchError}</div>
         )}
 
         <textarea
