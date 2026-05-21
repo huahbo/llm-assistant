@@ -14,8 +14,12 @@ use super::types::{
     ChatCompletion, ChatMessage, FinishReason, StreamEvent, ToolCall, ToolCallFunction, ToolSchema,
 };
 
-/// 默认请求超时时间（秒）
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// 默认请求超时时间（秒）。
+///
+/// 与 OpenAI provider 对齐到 120s：Deep Research 单次 Outline-First 报告中
+/// 会触发 5-10 次 LLM 调用（章节 + intro + conclusion + ingest summary +
+/// ingest entities），慢一点的本地模型单次完成可能 60-90s，60s 过于激进。
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 /// Ollama Provider 配置
 #[derive(Debug, Clone)]
@@ -676,7 +680,7 @@ mod tests {
         let config = OllamaConfig::default();
         assert_eq!(config.base_url, "http://localhost:11434");
         assert_eq!(config.model, "llama3:8b");
-        assert_eq!(config.timeout_secs, 60);
+        assert_eq!(config.timeout_secs, 120);
     }
 
     #[test]
