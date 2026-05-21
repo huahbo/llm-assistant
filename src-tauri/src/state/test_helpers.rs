@@ -112,6 +112,7 @@ pub(crate) fn make_test_state_bare(vault_dir: &Path) -> AppState {
         pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
         pending_outline_data: Mutex::new(std::collections::HashMap::new()),
         pending_query_data: Mutex::new(std::collections::HashMap::new()),
+        pending_research_reports: Mutex::new(std::collections::HashMap::new()),
         ingest_previews: Mutex::new(std::collections::HashMap::new()),
         shell_sessions: Mutex::new(std::collections::HashMap::new()),
         chat_cancellations: Mutex::new(std::collections::HashMap::new()),

@@ -1075,6 +1075,7 @@ impl SearchConfig {
 }
 
 /// Web 搜索结果（内部使用）。
+#[derive(Debug, Clone)]
 pub struct WebSearchResult {
     pub title: String,
     pub url: String,

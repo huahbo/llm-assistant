@@ -100,6 +100,9 @@ pub struct AppState {
     pending_outline_data: Mutex<std::collections::HashMap<i64, String>>,
     /// 缓存待审批子查询（task_id -> queries），用于对话框关闭后重开恢复
     pending_query_data: Mutex<std::collections::HashMap<i64, Vec<String>>>,
+    /// 缓存已生成、等待用户决定是否保存的研究报告（task_id -> PendingResearchReport）。
+    /// 应用重启后丢失，由 ResearchPanel 优雅处理。
+    pending_research_reports: Mutex<std::collections::HashMap<i64, PendingResearchReport>>,
     /// 摄入预览缓存（preview_id -> 预览上下文）。
     ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
     /// Shell 会话缓存（session_id -> 会话状态）。
@@ -178,6 +181,18 @@ struct ShellSessionState {
     last_active_at: String,
 }
 
+/// 研究完成后缓存的报告，等待用户决定是否保存到知识库。
+#[derive(Debug, Clone)]
+pub(crate) struct PendingResearchReport {
+    pub topic: String,
+    pub content: String,
+    pub depth: i32,
+    pub breadth: i32,
+    pub all_results: Vec<crate::models::WebSearchResult>,
+    pub all_used_queries: Vec<String>,
+    pub learnings: Vec<String>,
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
@@ -228,6 +243,7 @@ impl AppState {
             pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_outline_data: Mutex::new(std::collections::HashMap::new()),
             pending_query_data: Mutex::new(std::collections::HashMap::new()),
+            pending_research_reports: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
@@ -326,6 +342,7 @@ impl AppState {
             pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_outline_data: Mutex::new(std::collections::HashMap::new()),
             pending_query_data: Mutex::new(std::collections::HashMap::new()),
+            pending_research_reports: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
@@ -397,6 +414,18 @@ impl AppState {
 
     pub fn get_pending_queries(&self, task_id: i64) -> Option<Vec<String>> {
         search_service::get_pending_queries(self, task_id)
+    }
+
+    pub async fn commit_research_to_wiki(&self, task_id: i64) -> Result<String, String> {
+        research_service::commit_research_to_wiki(self, task_id).await
+    }
+
+    pub fn discard_research_report(&self, task_id: i64) -> Result<(), String> {
+        research_service::discard_research_report(self, task_id)
+    }
+
+    pub fn get_pending_research_content(&self, task_id: i64) -> Option<String> {
+        research_service::get_pending_research_content(self, task_id)
     }
 
     /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。

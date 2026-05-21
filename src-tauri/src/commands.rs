@@ -978,6 +978,34 @@ pub fn get_pending_research_queries(
     state.get_pending_queries(task_id)
 }
 
+/// 用户主动保存研究报告到知识库（手动保存流程）。
+/// 返回保存后的 Wiki 路径，前端凭此显示「查看 Wiki」按钮。
+#[tauri::command]
+pub async fn commit_research_to_wiki(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+) -> Result<String, String> {
+    state.commit_research_to_wiki(task_id).await
+}
+
+/// 用户主动丢弃未保存的研究报告。
+#[tauri::command]
+pub fn discard_research_report(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+) -> Result<(), String> {
+    state.discard_research_report(task_id)
+}
+
+/// 查询任务当前待保存的报告正文（用于对话框关闭后重新打开恢复正文）。
+#[tauri::command]
+pub fn get_pending_research_content(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+) -> Option<String> {
+    state.get_pending_research_content(task_id)
+}
+
 /// 对单个 Wiki 页面执行快速结构检查（仅文件系统，不依赖 LLM）。
 #[tauri::command]
 pub fn quick_lint_page(

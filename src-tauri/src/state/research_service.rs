@@ -5,7 +5,7 @@ use std::{collections::HashSet, fs, sync::Arc};
 
 use tauri::{Emitter, Manager};
 
-use super::{current_timestamp_ms, AppState};
+use super::{current_timestamp_ms, AppState, PendingResearchReport};
 use crate::{
     db,
     llm::LlmError,
@@ -95,20 +95,13 @@ fn report_research_failure(
     );
 }
 
-/// Phase 4: 将综合报告写入 vault/wiki/research/ 并更新数据库。
-/// 返回保存的文件路径（成功）或 Err(()），失败已由 report_research_failure 处理。
-async fn save_research_output(
-    db_path: &std::path::Path,
-    app_handle: &tauri::AppHandle,
-    state: &AppState,
-    task_id: i64,
+/// 构造最终报告 Markdown（含 frontmatter + body + References），纯函数。
+fn build_final_report_content(
     topic: &str,
     config: &SearchConfig,
     all_results: &[WebSearchResult],
-    all_used_queries: &[String],
-    learnings: &[String],
     synthesized: &str,
-) -> Result<String, ()> {
+) -> String {
     let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
     let today = date_str.clone();
     let references = all_results
@@ -129,7 +122,7 @@ async fn save_research_output(
         .join("\n\n");
 
     let cleaned = strip_think_tags(synthesized);
-    let final_content = format!(
+    format!(
         "---\ntype: research\ntitle: \"{topic}\"\ncreated: {date}\nupdated: {date}\ndepth: {depth}\nbreadth: {breadth}\nsources: {count}\ntags: [research, deep-research]\n---\n\n{body}\n\n## References\n\n{refs}",
         topic = topic,
         date = date_str,
@@ -138,103 +131,192 @@ async fn save_research_output(
         count = all_results.len(),
         body = cleaned,
         refs = references,
-    );
+    )
+}
 
-    let vault_path = {
-        let guard = state.inner.lock().expect("状态锁");
-        guard.vault_path.clone()
+/// 研究完成后：缓存报告 + 更新 DB 状态为 awaiting_save + 发送 research_complete 事件。
+/// 用户后续通过 commit_research_to_wiki / discard_research_report 决定去向。
+fn finalize_pending_research(
+    db_path: &std::path::Path,
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    task_id: i64,
+    topic: &str,
+    config: &SearchConfig,
+    all_results: Vec<WebSearchResult>,
+    all_used_queries: Vec<String>,
+    learnings: Vec<String>,
+    synthesized: String,
+) {
+    let final_content = build_final_report_content(topic, config, &all_results, &synthesized);
+
+    let report = PendingResearchReport {
+        topic: topic.to_string(),
+        content: final_content.clone(),
+        depth: config.depth,
+        breadth: config.breadth,
+        all_results: all_results.clone(),
+        all_used_queries: all_used_queries.clone(),
+        learnings: learnings.clone(),
     };
-    let vault_path = match vault_path {
-        Some(p) => p,
-        None => {
-            report_research_failure(db_path, app_handle, task_id, "保存阶段：Vault 路径丢失");
-            return Err(());
-        }
-    };
+    state
+        .pending_research_reports
+        .lock()
+        .expect("pending_research_reports lock")
+        .insert(task_id, report);
 
-    let slug = make_research_slug(topic);
-    let filename = format!("research-{}-{}.md", slug, date_str);
-    let save_dir = vault_path.join("wiki").join("research");
-    let _ = fs::create_dir_all(&save_dir);
-    let save_path = save_dir.join(&filename);
-
-    // 防止 topic 含 ../ 等路径越权
-    match save_path
-        .canonicalize()
-        .or_else(|_| save_dir.canonicalize().map(|d| d.join(&filename)))
-    {
-        Ok(canonical) => {
-            let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
-            if !canonical.starts_with(&canonical_vault) {
-                report_research_failure(
-                    db_path,
-                    app_handle,
-                    task_id,
-                    "保存路径越权：topic 包含非法路径字符，已拒绝写入",
-                );
-                return Err(());
-            }
-        }
-        Err(e) => {
-            report_research_failure(
-                db_path,
-                app_handle,
-                task_id,
-                &format!("保存路径解析失败: {}", e),
-            );
-            return Err(());
-        }
-    }
-
-    if let Err(e) = fs::write(&save_path, &final_content) {
-        report_research_failure(
-            db_path,
-            app_handle,
-            task_id,
-            &format!("写入文件失败: {}", e),
-        );
-        return Err(());
-    }
-
-    let saved_path_str = save_path.to_string_lossy().to_string();
-    {
-        let conn = match rusqlite::Connection::open(db_path) {
-            Ok(c) => c,
-            Err(e) => {
-                report_research_failure(
-                    db_path,
-                    app_handle,
-                    task_id,
-                    &format!("打开数据库失败: {}", e),
-                );
-                return Err(());
-            }
-        };
+    // 数据库状态：awaiting_save（用户决定前不写 wiki）
+    if let Ok(conn) = rusqlite::Connection::open(db_path) {
         let now = current_timestamp_ms();
-        let queries_json = serde_json::to_string(all_used_queries).unwrap_or_default();
+        let queries_json = serde_json::to_string(&all_used_queries).unwrap_or_default();
         let _ = db::db_update_research_task(
             &conn,
             task_id,
-            "done",
+            "awaiting_save",
             &queries_json,
             all_results.len() as i32,
-            Some(saved_path_str.as_str()),
+            None,
             None,
             &now,
         );
     }
 
-    let _ = state.ingest_markdown(save_path, None).await;
     let _ = app_handle.emit(
-        "research_done",
+        "research_complete",
         serde_json::json!({
             "task_id": task_id,
-            "saved_path": saved_path_str,
+            "content": final_content,
             "sources": all_results.len(),
             "learnings": learnings.len(),
         }),
     );
+}
+
+/// 用户主动保存：将缓存的报告写到 vault/wiki/research/ 并 ingest，emit research_done。
+pub async fn commit_research_to_wiki(state: &AppState, task_id: i64) -> Result<String, String> {
+    let report = state
+        .pending_research_reports
+        .lock()
+        .expect("pending_research_reports lock")
+        .get(&task_id)
+        .cloned()
+        .ok_or_else(|| "找不到待保存的研究报告（可能已被丢弃或应用重启）".to_string())?;
+
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+
+    let vault_path = {
+        let guard = state.inner.lock().expect("状态锁");
+        guard
+            .vault_path
+            .clone()
+            .ok_or_else(|| "Vault 路径丢失".to_string())?
+    };
+
+    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let slug = make_research_slug(&report.topic);
+    let filename = format!("research-{}-{}.md", slug, date_str);
+    let save_dir = vault_path.join("wiki").join("research");
+    fs::create_dir_all(&save_dir).map_err(|e| format!("创建保存目录失败: {}", e))?;
+    let save_path = save_dir.join(&filename);
+
+    // 路径越权检查
+    let canonical = save_path
+        .canonicalize()
+        .or_else(|_| save_dir.canonicalize().map(|d| d.join(&filename)))
+        .map_err(|e| format!("保存路径解析失败: {}", e))?;
+    let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
+    if !canonical.starts_with(&canonical_vault) {
+        return Err("保存路径越权：topic 包含非法路径字符".to_string());
+    }
+
+    fs::write(&save_path, &report.content).map_err(|e| format!("写入文件失败: {}", e))?;
+
+    let saved_path_str = save_path.to_string_lossy().to_string();
+    {
+        let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
+        let now = current_timestamp_ms();
+        let queries_json = serde_json::to_string(&report.all_used_queries).unwrap_or_default();
+        db::db_update_research_task(
+            &conn,
+            task_id,
+            "done",
+            &queries_json,
+            report.all_results.len() as i32,
+            Some(saved_path_str.as_str()),
+            None,
+            &now,
+        )?;
+    }
+
+    let _ = state.ingest_markdown(save_path, None).await;
+
+    // 清理缓存
+    state
+        .pending_research_reports
+        .lock()
+        .expect("pending_research_reports lock")
+        .remove(&task_id);
+
+    if let Some(handle) = state.get_app_handle() {
+        let _ = handle.emit(
+            "research_done",
+            serde_json::json!({
+                "task_id": task_id,
+                "saved_path": saved_path_str,
+                "sources": report.all_results.len(),
+                "learnings": report.learnings.len(),
+            }),
+        );
+    }
     Ok(saved_path_str)
+}
+
+/// 用户主动丢弃：清理缓存 + 更新 DB 状态为 discarded。
+pub fn discard_research_report(state: &AppState, task_id: i64) -> Result<(), String> {
+    let removed = state
+        .pending_research_reports
+        .lock()
+        .expect("pending_research_reports lock")
+        .remove(&task_id);
+    if removed.is_none() {
+        return Err("找不到待保存的研究报告".to_string());
+    }
+
+    let db_path = state
+        .outbox_db_path()
+        .ok_or_else(|| "Vault 未初始化".to_string())?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
+    let now = current_timestamp_ms();
+    db::db_update_research_task(
+        &conn,
+        task_id,
+        "discarded",
+        "[]",
+        0,
+        None,
+        Some("用户丢弃了未保存的报告"),
+        &now,
+    )?;
+
+    if let Some(handle) = state.get_app_handle() {
+        let _ = handle.emit(
+            "research_discarded",
+            serde_json::json!({ "task_id": task_id }),
+        );
+    }
+    Ok(())
+}
+
+/// 查询任务的待保存报告内容（用于对话框重开时恢复正文）。
+pub fn get_pending_research_content(state: &AppState, task_id: i64) -> Option<String> {
+    state
+        .pending_research_reports
+        .lock()
+        .expect("pending_research_reports lock")
+        .get(&task_id)
+        .map(|r| r.content.clone())
 }
 
 /// 多重策略提取 JSON 字符串：剥离 markdown code fence、剥离首尾说明文字。
@@ -883,20 +965,19 @@ async fn start_research_task(
         }
         let synthesized = parts.join("\n\n");
 
-        emit_progress("saving", "正在保存到知识库...".to_string());
-        let _ = save_research_output(
+        emit_progress("awaiting_save", "报告已生成，等待用户决定是否保存到知识库...".to_string());
+        finalize_pending_research(
             &db_path,
             &app_handle,
             &state,
             task_id,
             &topic,
             &config,
-            &all_results,
-            &all_used_queries,
-            &learnings,
-            &synthesized,
-        )
-        .await;
+            all_results,
+            all_used_queries,
+            learnings,
+            synthesized,
+        );
     } else {
         // ── H25 兜底：单次综合合成 ──────────────────────────────────────────
         emit_progress(
@@ -1015,20 +1096,19 @@ async fn start_research_task(
             return;
         }
 
-        emit_progress("saving", "正在保存到知识库...".to_string());
-        let _ = save_research_output(
+        emit_progress("awaiting_save", "报告已生成，等待用户决定是否保存到知识库...".to_string());
+        finalize_pending_research(
             &db_path,
             &app_handle,
             &state,
             task_id,
             &topic,
             &config,
-            &all_results,
-            &all_used_queries,
-            &learnings,
-            &synthesized,
-        )
-        .await;
+            all_results,
+            all_used_queries,
+            learnings,
+            synthesized,
+        );
     }
 }
 

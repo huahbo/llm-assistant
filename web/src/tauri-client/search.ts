@@ -67,6 +67,19 @@ export interface ResearchDonePayload {
   saved_path: string;
 }
 
+/** 研究报告生成完成、等待用户决定是否保存的事件载荷 */
+export interface ResearchCompletePayload {
+  task_id: number;
+  content: string;
+  sources: number;
+  learnings: number;
+}
+
+/** 用户丢弃报告事件载荷 */
+export interface ResearchDiscardedPayload {
+  task_id: number;
+}
+
 /** 研究错误事件载荷 */
 export interface ResearchErrorPayload {
   task_id: number;
@@ -361,6 +374,18 @@ export async function listenResearchDone(
   return unlisten;
 }
 
+/** 监听报告生成完成、等待保存的事件 */
+export async function listenResearchComplete(
+  handler: (payload: ResearchCompletePayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchCompletePayload>("research_complete", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
 export async function listenResearchError(
   handler: (payload: ResearchErrorPayload) => void,
 ): Promise<() => void> {
@@ -436,6 +461,31 @@ export async function getPendingResearchQueries(taskId: number): Promise<string[
   const { invoke } = await import("@tauri-apps/api/core");
   const result = await withTimeout(
     invoke<string[] | null>("get_pending_research_queries", { taskId }),
+    10_000,
+  );
+  return result ?? null;
+}
+
+/** 用户主动把待保存的报告写入 Wiki。 */
+export async function commitResearchToWiki(taskId: number): Promise<string> {
+  if (!isTauriRuntime()) throw new Error("非 Tauri 环境");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(invoke<string>("commit_research_to_wiki", { taskId }), 30_000);
+}
+
+/** 用户丢弃未保存的研究报告。 */
+export async function discardResearchReport(taskId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(invoke("discard_research_report", { taskId }), 10_000);
+}
+
+/** 查询任务当前缓存的待保存报告正文（关闭对话框后重开恢复用）。 */
+export async function getPendingResearchContent(taskId: number): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const result = await withTimeout(
+    invoke<string | null>("get_pending_research_content", { taskId }),
     10_000,
   );
   return result ?? null;

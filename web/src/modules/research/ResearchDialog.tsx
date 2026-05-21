@@ -4,10 +4,14 @@ import DOMPurify from "dompurify";
 import {
   approveResearchOutline,
   approveResearchQueries,
+  commitResearchToWiki,
+  discardResearchReport,
   fetchWikiPageDetail,
+  getPendingResearchContent,
   getPendingResearchOutline,
   getPendingResearchQueries,
   getResearchTask,
+  listenResearchComplete,
   listenResearchDone,
   listenResearchError,
   listenResearchOutlineReady,
@@ -19,13 +23,25 @@ import {
 } from "../../tauri-client";
 import type { ResearchOutlineData, ResearchTaskItem } from "../../types";
 
+type DialogPhase =
+  | "running"
+  | "awaiting-approval"
+  | "awaiting-outline-approval"
+  | "synthesizing"
+  | "awaiting-save"
+  | "saving"
+  | "done"
+  | "failed";
+
 type DialogMsg =
   | { kind: "user"; topic: string; depth: number; breadth: number }
   | { kind: "progress"; stage: string; text: string; sectionIndex?: number; totalSections?: number }
   | { kind: "outline"; outline: ResearchOutlineData; taskId: number }
   | { kind: "queries"; queries: string[]; taskId: number }
   | { kind: "synthesis"; content: string }
+  | { kind: "report"; content: string }
   | { kind: "done"; savedPath: string; sources?: number; learnings?: number }
+  | { kind: "discarded" }
   | { kind: "error"; text: string };
 
 export default function ResearchDialog({
@@ -47,12 +63,12 @@ export default function ResearchDialog({
   onRetry?: () => void;
   onOpenWikiPage: (path: string) => void;
 }) {
-  const initPhase = (): "running" | "awaiting-approval" | "awaiting-outline-approval" | "synthesizing" | "done" | "failed" => {
+  const initPhase = (): DialogPhase => {
     if (!initialTask) return "running";
     if (initialTask.status === "done") return "done";
-    if (initialTask.status === "failed" || initialTask.status === "cancelled") return "failed";
+    if (initialTask.status === "failed" || initialTask.status === "cancelled" || initialTask.status === "discarded") return "failed";
     if (initialTask.status === "awaiting_outline_approval") return "awaiting-outline-approval";
-    if (initialTask.status === "decomposing") return "running";
+    if (initialTask.status === "awaiting_save") return "awaiting-save";
     return "running";
   };
 
@@ -75,14 +91,16 @@ export default function ResearchDialog({
   };
 
   const [messages, setMessages] = useState<DialogMsg[]>(initMessages);
-  const [phase, setPhase] = useState<
-    "running" | "awaiting-approval" | "awaiting-outline-approval" | "synthesizing" | "done" | "failed"
-  >(initPhase);
+  const [phase, setPhase] = useState<DialogPhase>(initPhase);
   const [editableQueries, setEditableQueries] = useState<string[]>([]);
   const [editableOutline, setEditableOutline] = useState<ResearchOutlineData | null>(null);
   const [approvingOutline, setApprovingOutline] = useState(false);
   const [approving, setApproving] = useState(false);
   const [synthesisContent, setSynthesisContent] = useState("");
+  /** 报告生成完成后的最终全文（含 frontmatter + 正文 + References），来自 research_complete 事件 */
+  const [reportContent, setReportContent] = useState("");
+  const [savingToWiki, setSavingToWiki] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [doneSavedPath, setDoneSavedPath] = useState<string>(
     initialTask?.status === "done" ? (initialTask.saved_path ?? "") : ""
   );
@@ -149,6 +167,18 @@ export default function ResearchDialog({
       });
       if (cancelled) { u3(); return; }
       unlisteners.push(u3);
+
+      const uComplete = await listenResearchComplete((p) => {
+        if (p.task_id !== taskId) return;
+        setReportContent(p.content);
+        setPhase("awaiting-save");
+        setMessages((prev) => {
+          if (prev.some((m) => m.kind === "report")) return prev;
+          return [...prev, { kind: "report", content: p.content }];
+        });
+      });
+      if (cancelled) { uComplete(); return; }
+      unlisteners.push(uComplete);
 
       const u4 = await listenResearchDone((p) => {
         if (p.task_id !== taskId) return;
@@ -235,13 +265,25 @@ export default function ResearchDialog({
           : [...prev, { kind: "queries", queries, taskId }],
       );
     });
+    void getPendingResearchContent(taskId).then((content) => {
+      if (cancelled || !content) return;
+      setReportContent((prev) => prev || content);
+      setPhase((prev) =>
+        prev === "running" || prev === "awaiting-outline-approval" ? "awaiting-save" : prev,
+      );
+      setMessages((prev) =>
+        prev.some((m) => m.kind === "report")
+          ? prev
+          : [...prev, { kind: "report", content }],
+      );
+    });
     return () => {
       cancelled = true;
     };
   }, [taskId, isTerminal]);
 
   const handleExportMd = async () => {
-    let content = synthesisContent.trim();
+    let content = reportContent.trim() || synthesisContent.trim();
     if (!content && doneSavedPath) {
       const detail = await fetchWikiPageDetail(doneSavedPath);
       content = detail?.content?.trim() ?? "";
@@ -254,6 +296,48 @@ export default function ResearchDialog({
     });
     if (!savePath) return;
     await saveResearchDoc(savePath, content);
+  };
+
+  const handleSaveToWiki = async () => {
+    setSavingToWiki(true);
+    setPhase("saving");
+    setMessages((prev) => [
+      ...prev,
+      { kind: "progress", stage: "saving", text: "正在写入 Wiki 并索引..." },
+    ]);
+    try {
+      const savedPath = await commitResearchToWiki(taskId);
+      setPhase("done");
+      setDoneSavedPath(savedPath);
+      setMessages((prev) => {
+        if (prev.some((m) => m.kind === "done")) return prev;
+        return [...prev, { kind: "done", savedPath }];
+      });
+    } catch (err) {
+      setPhase("awaiting-save");
+      setMessages((prev) => [
+        ...prev,
+        { kind: "error", text: err instanceof Error ? err.message : String(err) },
+      ]);
+    } finally {
+      setSavingToWiki(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    setDiscarding(true);
+    try {
+      await discardResearchReport(taskId);
+      setPhase("failed");
+      setMessages((prev) => {
+        if (prev.some((m) => m.kind === "discarded")) return prev;
+        return [...prev, { kind: "discarded" }];
+      });
+    } catch {
+      // 静默
+    } finally {
+      setDiscarding(false);
+    }
   };
 
   const handleApprove = async () => {
@@ -293,6 +377,7 @@ export default function ResearchDialog({
     assembling: "🔧",
     saving: "💾",
     awaiting_approval: "⏸️",
+    awaiting_save: "📨",
     planning_outline: "📋",
     awaiting_outline_approval: "⏸️",
   };
@@ -302,7 +387,9 @@ export default function ResearchDialog({
     "awaiting-approval":        { text: "等待确认研究方向", color: "#d97706" },
     "awaiting-outline-approval": { text: "等待大纲确认", color: "#d97706" },
     synthesizing:               { text: "生成报告中...", color: "var(--accent)" },
-    done:                       { text: "已完成", color: "#16a34a" },
+    "awaiting-save":            { text: "报告就绪 · 等待保存", color: "#d97706" },
+    saving:                     { text: "保存到知识库中...", color: "var(--accent)" },
+    done:                       { text: "已保存到知识库", color: "#16a34a" },
     failed:                     { text: "失败", color: "var(--error, #dc2626)" },
   };
 
@@ -548,6 +635,36 @@ export default function ResearchDialog({
               );
             }
 
+            if (msg.kind === "report") {
+              return (
+                <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "2px" }}>📨</span>
+                  <div style={{
+                    flex: 1,
+                    background: "var(--bg-page)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: "14px 16px",
+                    maxHeight: 420,
+                    overflowY: "auto",
+                  }}>
+                    <div style={{
+                      fontSize: 12, color: "var(--text-muted)", fontWeight: 600,
+                      marginBottom: 8,
+                    }}>
+                      报告已生成（{msg.content.length.toLocaleString()} 字符）— 请在下方选择保存到知识库 / 导出 / 丢弃
+                    </div>
+                    <div
+                      className="wiki-content"
+                      style={{ fontSize: 13, lineHeight: 1.7, color: "var(--text)" }}
+                      // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                    />
+                  </div>
+                </div>
+              );
+            }
+
             if (msg.kind === "done") {
               return (
                 <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
@@ -558,7 +675,7 @@ export default function ResearchDialog({
                     borderRadius: "10px", padding: "12px 14px",
                   }}>
                     <div style={{ fontSize: "13px", color: "#15803d", fontWeight: 600, marginBottom: "10px" }}>
-                      研究完成！已保存到知识库
+                      ✓ 报告已保存到知识库
                     </div>
                     <div style={{ display: "flex", gap: "8px" }}>
                       <button
@@ -570,6 +687,23 @@ export default function ResearchDialog({
                         📖 查看 Wiki
                       </button>
                     </div>
+                  </div>
+                </div>
+              );
+            }
+
+            if (msg.kind === "discarded") {
+              return (
+                <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "2px" }}>🗑️</span>
+                  <div style={{
+                    flex: 1,
+                    background: "var(--bg-page)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10, padding: "12px 14px",
+                    fontSize: 13, color: "var(--text-muted)",
+                  }}>
+                    报告已丢弃，未写入知识库。
                   </div>
                 </div>
               );
@@ -836,7 +970,7 @@ export default function ResearchDialog({
         </div>
 
         {/* 底部操作栏：根据阶段显示主操作按钮 */}
-        {(phase === "done" || phase === "failed" || phase === "awaiting-approval" || phase === "awaiting-outline-approval") && (
+        {(phase === "done" || phase === "failed" || phase === "awaiting-approval" || phase === "awaiting-outline-approval" || phase === "awaiting-save") && (
           <div style={{
             borderTop: "1px solid var(--border-light)",
             padding: "10px 18px",
@@ -856,7 +990,40 @@ export default function ResearchDialog({
                 {approving ? "提交中..." : "开始搜索 →"}
               </button>
             )}
-            {phase === "done" && (synthesisContent || doneSavedPath) && (
+            {phase === "awaiting-save" && (
+              <>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  style={{ fontSize: 13 }}
+                  onClick={() => void handleExportMd()}
+                  title="导出为 Markdown 文件（不写入 Wiki）"
+                  disabled={savingToWiki || discarding}
+                >
+                  ⬇ 导出 .md
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button"
+                  style={{ fontSize: 13, color: "var(--error, #dc2626)" }}
+                  onClick={() => void handleDiscard()}
+                  title="丢弃本次报告（不保存）"
+                  disabled={savingToWiki || discarding}
+                >
+                  {discarding ? "丢弃中..." : "🗑 丢弃"}
+                </button>
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--accent"
+                  style={{ fontSize: 13 }}
+                  onClick={() => void handleSaveToWiki()}
+                  disabled={savingToWiki || discarding}
+                >
+                  {savingToWiki ? "保存中..." : "💾 保存到知识库"}
+                </button>
+              </>
+            )}
+            {phase === "done" && (reportContent || synthesisContent || doneSavedPath) && (
               <button
                 type="button"
                 className="dev-panel__button"

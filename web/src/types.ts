@@ -544,9 +544,11 @@ export type ResearchTaskStatus =
   | "writing_section"
   | "assembling"
   | "saving"
+  | "awaiting_save"
   | "done"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "discarded";
 
 export interface ResearchTaskItem {
   id: number;

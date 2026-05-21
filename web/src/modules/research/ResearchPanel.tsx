@@ -40,9 +40,11 @@ export const getResearchStatusLabel = (status: ResearchTaskStatus): string => {
     writing_section:          "章节写作",
     assembling:               "组装报告",
     saving:                   "保存中",
-    done:                     "✓ 完成",
+    awaiting_save:            "⏸ 等待保存",
+    done:                     "✓ 已保存",
     failed:                   "✕ 失败",
     cancelled:                "已取消",
+    discarded:                "已丢弃",
   };
   return labels[status] ?? status;
 };
@@ -538,9 +540,11 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
               const RUNNING_STATES: ResearchTaskStatus[] = [
                 "queued", "decomposing", "planning_outline", "awaiting_outline_approval",
                 "searching", "synthesizing", "writing_section", "assembling", "saving",
+                "awaiting_save",
               ];
               const AWAITING_USER: ResearchTaskStatus[] = [
                 "awaiting_outline_approval",
+                "awaiting_save",
               ];
               const isRunning = RUNNING_STATES.includes(task.status);
               const needsUserAction = AWAITING_USER.includes(task.status);
