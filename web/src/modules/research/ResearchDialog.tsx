@@ -128,7 +128,11 @@ export default function ResearchDialog({
             sectionIndex: p.section_index,
             totalSections: p.total_sections,
           };
-          if (last?.kind === "progress" && last.stage === p.stage) {
+          // 任何阶段下，✓/✗ 前缀的消息表示一次独立事件（搜索结果 / 阶段完成
+          // 标记），每条都独立成行不折叠；其他消息（如 "正在 X..."）仍替换
+          // 上一条同 stage（避免同阶段心跳信息刷屏）。
+          const isIndependentEvent = p.message.startsWith("✓ ") || p.message.startsWith("✗ ");
+          if (!isIndependentEvent && last?.kind === "progress" && last.stage === p.stage) {
             return [...prev.slice(0, -1), entry];
           }
           return [...prev, entry];

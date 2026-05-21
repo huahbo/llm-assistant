@@ -922,8 +922,8 @@ async fn start_research_task(
             section_bodies.push(format!("{}\n\n{}", section.heading, section_body));
         }
 
-        // 生成摘要与结论（分别生成，确保 Conclusion 拼到正文末尾）
-        emit_progress("assembling", "生成摘要与结论...".to_string());
+        // 生成 Introduction / Conclusion（分别生成，分别 emit 进度，确保
+        // Conclusion 拼到正文末尾）
         let sections_overview = outline
             .sections
             .iter()
@@ -931,27 +931,45 @@ async fn start_research_task(
             .collect::<Vec<_>>()
             .join("\n");
 
+        emit_progress("assembling", "撰写 Introduction（引言）...".to_string());
         let intro_prompt = format!(
             "Write ONLY the Introduction section (150-250 words) of a research report on \"{topic}\".\n\nThe report will cover these sections:\n{sections}\n\nRequirements:\n- Start with the heading \"## Introduction\"\n- Write in the same language as the topic\n- Output ONLY the Introduction (no Conclusion, no other sections)",
             topic = topic,
             sections = sections_overview,
         );
-        let conclusion_prompt = format!(
-            "Write ONLY the Conclusion section (150-250 words) of a research report on \"{topic}\".\n\nThe report covered these sections:\n{sections}\n\nRequirements:\n- Start with the heading \"## Conclusion\"\n- Synthesize the main findings; do not introduce new facts\n- Write in the same language as the topic\n- Output ONLY the Conclusion",
-            topic = topic,
-            sections = sections_overview,
-        );
-
         let introduction = provider
             .complete(&intro_prompt)
             .await
             .map(|t| strip_think_tags(&t))
             .unwrap_or_default();
+        if introduction.is_empty() {
+            emit_progress("assembling", "Introduction 生成失败，将跳过".to_string());
+        } else {
+            emit_progress(
+                "assembling",
+                format!("✓ Introduction 已生成（{} 字）", introduction.chars().count()),
+            );
+        }
+
+        emit_progress("assembling", "撰写 Conclusion（结论）...".to_string());
+        let conclusion_prompt = format!(
+            "Write ONLY the Conclusion section (150-250 words) of a research report on \"{topic}\".\n\nThe report covered these sections:\n{sections}\n\nRequirements:\n- Start with the heading \"## Conclusion\"\n- Synthesize the main findings; do not introduce new facts\n- Write in the same language as the topic\n- Output ONLY the Conclusion",
+            topic = topic,
+            sections = sections_overview,
+        );
         let conclusion = provider
             .complete(&conclusion_prompt)
             .await
             .map(|t| strip_think_tags(&t))
             .unwrap_or_default();
+        if conclusion.is_empty() {
+            emit_progress("assembling", "Conclusion 生成失败，将跳过".to_string());
+        } else {
+            emit_progress(
+                "assembling",
+                format!("✓ Conclusion 已生成（{} 字）", conclusion.chars().count()),
+            );
+        }
 
         // 拼装：# Title → Introduction → 各 Section bodies → Conclusion
         let mut parts: Vec<String> = Vec::with_capacity(3 + section_bodies.len());
