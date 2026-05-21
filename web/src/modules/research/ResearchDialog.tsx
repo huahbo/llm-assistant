@@ -526,53 +526,213 @@ export default function ResearchDialog({
             return null;
           })}
 
-          {phase === "awaiting-outline-approval" && editableOutline && (
-            <div className="research-dialog-outline-approval" style={{ marginTop: 12, padding: "12px 16px", background: "var(--bg-content)", borderRadius: 8, border: "1px solid var(--border)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                请确认研究大纲（可编辑章节标题）：
-              </div>
-              {editableOutline.sections.map((section, idx) => (
-                <div key={idx} style={{ marginBottom: 10 }}>
-                  <input
-                    style={{ width: "100%", fontSize: 13, fontWeight: 600, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", marginBottom: 4 }}
-                    value={section.heading}
-                    onChange={(e) => {
-                      const newSections = [...editableOutline.sections];
-                      newSections[idx] = { ...newSections[idx], heading: e.target.value };
-                      setEditableOutline({ ...editableOutline, sections: newSections });
-                    }}
-                  />
-                  <div style={{ fontSize: 11.5, color: "var(--text-muted)", paddingLeft: 4 }}>
-                    {section.key_questions.join(" · ")}
-                  </div>
+          {phase === "awaiting-outline-approval" && editableOutline && (() => {
+            const outline = editableOutline;
+            const updateSection = (idx: number, patch: Partial<typeof outline.sections[number]>) => {
+              const newSections = outline.sections.map((s, i) =>
+                i === idx ? { ...s, ...patch } : s
+              );
+              setEditableOutline({ ...outline, sections: newSections });
+            };
+            const updateQuestion = (sIdx: number, qIdx: number, val: string) => {
+              const newSections = outline.sections.map((s, i) => {
+                if (i !== sIdx) return s;
+                const qs = [...s.key_questions];
+                qs[qIdx] = val;
+                return { ...s, key_questions: qs };
+              });
+              setEditableOutline({ ...outline, sections: newSections });
+            };
+            const addQuestion = (sIdx: number) => {
+              const newSections = outline.sections.map((s, i) =>
+                i === sIdx ? { ...s, key_questions: [...s.key_questions, ""] } : s
+              );
+              setEditableOutline({ ...outline, sections: newSections });
+            };
+            const removeQuestion = (sIdx: number, qIdx: number) => {
+              const newSections = outline.sections.map((s, i) => {
+                if (i !== sIdx) return s;
+                return { ...s, key_questions: s.key_questions.filter((_, j) => j !== qIdx) };
+              });
+              setEditableOutline({ ...outline, sections: newSections });
+            };
+            const addSection = () => {
+              const nextIdx = outline.sections.length + 1;
+              setEditableOutline({
+                ...outline,
+                sections: [
+                  ...outline.sections,
+                  { heading: `## ${nextIdx}. 新章节`, key_questions: [""], search_queries: [] },
+                ],
+              });
+            };
+            const removeSection = (idx: number) => {
+              setEditableOutline({
+                ...outline,
+                sections: outline.sections.filter((_, i) => i !== idx),
+              });
+            };
+
+            // 提交前清洗：去空、剪空 key_questions、空 section 删除
+            const sanitized = (): typeof outline => ({
+              ...outline,
+              sections: outline.sections
+                .map((s) => ({
+                  ...s,
+                  heading: s.heading.trim(),
+                  key_questions: s.key_questions.map((q) => q.trim()).filter(Boolean),
+                  // 没有 search_queries 时由后端从 key_questions 推断；这里保留原值
+                  search_queries: s.search_queries.filter((q) => q.trim()),
+                }))
+                .filter((s) => s.heading.length > 0),
+            });
+            const cleaned = sanitized();
+            const isValid = cleaned.sections.length > 0
+              && cleaned.sections.every((s) => s.key_questions.length > 0 || s.search_queries.length > 0);
+
+            return (
+              <div className="research-dialog-outline-approval" style={{
+                marginTop: 12, padding: "14px 16px",
+                background: "var(--bg-page)", borderRadius: 10,
+                border: "1px solid var(--border)",
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: "var(--text)" }}>
+                  请确认研究大纲（可编辑章节标题、关键问题，支持增删）：
                 </div>
-              ))}
-              <button
-                type="button"
-                className="dev-panel__button dev-panel__button--accent"
-                style={{ marginTop: 8, width: "100%" }}
-                disabled={approvingOutline}
-                onClick={async () => {
-                  setApprovingOutline(true);
-                  try {
-                    const json = JSON.stringify(editableOutline);
-                    await approveResearchOutline(taskId, json);
-                    setPhase("running");
-                    setMessages((prev) => [
-                      ...prev,
-                      { kind: "progress", stage: "searching", text: `✓ 大纲已确认（${editableOutline.sections.length} 章），开始搜索...` },
-                    ]);
-                  } catch {
-                    // 静默，继续等待
-                  } finally {
-                    setApprovingOutline(false);
-                  }
-                }}
-              >
-                {approvingOutline ? "确认中..." : `确认大纲（${editableOutline.sections.length} 章）`}
-              </button>
-            </div>
-          )}
+                {outline.sections.map((section, idx) => (
+                  <div key={idx} style={{
+                    marginBottom: 12,
+                    padding: "10px 12px",
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border-light)",
+                    borderRadius: 8,
+                  }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, color: "var(--accent)",
+                        minWidth: 22, textAlign: "center",
+                        background: "var(--bg-page)", borderRadius: 4,
+                        padding: "2px 6px", border: "1px solid var(--border-light)",
+                      }}>{idx + 1}</span>
+                      <input
+                        type="text"
+                        value={section.heading}
+                        placeholder="章节标题"
+                        onChange={(e) => updateSection(idx, { heading: e.target.value })}
+                        style={{
+                          flex: 1, fontSize: 13, fontWeight: 600,
+                          padding: "6px 10px", borderRadius: 6,
+                          border: "1.5px solid var(--border)",
+                          background: "var(--bg-card)", color: "var(--text)",
+                          outline: "none",
+                        }}
+                      />
+                      {outline.sections.length > 1 && (
+                        <button
+                          type="button"
+                          title="删除此章节"
+                          onClick={() => removeSection(idx)}
+                          style={{
+                            background: "none", border: "1px solid var(--border)",
+                            borderRadius: 5, cursor: "pointer",
+                            fontSize: 12, color: "var(--text-muted)",
+                            padding: "4px 8px", lineHeight: 1,
+                          }}
+                        >✕</button>
+                      )}
+                    </div>
+                    <div style={{ marginLeft: 28, display: "flex", flexDirection: "column", gap: 5 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>
+                        关键问题（每条 LLM 都会回答，可增删）
+                      </div>
+                      {section.key_questions.map((q, qIdx) => (
+                        <div key={qIdx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <span style={{
+                            fontSize: 10, color: "var(--text-faint, var(--text-muted))",
+                            minWidth: 14, textAlign: "right",
+                          }}>·</span>
+                          <input
+                            type="text"
+                            value={q}
+                            placeholder="新的关键问题..."
+                            onChange={(e) => updateQuestion(idx, qIdx, e.target.value)}
+                            style={{
+                              flex: 1, fontSize: 12,
+                              padding: "5px 8px", borderRadius: 5,
+                              border: "1px solid var(--border-light)",
+                              background: "var(--bg-page)", color: "var(--text)",
+                              outline: "none",
+                            }}
+                          />
+                          {section.key_questions.length > 1 && (
+                            <button
+                              type="button"
+                              title="删除此问题"
+                              onClick={() => removeQuestion(idx, qIdx)}
+                              style={{
+                                background: "none", border: "1px solid var(--border-light)",
+                                borderRadius: 4, cursor: "pointer",
+                                fontSize: 11, color: "var(--text-muted)",
+                                padding: "3px 6px", lineHeight: 1,
+                              }}
+                            >✕</button>
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => addQuestion(idx)}
+                        style={{
+                          alignSelf: "flex-start",
+                          marginTop: 2,
+                          background: "none", border: "1px dashed var(--border)",
+                          borderRadius: 5, cursor: "pointer",
+                          fontSize: 11, color: "var(--text-muted)",
+                          padding: "4px 10px",
+                        }}
+                      >+ 添加问题</button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addSection}
+                  style={{
+                    width: "100%", marginTop: 4, marginBottom: 10,
+                    background: "none", border: "1px dashed var(--accent)",
+                    borderRadius: 8, cursor: "pointer",
+                    fontSize: 12, color: "var(--accent)",
+                    padding: "8px 10px", fontWeight: 600,
+                  }}
+                >+ 添加章节</button>
+                <button
+                  type="button"
+                  className="dev-panel__button dev-panel__button--accent"
+                  style={{ width: "100%", opacity: isValid ? 1 : 0.5 }}
+                  disabled={approvingOutline || !isValid}
+                  title={!isValid ? "至少需要 1 个有效章节，每章至少 1 个关键问题或搜索词" : ""}
+                  onClick={async () => {
+                    setApprovingOutline(true);
+                    try {
+                      const json = JSON.stringify(cleaned);
+                      await approveResearchOutline(taskId, json);
+                      setPhase("running");
+                      setMessages((prev) => [
+                        ...prev,
+                        { kind: "progress", stage: "searching", text: `✓ 大纲已确认（${cleaned.sections.length} 章），开始搜索...` },
+                      ]);
+                    } catch {
+                      // 静默，继续等待
+                    } finally {
+                      setApprovingOutline(false);
+                    }
+                  }}
+                >
+                  {approvingOutline ? "确认中..." : `确认大纲（${cleaned.sections.length} 章）`}
+                </button>
+              </div>
+            );
+          })()}
 
           {/* 流式综合报告预览 */}
           {synthesisContent && (
