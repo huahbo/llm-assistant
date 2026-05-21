@@ -12,21 +12,13 @@
 
 ---
 
-## 本轮快讯（2026-05-21，Claude Code）— H25 完成 + H26 计划就绪
+## 本轮快讯（2026-05-21，Claude Sonnet 4.6）— H26 全部完成
 
-- **H25 Deep Research 升级**（commit `d34465b`）已落地：
-  - P1 报告格式：[N] 行内引用 + 学术/网页 References 双格式
-  - P2 多搜索提供商并行（Tavily + SearXNG）
-  - P3 调研（gpt-researcher / STORM）
-  - P4 独立 HTML 单文件导出
-  - ResearchPanel UI 全面美化（terminal 风格日志、状态色徽章、语义按钮色）
-- **H26 详细计划已写入 `docs/h26-deep-research-quality-plan.md`**（基于 2026-05-21 实地调研 5 个真实 GitHub 项目）：
-  - H26-B 学术 API（arXiv + Semantic Scholar）★★★ 低难度，先做
-  - H26-C 来源质量评分 ★★ 跟 B 一起做
-  - H26-A Outline-First 报告架构 ★★★ 中难度
-  - H26-E 分章节进度推送 ★ 收口做
-  - H27（延后）自适应追踪搜索 — 已记录在 §6，下次单独开
-- **下一轮接力**：Sonnet 4.6 按 H26 计划编码
+- **H26-B/C 学术 API + 质量评分**（commit `49babcb`）：arXiv + Semantic Scholar 搜索，`score_by_domain` 0.4–0.95 评分，`do_search_multi` 按分排序
+- **H26-A Outline-First 报告架构**（commit `49babcb`）：`generate_research_outline` LLM→JSON 大纲，章节独立搜索+综合，大纲审批 UI，fallback 向后兼容
+- **H26-E 分章节进度推送**（commit `003b234`）：`emit_section_progress` 携带 section_index/total_sections，ResearchDialog 渐进式进度条
+- **测试基线升至 291**，typecheck 零错误
+- **下一轮接力**：P22 打包发布 或 H27 自适应追踪搜索（独立立项）
 
 ---
 
@@ -53,10 +45,10 @@
 
 ---
 
-## 验证基线（2026-05-17）
+## 验证基线（2026-05-21）
 
 ```powershell
-cd E:\llm-wiki\src-tauri; cargo test    # 268 通过 0 失败
+cd E:\llm-wiki\src-tauri; cargo test    # 291 通过 0 失败
 cd E:\llm-wiki\web; npm run typecheck   # 零错误
 ```
 
@@ -101,16 +93,15 @@ cd E:\llm-wiki\web; npm run typecheck   # 零错误
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| **H26** | **Deep Research 质量升级** | 详见 `docs/h26-deep-research-quality-plan.md`；顺序 B → C → A → E |
 | P22 | 打包发布 | `npm run tauri:build`，生成 .msi/.exe 安装包 |
 | H10A | ToolRegistry trait 重构 | 可选优化 |
-| H27 | （延后）自适应追踪搜索 | 参考 local-deep-research LangGraph 策略，单独立项后再做 |
+| H27 | 自适应追踪搜索 | 参考 local-deep-research LangGraph 策略，单独立项后再做 |
 
 ---
 
 ## 关键架构约束
 
-- **测试基线**：268 通过（2026-05-17，v0.2.4，commit fd4ecda）
+- **测试基线**：291 通过（2026-05-21，commit 003b234）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**
