@@ -115,9 +115,10 @@ async fn save_research_output(
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let is_academic = ["arxiv.org", "doi.org", "pubmed", "scholar.google", "researchgate.net", "semanticscholar"]
-                .iter()
-                .any(|domain| r.url.contains(domain));
+            let is_academic = r.source_type == "academic"
+                || ["arxiv.org", "doi.org", "pubmed", "scholar.google", "researchgate.net", "semanticscholar"]
+                    .iter()
+                    .any(|domain| r.url.contains(domain));
             if is_academic {
                 format!("[{}] {}. *{}*. <{}>", i + 1, r.title, r.source, r.url)
             } else {
@@ -125,7 +126,7 @@ async fn save_research_output(
             }
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n\n");
 
     let cleaned = strip_think_tags(synthesized);
     let final_content = format!(
@@ -738,7 +739,7 @@ async fn start_research_task(
             section_bodies.push(format!("{}\n\n{}", section.heading, section_body));
         }
 
-        // 生成摘要与结论
+        // 生成摘要与结论（分别生成，确保 Conclusion 拼到正文末尾）
         emit_progress("assembling", "生成摘要与结论...".to_string());
         let sections_overview = outline
             .sections
@@ -746,23 +747,40 @@ async fn start_research_task(
             .map(|s| format!("- {}", s.heading))
             .collect::<Vec<_>>()
             .join("\n");
-        let ic_prompt = format!(
-            "Write a concise Introduction (150-250 words) and Conclusion (150-250 words) for a research report on \"{topic}\" covering:\n{sections}\n\nFormat exactly:\n## Introduction\n[content]\n\n## Conclusion\n[content]\n\nWrite in same language as the topic.",
+
+        let intro_prompt = format!(
+            "Write ONLY the Introduction section (150-250 words) of a research report on \"{topic}\".\n\nThe report will cover these sections:\n{sections}\n\nRequirements:\n- Start with the heading \"## Introduction\"\n- Write in the same language as the topic\n- Output ONLY the Introduction (no Conclusion, no other sections)",
+            topic = topic,
+            sections = sections_overview,
+        );
+        let conclusion_prompt = format!(
+            "Write ONLY the Conclusion section (150-250 words) of a research report on \"{topic}\".\n\nThe report covered these sections:\n{sections}\n\nRequirements:\n- Start with the heading \"## Conclusion\"\n- Synthesize the main findings; do not introduce new facts\n- Write in the same language as the topic\n- Output ONLY the Conclusion",
             topic = topic,
             sections = sections_overview,
         );
 
-        let intro_conclusion = match provider.complete(&ic_prompt).await {
-            Ok(text) => strip_think_tags(&text),
-            Err(_) => String::new(),
-        };
+        let introduction = provider
+            .complete(&intro_prompt)
+            .await
+            .map(|t| strip_think_tags(&t))
+            .unwrap_or_default();
+        let conclusion = provider
+            .complete(&conclusion_prompt)
+            .await
+            .map(|t| strip_think_tags(&t))
+            .unwrap_or_default();
 
-        let synthesized = format!(
-            "# {}\n\n{}\n\n{}",
-            topic,
-            intro_conclusion,
-            section_bodies.join("\n\n"),
-        );
+        // 拼装：# Title → Introduction → 各 Section bodies → Conclusion
+        let mut parts: Vec<String> = Vec::with_capacity(3 + section_bodies.len());
+        parts.push(format!("# {}", topic));
+        if !introduction.is_empty() {
+            parts.push(introduction);
+        }
+        parts.extend(section_bodies.into_iter());
+        if !conclusion.is_empty() {
+            parts.push(conclusion);
+        }
+        let synthesized = parts.join("\n\n");
 
         emit_progress("saving", "正在保存到知识库...".to_string());
         let _ = save_research_output(
