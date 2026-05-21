@@ -424,6 +424,32 @@ fn extract_json_object(text: &str) -> Option<String> {
     }
 }
 
+/// LLM 完成调用 + 自动重试一次。返回 (text, last_error_message)。
+/// - 第 1 次失败：发 emit_progress(stage, "...失败（错误），N00ms 后重试...") 并重试
+/// - 第 2 次仍失败：返回 (空串, Some(具体错误信息))；调用方决定是否继续
+async fn complete_with_retry(
+    provider: &dyn crate::llm::LlmProvider,
+    prompt: &str,
+    label: &str,
+    on_retry: impl Fn(&str),
+) -> (String, Option<String>) {
+    for attempt in 1..=2u8 {
+        match provider.complete(prompt).await {
+            Ok(text) => return (strip_think_tags(&text), None),
+            Err(err) => {
+                let msg = search_service::compact_llm_error(&err, 140);
+                if attempt == 1 {
+                    on_retry(&format!("{} 第 1 次失败（{}），800ms 后重试...", label, msg));
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                } else {
+                    return (String::new(), Some(msg));
+                }
+            }
+        }
+    }
+    (String::new(), Some(format!("{} 重试逻辑异常退出", label)))
+}
+
 async fn generate_research_outline(
     provider: &dyn crate::llm::LlmProvider,
     topic: &str,
@@ -947,18 +973,35 @@ async fn start_research_task(
                 questions = questions_text,
             );
 
-            let section_body = match provider.complete(&section_prompt).await {
-                Ok(text) => strip_think_tags(&text),
-                Err(e) => {
-                    emit_section_progress(
-                        sec_idx,
-                        total_sections,
-                        &section.heading,
-                        format!("第 {} 章生成失败: {}", sec_idx + 1, e),
+            let section_label = format!("第 {} 章「{}」", sec_idx + 1, section.heading);
+            let (section_body, section_err) = complete_with_retry(
+                &*provider,
+                &section_prompt,
+                &section_label,
+                |msg| {
+                    let _ = app_handle.emit(
+                        "research_progress",
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "stage": "writing_section",
+                            "message": msg,
+                            "section_index": sec_idx,
+                            "section_title": section.heading.clone(),
+                            "total_sections": total_sections,
+                        }),
                     );
-                    String::new()
-                }
-            };
+                },
+            )
+            .await;
+
+            if let Some(err) = section_err {
+                emit_section_progress(
+                    sec_idx,
+                    total_sections,
+                    &section.heading,
+                    format!("✗ {} 重试后仍失败：{}（章节将留空）", section_label, err),
+                );
+            }
 
             section_bodies.push(format!("{}\n\n{}", section.heading, section_body));
         }
@@ -978,14 +1021,19 @@ async fn start_research_task(
             topic = topic,
             sections = sections_overview,
         );
-        let introduction = provider
-            .complete(&intro_prompt)
-            .await
-            .map(|t| strip_think_tags(&t))
-            .unwrap_or_default();
-        if introduction.is_empty() {
-            emit_progress("assembling", "Introduction 生成失败，将跳过".to_string());
-        } else {
+        let (introduction, intro_err) = complete_with_retry(
+            &*provider,
+            &intro_prompt,
+            "Introduction",
+            |msg| emit_progress("assembling", msg.to_string()),
+        )
+        .await;
+        if let Some(err) = intro_err {
+            emit_progress(
+                "assembling",
+                format!("✗ Introduction 重试后仍失败：{}（将跳过）", err),
+            );
+        } else if !introduction.is_empty() {
             emit_progress(
                 "assembling",
                 format!("✓ Introduction 已生成（{} 字）", introduction.chars().count()),
@@ -998,14 +1046,19 @@ async fn start_research_task(
             topic = topic,
             sections = sections_overview,
         );
-        let conclusion = provider
-            .complete(&conclusion_prompt)
-            .await
-            .map(|t| strip_think_tags(&t))
-            .unwrap_or_default();
-        if conclusion.is_empty() {
-            emit_progress("assembling", "Conclusion 生成失败，将跳过".to_string());
-        } else {
+        let (conclusion, conclusion_err) = complete_with_retry(
+            &*provider,
+            &conclusion_prompt,
+            "Conclusion",
+            |msg| emit_progress("assembling", msg.to_string()),
+        )
+        .await;
+        if let Some(err) = conclusion_err {
+            emit_progress(
+                "assembling",
+                format!("✗ Conclusion 重试后仍失败：{}（将跳过）", err),
+            );
+        } else if !conclusion.is_empty() {
             emit_progress(
                 "assembling",
                 format!("✓ Conclusion 已生成（{} 字）", conclusion.chars().count()),
