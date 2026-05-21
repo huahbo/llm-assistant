@@ -362,6 +362,20 @@ async fn start_research_task(
             }),
         );
     };
+    let emit_section_progress =
+        |sec_idx: usize, total: usize, heading: &str, msg: String| {
+            let _ = app_handle.emit(
+                "research_progress",
+                serde_json::json!({
+                    "task_id": task_id,
+                    "stage": "writing_section",
+                    "message": msg,
+                    "section_index": sec_idx,
+                    "section_title": heading,
+                    "total_sections": total,
+                }),
+            );
+        };
 
     if let Err(err) = search_service::validate_search_config(&config) {
         report_research_failure(&db_path, &app_handle, task_id, &err);
@@ -693,14 +707,11 @@ async fn start_research_task(
         let mut section_bodies: Vec<String> = Vec::new();
 
         for (sec_idx, section) in outline.sections.iter().enumerate() {
-            emit_progress(
-                "writing_section",
-                format!(
-                    "第 {}/{} 章：{}",
-                    sec_idx + 1,
-                    total_sections,
-                    section.heading
-                ),
+            emit_section_progress(
+                sec_idx,
+                total_sections,
+                &section.heading,
+                format!("第 {}/{} 章：{}", sec_idx + 1, total_sections, section.heading),
             );
             let questions_text = section.key_questions.join("\n- ");
             let section_prompt = format!(
@@ -714,8 +725,10 @@ async fn start_research_task(
             let section_body = match provider.complete(&section_prompt).await {
                 Ok(text) => strip_think_tags(&text),
                 Err(e) => {
-                    emit_progress(
-                        "writing_section",
+                    emit_section_progress(
+                        sec_idx,
+                        total_sections,
+                        &section.heading,
                         format!("第 {} 章生成失败: {}", sec_idx + 1, e),
                     );
                     String::new()

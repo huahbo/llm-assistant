@@ -19,7 +19,7 @@ import type { ResearchOutlineData, ResearchTaskItem } from "../../types";
 
 type DialogMsg =
   | { kind: "user"; topic: string; depth: number; breadth: number }
-  | { kind: "progress"; stage: string; text: string }
+  | { kind: "progress"; stage: string; text: string; sectionIndex?: number; totalSections?: number }
   | { kind: "outline"; outline: ResearchOutlineData; taskId: number }
   | { kind: "queries"; queries: string[]; taskId: number }
   | { kind: "synthesis"; content: string }
@@ -101,10 +101,15 @@ export default function ResearchDialog({
         if (p.stage === "synthesizing") setPhase("synthesizing");
         setMessages((prev) => {
           const last = prev[prev.length - 1];
+          const entry: DialogMsg = {
+            kind: "progress", stage: p.stage, text: p.message,
+            sectionIndex: p.section_index,
+            totalSections: p.total_sections,
+          };
           if (last?.kind === "progress" && last.stage === p.stage) {
-            return [...prev.slice(0, -1), { kind: "progress", stage: p.stage, text: p.message }];
+            return [...prev.slice(0, -1), entry];
           }
-          return [...prev, { kind: "progress", stage: p.stage, text: p.message }];
+          return [...prev, entry];
         });
       });
       if (cancelled) { u1(); return; }
@@ -244,8 +249,12 @@ export default function ResearchDialog({
     decomposing: "🔍",
     searching: "🌐",
     synthesizing: "✍️",
+    writing_section: "📝",
+    assembling: "🔧",
     saving: "💾",
     awaiting_approval: "⏸️",
+    planning_outline: "📋",
+    awaiting_outline_approval: "⏸️",
   };
 
   const phaseLabel: Record<string, { text: string; color: string }> = {
@@ -339,17 +348,43 @@ export default function ResearchDialog({
             }
 
             if (msg.kind === "progress") {
+              const hasSectionBar = msg.stage === "writing_section"
+                && msg.sectionIndex !== undefined
+                && msg.totalSections !== undefined
+                && msg.totalSections > 0;
+              const pct = hasSectionBar
+                ? Math.round(((msg.sectionIndex! + 1) / msg.totalSections!) * 100)
+                : 0;
               return (
                 <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
                   <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "1px" }}>
                     {stageIcon[msg.stage] ?? "💬"}
                   </span>
-                  <span style={{
-                    fontSize: "13px", color: "var(--text-muted)",
-                    lineHeight: 1.6, paddingTop: "1px",
-                  }}>
-                    {msg.text}
-                  </span>
+                  <div style={{ flex: 1 }}>
+                    <span style={{
+                      fontSize: "13px", color: "var(--text-muted)",
+                      lineHeight: 1.6, paddingTop: "1px",
+                    }}>
+                      {msg.text}
+                    </span>
+                    {hasSectionBar && (
+                      <div style={{ marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div style={{
+                          flex: 1, height: "4px", borderRadius: "2px",
+                          background: "var(--border)", overflow: "hidden",
+                        }}>
+                          <div style={{
+                            width: `${pct}%`, height: "100%",
+                            background: "var(--accent)", borderRadius: "2px",
+                            transition: "width 0.3s ease",
+                          }} />
+                        </div>
+                        <span style={{ fontSize: "11px", color: "var(--text-faint)", minWidth: "32px" }}>
+                          {msg.sectionIndex! + 1}/{msg.totalSections}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             }

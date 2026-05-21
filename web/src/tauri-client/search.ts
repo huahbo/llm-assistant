@@ -55,6 +55,10 @@ export interface ResearchProgressPayload {
   task_id: number;
   stage: string;
   message: string;
+  /** 仅 writing_section 阶段携带（0-based） */
+  section_index?: number;
+  section_title?: string;
+  total_sections?: number;
 }
 
 /** 研究完成事件载荷 */
