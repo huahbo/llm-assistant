@@ -959,6 +959,25 @@ pub async fn approve_research_outline(
     Ok(())
 }
 
+/// 查询任务当前待审批的大纲数据（用于关闭对话框后重新打开恢复状态）。
+/// 返回 outline JSON 字符串，无待审批时返回 None。
+#[tauri::command]
+pub fn get_pending_research_outline(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+) -> Option<String> {
+    state.get_pending_outline(task_id)
+}
+
+/// 查询任务当前待审批的子查询（用于关闭对话框后重新打开恢复状态）。
+#[tauri::command]
+pub fn get_pending_research_queries(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+) -> Option<Vec<String>> {
+    state.get_pending_queries(task_id)
+}
+
 /// 对单个 Wiki 页面执行快速结构检查（仅文件系统，不依赖 LLM）。
 #[tauri::command]
 pub fn quick_lint_page(

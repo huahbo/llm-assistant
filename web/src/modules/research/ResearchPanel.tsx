@@ -535,7 +535,15 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
         ) : (
           <div className="research-task-list">
             {researchTasks.map((task) => {
-              const isRunning = task.status === "queued" || task.status === "decomposing" || task.status === "searching" || task.status === "synthesizing" || task.status === "saving";
+              const RUNNING_STATES: ResearchTaskStatus[] = [
+                "queued", "decomposing", "planning_outline", "awaiting_outline_approval",
+                "searching", "synthesizing", "writing_section", "assembling", "saving",
+              ];
+              const AWAITING_USER: ResearchTaskStatus[] = [
+                "awaiting_outline_approval",
+              ];
+              const isRunning = RUNNING_STATES.includes(task.status);
+              const needsUserAction = AWAITING_USER.includes(task.status);
               const cardMod = isRunning ? "running" : task.status === "done" ? "done" : task.status === "failed" ? "failed" : task.status === "cancelled" ? "cancelled" : "queued";
               const logs = taskLogs[task.id] ?? [];
               const showLog = logs.length > 0 || (task.status !== "done" && task.status !== "cancelled");
@@ -576,6 +584,22 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
                   <div className="research-task-actions">
                     {task.status === "failed" && task.error && (
                       <span className="research-task-error" title={task.error}>{task.error}</span>
+                    )}
+                    {isRunning && (
+                      <button
+                        type="button"
+                        className={`dev-panel__button${needsUserAction ? " dev-panel__button--accent" : ""}`}
+                        onClick={() => setDialogTask({
+                          taskId: task.id,
+                          topic: task.topic,
+                          depth: task.depth ?? 1,
+                          breadth: task.breadth ?? 3,
+                          initialTask: task,
+                        })}
+                        title={needsUserAction ? "任务等待你的输入" : "查看实时进度"}
+                      >
+                        {needsUserAction ? "⏸ 需要确认" : "💬 打开对话"}
+                      </button>
                     )}
                     {task.status === "done" && task.saved_path && (
                       <>

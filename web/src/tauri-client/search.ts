@@ -419,6 +419,28 @@ export async function approveResearchOutline(taskId: number, outlineJson: string
   return withTimeout(invoke("approve_research_outline", { taskId, outlineJson }), 30_000);
 }
 
+/** 查询任务当前缓存的待审批大纲 JSON（重新打开对话框时恢复用）。 */
+export async function getPendingResearchOutline(taskId: number): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const result = await withTimeout(
+    invoke<string | null>("get_pending_research_outline", { taskId }),
+    10_000,
+  );
+  return result ?? null;
+}
+
+/** 查询任务当前缓存的待审批子查询（重新打开对话框时恢复用）。 */
+export async function getPendingResearchQueries(taskId: number): Promise<string[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const result = await withTimeout(
+    invoke<string[] | null>("get_pending_research_queries", { taskId }),
+    10_000,
+  );
+  return result ?? null;
+}
+
 /** 启动研究任务，返回 task_id。非 Tauri 环境返回 -1。 */
 export async function startResearch(
   topic: string,

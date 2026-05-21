@@ -433,6 +433,10 @@ async fn start_research_task(
             .collect();
 
         let rx_outline = state.register_outline_approval(task_id);
+        // 缓存大纲数据，供 ResearchDialog 关闭后重开恢复
+        if let Ok(outline_json) = serde_json::to_string(&outline) {
+            state.cache_pending_outline(task_id, outline_json);
+        }
         let _ = app_handle.emit(
             "research_outline_ready",
             serde_json::json!({
@@ -512,6 +516,8 @@ async fn start_research_task(
         };
 
         let rx = state.register_query_approval(task_id);
+        // 缓存子查询，供 ResearchDialog 关闭后重开恢复
+        state.cache_pending_queries(task_id, current_queries.clone());
         let _ = app_handle.emit(
             "research_queries_ready",
             serde_json::json!({

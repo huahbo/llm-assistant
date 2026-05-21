@@ -142,6 +142,8 @@ fn main() {
             commands::research_md_to_html,
             commands::approve_research_queries,
             commands::approve_research_outline,
+            commands::get_pending_research_outline,
+            commands::get_pending_research_queries,
             commands::quick_lint_page,
             commands::get_vault_stats,
             commands::ai_assist_wiki_edit,

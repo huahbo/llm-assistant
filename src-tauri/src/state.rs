@@ -96,6 +96,10 @@ pub struct AppState {
     /// 等待用户审批研究大纲的一次性 channel（task_id -> sender）
     pending_outline_approvals:
         Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<String>>>,
+    /// 缓存待审批大纲数据（task_id -> outline JSON），用于对话框关闭后重开恢复
+    pending_outline_data: Mutex<std::collections::HashMap<i64, String>>,
+    /// 缓存待审批子查询（task_id -> queries），用于对话框关闭后重开恢复
+    pending_query_data: Mutex<std::collections::HashMap<i64, Vec<String>>>,
     /// 摄入预览缓存（preview_id -> 预览上下文）。
     ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
     /// Shell 会话缓存（session_id -> 会话状态）。
@@ -222,6 +226,8 @@ impl AppState {
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
+            pending_outline_data: Mutex::new(std::collections::HashMap::new()),
+            pending_query_data: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
@@ -318,6 +324,8 @@ impl AppState {
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
+            pending_outline_data: Mutex::new(std::collections::HashMap::new()),
+            pending_query_data: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
@@ -373,6 +381,22 @@ impl AppState {
 
     pub fn approve_research_outline(&self, task_id: i64, outline_json: String) -> bool {
         search_service::approve_research_outline(self, task_id, outline_json)
+    }
+
+    pub fn cache_pending_outline(&self, task_id: i64, outline_json: String) {
+        search_service::cache_pending_outline(self, task_id, outline_json)
+    }
+
+    pub fn get_pending_outline(&self, task_id: i64) -> Option<String> {
+        search_service::get_pending_outline(self, task_id)
+    }
+
+    pub fn cache_pending_queries(&self, task_id: i64, queries: Vec<String>) {
+        search_service::cache_pending_queries(self, task_id, queries)
+    }
+
+    pub fn get_pending_queries(&self, task_id: i64) -> Option<Vec<String>> {
+        search_service::get_pending_queries(self, task_id)
     }
 
     /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。

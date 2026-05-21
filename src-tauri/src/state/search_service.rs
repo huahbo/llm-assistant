@@ -846,6 +846,11 @@ pub fn register_query_approval(
 }
 
 pub fn approve_research_queries(state: &AppState, task_id: i64, queries: Vec<String>) -> bool {
+    state
+        .pending_query_data
+        .lock()
+        .expect("pending_query_data lock")
+        .remove(&task_id);
     if let Some(tx) = state
         .pending_query_approvals
         .lock()
@@ -871,7 +876,50 @@ pub fn register_outline_approval(
     rx
 }
 
+/// 缓存待审批的大纲 JSON，供 ResearchDialog 关闭后重新打开时恢复状态。
+pub fn cache_pending_outline(state: &AppState, task_id: i64, outline_json: String) {
+    state
+        .pending_outline_data
+        .lock()
+        .expect("pending_outline_data lock")
+        .insert(task_id, outline_json);
+}
+
+/// 查询待审批的大纲 JSON。
+pub fn get_pending_outline(state: &AppState, task_id: i64) -> Option<String> {
+    state
+        .pending_outline_data
+        .lock()
+        .expect("pending_outline_data lock")
+        .get(&task_id)
+        .cloned()
+}
+
+/// 缓存待审批的子查询。
+pub fn cache_pending_queries(state: &AppState, task_id: i64, queries: Vec<String>) {
+    state
+        .pending_query_data
+        .lock()
+        .expect("pending_query_data lock")
+        .insert(task_id, queries);
+}
+
+/// 查询待审批的子查询。
+pub fn get_pending_queries(state: &AppState, task_id: i64) -> Option<Vec<String>> {
+    state
+        .pending_query_data
+        .lock()
+        .expect("pending_query_data lock")
+        .get(&task_id)
+        .cloned()
+}
+
 pub fn approve_research_outline(state: &AppState, task_id: i64, outline_json: String) -> bool {
+    state
+        .pending_outline_data
+        .lock()
+        .expect("pending_outline_data lock")
+        .remove(&task_id);
     if let Some(tx) = state
         .pending_outline_approvals
         .lock()

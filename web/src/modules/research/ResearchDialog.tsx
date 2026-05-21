@@ -5,6 +5,8 @@ import {
   approveResearchOutline,
   approveResearchQueries,
   fetchWikiPageDetail,
+  getPendingResearchOutline,
+  getPendingResearchQueries,
   getResearchTask,
   listenResearchDone,
   listenResearchError,
@@ -45,10 +47,12 @@ export default function ResearchDialog({
   onRetry?: () => void;
   onOpenWikiPage: (path: string) => void;
 }) {
-  const initPhase = (): "running" | "awaiting-approval" | "synthesizing" | "done" | "failed" => {
+  const initPhase = (): "running" | "awaiting-approval" | "awaiting-outline-approval" | "synthesizing" | "done" | "failed" => {
     if (!initialTask) return "running";
     if (initialTask.status === "done") return "done";
     if (initialTask.status === "failed" || initialTask.status === "cancelled") return "failed";
+    if (initialTask.status === "awaiting_outline_approval") return "awaiting-outline-approval";
+    if (initialTask.status === "decomposing") return "running";
     return "running";
   };
 
@@ -198,6 +202,42 @@ export default function ResearchDialog({
         });
       }
     });
+  }, [taskId, isTerminal]);
+
+  // 关闭对话框后重新打开：恢复待审批的大纲 / 子查询数据。
+  // 后端把数据存在内存缓存里（pending_outline_data / pending_query_data），
+  // 不依赖 Tauri 事件的"一次性"特性。
+  useEffect(() => {
+    if (isTerminal) return;
+    let cancelled = false;
+    void getPendingResearchOutline(taskId).then((json) => {
+      if (cancelled || !json) return;
+      try {
+        const outline = JSON.parse(json) as ResearchOutlineData;
+        setEditableOutline((prev) => prev ?? outline);
+        setPhase((prev) => (prev === "running" ? "awaiting-outline-approval" : prev));
+        setMessages((prev) =>
+          prev.some((m) => m.kind === "outline")
+            ? prev
+            : [...prev, { kind: "outline", outline, taskId }],
+        );
+      } catch {
+        // 静默：缓存内容损坏时由事件流接管
+      }
+    });
+    void getPendingResearchQueries(taskId).then((queries) => {
+      if (cancelled || !queries || queries.length === 0) return;
+      setEditableQueries((prev) => (prev.length > 0 ? prev : queries));
+      setPhase((prev) => (prev === "running" ? "awaiting-approval" : prev));
+      setMessages((prev) =>
+        prev.some((m) => m.kind === "queries")
+          ? prev
+          : [...prev, { kind: "queries", queries, taskId }],
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [taskId, isTerminal]);
 
   const handleExportMd = async () => {
