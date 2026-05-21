@@ -395,36 +395,65 @@ export default function ResearchDialog({
               const pct = hasSectionBar
                 ? Math.round(((msg.sectionIndex! + 1) / msg.totalSections!) * 100)
                 : 0;
+
+              if (hasSectionBar) {
+                return (
+                  <div key={i} style={{
+                    display: "flex", gap: "10px", alignItems: "flex-start",
+                    padding: "10px 12px",
+                    background: "var(--bg-page)",
+                    border: "1px solid var(--border-light)",
+                    borderRadius: 10,
+                  }}>
+                    <span style={{ fontSize: "18px", flexShrink: 0, marginTop: "1px" }}>
+                      {stageIcon[msg.stage] ?? "📝"}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                        gap: 8, marginBottom: 6,
+                      }}>
+                        <span style={{
+                          fontSize: 13, fontWeight: 600, color: "var(--text)",
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          flex: 1, minWidth: 0,
+                        }}>
+                          {msg.text}
+                        </span>
+                        <span style={{
+                          fontSize: 12, fontWeight: 700, color: "var(--accent)",
+                          flexShrink: 0, fontVariantNumeric: "tabular-nums",
+                        }}>
+                          {msg.sectionIndex! + 1}/{msg.totalSections}
+                        </span>
+                      </div>
+                      <div style={{
+                        height: 8, borderRadius: 4,
+                        background: "var(--border-light, var(--border))", overflow: "hidden",
+                      }}>
+                        <div style={{
+                          width: `${pct}%`, height: "100%",
+                          background: "var(--accent)", borderRadius: 4,
+                          transition: "width 0.4s ease",
+                          boxShadow: "0 0 8px rgba(124,58,237,0.4)",
+                        }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               return (
                 <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
                   <span style={{ fontSize: "15px", flexShrink: 0, marginTop: "1px" }}>
                     {stageIcon[msg.stage] ?? "💬"}
                   </span>
-                  <div style={{ flex: 1 }}>
-                    <span style={{
-                      fontSize: "13px", color: "var(--text-muted)",
-                      lineHeight: 1.6, paddingTop: "1px",
-                    }}>
-                      {msg.text}
-                    </span>
-                    {hasSectionBar && (
-                      <div style={{ marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
-                        <div style={{
-                          flex: 1, height: "4px", borderRadius: "2px",
-                          background: "var(--border)", overflow: "hidden",
-                        }}>
-                          <div style={{
-                            width: `${pct}%`, height: "100%",
-                            background: "var(--accent)", borderRadius: "2px",
-                            transition: "width 0.3s ease",
-                          }} />
-                        </div>
-                        <span style={{ fontSize: "11px", color: "var(--text-faint)", minWidth: "32px" }}>
-                          {msg.sectionIndex! + 1}/{msg.totalSections}
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                  <span style={{
+                    fontSize: "13px", color: "var(--text-muted)",
+                    lineHeight: 1.6, paddingTop: "1px",
+                  }}>
+                    {msg.text}
+                  </span>
                 </div>
               );
             }

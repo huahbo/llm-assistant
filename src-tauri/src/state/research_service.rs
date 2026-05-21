@@ -237,6 +237,70 @@ async fn save_research_output(
     Ok(saved_path_str)
 }
 
+/// 多重策略提取 JSON 字符串：剥离 markdown code fence、剥离首尾说明文字。
+fn extract_json_object(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+
+    // 策略 1：剥离 ```json ... ``` 或 ``` ... ``` 代码围栏
+    if let Some(stripped) = trimmed.strip_prefix("```json").or_else(|| trimmed.strip_prefix("```")) {
+        let after_fence = stripped.trim_start_matches('\n').trim_start();
+        if let Some(end) = after_fence.rfind("```") {
+            let candidate = after_fence[..end].trim();
+            if candidate.starts_with('{') {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+
+    // 策略 2：括号配对匹配，找第一个完整 JSON 对象（处理嵌套示例 / 杂质前缀）
+    let bytes = trimmed.as_bytes();
+    let mut start_idx: Option<usize> = None;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_string {
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    start_idx = Some(i);
+                }
+                depth += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start_idx {
+                        return Some(trimmed[s..=i].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 策略 3：最朴素的首尾大括号截取（兜底）
+    let first = trimmed.find('{')?;
+    let last = trimmed.rfind('}')?;
+    if last > first {
+        Some(trimmed[first..=last].to_string())
+    } else {
+        None
+    }
+}
+
 async fn generate_research_outline(
     provider: &dyn crate::llm::LlmProvider,
     topic: &str,
@@ -244,22 +308,21 @@ async fn generate_research_outline(
 ) -> Option<ResearchOutline> {
     let section_count = config.breadth.clamp(3, 5);
     let prompt = format!(
-        "Create a structured research outline for: \"{topic}\"\n\nReturn ONLY valid JSON (no markdown fence, no explanation):\n{{\"title\":\"{topic}\",\"sections\":[{{\"heading\":\"## 1. Section Title\",\"key_questions\":[\"Question 1?\",\"Question 2?\"],\"search_queries\":[\"search term 1\",\"search term 2\"]}}]}}\n\nRequirements:\n- Exactly {n} body sections (not including Introduction or Conclusion)\n- Each section: 2-3 key_questions, 2-3 search_queries\n- Heading format: \"## N. Title\"\n- Write section headings and questions in same language as the topic\n- Output ONLY the JSON object",
+        "You are a research planner. Create a structured research outline for the topic below.\n\nTopic: \"{topic}\"\n\nOutput RULES (critical):\n- Output ONLY a single valid JSON object — no markdown code fences, no commentary, no leading or trailing text\n- Must parse with strict JSON (double quotes, no trailing commas)\n- Schema:\n  {{\n    \"title\": \"<topic>\",\n    \"sections\": [\n      {{\n        \"heading\": \"## 1. <Section Title>\",\n        \"key_questions\": [\"<Q1>\", \"<Q2>\"],\n        \"search_queries\": [\"<term1>\", \"<term2>\"]\n      }}\n    ]\n  }}\n\nContent requirements:\n- EXACTLY {n} body sections (do not include Introduction or Conclusion as separate sections)\n- Each section: 2-3 key_questions, 2-3 search_queries\n- Heading format: \"## N. Title\" where N is the section number\n- Write section headings, key_questions, and search_queries in the same language as the topic\n- key_questions are real questions ending with ?; search_queries are short keyword phrases\n\nBegin output now:",
         topic = topic,
         n = section_count,
     );
 
     let text = provider.complete(&prompt).await.ok()?;
     let cleaned = strip_think_tags(&text);
+    let json_str = extract_json_object(&cleaned)?;
 
-    let start = cleaned.find('{')?;
-    let end = cleaned.rfind('}')?;
-    if end < start {
-        return None;
+    // 直接解析；失败时尝试把单引号替换为双引号再试一次
+    if let Ok(outline) = serde_json::from_str::<ResearchOutline>(&json_str) {
+        return Some(outline);
     }
-    let json_str = &cleaned[start..=end];
-
-    serde_json::from_str::<ResearchOutline>(json_str).ok()
+    let coerced = json_str.replace('\'', "\"");
+    serde_json::from_str::<ResearchOutline>(&coerced).ok()
 }
 
 /// 从 LLM 输出行中提取 "TAG: content" 结构，容忍 markdown 装饰与大小写变体。
@@ -449,17 +512,39 @@ async fn start_research_task(
             format!("大纲已生成（{} 章），等待确认...", outline.sections.len()),
         );
 
-        let approved_json = tokio::time::timeout(
+        let approved_json = match tokio::time::timeout(
             std::time::Duration::from_secs(300),
             rx_outline,
         )
         .await
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or_else(|| serde_json::to_string(&outline).unwrap_or_default());
+        {
+            Ok(Ok(json)) => json,
+            Ok(Err(_)) => {
+                // channel 被关闭 / 任务已取消
+                emit_progress(
+                    "planning_outline",
+                    "审批通道已关闭，使用初始大纲继续".to_string(),
+                );
+                serde_json::to_string(&outline).unwrap_or_default()
+            }
+            Err(_) => {
+                // 300s 超时
+                emit_progress(
+                    "planning_outline",
+                    "等待大纲确认超时（5 分钟未操作），使用初始大纲自动继续".to_string(),
+                );
+                serde_json::to_string(&outline).unwrap_or_default()
+            }
+        };
 
         let approved = serde_json::from_str::<ResearchOutline>(&approved_json)
-            .unwrap_or(outline.clone());
+            .unwrap_or_else(|_| {
+                emit_progress(
+                    "planning_outline",
+                    "审批返回的大纲 JSON 解析失败，使用初始大纲继续".to_string(),
+                );
+                outline.clone()
+            });
 
         current_queries = approved
             .sections
@@ -477,7 +562,7 @@ async fn start_research_task(
         // ── H25 兜底路径：子查询分解 + 旧审批机制 ──────────────────────────
         emit_progress(
             "decomposing",
-            "大纲生成失败，使用标准查询分解...".to_string(),
+            "未生成有效大纲，降级为标准查询分解流程（章节进度不可用）".to_string(),
         );
         let decompose_prompt = format!(
             "You are an expert researcher. Generate {breadth} specific, diverse search queries to thoroughly investigate: \"{topic}\"\nOutput one query per line, no numbering, no extra text.",
@@ -1183,6 +1268,54 @@ mod tests {
     fn strip_think_tags_no_tags_unchanged() {
         let input = "plain text with no tags";
         assert_eq!(strip_think_tags(input), input);
+    }
+
+    // ─── JSON 提取（大纲生成） ───────────────────────────────────────────────
+
+    #[test]
+    fn extract_json_object_plain() {
+        let json = extract_json_object("{\"a\":1}").unwrap();
+        assert_eq!(json, "{\"a\":1}");
+    }
+
+    #[test]
+    fn extract_json_object_strips_code_fence() {
+        let text = "```json\n{\"a\":1,\"b\":[2,3]}\n```";
+        let json = extract_json_object(text).unwrap();
+        assert_eq!(json, "{\"a\":1,\"b\":[2,3]}");
+    }
+
+    #[test]
+    fn extract_json_object_strips_plain_fence() {
+        let text = "```\n{\"x\":\"y\"}\n```";
+        let json = extract_json_object(text).unwrap();
+        assert_eq!(json, "{\"x\":\"y\"}");
+    }
+
+    #[test]
+    fn extract_json_object_skips_leading_prose() {
+        let text = "Here is the outline:\n{\"title\":\"T\"}\nHope this helps.";
+        let json = extract_json_object(text).unwrap();
+        assert_eq!(json, "{\"title\":\"T\"}");
+    }
+
+    #[test]
+    fn extract_json_object_handles_nested_braces() {
+        let text = "Outline:\n{\"a\":{\"b\":1},\"c\":[{\"d\":2}]}";
+        let json = extract_json_object(text).unwrap();
+        assert_eq!(json, "{\"a\":{\"b\":1},\"c\":[{\"d\":2}]}");
+    }
+
+    #[test]
+    fn extract_json_object_ignores_braces_in_strings() {
+        let text = "{\"s\":\"contains } brace\",\"n\":1}";
+        let json = extract_json_object(text).unwrap();
+        assert_eq!(json, text);
+    }
+
+    #[test]
+    fn extract_json_object_none_when_no_object() {
+        assert!(extract_json_object("no json here").is_none());
     }
 
     // ─── DB research task CRUD tests ─────────────────────────────────────────
