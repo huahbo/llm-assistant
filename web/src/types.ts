@@ -559,11 +559,12 @@ export interface ResearchTaskItem {
 }
 
 export interface SearchConfig {
-  search_provider: "tavily" | "searxng" | "brave" | "none";
+  search_provider: "tavily" | "searxng" | "brave" | "arxiv" | "semantic_scholar" | "none";
   search_providers?: string[];
   tavily_api_key: string;
   searxng_url: string;
   brave_api_key: string;
+  semantic_scholar_api_key?: string | null;
   breadth: number;
   depth: number;
 }

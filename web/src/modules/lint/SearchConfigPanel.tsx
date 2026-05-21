@@ -9,6 +9,7 @@ export default function SearchConfigPanel() {
     tavily_api_key: "",
     searxng_url: "http://localhost:8080",
     brave_api_key: "",
+    semantic_scholar_api_key: "",
     breadth: 3,
     depth: 1,
   });
@@ -20,7 +21,7 @@ export default function SearchConfigPanel() {
       const providers = cfg.search_providers?.length
         ? cfg.search_providers
         : cfg.search_provider !== "none" ? [cfg.search_provider] : [];
-      setConfig({ ...cfg, search_providers: providers });
+      setConfig({ ...cfg, search_providers: providers, semantic_scholar_api_key: cfg.semantic_scholar_api_key ?? "" });
     }).catch(() => {});
   }, []);
 
@@ -42,6 +43,7 @@ export default function SearchConfigPanel() {
         ...config,
         search_provider: (providers[0] ?? "none") as SearchConfig["search_provider"],
         search_providers: providers,
+        semantic_scholar_api_key: config.semantic_scholar_api_key || null,
       };
       await setSearchConfig(toSave);
       setSaved(true);
@@ -113,6 +115,41 @@ export default function SearchConfigPanel() {
                   />
                 </div>
               )}
+              {/* arXiv checkbox */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={(config.search_providers ?? []).includes("arxiv")}
+                  onChange={() => toggleProvider("arxiv")}
+                />
+                <span>arXiv（学术论文，免费无需 API Key）</span>
+              </label>
+              {/* Semantic Scholar checkbox */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={(config.search_providers ?? []).includes("semantic_scholar")}
+                  onChange={() => toggleProvider("semantic_scholar")}
+                />
+                <span>Semantic Scholar（同行评审论文，免费，可选 API Key 提升限速）</span>
+              </label>
+              {(config.search_providers ?? []).includes("semantic_scholar") && (
+                <div style={{ marginLeft: 24 }}>
+                  <label className="dev-panel__label" htmlFor="s2-api-key">
+                    Semantic Scholar API Key（可选，留空走匿名限速）
+                  </label>
+                  <input
+                    id="s2-api-key"
+                    className="dev-panel__input"
+                    type="password"
+                    value={config.semantic_scholar_api_key ?? ""}
+                    onChange={(e) => setConfig(prev => ({ ...prev, semantic_scholar_api_key: e.target.value }))}
+                    placeholder="留空使用匿名访问（100 次/5分钟）"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -164,7 +201,7 @@ export default function SearchConfigPanel() {
         </div>
         <p className="settings-panel__hint">
           {isTauriRuntime()
-            ? "搜索配置用于 Deep Research 与 AI 对话的联网搜索。可同时勾选多个提供商，搜索时并行查询并合并去重结果。支持 Tavily（需 API Key）和 SearXNG（自托管）。"
+            ? "搜索配置用于 Deep Research 与 AI 对话的联网搜索。可同时勾选多个提供商，搜索时并行查询、按质量排序并合并去重结果。支持 Tavily（需 API Key）、SearXNG（自托管）、arXiv（学术论文，免费）、Semantic Scholar（同行评审，免费）。"
             : "浏览器预览模式下无法保存配置。"}
         </p>
       </div>

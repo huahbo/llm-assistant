@@ -116,6 +116,70 @@ pub(super) fn url_hostname(url: &str) -> String {
         .to_string()
 }
 
+pub(super) fn score_by_domain(url: &str) -> f32 {
+    let host = url_hostname(url);
+    if host.contains("arxiv.org") || host.contains("semanticscholar.org") {
+        0.95
+    } else if host.contains("doi.org") || host.contains("pubmed") || host.contains("ncbi.nlm.nih.gov") {
+        0.9
+    } else if host.ends_with(".edu") || host.ends_with(".gov") {
+        0.85
+    } else if host.contains("nature.com") || host.contains("sciencedirect.com")
+        || host.contains("ieee.org") || host.contains("acm.org")
+        || host.contains("springer.com") || host.contains("wiley.com")
+    {
+        0.85
+    } else if host.contains("wikipedia.org") {
+        0.7
+    } else if host.contains("github.com") || host.contains("stackoverflow.com") {
+        0.65
+    } else if host.contains("medium.com") || host.contains("dev.to")
+        || host.contains("zhihu.com") || host.contains("csdn.net")
+        || host.contains("cnblogs.com")
+    {
+        0.4
+    } else {
+        0.5
+    }
+}
+
+fn extract_xml_entries(xml: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut start = 0;
+    while let Some(rel) = xml[start..].find("<entry>") {
+        let abs_start = start + rel;
+        if let Some(rel_end) = xml[abs_start..].find("</entry>") {
+            let abs_end = abs_start + rel_end + "</entry>".len();
+            entries.push(xml[abs_start..abs_end].to_string());
+            start = abs_end;
+        } else {
+            break;
+        }
+    }
+    entries
+}
+
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)?;
+    Some(xml[start..start + end].to_string())
+}
+
+fn extract_first_xml_author(entry_xml: &str) -> String {
+    if let Some(author_start) = entry_xml.find("<author>") {
+        let after = &entry_xml[author_start..];
+        if let Some(author_end) = after.find("</author>") {
+            let author_block = &after[..author_end + "</author>".len()];
+            if let Some(name) = extract_xml_tag(author_block, "name") {
+                return name.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 fn normalize_search_provider(provider: &str) -> &str {
     match provider.trim().to_ascii_lowercase().as_str() {
         "tavily" => "tavily",
@@ -138,7 +202,7 @@ pub(super) fn validate_search_config(config: &SearchConfig) -> Result<(), String
             "searxng" if config.searxng_url.trim().is_empty() => {
                 return Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string());
             }
-            "tavily" | "searxng" => {}
+            "tavily" | "searxng" | "arxiv" | "semantic_scholar" => {}
             other => {
                 return Err(format!("搜索配置错误：不支持的搜索提供商 `{}`", other));
             }
@@ -214,8 +278,174 @@ async fn search_tavily(
             .chars()
             .take(300)
             .collect();
+        let quality_score = score_by_domain(&url);
         let source = url_hostname(&url);
-        out.push(WebSearchResult { title, url, snippet, source });
+        out.push(WebSearchResult { title, url, snippet, source, quality_score, source_type: "web".to_string() });
+    }
+    Ok(out)
+}
+
+async fn search_arxiv(
+    client: &reqwest::Client,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<WebSearchResult>, String> {
+    let search_query = format!("all:{}", query);
+    let limit_str = limit.to_string();
+    let resp = client
+        .get("http://export.arxiv.org/api/query")
+        .query(&[
+            ("search_query", search_query.as_str()),
+            ("start", "0"),
+            ("max_results", limit_str.as_str()),
+            ("sortBy", "relevance"),
+        ])
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("arXiv 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("arXiv HTTP {}", resp.status().as_u16()));
+    }
+
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("arXiv 响应读取失败: {}", e))?;
+
+    let entries = extract_xml_entries(&text);
+    let mut out = Vec::new();
+    for entry in entries.iter().take(limit) {
+        let title = extract_xml_tag(entry, "title")
+            .map(|s| s.trim().replace('\n', " "))
+            .unwrap_or_default();
+        let summary = extract_xml_tag(entry, "summary")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let id_url = extract_xml_tag(entry, "id")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let published = extract_xml_tag(entry, "published")
+            .unwrap_or_default();
+        let year: String = published.chars().take(4).collect();
+        let author = extract_first_xml_author(entry);
+
+        if title.is_empty() || id_url.is_empty() {
+            continue;
+        }
+
+        let prefix = if author.is_empty() {
+            String::new()
+        } else {
+            format!("{} ({}). ", author, year)
+        };
+        let snippet = format!(
+            "{}{}",
+            prefix,
+            summary.chars().take(280).collect::<String>()
+        );
+
+        let source = url_hostname(&id_url);
+        let quality_score = score_by_domain(&id_url);
+        out.push(WebSearchResult {
+            title,
+            url: id_url,
+            snippet,
+            source,
+            quality_score,
+            source_type: "academic".to_string(),
+        });
+    }
+    Ok(out)
+}
+
+async fn search_semantic_scholar(
+    client: &reqwest::Client,
+    query: &str,
+    limit: usize,
+    api_key: Option<&str>,
+) -> Result<Vec<WebSearchResult>, String> {
+    let limit_str = limit.to_string();
+    let mut req = client
+        .get("https://api.semanticscholar.org/graph/v1/paper/search")
+        .query(&[
+            ("query", query),
+            ("limit", &limit_str),
+            ("fields", "title,abstract,authors,year,url,venue"),
+        ])
+        .timeout(std::time::Duration::from_secs(12));
+
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        req = req.header("x-api-key", key);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("Semantic Scholar 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(120).collect();
+        return Err(format!("Semantic Scholar HTTP {}: {}", status, preview));
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Semantic Scholar 响应解析失败: {}", e))?;
+
+    let papers = data["data"].as_array().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for paper in papers.iter().take(limit) {
+        let title = paper["title"].as_str().unwrap_or("").to_string();
+        let abstract_text = paper["abstract"].as_str().unwrap_or("").to_string();
+        let year = paper["year"]
+            .as_i64()
+            .map(|y| y.to_string())
+            .unwrap_or_default();
+        let venue = paper["venue"].as_str().unwrap_or("").to_string();
+        let url = paper["url"].as_str().unwrap_or("").to_string();
+        let author = paper["authors"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|a| a["name"].as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+
+        let prefix = if author.is_empty() {
+            String::new()
+        } else {
+            format!("{} ({}). ", author, year)
+        };
+        let venue_part = if venue.is_empty() {
+            String::new()
+        } else {
+            format!("{}. ", venue)
+        };
+        let snippet = format!(
+            "{}{}{}",
+            prefix,
+            venue_part,
+            abstract_text.chars().take(240).collect::<String>()
+        );
+
+        let source = url_hostname(&url);
+        let quality_score = score_by_domain(&url);
+        out.push(WebSearchResult {
+            title,
+            url,
+            snippet,
+            source,
+            quality_score,
+            source_type: "academic".to_string(),
+        });
     }
     Ok(out)
 }
@@ -272,8 +502,9 @@ async fn search_searxng_endpoint_with_params(
             .chars()
             .take(300)
             .collect();
+        let quality_score = score_by_domain(&url_str);
         let source = url_hostname(&url_str);
-        out.push(WebSearchResult { title, url: url_str, snippet, source });
+        out.push(WebSearchResult { title, url: url_str, snippet, source, quality_score, source_type: "web".to_string() });
     }
     Ok((out, unresponsive_engines))
 }
@@ -386,8 +617,9 @@ async fn search_brave(
             let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let snippet = item.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if url.is_empty() { continue; }
+            let quality_score = score_by_domain(&url);
             let source = url_hostname(&url);
-            out.push(WebSearchResult { title, url, snippet, source });
+            out.push(WebSearchResult { title, url, snippet, source, quality_score, source_type: "web".to_string() });
         }
     }
     Ok(out)
@@ -426,8 +658,9 @@ async fn search_powershell(
                 String::new()
             };
             if !href.is_empty() && !title.is_empty() {
+                let quality_score = score_by_domain(&href);
                 let source = url_hostname(&href);
-                out.push(WebSearchResult { title, url: href, snippet, source });
+                out.push(WebSearchResult { title, url: href, snippet, source, quality_score, source_type: "web".to_string() });
             }
         }
         i += 1;
@@ -450,6 +683,14 @@ pub(super) async fn do_search(
             search_searxng(client, query, &config.searxng_url, max_results).await
         }
         "searxng" => Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string()),
+        "arxiv" => search_arxiv(client, query, max_results).await,
+        "semantic_scholar" => {
+            let api_key = config
+                .semantic_scholar_api_key
+                .as_deref()
+                .filter(|k| !k.is_empty());
+            search_semantic_scholar(client, query, max_results, api_key).await
+        }
         "none" => Err("搜索配置错误：未启用搜索 Provider".to_string()),
         other => Err(format!("搜索配置错误：不支持的搜索 Provider `{}`", other)),
     }
@@ -506,6 +747,12 @@ pub(super) async fn do_search_multi(
     if merged.is_empty() {
         Err(last_err.unwrap_or_else(|| "所有搜索提供商均无结果".to_string()))
     } else {
+        merged.sort_by(|a, b| {
+            b.quality_score
+                .partial_cmp(&a.quality_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        merged.truncate(limit);
         Ok(merged)
     }
 }
@@ -690,5 +937,68 @@ mod tests {
         cfg.search_provider = "searxng".to_string();
         cfg.searxng_url = "localhost:8080".to_string();
         assert!(validate_search_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn test_score_by_domain_academic() {
+        assert!((score_by_domain("https://arxiv.org/abs/2401.12345") - 0.95).abs() < 0.01);
+        assert!((score_by_domain("https://www.semanticscholar.org/paper/abc") - 0.95).abs() < 0.01);
+        assert!((score_by_domain("https://doi.org/10.1234/abc") - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_score_by_domain_low_quality() {
+        assert!((score_by_domain("https://medium.com/post") - 0.4).abs() < 0.01);
+        assert!((score_by_domain("https://csdn.net/article") - 0.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_score_by_domain_default() {
+        assert!((score_by_domain("https://example.com/page") - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_extract_xml_tag() {
+        let xml = "<entry><title>Test Paper</title><summary>Abstract here.</summary></entry>";
+        assert_eq!(extract_xml_tag(xml, "title").as_deref(), Some("Test Paper"));
+        assert_eq!(extract_xml_tag(xml, "summary").as_deref(), Some("Abstract here."));
+        assert_eq!(extract_xml_tag(xml, "notexist"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_entries() {
+        let xml = "<feed><entry><title>A</title></entry><entry><title>B</title></entry></feed>";
+        let entries = extract_xml_entries(xml);
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].contains("<title>A</title>"));
+    }
+
+    #[test]
+    fn test_arxiv_parse_simulated() {
+        let xml = r#"<feed>
+<entry>
+<id>http://arxiv.org/abs/2401.12345v1</id>
+<title>A Survey of Large Language Models</title>
+<summary>This paper surveys recent advances...</summary>
+<published>2024-01-15T00:00:00Z</published>
+<author><name>John Doe</name></author>
+</entry>
+</feed>"#;
+        let entries = extract_xml_entries(xml);
+        assert_eq!(entries.len(), 1);
+        let title = extract_xml_tag(&entries[0], "title");
+        assert_eq!(title.as_deref(), Some("A Survey of Large Language Models"));
+        let author = extract_first_xml_author(&entries[0]);
+        assert_eq!(author, "John Doe");
+    }
+
+    #[test]
+    fn test_semantic_scholar_json_parse() {
+        let json_str = r#"{"data":[{"title":"BERT","abstract":"Pre-training...","authors":[{"name":"Devlin"}],"year":2019,"url":"https://www.semanticscholar.org/paper/bert","venue":"NAACL"}]}"#;
+        let data: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let papers = data["data"].as_array().unwrap();
+        assert_eq!(papers.len(), 1);
+        assert_eq!(papers[0]["title"].as_str(), Some("BERT"));
+        assert_eq!(papers[0]["authors"][0]["name"].as_str(), Some("Devlin"));
     }
 }

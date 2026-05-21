@@ -1040,6 +1040,8 @@ pub struct SearchConfig {
     pub tavily_api_key: String,
     pub searxng_url: String,
     pub brave_api_key: String,
+    #[serde(default)]
+    pub semantic_scholar_api_key: Option<String>,
     pub breadth: i32,
     pub depth: i32,
 }
@@ -1052,6 +1054,7 @@ impl Default for SearchConfig {
             tavily_api_key: "".into(),
             searxng_url: "http://localhost:8080".into(),
             brave_api_key: "".into(),
+            semantic_scholar_api_key: None,
             breadth: 3,
             depth: 1,
         }
@@ -1077,6 +1080,8 @@ pub struct WebSearchResult {
     pub url: String,
     pub snippet: String,
     pub source: String,
+    pub quality_score: f32,
+    pub source_type: String,
 }
 
 /// 被引用次数统计（单条记录）。
