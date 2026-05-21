@@ -95,6 +95,13 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
         const hasMulti = Array.isArray(cfg.search_providers) && cfg.search_providers.length > 0;
         const hasSingle = cfg.search_provider !== "none";
         setHasSearchProvider(hasMulti || hasSingle);
+        // 同步默认 depth / breadth（SearchConfigPanel 中的"默认研究深度/默认搜索广度"）
+        if (typeof cfg.depth === "number" && cfg.depth >= 1 && cfg.depth <= 5) {
+          setDepth(cfg.depth);
+        }
+        if (typeof cfg.breadth === "number" && cfg.breadth >= 2 && cfg.breadth <= 5) {
+          setBreadth(cfg.breadth);
+        }
       })
       .catch(() => {});
   }, [refreshTasks]);
