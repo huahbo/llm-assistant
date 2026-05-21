@@ -537,8 +537,12 @@ export type IngestQueueStatus = "queued" | "running" | "done" | "failed" | "canc
 export type ResearchTaskStatus =
   | "queued"
   | "decomposing"
+  | "planning_outline"
+  | "awaiting_outline_approval"
   | "searching"
   | "synthesizing"
+  | "writing_section"
+  | "assembling"
   | "saving"
   | "done"
   | "failed"
@@ -556,6 +560,22 @@ export interface ResearchTaskItem {
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ResearchOutlineSection {
+  heading: string;
+  key_questions: string[];
+  search_queries: string[];
+}
+
+export interface ResearchOutlineData {
+  title: string;
+  sections: ResearchOutlineSection[];
+}
+
+export interface ResearchOutlinePayload {
+  task_id: number;
+  outline: ResearchOutlineData;
 }
 
 export interface SearchConfig {

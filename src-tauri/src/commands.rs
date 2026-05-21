@@ -943,6 +943,22 @@ pub async fn approve_research_queries(
     Ok(())
 }
 
+/// 用户审批研究大纲（Outline-First 模式）。
+#[tauri::command]
+pub async fn approve_research_outline(
+    state: tauri::State<'_, crate::state::AppState>,
+    task_id: i64,
+    outline_json: String,
+) -> Result<(), String> {
+    if outline_json.trim().is_empty() {
+        return Err("大纲 JSON 不能为空".to_string());
+    }
+    if !state.approve_research_outline(task_id, outline_json) {
+        return Err("任务不存在或已超时，请重新开始研究".to_string());
+    }
+    Ok(())
+}
+
 /// 对单个 Wiki 页面执行快速结构检查（仅文件系统，不依赖 LLM）。
 #[tauri::command]
 pub fn quick_lint_page(

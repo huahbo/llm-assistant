@@ -13,6 +13,19 @@ use crate::{
     state::search_service,
 };
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ResearchOutline {
+    title: String,
+    sections: Vec<OutlineSection>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OutlineSection {
+    heading: String,
+    key_questions: Vec<String>,
+    search_queries: Vec<String>,
+}
+
 // ── 内部辅助函数 ────────────────────────────────────────────────────────────
 
 /// 将研究主题转换为 URL 友好的 slug（最多 50 字符）。
@@ -223,6 +236,31 @@ async fn save_research_output(
     Ok(saved_path_str)
 }
 
+async fn generate_research_outline(
+    provider: &dyn crate::llm::LlmProvider,
+    topic: &str,
+    config: &SearchConfig,
+) -> Option<ResearchOutline> {
+    let section_count = config.breadth.clamp(3, 5);
+    let prompt = format!(
+        "Create a structured research outline for: \"{topic}\"\n\nReturn ONLY valid JSON (no markdown fence, no explanation):\n{{\"title\":\"{topic}\",\"sections\":[{{\"heading\":\"## 1. Section Title\",\"key_questions\":[\"Question 1?\",\"Question 2?\"],\"search_queries\":[\"search term 1\",\"search term 2\"]}}]}}\n\nRequirements:\n- Exactly {n} body sections (not including Introduction or Conclusion)\n- Each section: 2-3 key_questions, 2-3 search_queries\n- Heading format: \"## N. Title\"\n- Write section headings and questions in same language as the topic\n- Output ONLY the JSON object",
+        topic = topic,
+        n = section_count,
+    );
+
+    let text = provider.complete(&prompt).await.ok()?;
+    let cleaned = strip_think_tags(&text);
+
+    let start = cleaned.find('{')?;
+    let end = cleaned.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    let json_str = &cleaned[start..=end];
+
+    serde_json::from_str::<ResearchOutline>(json_str).ok()
+}
+
 /// 从 LLM 输出行中提取 "TAG: content" 结构，容忍 markdown 装饰与大小写变体。
 ///
 /// 支持格式：
@@ -362,58 +400,121 @@ async fn start_research_task(
     let mut all_used_queries: Vec<String> = Vec::new();
     // 全局源编号（跨轮次不重置）
     let mut source_index: usize = 0;
+    // Outline-First 大纲（若生成成功，Phase 3 时用于章节合成；否则 None）
+    let mut current_outline: Option<ResearchOutline> = None;
 
-    // ── Phase 1: 初始查询分解 ─────────────────────────────────────────────────
-    emit_progress("decomposing", "正在规划研究路径...".to_string());
-    let decompose_prompt = format!(
-        "You are an expert researcher. Generate {breadth} specific, diverse search queries to thoroughly investigate: \"{topic}\"\nOutput one query per line, no numbering, no extra text.",
-        breadth = config.breadth,
-        topic = topic
-    );
-    let mut current_queries: Vec<String> = match provider.complete(&decompose_prompt).await {
-        Ok(text) => {
-            let qs: Vec<String> = strip_think_tags(&text)
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .take(config.breadth as usize)
-                .collect();
-            if qs.is_empty() {
-                emit_progress(
-                    "decomposing",
-                    "LLM 未生成子查询，使用原始主题搜索".to_string(),
-                );
-                vec![topic.clone()]
-            } else {
-                emit_progress("decomposing", format!("生成了 {} 个研究子查询", qs.len()));
-                qs
-            }
-        }
-        Err(_) => {
-            emit_progress("decomposing", "查询分解失败，使用原始主题搜索".to_string());
-            vec![topic.clone()]
-        }
-    };
+    // ── Phase 1/A: 查询规划（Outline-First 或 H25 兜底） ──────────────────────
+    let mut current_queries: Vec<String>;
 
-    // 暂停：通知前端子查询已就绪，等待用户审批（最多 5 分钟）
-    let rx = state.register_query_approval(task_id);
-    let _ = app_handle.emit(
-        "research_queries_ready",
-        serde_json::json!({
-            "task_id": task_id,
-            "queries": current_queries,
-        }),
-    );
-    emit_progress(
-        "awaiting_approval",
-        format!("已分解为 {} 个研究方向，等待确认...", current_queries.len()),
-    );
+    emit_progress("planning_outline", "正在规划研究大纲...".to_string());
+    let outline_opt = generate_research_outline(&*provider, &topic, &config).await;
 
-    current_queries = tokio::time::timeout(std::time::Duration::from_secs(300), rx)
+    if let Some(outline) = outline_opt {
+        // ── Outline-First 路径 ──────────────────────────────────────────────
+        let flat_queries: Vec<String> = outline
+            .sections
+            .iter()
+            .flat_map(|s| s.search_queries.iter().cloned())
+            .collect();
+
+        let rx_outline = state.register_outline_approval(task_id);
+        let _ = app_handle.emit(
+            "research_outline_ready",
+            serde_json::json!({
+                "task_id": task_id,
+                "outline": serde_json::to_value(&outline).unwrap_or_default(),
+            }),
+        );
+        emit_progress(
+            "awaiting_outline_approval",
+            format!("大纲已生成（{} 章），等待确认...", outline.sections.len()),
+        );
+
+        let approved_json = tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            rx_outline,
+        )
         .await
         .ok()
         .and_then(|r| r.ok())
-        .unwrap_or_else(|| current_queries.clone());
+        .unwrap_or_else(|| serde_json::to_string(&outline).unwrap_or_default());
+
+        let approved = serde_json::from_str::<ResearchOutline>(&approved_json)
+            .unwrap_or(outline.clone());
+
+        current_queries = approved
+            .sections
+            .iter()
+            .flat_map(|s| s.search_queries.iter().cloned())
+            .collect();
+        if current_queries.is_empty() {
+            current_queries = flat_queries;
+        }
+        if current_queries.is_empty() {
+            current_queries = vec![topic.clone()];
+        }
+        current_outline = Some(approved);
+    } else {
+        // ── H25 兜底路径：子查询分解 + 旧审批机制 ──────────────────────────
+        emit_progress(
+            "decomposing",
+            "大纲生成失败，使用标准查询分解...".to_string(),
+        );
+        let decompose_prompt = format!(
+            "You are an expert researcher. Generate {breadth} specific, diverse search queries to thoroughly investigate: \"{topic}\"\nOutput one query per line, no numbering, no extra text.",
+            breadth = config.breadth,
+            topic = topic
+        );
+        current_queries = match provider.complete(&decompose_prompt).await {
+            Ok(text) => {
+                let qs: Vec<String> = strip_think_tags(&text)
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .take(config.breadth as usize)
+                    .collect();
+                if qs.is_empty() {
+                    emit_progress(
+                        "decomposing",
+                        "LLM 未生成子查询，使用原始主题搜索".to_string(),
+                    );
+                    vec![topic.clone()]
+                } else {
+                    emit_progress(
+                        "decomposing",
+                        format!("生成了 {} 个研究子查询", qs.len()),
+                    );
+                    qs
+                }
+            }
+            Err(_) => {
+                emit_progress(
+                    "decomposing",
+                    "查询分解失败，使用原始主题搜索".to_string(),
+                );
+                vec![topic.clone()]
+            }
+        };
+
+        let rx = state.register_query_approval(task_id);
+        let _ = app_handle.emit(
+            "research_queries_ready",
+            serde_json::json!({
+                "task_id": task_id,
+                "queries": current_queries,
+            }),
+        );
+        emit_progress(
+            "awaiting_approval",
+            format!("已分解为 {} 个研究方向，等待确认...", current_queries.len()),
+        );
+
+        current_queries = tokio::time::timeout(std::time::Duration::from_secs(300), rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_else(|| current_queries.clone());
+    }
 
     // ── Phase 2: 迭代式并发搜索 + 学习提取 ──────────────────────────────────
     let max_depth = config.depth.clamp(1, 5);
@@ -567,132 +668,227 @@ async fn start_research_task(
         }
     }
 
-    // ── Phase 3: 最终综合报告 ────────────────────────────────────────────────
-    emit_progress(
-        "synthesizing",
-        format!("综合 {} 条关键发现，撰写研究报告...", learnings.len()),
-    );
+    // ── Phase 3/4: 报告合成与保存 ─────────────────────────────────────────────
 
-    let wiki_index = {
-        let guard = state.inner.lock().expect("状态锁");
-        guard
-            .vault_path
-            .as_ref()
-            .and_then(|vp| fs::read_to_string(vp.join("wiki").join("index.md")).ok())
-            .unwrap_or_default()
-    };
-    let wiki_excerpt: String = wiki_index.chars().take(800).collect();
+    if let Some(ref outline) = current_outline {
+        // ── Outline-First：按章节合成 ───────────────────────────────────────
+        emit_progress(
+            "synthesizing",
+            format!("按大纲合成报告（{} 章）...", outline.sections.len()),
+        );
 
-    // 截断学习成果到 8000 字符防止 LLM token 溢出
-    let learnings_text = learnings
-        .iter()
-        .enumerate()
-        .map(|(i, l)| format!("{}. {}", i + 1, l))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let context: String = learnings_text.chars().take(8000).collect();
+        let sources_block_full: String = all_results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let snip: String = r.snippet.chars().take(200).collect();
+                let quality = if r.quality_score > 0.8 { " [high quality]" } else { "" };
+                format!("[{}]{} {} ({}): {}", i + 1, quality, r.title, r.url, snip)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let sources_block: String = sources_block_full.chars().take(6000).collect();
 
-    // 构建编号源列表供 LLM 行内引用（截断到 6000 字符防止 token 溢出）
-    let sources_block_full: String = all_results
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let snip: String = r.snippet.chars().take(200).collect();
-            format!("[{}] {} ({}): {}", i + 1, r.title, r.url, snip)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let sources_block: String = sources_block_full.chars().take(6000).collect();
+        let total_sections = outline.sections.len();
+        let mut section_bodies: Vec<String> = Vec::new();
 
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let synth_prompt = format!(
-        "You are a professional research analyst. Write a comprehensive, well-structured research report in Markdown.\n\nTopic: {topic}\n\nResearch Sources — cite these inline using [N] notation:\n{sources_block}\n\nKey Research Findings ({count} items):\n{context}\n\nExisting Knowledge Base:\n{wiki}\n\n## Writing Requirements:\n1. Write a complete report with sections: Abstract, Core Findings, Detailed Analysis, Conclusion\n2. EVERY factual claim MUST be supported by an inline citation [N] referencing one of the numbered sources above\n3. The final section MUST be \"## References\" containing properly formatted entries:\n   - For academic papers (URLs containing arxiv.org, doi.org, pubmed, scholar): use format: [N] Author(s) (Year). *Title*. Venue. URL\n   - For web articles: use format: [N] Title. *Site Name*. URL. Accessed {date}\n4. References must be clickable Markdown links where possible\n5. Write in the same language as the topic title (Chinese topic → Chinese report)\n6. Do NOT include reasoning or thinking process in output",
-        topic = topic,
-        sources_block = sources_block,
-        count = learnings.len(),
-        context = context,
-        wiki = wiki_excerpt,
-        date = today,
-    );
+        for (sec_idx, section) in outline.sections.iter().enumerate() {
+            emit_progress(
+                "writing_section",
+                format!(
+                    "第 {}/{} 章：{}",
+                    sec_idx + 1,
+                    total_sections,
+                    section.heading
+                ),
+            );
+            let questions_text = section.key_questions.join("\n- ");
+            let section_prompt = format!(
+                "You are writing section \"{heading}\" of a research report on \"{topic}\".\n\nAvailable sources (cite inline as [N]):\n{sources}\n\nKey questions to address:\n- {questions}\n\nRequirements:\n- 500-1000 words\n- EVERY factual claim must have [N] inline citation\n- Do NOT include the heading (it will be added automatically)\n- Write in same language as the topic\n- Output ONLY the section body content",
+                heading = section.heading,
+                topic = topic,
+                sources = sources_block,
+                questions = questions_text,
+            );
 
-    let mut synthesized = String::new();
-    let mut synth_last_err: Option<LlmError> = None;
-    for attempt in 1..=2 {
-        let mut char_count = 0usize;
-        let mut last_emitted = 0usize;
-        let mut buf = String::new();
-        let stream_result = provider
-            .complete_stream(&synth_prompt, &mut |chunk| {
-                let chunk_str = chunk.clone(); // 给 emit 用
-                buf.push_str(&chunk);
-                char_count += chunk.chars().count();
-                let _ = app_handle.emit(
-                    "research_stream_chunk",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "chunk": chunk_str,
-                    }),
-                );
-                // 每增加 150 字触发一次进度更新，避免事件风暴
-                if char_count.saturating_sub(last_emitted) >= 150 {
-                    last_emitted = char_count;
+            let section_body = match provider.complete(&section_prompt).await {
+                Ok(text) => strip_think_tags(&text),
+                Err(e) => {
+                    emit_progress(
+                        "writing_section",
+                        format!("第 {} 章生成失败: {}", sec_idx + 1, e),
+                    );
+                    String::new()
+                }
+            };
+
+            section_bodies.push(format!("{}\n\n{}", section.heading, section_body));
+        }
+
+        // 生成摘要与结论
+        emit_progress("assembling", "生成摘要与结论...".to_string());
+        let sections_overview = outline
+            .sections
+            .iter()
+            .map(|s| format!("- {}", s.heading))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ic_prompt = format!(
+            "Write a concise Introduction (150-250 words) and Conclusion (150-250 words) for a research report on \"{topic}\" covering:\n{sections}\n\nFormat exactly:\n## Introduction\n[content]\n\n## Conclusion\n[content]\n\nWrite in same language as the topic.",
+            topic = topic,
+            sections = sections_overview,
+        );
+
+        let intro_conclusion = match provider.complete(&ic_prompt).await {
+            Ok(text) => strip_think_tags(&text),
+            Err(_) => String::new(),
+        };
+
+        let synthesized = format!(
+            "# {}\n\n{}\n\n{}",
+            topic,
+            intro_conclusion,
+            section_bodies.join("\n\n"),
+        );
+
+        emit_progress("saving", "正在保存到知识库...".to_string());
+        let _ = save_research_output(
+            &db_path,
+            &app_handle,
+            &state,
+            task_id,
+            &topic,
+            &config,
+            &all_results,
+            &all_used_queries,
+            &learnings,
+            &synthesized,
+        )
+        .await;
+    } else {
+        // ── H25 兜底：单次综合合成 ──────────────────────────────────────────
+        emit_progress(
+            "synthesizing",
+            format!("综合 {} 条关键发现，撰写研究报告...", learnings.len()),
+        );
+
+        let wiki_index = {
+            let guard = state.inner.lock().expect("状态锁");
+            guard
+                .vault_path
+                .as_ref()
+                .and_then(|vp| fs::read_to_string(vp.join("wiki").join("index.md")).ok())
+                .unwrap_or_default()
+        };
+        let wiki_excerpt: String = wiki_index.chars().take(800).collect();
+
+        let learnings_text = learnings
+            .iter()
+            .enumerate()
+            .map(|(i, l)| format!("{}. {}", i + 1, l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context: String = learnings_text.chars().take(8000).collect();
+
+        let sources_block_full: String = all_results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let snip: String = r.snippet.chars().take(200).collect();
+                format!("[{}] {} ({}): {}", i + 1, r.title, r.url, snip)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let sources_block: String = sources_block_full.chars().take(6000).collect();
+
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let synth_prompt = format!(
+            "You are a professional research analyst. Write a comprehensive, well-structured research report in Markdown.\n\nTopic: {topic}\n\nResearch Sources — cite these inline using [N] notation:\n{sources_block}\n\nKey Research Findings ({count} items):\n{context}\n\nExisting Knowledge Base:\n{wiki}\n\n## Writing Requirements:\n1. Write a complete report with sections: Abstract, Core Findings, Detailed Analysis, Conclusion\n2. EVERY factual claim MUST be supported by an inline citation [N] referencing one of the numbered sources above\n3. The final section MUST be \"## References\" containing properly formatted entries:\n   - For academic papers (URLs containing arxiv.org, doi.org, pubmed, scholar): use format: [N] Author(s) (Year). *Title*. Venue. URL\n   - For web articles: use format: [N] Title. *Site Name*. URL. Accessed {date}\n4. References must be clickable Markdown links where possible\n5. Write in the same language as the topic title (Chinese topic → Chinese report)\n6. Do NOT include reasoning or thinking process in output",
+            topic = topic,
+            sources_block = sources_block,
+            count = learnings.len(),
+            context = context,
+            wiki = wiki_excerpt,
+            date = today,
+        );
+
+        let mut synthesized = String::new();
+        let mut synth_last_err: Option<LlmError> = None;
+        for attempt in 1..=2 {
+            let mut char_count = 0usize;
+            let mut last_emitted = 0usize;
+            let mut buf = String::new();
+            let stream_result = provider
+                .complete_stream(&synth_prompt, &mut |chunk| {
+                    let chunk_str = chunk.clone();
+                    buf.push_str(&chunk);
+                    char_count += chunk.chars().count();
                     let _ = app_handle.emit(
-                        "research_progress",
+                        "research_stream_chunk",
                         serde_json::json!({
                             "task_id": task_id,
-                            "stage": "synthesizing",
-                            "message": format!("正在生成综合报告... 已生成 {} 字", char_count),
+                            "chunk": chunk_str,
                         }),
                     );
+                    if char_count.saturating_sub(last_emitted) >= 150 {
+                        last_emitted = char_count;
+                        let _ = app_handle.emit(
+                            "research_progress",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "stage": "synthesizing",
+                                "message": format!("正在生成综合报告... 已生成 {} 字", char_count),
+                            }),
+                        );
+                    }
+                })
+                .await;
+            match stream_result {
+                Ok(_) => {
+                    synthesized = buf;
+                    synth_last_err = None;
+                    break;
                 }
-            })
-            .await;
-        match stream_result {
-            Ok(_) => {
-                synthesized = buf;
-                synth_last_err = None;
-                break;
-            }
-            Err(err) => {
-                synth_last_err = Some(err.clone());
-                if attempt == 1 {
-                    emit_progress(
-                        "synthesizing",
-                        format!(
-                            "综合报告生成失败，正在重试一次：{}",
-                            search_service::compact_llm_error(&err, 120)
-                        ),
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                Err(err) => {
+                    synth_last_err = Some(err.clone());
+                    if attempt == 1 {
+                        emit_progress(
+                            "synthesizing",
+                            format!(
+                                "综合报告生成失败，正在重试一次：{}",
+                                search_service::compact_llm_error(&err, 120)
+                            ),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                    }
                 }
             }
         }
-    }
-    if let Some(err) = synth_last_err {
-        report_research_failure(
+        if let Some(err) = synth_last_err {
+            report_research_failure(
+                &db_path,
+                &app_handle,
+                task_id,
+                &format!("综合报告生成失败: {}", err),
+            );
+            return;
+        }
+
+        emit_progress("saving", "正在保存到知识库...".to_string());
+        let _ = save_research_output(
             &db_path,
             &app_handle,
+            &state,
             task_id,
-            &format!("综合报告生成失败: {}", err),
-        );
-        return;
+            &topic,
+            &config,
+            &all_results,
+            &all_used_queries,
+            &learnings,
+            &synthesized,
+        )
+        .await;
     }
-
-    // ── Phase 4: 保存 ────────────────────────────────────────────────────────
-    emit_progress("saving", "正在保存到知识库...".to_string());
-    let _ = save_research_output(
-        &db_path,
-        &app_handle,
-        &state,
-        task_id,
-        &topic,
-        &config,
-        &all_results,
-        &all_used_queries,
-        &learnings,
-        &synthesized,
-    )
-    .await;
 }
 
 // ── AppState 方法的自由函数版本 ──────────────────────────────────────────────

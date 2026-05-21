@@ -109,6 +109,7 @@ pub(crate) fn make_test_state_bare(vault_dir: &Path) -> AppState {
         ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
         search_config: Mutex::new(crate::models::SearchConfig::default()),
         pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
+        pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
         ingest_previews: Mutex::new(std::collections::HashMap::new()),
         shell_sessions: Mutex::new(std::collections::HashMap::new()),
         chat_cancellations: Mutex::new(std::collections::HashMap::new()),

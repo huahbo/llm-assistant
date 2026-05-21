@@ -31,14 +31,18 @@ type DeleteModalState = {
 
 export const getResearchStatusLabel = (status: ResearchTaskStatus): string => {
   const labels: Record<ResearchTaskStatus, string> = {
-    queued:      "等待",
-    decomposing: "分解中",
-    searching:   "搜索中",
-    synthesizing:"合成中",
-    saving:      "保存中",
-    done:        "✓ 完成",
-    failed:      "✕ 失败",
-    cancelled:   "已取消",
+    queued:                   "等待",
+    decomposing:              "分解中",
+    planning_outline:         "规划大纲",
+    awaiting_outline_approval:"等待大纲确认",
+    searching:                "搜索中",
+    synthesizing:             "合成中",
+    writing_section:          "章节写作",
+    assembling:               "组装报告",
+    saving:                   "保存中",
+    done:                     "✓ 完成",
+    failed:                   "✕ 失败",
+    cancelled:                "已取消",
   };
   return labels[status] ?? status;
 };

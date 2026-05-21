@@ -858,6 +858,32 @@ pub fn approve_research_queries(state: &AppState, task_id: i64, queries: Vec<Str
     }
 }
 
+pub fn register_outline_approval(
+    state: &AppState,
+    task_id: i64,
+) -> tokio::sync::oneshot::Receiver<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state
+        .pending_outline_approvals
+        .lock()
+        .expect("pending_outline_approvals lock")
+        .insert(task_id, tx);
+    rx
+}
+
+pub fn approve_research_outline(state: &AppState, task_id: i64, outline_json: String) -> bool {
+    if let Some(tx) = state
+        .pending_outline_approvals
+        .lock()
+        .expect("pending_outline_approvals lock")
+        .remove(&task_id)
+    {
+        tx.send(outline_json).is_ok()
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

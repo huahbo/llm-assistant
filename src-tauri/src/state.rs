@@ -93,6 +93,9 @@ pub struct AppState {
     /// 等待用户审批子查询的一次性 channel（task_id -> sender）
     pending_query_approvals:
         Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Vec<String>>>>,
+    /// 等待用户审批研究大纲的一次性 channel（task_id -> sender）
+    pending_outline_approvals:
+        Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<String>>>,
     /// 摄入预览缓存（preview_id -> 预览上下文）。
     ingest_previews: Mutex<std::collections::HashMap<String, CachedIngestPreview>>,
     /// Shell 会话缓存（session_id -> 会话状态）。
@@ -218,6 +221,7 @@ impl AppState {
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
+            pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
@@ -313,6 +317,7 @@ impl AppState {
             ask_cancel_flags: Mutex::new(std::collections::HashMap::new()),
             search_config: Mutex::new(search_config),
             pending_query_approvals: Mutex::new(std::collections::HashMap::new()),
+            pending_outline_approvals: Mutex::new(std::collections::HashMap::new()),
             ingest_previews: Mutex::new(std::collections::HashMap::new()),
             shell_sessions: Mutex::new(std::collections::HashMap::new()),
             chat_cancellations: Mutex::new(std::collections::HashMap::new()),
@@ -357,6 +362,17 @@ impl AppState {
 
     pub fn approve_research_queries(&self, task_id: i64, queries: Vec<String>) -> bool {
         search_service::approve_research_queries(self, task_id, queries)
+    }
+
+    pub fn register_outline_approval(
+        &self,
+        task_id: i64,
+    ) -> tokio::sync::oneshot::Receiver<String> {
+        search_service::register_outline_approval(self, task_id)
+    }
+
+    pub fn approve_research_outline(&self, task_id: i64, outline_json: String) -> bool {
+        search_service::approve_research_outline(self, task_id, outline_json)
     }
 
     /// 向前端 emit 进度事件（AppHandle 未注入时静默跳过）。

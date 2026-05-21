@@ -2,22 +2,25 @@ import { useEffect, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
+  approveResearchOutline,
   approveResearchQueries,
   fetchWikiPageDetail,
   getResearchTask,
   listenResearchDone,
   listenResearchError,
+  listenResearchOutlineReady,
   listenResearchProgress,
   listenResearchQueriesReady,
   listenResearchStreamChunk,
   pickSaveFile,
   saveResearchDoc,
 } from "../../tauri-client";
-import type { ResearchTaskItem } from "../../types";
+import type { ResearchOutlineData, ResearchTaskItem } from "../../types";
 
 type DialogMsg =
   | { kind: "user"; topic: string; depth: number; breadth: number }
   | { kind: "progress"; stage: string; text: string }
+  | { kind: "outline"; outline: ResearchOutlineData; taskId: number }
   | { kind: "queries"; queries: string[]; taskId: number }
   | { kind: "synthesis"; content: string }
   | { kind: "done"; savedPath: string; sources?: number; learnings?: number }
@@ -69,9 +72,11 @@ export default function ResearchDialog({
 
   const [messages, setMessages] = useState<DialogMsg[]>(initMessages);
   const [phase, setPhase] = useState<
-    "running" | "awaiting-approval" | "synthesizing" | "done" | "failed"
+    "running" | "awaiting-approval" | "awaiting-outline-approval" | "synthesizing" | "done" | "failed"
   >(initPhase);
   const [editableQueries, setEditableQueries] = useState<string[]>([]);
+  const [editableOutline, setEditableOutline] = useState<ResearchOutlineData | null>(null);
+  const [approvingOutline, setApprovingOutline] = useState(false);
   const [approving, setApproving] = useState(false);
   const [synthesisContent, setSynthesisContent] = useState("");
   const [doneSavedPath, setDoneSavedPath] = useState<string>(
@@ -104,6 +109,18 @@ export default function ResearchDialog({
       });
       if (cancelled) { u1(); return; }
       unlisteners.push(u1);
+
+      const uOutline = await listenResearchOutlineReady((p) => {
+        if (p.task_id !== taskId) return;
+        setEditableOutline(p.outline);
+        setPhase("awaiting-outline-approval");
+        setMessages((prev) => {
+          if (prev.some((m) => m.kind === "outline")) return prev;
+          return [...prev, { kind: "outline", outline: p.outline, taskId: p.task_id }];
+        });
+      });
+      if (cancelled) { uOutline(); return; }
+      unlisteners.push(uOutline);
 
       const u2 = await listenResearchQueriesReady((p) => {
         if (p.task_id !== taskId) return;
@@ -232,11 +249,12 @@ export default function ResearchDialog({
   };
 
   const phaseLabel: Record<string, { text: string; color: string }> = {
-    running:           { text: "进行中...", color: "var(--accent)" },
-    "awaiting-approval": { text: "等待确认研究方向", color: "#d97706" },
-    synthesizing:      { text: "生成报告中...", color: "var(--accent)" },
-    done:              { text: "已完成", color: "#16a34a" },
-    failed:            { text: "失败", color: "var(--error, #dc2626)" },
+    running:                    { text: "进行中...", color: "var(--accent)" },
+    "awaiting-approval":        { text: "等待确认研究方向", color: "#d97706" },
+    "awaiting-outline-approval": { text: "等待大纲确认", color: "#d97706" },
+    synthesizing:               { text: "生成报告中...", color: "var(--accent)" },
+    done:                       { text: "已完成", color: "#16a34a" },
+    failed:                     { text: "失败", color: "var(--error, #dc2626)" },
   };
 
   return (
@@ -334,6 +352,10 @@ export default function ResearchDialog({
                   </span>
                 </div>
               );
+            }
+
+            if (msg.kind === "outline") {
+              return null;
             }
 
             if (msg.kind === "queries") {
@@ -469,6 +491,54 @@ export default function ResearchDialog({
             return null;
           })}
 
+          {phase === "awaiting-outline-approval" && editableOutline && (
+            <div className="research-dialog-outline-approval" style={{ marginTop: 12, padding: "12px 16px", background: "var(--bg-content)", borderRadius: 8, border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                请确认研究大纲（可编辑章节标题）：
+              </div>
+              {editableOutline.sections.map((section, idx) => (
+                <div key={idx} style={{ marginBottom: 10 }}>
+                  <input
+                    style={{ width: "100%", fontSize: 13, fontWeight: 600, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", marginBottom: 4 }}
+                    value={section.heading}
+                    onChange={(e) => {
+                      const newSections = [...editableOutline.sections];
+                      newSections[idx] = { ...newSections[idx], heading: e.target.value };
+                      setEditableOutline({ ...editableOutline, sections: newSections });
+                    }}
+                  />
+                  <div style={{ fontSize: 11.5, color: "var(--text-muted)", paddingLeft: 4 }}>
+                    {section.key_questions.join(" · ")}
+                  </div>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="dev-panel__button dev-panel__button--accent"
+                style={{ marginTop: 8, width: "100%" }}
+                disabled={approvingOutline}
+                onClick={async () => {
+                  setApprovingOutline(true);
+                  try {
+                    const json = JSON.stringify(editableOutline);
+                    await approveResearchOutline(taskId, json);
+                    setPhase("running");
+                    setMessages((prev) => [
+                      ...prev,
+                      { kind: "progress", stage: "searching", text: `✓ 大纲已确认（${editableOutline.sections.length} 章），开始搜索...` },
+                    ]);
+                  } catch {
+                    // 静默，继续等待
+                  } finally {
+                    setApprovingOutline(false);
+                  }
+                }}
+              >
+                {approvingOutline ? "确认中..." : `确认大纲（${editableOutline.sections.length} 章）`}
+              </button>
+            </div>
+          )}
+
           {/* 流式综合报告预览 */}
           {synthesisContent && (
             <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
@@ -502,7 +572,7 @@ export default function ResearchDialog({
         </div>
 
         {/* 底部操作栏：根据阶段显示主操作按钮 */}
-        {(phase === "done" || phase === "failed" || phase === "awaiting-approval") && (
+        {(phase === "done" || phase === "failed" || phase === "awaiting-approval" || phase === "awaiting-outline-approval") && (
           <div style={{
             borderTop: "1px solid var(--border-light)",
             padding: "10px 18px",

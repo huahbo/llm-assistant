@@ -6,6 +6,8 @@ import type {
   QueryAnswerResult,
   QueryAskOptions,
   QuerySettings,
+  ResearchOutlineData,
+  ResearchOutlinePayload,
   ResearchTaskItem,
   SaveQueryAnswerInput,
   SaveQueryAnswerResult,
@@ -388,12 +390,29 @@ export async function listenResearchStreamChunk(
   return unlisten;
 }
 
+export async function listenResearchOutlineReady(
+  handler: (payload: ResearchOutlinePayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchOutlinePayload>("research_outline_ready", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
 // ── Research tasks ────────────────────────────────────────────────────────────
 
 export async function approveResearchQueries(taskId: number, queries: string[]): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   return withTimeout(invoke("approve_research_queries", { taskId, queries }), 30_000);
+}
+
+export async function approveResearchOutline(taskId: number, outlineJson: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return withTimeout(invoke("approve_research_outline", { taskId, outlineJson }), 30_000);
 }
 
 /** 启动研究任务，返回 task_id。非 Tauri 环境返回 -1。 */

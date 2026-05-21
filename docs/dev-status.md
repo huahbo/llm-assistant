@@ -12,7 +12,25 @@
 
 ---
 
-## 本轮快讯（2026-05-20，Claude Code）— H24 完成
+## 本轮快讯（2026-05-21，Claude Code）— H25 完成 + H26 计划就绪
+
+- **H25 Deep Research 升级**（commit `d34465b`）已落地：
+  - P1 报告格式：[N] 行内引用 + 学术/网页 References 双格式
+  - P2 多搜索提供商并行（Tavily + SearXNG）
+  - P3 调研（gpt-researcher / STORM）
+  - P4 独立 HTML 单文件导出
+  - ResearchPanel UI 全面美化（terminal 风格日志、状态色徽章、语义按钮色）
+- **H26 详细计划已写入 `docs/h26-deep-research-quality-plan.md`**（基于 2026-05-21 实地调研 5 个真实 GitHub 项目）：
+  - H26-B 学术 API（arXiv + Semantic Scholar）★★★ 低难度，先做
+  - H26-C 来源质量评分 ★★ 跟 B 一起做
+  - H26-A Outline-First 报告架构 ★★★ 中难度
+  - H26-E 分章节进度推送 ★ 收口做
+  - H27（延后）自适应追踪搜索 — 已记录在 §6，下次单独开
+- **下一轮接力**：Sonnet 4.6 按 H26 计划编码
+
+---
+
+## 上轮快讯（2026-05-20，Claude Code）— H24 完成
 
 - **H24 无头浏览器服务**：`src-tauri/src/browser/mod.rs` 已实装
   - Chrome→Edge→静态HTTP 三级兜底，headless_chrome CDP + spawn_blocking
@@ -83,8 +101,10 @@ cd E:\llm-wiki\web; npm run typecheck   # 零错误
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| P22 | **打包发布** | `npm run tauri:build`，生成 .msi/.exe 安装包 |
+| **H26** | **Deep Research 质量升级** | 详见 `docs/h26-deep-research-quality-plan.md`；顺序 B → C → A → E |
+| P22 | 打包发布 | `npm run tauri:build`，生成 .msi/.exe 安装包 |
 | H10A | ToolRegistry trait 重构 | 可选优化 |
+| H27 | （延后）自适应追踪搜索 | 参考 local-deep-research LangGraph 策略，单独立项后再做 |
 
 ---
 
