@@ -192,14 +192,20 @@ fn finalize_pending_research(
     );
 }
 
-/// 用户主动保存：将缓存的报告写到 vault/wiki/research/ 并 ingest，emit research_done。
+/// 用户主动保存：把缓存的报告写到 vault/wiki/research/，立即返回；
+/// LLM 摘要 / 实体提取 / 索引等慢操作在后台 spawn，避免前端超时。
+///
+/// 事件流：
+/// - 函数返回时：文件已落盘 + DB 状态 done + cache 已清理 + emit `research_done`
+/// - 后台任务完成时：emit `research_indexed`（携带 ok/err）
 pub async fn commit_research_to_wiki(state: &AppState, task_id: i64) -> Result<String, String> {
+    // === 第一阶段：快操作（毫秒级，全部走完才允许第二次调用）===
+    // 用 remove 而不是 get+clone，确保拿到的同时清除缓存，杜绝并发重复保存。
     let report = state
         .pending_research_reports
         .lock()
         .expect("pending_research_reports lock")
-        .get(&task_id)
-        .cloned()
+        .remove(&task_id)
         .ok_or_else(|| "找不到待保存的研究报告（可能已被丢弃或应用重启）".to_string())?;
 
     let db_path = state
@@ -228,10 +234,23 @@ pub async fn commit_research_to_wiki(state: &AppState, task_id: i64) -> Result<S
         .map_err(|e| format!("保存路径解析失败: {}", e))?;
     let canonical_vault = vault_path.canonicalize().unwrap_or(vault_path.clone());
     if !canonical.starts_with(&canonical_vault) {
+        // 路径越权时回滚：把 report 放回缓存让用户能重新选择
+        state
+            .pending_research_reports
+            .lock()
+            .expect("pending_research_reports lock")
+            .insert(task_id, report);
         return Err("保存路径越权：topic 包含非法路径字符".to_string());
     }
 
-    fs::write(&save_path, &report.content).map_err(|e| format!("写入文件失败: {}", e))?;
+    if let Err(e) = fs::write(&save_path, &report.content) {
+        state
+            .pending_research_reports
+            .lock()
+            .expect("pending_research_reports lock")
+            .insert(task_id, report);
+        return Err(format!("写入文件失败: {}", e));
+    }
 
     let saved_path_str = save_path.to_string_lossy().to_string();
     {
@@ -250,15 +269,7 @@ pub async fn commit_research_to_wiki(state: &AppState, task_id: i64) -> Result<S
         )?;
     }
 
-    let _ = state.ingest_markdown(save_path, None).await;
-
-    // 清理缓存
-    state
-        .pending_research_reports
-        .lock()
-        .expect("pending_research_reports lock")
-        .remove(&task_id);
-
+    // 立刻 emit research_done → 前端可立刻显示「已保存」+ 「查看 Wiki」
     if let Some(handle) = state.get_app_handle() {
         let _ = handle.emit(
             "research_done",
@@ -269,7 +280,37 @@ pub async fn commit_research_to_wiki(state: &AppState, task_id: i64) -> Result<S
                 "learnings": report.learnings.len(),
             }),
         );
+
+        // === 第二阶段：慢操作（LLM 摘要 + 实体提取 + 索引），后台 spawn ===
+        // 即使用户关闭对话框 / 应用退出（macOS）也能保留进度。
+        let handle_clone = handle.clone();
+        let save_path_clone = save_path.clone();
+        tauri::async_runtime::spawn(async move {
+            let state = handle_clone.state::<AppState>();
+            let _ = handle_clone.emit(
+                "research_indexing",
+                serde_json::json!({ "task_id": task_id }),
+            );
+            match state.ingest_markdown(save_path_clone, None).await {
+                Ok(_) => {
+                    let _ = handle_clone.emit(
+                        "research_indexed",
+                        serde_json::json!({ "task_id": task_id, "ok": true }),
+                    );
+                }
+                Err(err) => {
+                    let _ = handle_clone.emit(
+                        "research_indexed",
+                        serde_json::json!({ "task_id": task_id, "ok": false, "error": err }),
+                    );
+                }
+            }
+        });
+    } else {
+        // 没有 AppHandle（极少见，理论上 setup 后总会有）→ 同步索引兜底
+        let _ = state.ingest_markdown(save_path, None).await;
     }
+
     Ok(saved_path_str)
 }
 

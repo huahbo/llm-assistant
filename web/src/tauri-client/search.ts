@@ -80,6 +80,13 @@ export interface ResearchDiscardedPayload {
   task_id: number;
 }
 
+/** 后台索引完成事件载荷（ingest_markdown 完成或失败） */
+export interface ResearchIndexedPayload {
+  task_id: number;
+  ok: boolean;
+  error?: string;
+}
+
 /** 研究错误事件载荷 */
 export interface ResearchErrorPayload {
   task_id: number;
@@ -386,6 +393,30 @@ export async function listenResearchComplete(
   return unlisten;
 }
 
+/** 监听后台索引开始事件 */
+export async function listenResearchIndexing(
+  handler: (payload: { task_id: number }) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<{ task_id: number }>("research_indexing", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
+/** 监听后台索引完成事件（成功或失败均会触发） */
+export async function listenResearchIndexed(
+  handler: (payload: ResearchIndexedPayload) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ResearchIndexedPayload>("research_indexed", (e) =>
+    handler(e.payload),
+  );
+  return unlisten;
+}
+
 export async function listenResearchError(
   handler: (payload: ResearchErrorPayload) => void,
 ): Promise<() => void> {
@@ -466,11 +497,14 @@ export async function getPendingResearchQueries(taskId: number): Promise<string[
   return result ?? null;
 }
 
-/** 用户主动把待保存的报告写入 Wiki。 */
+/** 用户主动把待保存的报告写入 Wiki。
+ * 后端拆为快慢两阶段：写盘 + DB 同步（< 1s）；索引/摘要后台 spawn。
+ * 此调用返回时文件已落盘，索引完成另发 research_indexed 事件。
+ */
 export async function commitResearchToWiki(taskId: number): Promise<string> {
   if (!isTauriRuntime()) throw new Error("非 Tauri 环境");
   const { invoke } = await import("@tauri-apps/api/core");
-  return withTimeout(invoke<string>("commit_research_to_wiki", { taskId }), 30_000);
+  return withTimeout(invoke<string>("commit_research_to_wiki", { taskId }), 60_000);
 }
 
 /** 用户丢弃未保存的研究报告。 */

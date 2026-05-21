@@ -14,6 +14,8 @@ import {
   listenResearchComplete,
   listenResearchDone,
   listenResearchError,
+  listenResearchIndexed,
+  listenResearchIndexing,
   listenResearchOutlineReady,
   listenResearchProgress,
   listenResearchQueriesReady,
@@ -101,6 +103,9 @@ export default function ResearchDialog({
   const [reportContent, setReportContent] = useState("");
   const [savingToWiki, setSavingToWiki] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  /** 后台索引中（摘要/实体提取/embedding） */
+  const [indexing, setIndexing] = useState(false);
+  const [indexError, setIndexError] = useState<string | null>(null);
   const [doneSavedPath, setDoneSavedPath] = useState<string>(
     initialTask?.status === "done" ? (initialTask.saved_path ?? "") : ""
   );
@@ -195,6 +200,24 @@ export default function ResearchDialog({
       });
       if (cancelled) { u4(); return; }
       unlisteners.push(u4);
+
+      const uIndexing = await listenResearchIndexing((p) => {
+        if (p.task_id !== taskId) return;
+        setIndexing(true);
+        setIndexError(null);
+      });
+      if (cancelled) { uIndexing(); return; }
+      unlisteners.push(uIndexing);
+
+      const uIndexed = await listenResearchIndexed((p) => {
+        if (p.task_id !== taskId) return;
+        setIndexing(false);
+        if (!p.ok && p.error) {
+          setIndexError(p.error);
+        }
+      });
+      if (cancelled) { uIndexed(); return; }
+      unlisteners.push(uIndexed);
 
       const u5 = await listenResearchError((p) => {
         if (p.task_id !== taskId) return;
@@ -678,9 +701,30 @@ export default function ResearchDialog({
                     border: "1px solid #bbf7d0",
                     borderRadius: "10px", padding: "12px 14px",
                   }}>
-                    <div style={{ fontSize: "13px", color: "#15803d", fontWeight: 600, marginBottom: "10px" }}>
+                    <div style={{ fontSize: "13px", color: "#15803d", fontWeight: 600, marginBottom: 6 }}>
                       ✓ 报告已保存到知识库
                     </div>
+                    {indexing && (
+                      <div style={{
+                        fontSize: 11, color: "#15803d",
+                        background: "rgba(22,163,74,0.08)",
+                        border: "1px dashed rgba(22,163,74,0.3)",
+                        padding: "4px 8px", borderRadius: 6, marginBottom: 8,
+                        display: "inline-block",
+                      }}>
+                        ⏳ 后台索引中（生成摘要/抽取实体/向量化）...
+                      </div>
+                    )}
+                    {!indexing && indexError && (
+                      <div style={{
+                        fontSize: 11, color: "#b91c1c",
+                        background: "rgba(220,38,38,0.06)",
+                        border: "1px dashed rgba(220,38,38,0.3)",
+                        padding: "4px 8px", borderRadius: 6, marginBottom: 8,
+                      }}>
+                        ⚠ 索引失败（文件已保存但未入库检索）：{indexError}
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: "8px" }}>
                       <button
                         type="button"
