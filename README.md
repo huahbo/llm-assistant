@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.6 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.7 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -16,13 +16,77 @@
 | **Wiki** | Markdown 编辑/渲染/重命名/删除，双向链接，内链补全，实体提取，Frontmatter 元数据 |
 | **Lint** | 语义矛盾/陈旧/覆盖度检测，Wiki-link 级 broken/orphan 检测，可预览/应用修复补丁 |
 | **Graph** | 知识图谱可视化（Global/Local 模式）；Chat↔Graph 双向联动（节点高亮、右键跳转、Ask 预填充）；洞察层 |
-| **Deep Research** | LLM 驱动多轮联网研究，子查询分解、多源聚合、综合报告写入 Wiki |
+| **Deep Research** | LLM 驱动多轮联网研究 · Outline-First 报告架构（大纲审批 → 章节合成 → 拼装） · 学术 API（arXiv + Semantic Scholar） · 来源质量评分 · [N] 内联引用 + 学术/网页 References 双格式 · HTML 单文件导出 · 手动保存到知识库 |
 | **Agent Studio** | LLM 驱动 Wiki 草稿生成；Skill 模板；检索增强；审批后自动提炼全局记忆（AAAK-lite）；Shell 审计日志 |
-| **Settings** | LLM Provider 配置；搜索配置（SearXNG / Tavily / Brave）；OCR Provider；Shell 策略配置；**MCP 服务器管理** |
+| **Settings** | LLM Provider 配置；搜索配置（Tavily / SearXNG / arXiv / Semantic Scholar / Brave，可多选并行）；OCR Provider；Shell 策略配置；**MCP 服务器管理** |
 
 ---
 
-## 最近更新（H21–H24）
+## 最近更新（H21–H26）
+
+### v0.2.7（H25 + H26 — Deep Research 全面升级）
+
+#### H26 — Outline-First 架构 + 学术 API + 手动保存
+
+**报告架构（Outline-First）**
+- LLM 先产出 JSON 大纲（N=breadth.clamp(3-5) 章），**用户在对话框中可视化审批**：
+  - 章节标题、关键问题逐条可编辑
+  - 支持任意增删章节、增删关键问题
+  - 空值校验（至少 1 章 + 每章至少 1 个非空问题才能确认）
+- 审批后按章节独立搜索 + 独立综合（每节 500-1000 字 + [N] 内联引用）
+- Introduction / Conclusion 单独 LLM 生成（保证 Conclusion 位于报告末尾，**修复了之前 Conclusion 出现在 body 中间的 bug**）
+- LLM 大纲生成失败时优雅降级到 H25 子查询分解路径，前端会明确提示"降级为标准查询分解流程"
+- **JSON 提取 4 重 fallback**：剥离代码围栏 / 大括号配对（处理嵌套示例 + 字符串内 brace 屏蔽）/ 单引号容错 / 首尾大括号兜底
+
+**学术数据源 + 来源质量评分**
+- 新增 **arXiv**（Atom XML，免费无需 key）、**Semantic Scholar**（JSON，可选 API key）
+- 4 个搜索源（Tavily / SearXNG / arXiv / Semantic Scholar）**可同时勾选并行查询**
+- `score_by_domain(url)` 域名加权评分（0.4–0.95，arxiv/edu/gov 优先）
+- 多源结果合并去重后按 quality_score 降序排序，高分源率先进入 LLM 上下文
+- 合成 prompt 中高分来源带 `[high quality]` 注释
+
+**分章节进度推送**
+- 章节合成阶段独立卡片样式（18px 图标 + 加粗章节文字 + 8px 高紫色发光进度条 + `X/Y` 徽章）
+- 搜索阶段每个 query 完成单独成行（✓/✗ 前缀消息不折叠，便于追踪并发查询进度）
+- Introduction / Conclusion 分别 emit "撰写中..." → "✓ 已生成（N 字）" 两条进度
+
+**报告归属：手动保存到知识库**
+- 报告生成完成后**默认不写盘**，停留在对话框展示全文
+- 底部 4 按钮：💾 保存到知识库 / ⬇ 导出 .md / 🗑 丢弃 / ✕ 关闭
+- 保存路径走「快慢两阶段」：写盘 + DB 更新（< 1s 同步返回）+ ingest 索引（LLM 摘要/实体提取/向量化，后台 spawn，60-180s）
+- 前端实时显示「✓ 已保存（⏳ 后台索引中...）」→ 「✓ 已索引」
+- ResearchPanel 任务卡新增 `💬 打开对话` 按钮（运行中）/ `⏸ 需要确认` 按钮（等待大纲/保存）
+
+**LLM 鲁棒性**
+- Section / Introduction / Conclusion 调用失败时**自动重试一次**（800ms 退避）
+- 重试仍失败则 emit 具体错误信息（如 `HTTP 429 / Timeout / ConnectionFailed`），不再静默吞为空字符串
+- 大纲审批超时 / 通道关闭 / JSON 解析失败时分别 emit 明确提示，**用户不再面对"莫名跳过"**
+- Ollama 默认超时 60s → 120s（与 OpenAI 对齐）
+
+**其他**
+- References 区每条单独成行（`\n\n` 分隔，之前的 `\n` 在 Markdown 中会被折叠成一段）
+- 报告组装顺序修复：`# Title → ## Introduction → ## 1. Section → ... → ## N. Section → ## Conclusion → ## References`
+- ResearchPanel `深度/广度` pill 从 Settings → 搜索配置的「默认研究深度/默认搜索广度」同步初始值
+- SearchConfigPanel UI 重排：搜索提供商左列（跨两行），深度/广度右列上下并排 + 选项语义标签 + 11px 参数说明
+
+**Bug 修复**
+- 关闭对话框后无法继续审批：新增 `pending_outline_data` / `pending_query_data` / `pending_research_reports` 三个 in-memory cache + `get_pending_*` Tauri 命令，对话框重开自动恢复
+- 保存到 Wiki 超时假警报：拆快慢两阶段后前端不再因 ingest 慢而误报"超时，请查日志"
+- 并发保存竞态：`HashMap::remove` 替代 `get+clone`，第二次点击保存立刻得到"找不到报告"明确反馈而非启动并发 ingest
+
+#### H25 — 报告格式 + 多搜索 + HTML 导出（v0.2.6 累积改进）
+
+- `[N]` 行内引用 + 学术（arxiv/doi 等）vs 网页 References 双格式输出
+- Tavily + SearXNG 多 provider 并行 + URL 去重合并
+- `export_research_html`：HTML 单文件导出，CSS 内嵌可独立浏览
+- ResearchPanel UI：terminal 风格日志 + 状态色徽章 + 语义按钮色
+
+#### 测试基线 v0.2.7
+
+- Rust 单测 **298** 通过 0 失败（新增 7 个 JSON 提取测试 + 5 个学术 API XML/JSON 解析测试 + 3 个 score_by_domain 测试）
+- TypeScript typecheck 零错误
+
+---
 
 ### v0.2.6（URL 上下文卡片交互增强 + Markdown 渲染）
 
@@ -157,7 +221,7 @@
 | **Query / Ask / Chat** | Ollama 或 OpenAI-compatible 云 Provider | - | `Settings → LLM Provider` |
 | **语义检索 / 混合搜索 / 图谱** | Ollama embedding 模型（`nomic-embed-text`） | - | `embed_ollama_model=nomic-embed-text` |
 | **Chat web_search** | 无（DuckDuckGo 兜底无需配置） | SearXNG / Tavily / Brave Search | `Settings → 搜索配置` |
-| **Deep Research** | 搜索 Provider（至少配置一个） | - | `Settings → 搜索配置` |
+| **Deep Research** | 搜索 Provider（至少配置一个：arXiv/SearXNG 免费，Tavily/Semantic Scholar 可选 key） | - | `Settings → 搜索配置`（支持多源并行） |
 | **Chat MCP 工具** | 任意 MCP 服务器进程 | - | `Settings → MCP 服务器` 添加并重载 |
 | **Clipper 扩展** | 桌面 App 运行中 + Vault 已打开 | Chrome/Edge 扩展 | 本地服务 `127.0.0.1:19827` |
 | **Strict Local Mode** | Ollama（本地） | - | 禁止云 Provider，敏感任务强制本地 |
@@ -267,7 +331,7 @@ cargo tauri build
 ### 测试
 
 ```powershell
-# Rust 单测（284 项）
+# Rust 单测（298 项）
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # 前端类型检查

@@ -12,13 +12,24 @@
 
 ---
 
-## 本轮快讯（2026-05-21，Claude Sonnet 4.6）— H26 全部完成
+## 本轮快讯（2026-05-22，Claude Opus 4.7）— H26 全面收口 + 手动保存改造
 
-- **H26-B/C 学术 API + 质量评分**（commit `49babcb`）：arXiv + Semantic Scholar 搜索，`score_by_domain` 0.4–0.95 评分，`do_search_multi` 按分排序
-- **H26-A Outline-First 报告架构**（commit `49babcb`）：`generate_research_outline` LLM→JSON 大纲，章节独立搜索+综合，大纲审批 UI，fallback 向后兼容
-- **H26-E 分章节进度推送**（commit `003b234`）：`emit_section_progress` 携带 section_index/total_sections，ResearchDialog 渐进式进度条
-- **测试基线升至 291**，typecheck 零错误
-- **下一轮接力**：P22 打包发布 或 H27 自适应追踪搜索（独立立项）
+接续 Sonnet 4.6 的 H26-B/C/A/E 基础上，做了系统性质量打磨：
+
+- **大纲审批 UI 完整化**（commit `8c1984b`）：key_questions 每条可编辑、可增删、章节可增删、空值校验
+- **关闭后可重新打开**（commit `83d7b14`）：后端 `pending_outline_data` / `pending_query_data` / `pending_research_reports` 缓存 + `get_pending_*` 命令；ResearchPanel 加 `💬 打开对话` / `⏸ 需要确认` 按钮
+- **大纲生成 JSON 解析强化**（commit `5c13f54`）：4 重 fallback（围栏剥离 / 括号配对 + 字符串内 brace 屏蔽 / 单引号容错 / 兜底）+ 7 个单测；超时/通道关闭/解析失败时 emit 明确提示
+- **报告组装 bug 修复**（commit `4fbb326`）：Conclusion 位置（之前出现在 body 中间）+ References 换行（`\n` → `\n\n`）
+- **来源排序统一**（commit `1ca7745`）：H25/H26 两条路径都按 quality_score 排序后 truncate
+- **手动保存改造**（commit `4d82713`）：报告完成后默认不写盘，停在对话框 4 按钮（保存/导出/丢弃/关闭）；DB 状态新增 `awaiting_save` / `discarded`
+- **保存超时根治**（commit `843e7f2`）：commit_research_to_wiki 拆快慢两阶段，ingest 后台 spawn；新增 research_indexing / research_indexed 事件；前端显示「⏳ 后台索引中」徽章；HashMap::remove 防并发重提
+- **LLM 调用鲁棒性**（commit `209542d`）：complete_with_retry helper，section/intro/conclusion 失败自动重试一次 + 暴露具体错误
+- **Ollama 默认超时**（commit `468a654`）：60s → 120s 与 OpenAI 对齐
+- **跨模块同步 + UI 优化**（commits `3127599` / `86956e7` / `8e5a658`）：深度/广度从 SearchConfig 同步初始值；SearchConfigPanel 重排（搜索源左列跨两行，深度/广度右列）；搜索进度按 ✓/✗ 前缀决定是否折叠
+
+**版本号 0.2.6 → 0.2.7**，测试基线 291 → **298**，typecheck 零错误
+
+**下一轮接力**：P22 打包发布（`tauri build`）或 H27 自适应追踪搜索（独立立项）
 
 ---
 
@@ -45,10 +56,10 @@
 
 ---
 
-## 验证基线（2026-05-21）
+## 验证基线（2026-05-22）
 
 ```powershell
-cd E:\llm-wiki\src-tauri; cargo test    # 291 通过 0 失败
+cd E:\llm-wiki\src-tauri; cargo test    # 298 通过 0 失败
 cd E:\llm-wiki\web; npm run typecheck   # 零错误
 ```
 
@@ -101,7 +112,7 @@ cd E:\llm-wiki\web; npm run typecheck   # 零错误
 
 ## 关键架构约束
 
-- **测试基线**：291 通过（2026-05-21，commit 003b234）
+- **测试基线**：298 通过（2026-05-22，v0.2.7，commit 468a654）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**
