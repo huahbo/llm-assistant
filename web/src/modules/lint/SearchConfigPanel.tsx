@@ -65,9 +65,10 @@ export default function SearchConfigPanel() {
       </div>
       <div className="settings-panel">
         <div className="settings-panel__fields">
-          <div className="dev-panel__field">
+          {/* 左列：搜索提供商（跨两行） */}
+          <div className="dev-panel__field" style={{ gridRow: "span 2" }}>
             <label className="dev-panel__label">搜索提供商（可多选）</label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 6 }}>
               {/* Tavily checkbox */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                 <input
@@ -153,6 +154,7 @@ export default function SearchConfigPanel() {
             </div>
           </div>
 
+          {/* 右列上：默认研究深度 */}
           <div className="dev-panel__field">
             <label className="dev-panel__label" htmlFor="default-depth">默认研究深度</label>
             <select
@@ -169,8 +171,12 @@ export default function SearchConfigPanel() {
               <option value={4}>4 - 极深</option>
               <option value={5}>5 - 极限研究</option>
             </select>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              迭代轮数：每轮基于上一轮搜索结果生成新查询，挖掘更深层信息
+            </p>
           </div>
 
+          {/* 右列下：默认搜索广度 */}
           <div className="dev-panel__field">
             <label className="dev-panel__label" htmlFor="default-breadth">默认搜索广度</label>
             <select
@@ -181,11 +187,14 @@ export default function SearchConfigPanel() {
                 setConfig((prev) => ({ ...prev, breadth: Number(e.target.value) }))
               }
             >
-              <option value={2}>2</option>
-              <option value={3}>3</option>
-              <option value={4}>4</option>
-              <option value={5}>5</option>
+              <option value={2}>2 - 精准</option>
+              <option value={3}>3 - 标准</option>
+              <option value={4}>4 - 广泛</option>
+              <option value={5}>5 - 极广</option>
             </select>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              每轮并发查询数；Outline-First 模式下也用作大纲章节数（clamp 3-5）
+            </p>
           </div>
         </div>
 
