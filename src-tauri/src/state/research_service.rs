@@ -783,13 +783,23 @@ async fn start_research_task(
             format!("按大纲合成报告（{} 章）...", outline.sections.len()),
         );
 
-        let sources_block_full: String = all_results
+        // O-7 高质量来源优先：按 quality_score 降序排序后再 truncate，
+        //     保证 6000 字符预算优先用于权威来源（arxiv/edu/gov 等）
+        let mut ranked_indices: Vec<usize> = (0..all_results.len()).collect();
+        ranked_indices.sort_by(|a, b| {
+            all_results[*b]
+                .quality_score
+                .partial_cmp(&all_results[*a].quality_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let sources_block_full: String = ranked_indices
             .iter()
-            .enumerate()
-            .map(|(i, r)| {
+            .map(|&idx| {
+                let r = &all_results[idx];
                 let snip: String = r.snippet.chars().take(200).collect();
                 let quality = if r.quality_score > 0.8 { " [high quality]" } else { "" };
-                format!("[{}]{} {} ({}): {}", i + 1, quality, r.title, r.url, snip)
+                // 原始全局编号（idx + 1）保留，确保引用编号与 References 一致
+                format!("[{}]{} {} ({}): {}", idx + 1, quality, r.title, r.url, snip)
             })
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -912,12 +922,21 @@ async fn start_research_task(
             .join("\n");
         let context: String = learnings_text.chars().take(8000).collect();
 
-        let sources_block_full: String = all_results
+        // C-3：fallback 路径同样按 quality_score 排序、加 [high quality] 标记
+        let mut ranked_indices: Vec<usize> = (0..all_results.len()).collect();
+        ranked_indices.sort_by(|a, b| {
+            all_results[*b]
+                .quality_score
+                .partial_cmp(&all_results[*a].quality_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let sources_block_full: String = ranked_indices
             .iter()
-            .enumerate()
-            .map(|(i, r)| {
+            .map(|&idx| {
+                let r = &all_results[idx];
                 let snip: String = r.snippet.chars().take(200).collect();
-                format!("[{}] {} ({}): {}", i + 1, r.title, r.url, snip)
+                let quality = if r.quality_score > 0.8 { " [high quality]" } else { "" };
+                format!("[{}]{} {} ({}): {}", idx + 1, quality, r.title, r.url, snip)
             })
             .collect::<Vec<_>>()
             .join("\n");
