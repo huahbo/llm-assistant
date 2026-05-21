@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import "./research.css";
 import {
   askConfirmDialog,
   cancelResearchTask,
@@ -19,6 +20,7 @@ import {
 import type { ResearchTaskItem, ResearchTaskStatus } from "../../types";
 import { formatLintCheckedAt } from "../../lint-utils";
 import ResearchDialog from "./ResearchDialog";
+import { exportResearchHtml } from "../../tauri-client/export";
 
 type DeleteModalOutcome = "cancel" | "task-only" | "task-and-wiki";
 type DeleteModalState = {
@@ -29,14 +31,14 @@ type DeleteModalState = {
 
 export const getResearchStatusLabel = (status: ResearchTaskStatus): string => {
   const labels: Record<ResearchTaskStatus, string> = {
-    queued: "等待",
+    queued:      "等待",
     decomposing: "分解中",
-    searching: "搜索中",
-    synthesizing: "合成中",
-    saving: "保存中",
-    done: "完成",
-    failed: "失败",
-    cancelled: "已取消",
+    searching:   "搜索中",
+    synthesizing:"合成中",
+    saving:      "保存中",
+    done:        "✓ 完成",
+    failed:      "✕ 失败",
+    cancelled:   "已取消",
   };
   return labels[status] ?? status;
 };
@@ -60,7 +62,7 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
   const [topic, setTopic] = useState("");
   const [depth, setDepth] = useState(1);
   const [breadth, setBreadth] = useState(3);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const [researchTasks, setResearchTasks] = useState<ResearchTaskItem[]>([]);
   const [taskLogs, setTaskLogs] = useState<Record<number, string[]>>({});
   const [starting, setStarting] = useState(false);
@@ -83,7 +85,11 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
   useEffect(() => {
     void refreshTasks();
     getSearchConfig()
-      .then((cfg) => setHasSearchProvider(cfg.search_provider !== "none"))
+      .then((cfg) => {
+        const hasMulti = Array.isArray(cfg.search_providers) && cfg.search_providers.length > 0;
+        const hasSingle = cfg.search_provider !== "none";
+        setHasSearchProvider(hasMulti || hasSingle);
+      })
       .catch(() => {});
   }, [refreshTasks]);
 
@@ -166,7 +172,11 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
       setDialogTask({ taskId, topic: trimmed, depth, breadth });
       setTopic("");
     } catch (err) {
-      setStartError(err instanceof Error ? err.message : "启动研究任务失败，请重试");
+      setStartError(
+        err instanceof Error ? err.message :
+        typeof err === "string" ? err :
+        "启动研究任务失败，请重试"
+      );
     } finally {
       setStarting(false);
     }
@@ -201,7 +211,11 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
       };
       setResearchTasks((prev) => [optimisticTask, ...prev]);
     } catch (err) {
-      setTaskActionError(err instanceof Error ? err.message : "重试失败，请稍后再试");
+      setTaskActionError(
+        err instanceof Error ? err.message :
+        typeof err === "string" ? err :
+        "重试失败，请稍后再试"
+      );
     }
   };
 
@@ -435,39 +449,27 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
         <p className="module-header__sub">自动分解主题、搜索互联网并合成 Wiki 页面</p>
       </div>
 
-      {/* 无搜索提供商警告 */}
+      {/* 横幅提示 */}
       {!hasSearchProvider && (
-        <div className="panel" style={{ background: "var(--color-warning-bg, #fffbe6)", border: "1px solid var(--color-warning, #e6a817)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-warning-text, #7c5a00)" }}>
-          ⚠️ 尚未配置搜索提供商。请先在「搜索设置」中填写 Tavily API Key 或 SearXNG 地址。
+        <div className="research-banner research-banner--warn">
+          ⚠ 尚未配置搜索提供商，请在「设置 → 搜索」中填写 Tavily API Key 或 SearXNG 地址。
         </div>
       )}
-
-      {/* 错误提示 */}
       {startError && (
-        <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
-          ✕ {startError}
-        </div>
+        <div className="research-banner research-banner--error">✕ {startError}</div>
       )}
       {downloadError && (
-        <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
-          ✕ 导出失败：{downloadError}
-        </div>
+        <div className="research-banner research-banner--error">✕ 导出失败：{downloadError}</div>
       )}
       {taskActionError && (
-        <div className="panel" style={{ background: "var(--color-error-bg, #fff0f0)", border: "1px solid var(--color-error, #d94f4f)", borderRadius: "6px", padding: "10px 14px", marginBottom: "8px", color: "var(--color-error, #d94f4f)" }}>
-          ✕ 任务操作失败：{taskActionError}
-        </div>
+        <div className="research-banner research-banner--error">✕ 任务操作失败：{taskActionError}</div>
       )}
 
       {/* 输入区 */}
       <section className="panel">
-        <div className="section-head">
-          <h2>新建研究任务</h2>
-        </div>
-        <div className="dev-panel__field" style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+        <div className="research-composer">
           <input
             className="dev-panel__input"
-            style={{ flex: 1 }}
             type="text"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
@@ -486,194 +488,111 @@ export default function ResearchPanel({ onOpenWikiPage }: { onOpenWikiPage: (pat
             {starting ? "启动中..." : "开始研究"}
           </button>
         </div>
-
-        {/* 高级选项 */}
-        <div style={{ marginBottom: "8px" }}>
-          <button
-            type="button"
-            className="dev-panel__button"
-            onClick={() => setShowAdvanced((v) => !v)}
-            style={{ fontSize: "12px" }}
-          >
-            {showAdvanced ? "▲ 收起高级选项" : "▼ 展开高级选项"}
-          </button>
-        </div>
-        {showAdvanced && (
-          <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "8px" }}>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="research-depth">研究深度</label>
-              <select
-                id="research-depth"
-                className="dev-panel__input"
-                value={depth}
-                onChange={(e) => setDepth(Number(e.target.value))}
-              >
-                <option value={1}>1 - 标准 (快速)</option>
-                <option value={2}>2 - 进阶 (更全面)</option>
-                <option value={3}>3 - 深度 (多轮迭代)</option>
-                <option value={4}>4 - 极深</option>
-                <option value={5}>5 - 极限研究</option>
-              </select>
-            </div>
-            <div className="dev-panel__field">
-              <label className="dev-panel__label" htmlFor="research-breadth">搜索广度</label>
-              <select
-                id="research-breadth"
-                className="dev-panel__input"
-                value={breadth}
-                onChange={(e) => setBreadth(Number(e.target.value))}
-              >
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-                <option value={4}>4</option>
-                <option value={5}>5</option>
-              </select>
+        <div className="research-options">
+          <div className="research-option-group">
+            <span className="research-option-group__label">深度</span>
+            <div className="research-option-pills">
+              {([{ v: 1, l: "标准" }, { v: 2, l: "进阶" }, { v: 3, l: "深度" }, { v: 4, l: "极深" }, { v: 5, l: "极限" }] as const).map(({ v, l }) => (
+                <button
+                  key={v}
+                  type="button"
+                  className={`research-option-pill${depth === v ? " research-option-pill--active" : ""}`}
+                  onClick={() => setDepth(v)}
+                >{l}</button>
+              ))}
             </div>
           </div>
-        )}
+          <div className="research-option-group">
+            <span className="research-option-group__label">广度</span>
+            <div className="research-option-pills">
+              {[2, 3, 4, 5].map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  className={`research-option-pill${breadth === v ? " research-option-pill--active" : ""}`}
+                  onClick={() => setBreadth(v)}
+                >{v}</button>
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
 
       {/* 任务列表 */}
-      <section className="panel">
+      <section className="panel research-tasks-panel">
         <div className="section-head">
-          <h2>任务列表</h2>
+          <h2>任务历史</h2>
           <span className="section-head__hint">
-            运行中 {runningCount} 条 · 历史 {doneCount} 条
+            运行中 {runningCount} · 历史 {doneCount}
           </span>
         </div>
         {researchTasks.length === 0 ? (
-          <p className="empty-state">暂无研究任务。输入研究主题后点击"开始研究"。</p>
+          <p className="empty-state">暂无研究任务，输入主题后点击「开始研究」。</p>
         ) : (
-          <div className="queue-list">
-            {researchTasks.map((task) => (
-              <div
-                key={task.id}
-                className="queue-item"
-                style={{ flexDirection: "column", alignItems: "stretch", padding: "12px" }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                    <span
-                      style={{ fontWeight: 600, fontSize: "14px", cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: "3px" }}
-                      title="点击打开研究对话框"
-                      onClick={() => setDialogTask({ taskId: task.id, topic: task.topic, depth: task.depth ?? 1, breadth: task.breadth ?? 3, initialTask: task })}
-                    >{task.topic}</span>
-                    <span style={{ fontSize: "10px", color: "var(--text-secondary)" }}>
-                      创建：{formatLintCheckedAt(task.created_at)} ·
-                      更新：{formatLintCheckedAt(task.updated_at)} ·
-                      深度 {task.depth || 1} · 广度 {task.breadth || 3}
+          <div className="research-task-list">
+            {researchTasks.map((task) => {
+              const isRunning = task.status === "queued" || task.status === "decomposing" || task.status === "searching" || task.status === "synthesizing" || task.status === "saving";
+              const cardMod = isRunning ? "running" : task.status === "done" ? "done" : task.status === "failed" ? "failed" : task.status === "cancelled" ? "cancelled" : "queued";
+              const logs = taskLogs[task.id] ?? [];
+              const showLog = logs.length > 0 || (task.status !== "done" && task.status !== "cancelled");
+              const logLines = logs.length > 0 ? logs : task.status === "failed" && task.error ? [`✗ ${task.error}`] : ["正在初始化..."];
+              return (
+                <div key={task.id} className={`research-task-card research-task-card--${cardMod}`}>
+                  <div className="research-task-head">
+                    <div className="research-task-info">
+                      <span
+                        className="research-task-title"
+                        title="点击打开研究对话框"
+                        onClick={() => setDialogTask({ taskId: task.id, topic: task.topic, depth: task.depth ?? 1, breadth: task.breadth ?? 3, initialTask: task })}
+                      >{task.topic}</span>
+                      <span className="research-task-meta">
+                        {formatLintCheckedAt(task.created_at)} · 深度 {task.depth ?? 1} · 广度 {task.breadth ?? 3}
+                        {task.status === "done" && task.web_results_count ? ` · 来源 ${task.web_results_count} 个` : ""}
+                      </span>
+                    </div>
+                    <span className={`research-badge ${getResearchStatusColor(task.status)}`}>
+                      {getResearchStatusLabel(task.status)}
                     </span>
                   </div>
-                  <span className={`queue-badge ${getResearchStatusColor(task.status)}`}>
-                    {getResearchStatusLabel(task.status)}
-                  </span>
-                </div>
 
-                {/* 日志区：运行中与失败任务均显示，便于定位失败原因 */}
-                {((taskLogs[task.id] && taskLogs[task.id].length > 0) ||
-                  (task.status !== "done" && task.status !== "cancelled")) && (
-                  <div
-                    style={{
-                      backgroundColor: "rgba(0,0,0,0.2)",
-                      padding: "8px",
-                      borderRadius: "4px",
-                      fontFamily: "monospace",
-                      fontSize: "11px",
-                      marginBottom: "8px",
-                      borderLeft:
-                        task.status === "failed"
-                          ? "3px solid var(--error)"
-                          : "3px solid var(--accent)",
-                      maxHeight: task.status === "failed" ? "120px" : "80px",
-                      overflowY: "auto"
-                    }}
-                  >
-                    {((taskLogs[task.id] && taskLogs[task.id].length > 0)
-                      ? taskLogs[task.id]
-                      : task.status === "failed" && task.error
-                        ? [`✗ ${task.error}`]
-                        : ["正在初始化..."]).map((log, i, arr) => (
-                      <div key={i} style={{ color: "var(--text-secondary)", opacity: i === arr.length - 1 ? 1 : 0.5 }}>
-                        <span
-                          style={{
-                            color: task.status === "failed" ? "var(--error)" : "var(--accent)",
-                            marginRight: "4px",
-                          }}
+                  {showLog && (
+                    <div className={`research-task-log${task.status === "failed" ? " research-task-log--failed" : ""}`}>
+                      {logLines.map((log, i, arr) => (
+                        <div
+                          key={i}
+                          className={`research-task-log-line${i === arr.length - 1 ? " research-task-log-line--latest" : ""}`}
                         >
-                          &gt;
-                        </span>
-                        {log}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                          <span className={`research-task-log-prompt${task.status === "failed" ? " research-task-log-prompt--failed" : ""}`}>&gt;</span>
+                          {log}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
-                {/* 完成后：显示结果统计 */}
-                {task.status === "done" && (
-                  <div style={{ marginBottom: "8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                    ✨ 已从 {task.web_results_count} 个来源中提取并综合信息。
+                  <div className="research-task-actions">
+                    {task.status === "failed" && task.error && (
+                      <span className="research-task-error" title={task.error}>{task.error}</span>
+                    )}
+                    {task.status === "done" && task.saved_path && (
+                      <>
+                        <button type="button" className="dev-panel__button btn--wiki" onClick={() => onOpenWikiPage(task.saved_path!)}>查看 Wiki</button>
+                        <button type="button" className="dev-panel__button btn--word" onClick={() => void handleDownloadWord(task)}>导出 Word</button>
+                        <button type="button" className="dev-panel__button btn--html" onClick={() => void exportResearchHtml(task.saved_path!, task.topic)}>导出 HTML</button>
+                      </>
+                    )}
+                    {isRunning && (
+                      <button type="button" className="dev-panel__button btn--cancel" onClick={() => handleCancel(task.id)}>取消</button>
+                    )}
+                    {(task.status === "failed" || task.status === "cancelled") && (
+                      <button type="button" className="dev-panel__button btn--retry" onClick={() => void handleRetryTask(task)}>重试</button>
+                    )}
+                    {(task.status === "done" || task.status === "failed" || task.status === "cancelled") && (
+                      <button type="button" className="dev-panel__button btn--danger" onClick={() => void handleDeleteTask(task)}>删除</button>
+                    )}
                   </div>
-                )}
-
-                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", alignItems: "center" }}>
-                  {task.status === "done" && task.saved_path && (
-                    <>
-                      <button
-                        type="button"
-                        className="dev-panel__button"
-                        style={{ fontSize: "12px" }}
-                        onClick={() => onOpenWikiPage(task.saved_path!)}
-                      >
-                        📖 查看 Wiki
-                      </button>
-                      <button
-                        type="button"
-                        className="dev-panel__button"
-                        style={{ fontSize: "12px" }}
-                        onClick={() => void handleDownloadWord(task)}
-                      >
-                        📄 导出 Word
-                      </button>
-                    </>
-                  )}
-                  {task.status === "failed" && task.error && (
-                    <span style={{ fontSize: "11px", color: "var(--error)", marginRight: "auto" }}>
-                      错误: {task.error}
-                    </span>
-                  )}
-                  {(task.status === "queued" || task.status === "decomposing" || task.status === "searching" || task.status === "synthesizing") && (
-                    <button
-                      type="button"
-                      className="dev-panel__button"
-                      style={{ fontSize: "12px" }}
-                      onClick={() => handleCancel(task.id)}
-                    >
-                      🛑 取消
-                    </button>
-                  )}
-                  {(task.status === "failed" || task.status === "cancelled") && (
-                    <button
-                      type="button"
-                      className="dev-panel__button dev-panel__button--accent"
-                      style={{ fontSize: "12px" }}
-                      onClick={() => void handleRetryTask(task)}
-                    >
-                      🔄 重试
-                    </button>
-                  )}
-                  {(task.status === "done" || task.status === "failed" || task.status === "cancelled") && (
-                    <button
-                      type="button"
-                      className="dev-panel__button"
-                      style={{ fontSize: "12px" }}
-                      onClick={() => void handleDeleteTask(task)}
-                    >
-                      🗑 删除任务
-                    </button>
-                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

@@ -297,10 +297,11 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn summarize(&self, content: &str, max_tokens: usize) -> Result<String, LlmError> {
-        // 构造摘要专用 prompt
         let prompt = format!(
-            "请为以下内容生成一个简洁的摘要，摘要长度不超过 {} 个词：\n\n{}\n\n摘要：",
-            max_tokens / 4, // 粗略估计：1 token ≈ 4 个字符
+            "请为以下内容生成一段详细摘要（不超过{}个词）。\
+涵盖：主要目的或问题、方法或研究设计、关键发现（附具体数据）、局限性或注意事项。\
+用连贯段落表达，不要使用列表：\n\n{}\n\n摘要：",
+            max_tokens / 2,
             content
         );
 

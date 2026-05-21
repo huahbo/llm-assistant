@@ -1391,8 +1391,8 @@
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 8px 10px 10px;
+  gap: 0;
+  padding: 0;
   background: var(--bg-page);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-light);
@@ -1614,6 +1614,89 @@
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* ── 行式对话 ────────────────────────────────── */
+.agent-studio__msg-row {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border-light);
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.agent-studio__msg-row:last-child {
+  border-bottom: none;
+}
+
+.agent-studio__msg-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.agent-studio__msg-row--user {
+  background: color-mix(in srgb, var(--accent-light) 38%, transparent);
+}
+
+.agent-studio__msg-row--user:hover {
+  background: color-mix(in srgb, var(--accent-light) 55%, transparent);
+}
+
+.agent-studio__msg-row--selected {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.agent-studio__msg-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-studio__msg-role {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.agent-studio__msg-row--user .agent-studio__msg-role {
+  color: var(--accent);
+}
+
+.agent-studio__msg-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.agent-studio__msg-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-studio__msg-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.agent-studio__debug-btn {
+  margin-left: auto;
+}
+/* ─────────────────────────────────────────────── */
 
 .agent-studio__composer {
   border-top: 1px solid var(--border-light);

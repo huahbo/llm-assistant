@@ -282,6 +282,12 @@
 
 /* ── 头像 ────────────────────────────────────────────────────────────────── */
 
+.chat-avatar--placeholder {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+}
+
 .chat-avatar {
   flex-shrink: 0;
   width: 28px;
@@ -436,6 +442,91 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+/* ── 推理过程折叠区 ──────────────────────────────────────────────────────────── */
+
+.chat-thinking-section {
+  border-top: 1px solid var(--border);
+}
+
+.chat-thinking-section__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 11px;
+  gap: 8px;
+  transition: background 0.1s;
+}
+
+.chat-thinking-section__toggle:hover {
+  background: var(--bg-muted);
+}
+
+.chat-thinking-section__body {
+  border-top: 1px solid var(--border);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-thinking-section__item {
+  padding: 6px 8px;
+  background: var(--bg-page);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border);
+  line-height: 1.5;
+}
+
+/* ── 工具调用后文字输出折叠区 ────────────────────────────────────────────── */
+
+.chat-text-section {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.chat-text-section__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-muted);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-muted);
+  gap: 8px;
+  transition: background 0.1s;
+}
+
+.chat-text-section__toggle:hover {
+  background: var(--bg-content);
+}
+
+.chat-text-section__label {
+  flex: 1;
+  font-size: 12px;
+}
+
+.chat-text-section__body {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 /* ── 工具调用卡片 ─────────────────────────────────────────────────────────── */

@@ -77,6 +77,7 @@ export default function App() {
   const { activeModule, navigateTo: setActiveModule } = useMode();
   // requestedOperationsTab: App 导航到 operations 时请求的 tab（由 OperationsModule 消费后保持自管）
   const [requestedOperationsTab, setRequestedOperationsTab] = useState<"queue" | "stats" | undefined>(undefined);
+  const [agentDebugOpen, setAgentDebugOpen] = useState(false);
   // ── 面板拖拽分割 ──────────────────────────────────────────────
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -442,7 +443,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? " module-viewport--agent" : ""}${activeModule === "chat" ? " module-viewport--chat" : ""}`}>
+        <div className={`module-viewport${activeModule === "ask" ? " module-viewport--ask" : ""}${activeModule === "agent" ? ` module-viewport--agent${agentDebugOpen ? " module-viewport--agent-debug" : ""}` : ""}${activeModule === "chat" ? " module-viewport--chat" : ""}`}>
           {!appReady && <SkeletonPane rows={8} />}
           {/* ---- Chat 模块 ---- */}
           {appReady && activeModule === "chat" && <ErrorBoundary label="Chat"><ChatModule /></ErrorBoundary>}
@@ -535,7 +536,7 @@ export default function App() {
           {/* ---- Agent Studio 模块 ---- */}
           {appReady && activeModule === "agent" && (
             <ErrorBoundary label="Agent Studio">
-              <AgentStudio onOpenWikiPage={handleOpenWikiPage} />
+              <AgentStudio onOpenWikiPage={handleOpenWikiPage} onDebugToggle={setAgentDebugOpen} />
             </ErrorBoundary>
           )}
         </div>

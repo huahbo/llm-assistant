@@ -4,6 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use chrono::{DateTime, Utc};
+
 use crate::{
     db::{self, IngestTaskInput},
     models::{
@@ -84,6 +86,7 @@ pub fn ingest_markdown(
     llm_summary: Option<&str>,
     entities: &[String],
     display_name: Option<&str>,
+    display_source: Option<&str>,
 ) -> Result<IngestResult, String> {
     if !vault_path.exists() {
         return Err("Vault 不存在，请先执行 init_vault".to_string());
@@ -106,13 +109,16 @@ pub fn ingest_markdown(
     let wiki_path = vault_path.join("wiki").join(&wiki_file_name);
     // 语义标题：entities[0] > display_name > filename stem（三级回退，确保用户可读）
     let wiki_title = resolve_wiki_semantic_title(entities, display_name, &wiki_file_name);
+    let source_display = display_source
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| source_path.to_string_lossy().to_string());
     // 优先使用 LLM 摘要，否则回退到截断摘要
     let summary = llm_summary
         .map(|s| s.to_string())
         .unwrap_or_else(|| fallback_summarize(&source_content, 200));
     let wiki_body = build_wiki_summary(
         &wiki_title,
-        source_path,
+        &source_display,
         &raw_path,
         &summary,
         &timestamp_ms,
@@ -385,27 +391,24 @@ fn finalize_failed_task(db_path: &Path, task_id: i64, timestamp_ms: &str, error:
 
 fn build_wiki_summary(
     wiki_title: &str,
-    source_path: &Path,
+    source_display: &str,
     raw_path: &Path,
     summary: &str,
     timestamp_ms: &str,
     entities: &[String],
 ) -> String {
-    // 统一在 frontmatter 中写入导入元数据，供后续检索与 lint 使用。
+    let iso_date = ms_to_iso_date(timestamp_ms);
     let frontmatter = build_wiki_frontmatter(
         wiki_title,
-        &source_path.to_string_lossy(),
+        source_display,
         &raw_path.to_string_lossy(),
-        timestamp_ms,
+        &iso_date,
         entities,
     );
     format!(
-        "{}\n# {}\n\n- Source: `{}`\n- Raw: `{}`\n- Imported at: {}\n\n## Summary\n\n{}\n",
+        "{}\n# {}\n\n## Summary\n\n{}\n\n## Key Findings\n\n- \n\n## Method\n\n- \n\n## Limitations\n\n- \n",
         frontmatter,
         wiki_title,
-        source_path.to_string_lossy(),
-        raw_path.to_string_lossy(),
-        timestamp_ms,
         summary
     )
 }
@@ -419,6 +422,7 @@ fn build_wiki_frontmatter(
 ) -> String {
     let mut output = String::new();
     output.push_str("---\n");
+    output.push_str("type: source\n");
     output.push_str("title: ");
     output.push_str(&yaml_quote(title));
     output.push('\n');
@@ -429,6 +433,12 @@ fn build_wiki_frontmatter(
     output.push_str(&yaml_quote(raw));
     output.push('\n');
     output.push_str("imported_at: ");
+    output.push_str(&yaml_quote(imported_at));
+    output.push('\n');
+    output.push_str("created: ");
+    output.push_str(&yaml_quote(imported_at));
+    output.push('\n');
+    output.push_str("updated: ");
     output.push_str(&yaml_quote(imported_at));
     output.push('\n');
     output.push_str("entities:");
@@ -449,6 +459,17 @@ fn build_wiki_frontmatter(
 fn yaml_quote(value: &str) -> String {
     // 使用单引号并转义 YAML 单引号，避免路径和实体中的特殊字符破坏格式。
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn ms_to_iso_date(timestamp_ms: &str) -> String {
+    if let Ok(ms) = timestamp_ms.parse::<i64>() {
+        let secs = ms / 1000;
+        let nsecs = ((ms % 1000) * 1_000_000) as u32;
+        if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, nsecs) {
+            return dt.format("%Y-%m-%d").to_string();
+        }
+    }
+    timestamp_ms.to_string()
 }
 
 fn build_query_page_title(input_title: Option<&str>, question: &str) -> String {
@@ -532,23 +553,23 @@ fn normalize_raw_filename(source_stem: &str, content_hash: &str) -> String {
 /// 从有意义的显示名称生成 wiki 文件名，冲突时追加 -1/-2 后缀。
 /// 解析摄入页面的语义标题（面向用户的显示名称）。
 ///
-/// 优先级：entities[0]（LLM 提取，语义最准）> display_name（源文件名）> wiki_file_name stem。
+/// 优先级：display_name（源文件名/URL）> entities[0] > wiki_file_name stem。
 /// 跳过长度 < 2 的实体和内部临时路径名（`llm_wiki_` / `ingest-` 前缀）。
 fn resolve_wiki_semantic_title(
     entities: &[String],
     display_name: Option<&str>,
     wiki_file_name: &str,
 ) -> String {
-    if let Some(entity) = entities.first() {
-        let e = entity.trim();
-        if e.len() >= 2 {
-            return e.to_string();
-        }
-    }
     if let Some(name) = display_name {
         let n = name.trim();
         if !n.is_empty() && !n.starts_with("llm_wiki_") && !n.starts_with("ingest-") {
             return n.to_string();
+        }
+    }
+    if let Some(entity) = entities.first() {
+        let e = entity.trim();
+        if e.len() >= 2 {
+            return e.to_string();
         }
     }
     wiki_file_name.trim_end_matches(".md").to_string()
@@ -868,7 +889,7 @@ mod tests {
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
         let result =
-            ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("导入 Markdown 失败");
+            ingest_markdown(&vault_dir, &source_path, None, &[], None, None).expect("导入 Markdown 失败");
 
         assert!(Path::new(&result.raw_path).is_file());
         assert!(Path::new(&result.wiki_path).is_file());
@@ -922,9 +943,9 @@ mod tests {
         fs::write(&source_path, source_content).expect("写入源文件失败");
 
         let first =
-            ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第一次导入失败");
+            ingest_markdown(&vault_dir, &source_path, None, &[], None, None).expect("第一次导入失败");
         let second =
-            ingest_markdown(&vault_dir, &source_path, None, &[], None).expect("第二次导入失败");
+            ingest_markdown(&vault_dir, &source_path, None, &[], None, None).expect("第二次导入失败");
 
         assert_eq!(first.wiki_path, second.wiki_path);
         assert_eq!(first.raw_path, second.raw_path);
@@ -965,7 +986,7 @@ mod tests {
         fs::write(&source_path, "# Note\n\nFrontmatter regression test.").expect("写入源文件失败");
 
         let entities = vec!["Rust".to_string(), "SQLite".to_string()];
-        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &entities, None)
+        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &entities, None, None)
             .expect("导入 Markdown 失败");
         let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
         let frontmatter = extract_frontmatter(&wiki_content).expect("缺少 YAML frontmatter");
@@ -987,7 +1008,7 @@ mod tests {
         fs::write(&source_path, "# Note\n\nEmpty entities regression test.")
             .expect("写入源文件失败");
 
-        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &[], None)
+        let result = ingest_markdown(&vault_dir, &source_path, Some("测试摘要"), &[], None, None)
             .expect("导入 Markdown 失败");
         let wiki_content = fs::read_to_string(&result.wiki_path).expect("读取 wiki 文件失败");
         let frontmatter = extract_frontmatter(&wiki_content).expect("缺少 YAML frontmatter");

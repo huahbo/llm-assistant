@@ -1035,6 +1035,8 @@ pub struct ResearchTaskItem {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchConfig {
     pub search_provider: String,
+    #[serde(default)]
+    pub search_providers: Vec<String>,
     pub tavily_api_key: String,
     pub searxng_url: String,
     pub brave_api_key: String,
@@ -1046,11 +1048,25 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             search_provider: "none".into(),
+            search_providers: vec![],
             tavily_api_key: "".into(),
             searxng_url: "http://localhost:8080".into(),
             brave_api_key: "".into(),
             breadth: 3,
             depth: 1,
+        }
+    }
+}
+
+impl SearchConfig {
+    /// 返回实际启用的提供商列表（兼容旧的单选字段）
+    pub fn effective_providers(&self) -> Vec<String> {
+        if !self.search_providers.is_empty() {
+            self.search_providers.clone()
+        } else if self.search_provider != "none" && !self.search_provider.is_empty() {
+            vec![self.search_provider.clone()]
+        } else {
+            vec![]
         }
     }
 }

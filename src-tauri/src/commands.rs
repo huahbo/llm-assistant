@@ -952,6 +952,206 @@ pub fn quick_lint_page(
     state.quick_lint_page_impl(&wiki_path)
 }
 
+/// 将已保存的研究报告 .md 文件转换为独立 HTML，返回 HTML 字符串供前端写入用户选择的路径。
+#[tauri::command]
+pub fn research_md_to_html(md_path: String) -> Result<String, String> {
+    let path = std::path::PathBuf::from(md_path.trim());
+    let md = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取研究报告失败: {}", e))?;
+
+    // Markdown → HTML
+    use pulldown_cmark::{html, Options, Parser};
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    let parser = Parser::new_ext(&md, opts);
+    let mut body_html = String::new();
+    html::push_html(&mut body_html, parser);
+
+    // 从 h2/h3 标题提取目录
+    let toc = build_html_toc(&md);
+
+    let title = md
+        .lines()
+        .find(|l| l.starts_with("# "))
+        .map(|l| l.trim_start_matches("# ").trim())
+        .unwrap_or("研究报告")
+        .to_string();
+
+    let html_out = format!(
+        r#"<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>
+  :root {{
+    --accent: #7c3aed;
+    --text: #1e1b2e;
+    --text-muted: #6b7280;
+    --border: #e5e7eb;
+    --bg: #fafafa;
+    --code-bg: #f3f4f6;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: "Noto Serif SC", Georgia, "Times New Roman", serif;
+    font-size: 16px;
+    line-height: 1.8;
+    color: var(--text);
+    background: var(--bg);
+    display: flex;
+    min-height: 100vh;
+  }}
+  #toc {{
+    width: 220px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 28px 16px;
+    border-right: 1px solid var(--border);
+    font-size: 13px;
+    font-family: system-ui, sans-serif;
+    background: #fff;
+  }}
+  #toc h3 {{
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }}
+  #toc ul {{ list-style: none; padding: 0; }}
+  #toc li {{ margin: 4px 0; }}
+  #toc a {{
+    color: var(--text-muted);
+    text-decoration: none;
+    display: block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
+  }}
+  #toc a:hover {{ background: #ede9fe; color: var(--accent); }}
+  #toc .toc-h3 {{ padding-left: 14px; font-size: 12px; }}
+  main {{
+    flex: 1;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 48px 40px;
+  }}
+  h1 {{ font-size: 2em; font-weight: 700; margin-bottom: 8px; color: var(--text); line-height: 1.3; }}
+  h2 {{
+    font-size: 1.4em; font-weight: 700;
+    margin-top: 2.5em; margin-bottom: 0.8em;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent);
+    color: var(--text);
+  }}
+  h3 {{ font-size: 1.15em; font-weight: 600; margin-top: 1.8em; margin-bottom: 0.5em; color: #374151; }}
+  p {{ margin: 0.9em 0; }}
+  ul, ol {{ padding-left: 1.6em; margin: 0.8em 0; }}
+  li {{ margin: 0.3em 0; }}
+  blockquote {{
+    border-left: 4px solid var(--accent);
+    padding: 8px 16px;
+    margin: 1em 0;
+    background: #ede9fe20;
+    color: #4b5563;
+    border-radius: 0 6px 6px 0;
+  }}
+  code {{
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: "Cascadia Code", "Fira Code", monospace;
+    font-size: 0.88em;
+  }}
+  pre {{
+    background: #1e1b2e;
+    color: #e2e8f0;
+    padding: 16px 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1.2em 0;
+    font-size: 0.9em;
+    line-height: 1.5;
+  }}
+  pre code {{ background: none; padding: 0; color: inherit; }}
+  table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.2em 0;
+    font-size: 14px;
+  }}
+  th, td {{
+    text-align: left;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+  }}
+  th {{ background: #f9fafb; font-weight: 600; }}
+  tr:nth-child(even) td {{ background: #fafafa; }}
+  a {{ color: var(--accent); text-decoration: underline dotted; }}
+  a:hover {{ text-decoration: underline; }}
+  hr {{ border: none; border-top: 1px solid var(--border); margin: 2em 0; }}
+  sup {{ font-size: 0.75em; vertical-align: super; }}
+  @media (max-width: 768px) {{
+    #toc {{ display: none; }}
+    main {{ padding: 24px 20px; }}
+  }}
+</style>
+</head>
+<body>
+<nav id="toc">
+  <h3>目录</h3>
+  {toc}
+</nav>
+<main>
+{body_html}
+</main>
+</body>
+</html>"#,
+        title = title,
+        toc = toc,
+        body_html = body_html,
+    );
+
+    Ok(html_out)
+}
+
+/// 从 Markdown 文本提取 h2/h3 标题生成 HTML 目录列表。
+fn build_html_toc(md: &str) -> String {
+    let mut items = Vec::new();
+    for line in md.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            let text = rest.trim();
+            let anchor = heading_to_anchor(text);
+            items.push(format!("<li><a href=\"#{}\">{}</a></li>", anchor, text));
+        } else if let Some(rest) = line.strip_prefix("### ") {
+            let text = rest.trim();
+            let anchor = heading_to_anchor(text);
+            items.push(format!("<li class=\"toc-h3\"><a href=\"#{}\">{}</a></li>", anchor, text));
+        }
+    }
+    if items.is_empty() {
+        return "<ul><li><em>无目录</em></li></ul>".to_string();
+    }
+    format!("<ul>{}</ul>", items.join(""))
+}
+
+/// 将标题文字转换为 URL 锚点（小写 + 非字母数字替换为 -）。
+fn heading_to_anchor(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 /// 保存 Deep Research 导出文件（.md 或其他格式）到用户指定路径。
 #[tauri::command]
 pub fn save_research_doc(path: String, content: String) -> Result<(), String> {

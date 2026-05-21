@@ -10,6 +10,8 @@ interface DisplayGroup {
   role: "user" | "assistant";
   content: string | null;
   segments: ChatStreamSegment[] | undefined;
+  thinkingTexts?: string[];
+  responseText?: string; // final answer merged with the tool-call group
 }
 
 function buildDisplayGroups(messages: ChatMessage[]): DisplayGroup[] {
@@ -21,15 +23,36 @@ function buildDisplayGroups(messages: ChatMessage[]): DisplayGroup[] {
   }
 
   const groups: DisplayGroup[] = [];
+  let pendingToolSegs: ChatStreamSegment[] = [];
+  let pendingThinkingTexts: string[] = [];
+  let pendingMsgId: number = 0;
+
+  // Emit the accumulated tool-call group, optionally attaching the final response text
+  const flushPending = (responseText?: string | null) => {
+    if (pendingToolSegs.length === 0) return;
+    groups.push({
+      messageId: pendingMsgId,
+      role: "assistant",
+      content: null,
+      segments: pendingToolSegs,
+      thinkingTexts: pendingThinkingTexts.length > 0 ? pendingThinkingTexts : undefined,
+      responseText: responseText ?? undefined,
+    });
+    pendingToolSegs = [];
+    pendingThinkingTexts = [];
+    pendingMsgId = 0;
+  };
+
   for (const msg of messages) {
     if (msg.role === "system" || msg.role === "tool") continue;
 
     if (msg.role === "user") {
+      flushPending();
       groups.push({ messageId: msg.id, role: "user", content: msg.content, segments: undefined });
       continue;
     }
 
-    // assistant — reconstruct segments if tool_calls present
+    // assistant — reconstruct tool segs
     const toolSegs: ChatStreamSegment[] = [];
     if (msg.tool_calls && msg.tool_calls.length > 0) {
       for (const tc of msg.tool_calls) {
@@ -49,16 +72,27 @@ function buildDisplayGroups(messages: ChatMessage[]): DisplayGroup[] {
       }
     }
 
-    const segments: ChatStreamSegment[] | undefined =
-      toolSegs.length > 0
-        ? [
-            ...toolSegs,
-            ...(msg.content ? [{ kind: "text" as const, text: msg.content, streaming: false }] : []),
-          ]
-        : undefined;
-
-    groups.push({ messageId: msg.id, role: "assistant", content: msg.content, segments });
+    if (toolSegs.length > 0) {
+      // Intermediate: accumulate tool segs + optional reasoning text
+      if (pendingToolSegs.length === 0) pendingMsgId = msg.id;
+      pendingToolSegs.push(...toolSegs);
+      if (msg.content && msg.content.trim()) {
+        pendingThinkingTexts.push(msg.content);
+      }
+    } else {
+      // Final text-only message
+      if (pendingToolSegs.length > 0) {
+        // Merge with the pending tool group → single unified bubble
+        flushPending(msg.content);
+      } else {
+        // Pure chat message with no preceding tool calls
+        groups.push({ messageId: msg.id, role: "assistant", content: msg.content, segments: undefined });
+      }
+    }
   }
+
+  flushPending(); // trailing tool-call round without a following text message
+
   return groups;
 }
 
@@ -231,29 +265,51 @@ export default function MessageThread({
         </button>
       </div>
       <div className="chat-thread__messages">
-        {buildDisplayGroups(
-            messages.filter((msg) => !streamingMessage || msg.id !== streamingMessage.message_id)
-          ).map((group) => (
-            <MessageBubble
-              key={group.messageId}
-              role={group.role}
-              content={group.segments ? null : group.content}
-              segments={group.segments}
-              streaming={false}
-            />
-          ))}
-        {pendingUserMsg !== null && (
-          <MessageBubble role="user" content={pendingUserMsg} />
-        )}
-        {streamingMessage && (
-          <MessageBubble
-            role="assistant"
-            content={null}
-            segments={streamingMessage.segments}
-            streaming={isStreaming}
-            streamStatus={streamingMessage.status}
-          />
-        )}
+        {(() => {
+          const filteredMsgs = messages.filter(
+            (msg) => !streamingMessage || msg.id !== streamingMessage.message_id
+          );
+          // Detect whether the current streaming round has agent tool calls already in DB
+          const lastUserIdx = filteredMsgs.map((m) => m.role).lastIndexOf("user");
+          const roundMsgs = lastUserIdx >= 0 ? filteredMsgs.slice(lastUserIdx + 1) : [];
+          const hasAgentContext = roundMsgs.some(
+            (m) => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0
+          );
+          const displayGroups = buildDisplayGroups(filteredMsgs);
+          return (
+            <>
+              {displayGroups.map((group, idx) => {
+                const prevGroup = idx > 0 ? displayGroups[idx - 1] : null;
+                const hideAvatar = group.role === "assistant" && prevGroup?.role === "assistant";
+                return (
+                  <MessageBubble
+                    key={group.messageId}
+                    role={group.role}
+                    content={group.segments ? null : group.content}
+                    segments={group.segments}
+                    streaming={false}
+                    thinkingTexts={group.thinkingTexts}
+                    responseText={group.responseText}
+                    hideAvatar={hideAvatar}
+                  />
+                );
+              })}
+              {pendingUserMsg !== null && (
+                <MessageBubble role="user" content={pendingUserMsg} />
+              )}
+              {streamingMessage && (
+                <MessageBubble
+                  role="assistant"
+                  content={null}
+                  segments={streamingMessage.segments}
+                  streaming={isStreaming}
+                  streamStatus={streamingMessage.status}
+                  hideAvatar={hasAgentContext}
+                />
+              )}
+            </>
+          );
+        })()}
         {shellApproval && (
           <div className="shell-approval-card">
             <div className="shell-approval-card__header">

@@ -575,6 +575,9 @@ body.split-dragging .split-handle::after {
 
 /* 模块标题区 */
 .module-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   margin-bottom: 22px;
 }
 
@@ -583,10 +586,11 @@ body.split-dragging .split-handle::after {
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.4px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .module-header__sub {
-  margin-top: 4px;
   font-size: 13px;
   color: var(--text-muted);
 }

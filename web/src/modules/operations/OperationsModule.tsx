@@ -199,10 +199,17 @@ export default function OperationsModule({
                     </p>
                     <button
                       type="button"
-                      className="btn btn--primary"
+                      className="export-card__btn"
                       disabled={exportBusy}
                       onClick={() => { void handleExport("markdown"); }}
                     >
+                      {exportBusy ? (
+                        <span className="export-card__btn-spinner" />
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 5v14M5 12l7 7 7-7" />
+                        </svg>
+                      )}
                       {exportBusy ? "导出中…" : "导出为 Markdown 包"}
                     </button>
                   </div>
@@ -216,10 +223,17 @@ export default function OperationsModule({
                     </p>
                     <button
                       type="button"
-                      className="btn btn--primary"
+                      className="export-card__btn"
                       disabled={exportBusy}
                       onClick={() => { void handleExport("html"); }}
                     >
+                      {exportBusy ? (
+                        <span className="export-card__btn-spinner" />
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 5v14M5 12l7 7 7-7" />
+                        </svg>
+                      )}
                       {exportBusy ? "导出中…" : "导出为静态 HTML 包"}
                     </button>
                   </div>

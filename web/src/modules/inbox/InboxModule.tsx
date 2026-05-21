@@ -941,6 +941,9 @@ const InboxModule = forwardRef<InboxModuleHandle, InboxModuleProps>(function Inb
                   placeholder="https://example.com/article"
                   spellCheck={false}
                 />
+                <p className="ingest-url-hint">
+                  使用静态抓取，不支持 JS 渲染页面（如 Framer / Next.js SPA）。此类站点内容可能不完整。
+                </p>
               </div>
               <div className="ingest-card__footer">
                 <button

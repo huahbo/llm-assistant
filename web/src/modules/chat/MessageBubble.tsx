@@ -5,7 +5,32 @@ import MarkdownRenderer from "./MarkdownRenderer";
 
 type ToolSeg = ChatStreamSegment & { kind: "tool" };
 
-function ToolGroup({ tools, streaming }: { tools: ToolSeg[]; streaming: boolean }) {
+function ThinkingSection({ texts }: { texts: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="chat-thinking-section">
+      <button
+        type="button"
+        className="chat-thinking-section__toggle"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span>💭 {texts.length} 步推理过程</span>
+        <span className="chat-tool-group__arrow">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="chat-thinking-section__body">
+          {texts.map((text, i) => (
+            <div key={i} className="chat-thinking-section__item">
+              <MarkdownRenderer content={text} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolGroup({ tools, streaming, thinkingTexts }: { tools: ToolSeg[]; streaming: boolean; thinkingTexts?: string[] }) {
   const isRunning = tools.some((t) => t.status === "running");
   const isAwaiting = tools.some((t) => t.status === "awaiting_approval");
   const [open, setOpen] = useState(false);
@@ -44,6 +69,9 @@ function ToolGroup({ tools, streaming }: { tools: ToolSeg[]; streaming: boolean 
           ))}
         </div>
       )}
+      {thinkingTexts && thinkingTexts.length > 0 && (
+        <ThinkingSection texts={thinkingTexts} />
+      )}
     </div>
   );
 }
@@ -54,6 +82,9 @@ interface Props {
   segments?: ChatStreamSegment[];
   streaming?: boolean;
   streamStatus?: ChatStreamingMessage["status"];
+  thinkingTexts?: string[];
+  responseText?: string;   // persisted final answer merged with tool-call group
+  hideAvatar?: boolean;    // hide bot avatar for consecutive assistant bubbles
 }
 
 // ── Avatars ────────────────────────────────────────────────────────────────────
@@ -147,9 +178,10 @@ function parseFileBlocks(raw: string): { attachments: string[]; text: string } {
   return { attachments, text: raw.slice(pos) };
 }
 
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function MessageBubble({ role, content, segments, streaming, streamStatus }: Props) {
+export default function MessageBubble({ role, content, segments, streaming, streamStatus, thinkingTexts, responseText, hideAvatar }: Props) {
   if (role === "system" || role === "tool") return null;
 
   // User message
@@ -172,7 +204,7 @@ export default function MessageBubble({ role, content, segments, streaming, stre
     );
   }
 
-  // Assistant — streaming (segments present)
+  // Assistant — segments present (streaming live OR persisted tool-call group)
   if (segments && segments.length > 0) {
     const toolSegs = segments.filter((s): s is ToolSeg => s.kind === "tool");
     const fullText = segments
@@ -180,32 +212,39 @@ export default function MessageBubble({ role, content, segments, streaming, stre
       .map((s) => (s.kind === "text" ? s.text : ""))
       .join("");
 
+    // Live text nodes (from streaming segments)
+    const textNodes = segments.map((seg, i) => {
+      if (seg.kind === "text") {
+        return streaming ? (
+          <span key={i}>
+            {seg.text}
+            {seg.streaming && <span className="chat-bubble__cursor">▍</span>}
+          </span>
+        ) : (
+          <MarkdownRenderer key={i} content={seg.text} />
+        );
+      }
+      if (seg.kind === "error") {
+        return <span key={i} style={{ color: "var(--color-error, #ef4444)" }}>{seg.message}</span>;
+      }
+      return null;
+    });
+
+    const copyText = responseText ?? (fullText || null);
+
     return (
       <div className="chat-row chat-row--assistant">
-        <BotAvatar />
+        {hideAvatar ? <div className="chat-avatar chat-avatar--placeholder" /> : <BotAvatar />}
         <div className="chat-bubble chat-bubble--assistant">
-          {toolSegs.length > 0 && <ToolGroup tools={toolSegs} streaming={!!streaming} />}
-          {segments.map((seg, i) => {
-            if (seg.kind === "text") {
-              return streaming ? (
-                <span key={i}>
-                  {seg.text}
-                  {seg.streaming && <span className="chat-bubble__cursor">▍</span>}
-                </span>
-              ) : (
-                <MarkdownRenderer key={i} content={seg.text} />
-              );
-            }
-            if (seg.kind === "error") {
-              return (
-                <span key={i} style={{ color: "var(--color-error, #ef4444)" }}>
-                  {seg.message}
-                </span>
-              );
-            }
-            return null;
-          })}
-          {!streaming && fullText && <CopyBtn text={fullText} />}
+          {toolSegs.length > 0 && (
+            <ToolGroup tools={toolSegs} streaming={!!streaming} thinkingTexts={thinkingTexts} />
+          )}
+          {responseText ? (
+            <MarkdownRenderer content={responseText} />
+          ) : (
+            textNodes
+          )}
+          {!streaming && copyText && <CopyBtn text={copyText} />}
         </div>
       </div>
     );
@@ -216,7 +255,7 @@ export default function MessageBubble({ role, content, segments, streaming, stre
   if (!text && streamStatus !== "cancelled") return null;
   return (
     <div className="chat-row chat-row--assistant">
-      <BotAvatar />
+      {hideAvatar ? <div className="chat-avatar chat-avatar--placeholder" /> : <BotAvatar />}
       <div className="chat-bubble chat-bubble--assistant">
         {text ? <MarkdownRenderer content={text} /> : null}
         {streamStatus === "cancelled" && (

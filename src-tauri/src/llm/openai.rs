@@ -239,10 +239,11 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn summarize(&self, content: &str, max_tokens: usize) -> Result<String, LlmError> {
-        // 构造摘要专用 prompt（英文指令以降低 token 消耗）
         let prompt = format!(
-            "Please generate a concise summary of the following content in at most {} words:\n\n{}\n\nSummary:",
-            max_tokens / 4,
+            "Generate a detailed summary of the following content (at most {} words). \
+Cover: main purpose/question, methods or approach, key findings with specific data, \
+and any limitations or caveats. Write in flowing prose, no bullet points:\n\n{}\n\nSummary:",
+            max_tokens / 2,
             content
         );
         self.complete(&prompt).await

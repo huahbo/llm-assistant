@@ -828,10 +828,10 @@ pub(super) async fn extract_entities(state: &AppState, content: &str) -> Vec<Str
     };
 
     // 截断内容，避免超出 token 上限
-    let truncated: String = content.chars().take(2000).collect();
+    let truncated: String = content.chars().take(6000).collect();
     let prompt = format!(
         "请从以下文档中提取关键实体（技术名、概念名、产品名、人名等），\
-每行输出一个实体名称，不要编号，不要解释，最多提取10个最重要的实体：\n\n{}",
+每行输出一个实体名称，不要编号，不要解释，最多提取15个最重要的实体：\n\n{}",
         truncated
     );
 
@@ -841,7 +841,7 @@ pub(super) async fn extract_entities(state: &AppState, content: &str) -> Vec<Str
                 .lines()
                 .map(|line| line.trim().trim_start_matches('-').trim().to_string())
                 .filter(|e| !e.is_empty() && e.len() <= 60)
-                .take(10)
+                .take(15)
                 .collect();
 
             if !entities.is_empty() {

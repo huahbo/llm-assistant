@@ -126,17 +126,25 @@ fn normalize_search_provider(provider: &str) -> &str {
 }
 
 pub(super) fn validate_search_config(config: &SearchConfig) -> Result<(), String> {
-    match normalize_search_provider(&config.search_provider) {
-        "tavily" if config.tavily_api_key.trim().is_empty() => {
-            Err("搜索配置错误：已选择 Tavily，但未填写 API Key".to_string())
-        }
-        "searxng" if config.searxng_url.trim().is_empty() => {
-            Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string())
-        }
-        "none" => Err("搜索配置错误：未启用搜索 Provider".to_string()),
-        "tavily" | "searxng" => Ok(()),
-        other => Err(format!("搜索配置错误：不支持的搜索 Provider `{}`", other)),
+    let providers = config.effective_providers();
+    if providers.is_empty() {
+        return Err("搜索配置错误：未启用任何搜索提供商".to_string());
     }
+    for provider in &providers {
+        match provider.as_str() {
+            "tavily" if config.tavily_api_key.trim().is_empty() => {
+                return Err("搜索配置错误：已选择 Tavily，但未填写 API Key".to_string());
+            }
+            "searxng" if config.searxng_url.trim().is_empty() => {
+                return Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string());
+            }
+            "tavily" | "searxng" => {}
+            other => {
+                return Err(format!("搜索配置错误：不支持的搜索提供商 `{}`", other));
+            }
+        }
+    }
+    Ok(())
 }
 
 // research_service 也会使用这些 error helper
@@ -444,6 +452,61 @@ pub(super) async fn do_search(
         "searxng" => Err("搜索配置错误：已选择 SearXNG，但未填写地址".to_string()),
         "none" => Err("搜索配置错误：未启用搜索 Provider".to_string()),
         other => Err(format!("搜索配置错误：不支持的搜索 Provider `{}`", other)),
+    }
+}
+
+/// 并行查询所有已启用的搜索提供商，按 URL 去重合并结果。
+pub(super) async fn do_search_multi(
+    client: &reqwest::Client,
+    query: &str,
+    config: &crate::models::SearchConfig,
+    limit: usize,
+) -> Result<Vec<crate::models::WebSearchResult>, String> {
+    let providers = config.effective_providers();
+    if providers.is_empty() {
+        return Err("未配置搜索提供商".to_string());
+    }
+    if providers.len() == 1 {
+        // 单提供商，直接复用原函数
+        let mut single = config.clone();
+        single.search_provider = providers[0].clone();
+        return do_search(client, query, &single, limit).await;
+    }
+
+    // 多提供商并行
+    let mut handles = Vec::new();
+    for provider in &providers {
+        let mut cfg = config.clone();
+        cfg.search_provider = provider.clone();
+        let client = client.clone();
+        let query = query.to_string();
+        handles.push(tokio::task::spawn(async move {
+            do_search(&client, &query, &cfg, limit).await
+        }));
+    }
+
+    let mut seen_urls = std::collections::HashSet::new();
+    let mut merged: Vec<crate::models::WebSearchResult> = Vec::new();
+    let mut last_err: Option<String> = None;
+
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(results)) => {
+                for r in results {
+                    if seen_urls.insert(r.url.clone()) {
+                        merged.push(r);
+                    }
+                }
+            }
+            Ok(Err(e)) => { last_err = Some(e); }
+            Err(e) => { last_err = Some(e.to_string()); }
+        }
+    }
+
+    if merged.is_empty() {
+        Err(last_err.unwrap_or_else(|| "所有搜索提供商均无结果".to_string()))
+    } else {
+        Ok(merged)
     }
 }
 

@@ -12,15 +12,15 @@
 
 ---
 
-## 本轮快讯（2026-05-20，Claude Code）— H24 进行中
+## 本轮快讯（2026-05-20，Claude Code）— H24 完成
 
-- **H24 无头浏览器服务**：正在并行实施 4 路子任务
-  - [A] `src-tauri/src/browser/mod.rs` — CDP 服务模块（headless_chrome + reqwest 兜底）
-  - [B] `ingest_service.rs` 重构 — 删旧 Edge 临时实现，改调 crate::browser
-  - [C] `commands.rs + main.rs` — 新增 fetch_url_context Tauri 命令
-  - [D] 前端 — UrlContextCard 组件 + ChatInputBar URL paste 检测
-- 详见：`docs/实施计划-H24-浏览器服务.md`
-- **基线（2026-05-17）**：268 测试全绿，typecheck 零错误，最新 commit fd4ecda
+- **H24 无头浏览器服务**：`src-tauri/src/browser/mod.rs` 已实装
+  - Chrome→Edge→静态HTTP 三级兜底，headless_chrome CDP + spawn_blocking
+  - `ingest_service.rs` 旧 Edge 临时实现已清除，复用 crate::browser
+  - `fetch_url_context` Tauri 命令 + 前端 UrlContextCard + ChatInputBar URL paste 检测
+  - 顺手修复旧 `html_to_text` 反向引用 bug（`\1` Rust regex 不支持）
+- **284 测试全绿**（新增 3 个 browser 单元测试），typecheck H24 零错误
+- **最新 commit**：3fd7da7（2026-05-20）
 
 ---
 

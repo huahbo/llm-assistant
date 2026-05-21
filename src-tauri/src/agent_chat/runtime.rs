@@ -57,9 +57,10 @@ pub async fn process_message_turn(
         }
     }
 
-    let max_iter: u32 = 8;
+    let max_iter: u32 = 12;
     let mut iter: u32 = 0;
     let mut last_message_id: i64 = 0;
+    let mut wrap_up_mode: bool = false;
 
     loop {
         // 取消检查
@@ -89,6 +90,7 @@ pub async fn process_message_turn(
         if shell_mode == "off" {
             tools.retain(|t| t.name != "run_shell");
         }
+        let effective_tools = if wrap_up_mode { Vec::new() } else { tools.clone() };
 
         // 预插入 assistant 占位消息，获取 message_id
         let now2 = current_timestamp_ms();
@@ -157,7 +159,7 @@ pub async fn process_message_turn(
         }
 
         let completion = match provider
-            .chat_stream(&llm_messages, &tools, &mut on_event)
+            .chat_stream(&llm_messages, &effective_tools, &mut on_event)
             .await
         {
             Ok(c) => c,
@@ -278,15 +280,21 @@ pub async fn process_message_turn(
 
                 iter += 1;
                 if iter >= max_iter {
-                    let _ = app_handle.emit(
-                        "chat_message_done",
-                        json!({
-                            "conversation_id": conv_id,
-                            "message_id": message_id,
-                            "note": "max iterations reached",
-                        }),
-                    );
-                    break;
+                    if !wrap_up_mode {
+                        // Give model one final text-only call to complete naturally
+                        wrap_up_mode = true;
+                        continue;
+                    } else {
+                        let _ = app_handle.emit(
+                            "chat_message_done",
+                            json!({
+                                "conversation_id": conv_id,
+                                "message_id": message_id,
+                                "note": "max iterations reached",
+                            }),
+                        );
+                        break;
+                    }
                 }
                 continue;
             }

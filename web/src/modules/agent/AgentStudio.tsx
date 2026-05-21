@@ -295,10 +295,11 @@ const copyTextToClipboard = async (text: string): Promise<boolean> => {
 // ── Props ──────────────────────────────────────────────────────────────────────
 type AgentStudioProps = {
   onOpenWikiPage: (path: string) => void;
+  onDebugToggle?: (open: boolean) => void;
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
-export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentStudioProps) {
+export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage, onDebugToggle }: AgentStudioProps) {
   // Context hooks
   const { activeModule } = useMode();
   const { agentStatusMessage, setAgentStatusMessage } = useToast();
@@ -712,6 +713,10 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
   };
 
   // ── useEffects ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    onDebugToggle?.(agentDebugPanelOpen);
+  }, [agentDebugPanelOpen, onDebugToggle]);
 
   // 拖拽分割条（agent layout）
   useEffect(() => {
@@ -1718,18 +1723,18 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
                     <button
                       key={message.id}
                       type="button"
-                      className={`agent-studio__chat-bubble agent-studio__chat-bubble--${message.role}${selected ? " agent-studio__chat-bubble--selected" : ""}`}
+                      className={`agent-studio__msg-row agent-studio__msg-row--${message.role}${selected ? " agent-studio__msg-row--selected" : ""}`}
                       onClick={() => handleSelectAgentRunFromChat(message.run_id)}
                     >
-                      <span className="agent-studio__chat-bubble-head">
-                        <strong>{message.role === "user" ? "You" : "Agent"}</strong>
-                        <time dateTime={message.created_at}>
+                      <span className="agent-studio__msg-meta">
+                        <strong className="agent-studio__msg-role">{message.role === "user" ? "You" : "Agent"}</strong>
+                        <time className="agent-studio__msg-time" dateTime={message.created_at}>
                           {formatLintCheckedAt(message.created_at)}
                         </time>
                       </span>
-                      <span className="agent-studio__chat-bubble-content">{message.content}</span>
+                      <p className="agent-studio__msg-body">{message.content}</p>
                       {message.role === "agent" && message.status ? (
-                        <span className="agent-studio__chat-bubble-status">
+                        <span className="agent-studio__msg-status">
                           {formatAgentRunStatusLabel(message.status)}
                         </span>
                       ) : null}
@@ -1806,6 +1811,13 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
                 onClick={() => { void handleGenerateAgentDraft(); }}
               >
                 基于当前 Run 重写
+              </button>
+              <button
+                type="button"
+                className="dev-panel__button agent-studio__debug-btn"
+                onClick={() => setAgentDebugPanelOpen((prev) => !prev)}
+              >
+                {agentDebugPanelOpen ? "收起调试" : "调试"}
               </button>
             </div>
           </section>
@@ -2251,15 +2263,6 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage }: AgentSt
               ) : null}
             </div>
           </section>
-        </div>
-        <div className="agent-studio__debug-toggle">
-          <button
-            type="button"
-            className="dev-panel__button"
-            onClick={() => setAgentDebugPanelOpen((prev) => !prev)}
-          >
-            {agentDebugPanelOpen ? "收起调试面板" : "展开调试面板"}
-          </button>
         </div>
         {agentDebugPanelOpen ? (
           <div className="agent-studio__debug">

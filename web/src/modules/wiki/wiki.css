@@ -1151,6 +1151,13 @@
   padding-top: 4px;
 }
 
+.ingest-url-hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 .ingest-card__footer .dev-panel__button {
   width: 100%;
   justify-content: center;
@@ -1549,6 +1556,53 @@
   color: var(--text-muted);
   margin: 0;
   line-height: 1.5;
+}
+
+.export-card__btn {
+  align-self: flex-end;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: none;
+  border-radius: 7px;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+
+.export-card__btn:hover:not(:disabled) {
+  background: #6d28d9;
+  transform: translateY(-1px);
+}
+
+.export-card__btn:active:not(:disabled) {
+  background: #5b21b6;
+  transform: translateY(0);
+}
+
+.export-card__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes export-spin {
+  to { transform: rotate(360deg); }
+}
+
+.export-card__btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: export-spin 0.7s linear infinite;
 }
 
 .export-panel__status {

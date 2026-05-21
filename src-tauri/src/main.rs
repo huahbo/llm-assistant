@@ -139,6 +139,7 @@ fn main() {
             commands::get_search_config,
             commands::set_search_config,
             commands::save_research_doc,
+            commands::research_md_to_html,
             commands::approve_research_queries,
             commands::quick_lint_page,
             commands::get_vault_stats,

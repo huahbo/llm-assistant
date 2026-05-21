@@ -97,10 +97,20 @@ async fn save_research_output(
     synthesized: &str,
 ) -> Result<String, ()> {
     let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = date_str.clone();
     let references = all_results
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("{}. [{}]({})", i + 1, r.title, r.url))
+        .map(|(i, r)| {
+            let is_academic = ["arxiv.org", "doi.org", "pubmed", "scholar.google", "researchgate.net", "semanticscholar"]
+                .iter()
+                .any(|domain| r.url.contains(domain));
+            if is_academic {
+                format!("[{}] {}. *{}*. <{}>", i + 1, r.title, r.source, r.url)
+            } else {
+                format!("[{}] [{}]({}). *{}*. Accessed {}.", i + 1, r.title, r.url, r.source, today)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -350,6 +360,8 @@ async fn start_research_task(
     // 累积的结构化学习成果（参考 dzhng/deep-research 的 learnings 模型）
     let mut learnings: Vec<String> = Vec::new();
     let mut all_used_queries: Vec<String> = Vec::new();
+    // 全局源编号（跨轮次不重置）
+    let mut source_index: usize = 0;
 
     // ── Phase 1: 初始查询分解 ─────────────────────────────────────────────────
     emit_progress("decomposing", "正在规划研究路径...".to_string());
@@ -425,7 +437,7 @@ async fn start_research_task(
             let config_clone = config.clone();
             handles.push(tokio::task::spawn(async move {
                 let result =
-                    search_service::do_search(&client, &query, &config_clone, breadth_limit).await;
+                    search_service::do_search_multi(&client, &query, &config_clone, breadth_limit).await;
                 (query, result)
             }));
         }
@@ -495,17 +507,18 @@ async fn start_research_task(
             break;
         }
 
-        // 构建本轮摘要（每条来源截取 300 字符，避免 token 溢出）
+        // 构建本轮摘要（每条来源截取 300 字符，避免 token 溢出）；使用全局源编号
         let round_snippets: String = round_results
             .iter()
             .enumerate()
             .map(|(i, r)| {
                 let snip: String = r.snippet.chars().take(300).collect();
-                format!("[{}] {} ({}): {}", i + 1, r.title, r.source, snip)
+                format!("[{}] {} ({}): {}", source_index + i + 1, r.title, r.source, snip)
             })
             .collect::<Vec<_>>()
             .join("\n\n");
 
+        source_index += round_results.len();
         all_results.extend(round_results);
 
         if depth < max_depth {
@@ -579,12 +592,27 @@ async fn start_research_task(
         .join("\n");
     let context: String = learnings_text.chars().take(8000).collect();
 
+    // 构建编号源列表供 LLM 行内引用（截断到 6000 字符防止 token 溢出）
+    let sources_block_full: String = all_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let snip: String = r.snippet.chars().take(200).collect();
+            format!("[{}] {} ({}): {}", i + 1, r.title, r.url, snip)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sources_block: String = sources_block_full.chars().take(6000).collect();
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let synth_prompt = format!(
-        "You are a professional research analyst. Write a comprehensive, well-structured Markdown wiki page based on the research findings.\n\nTopic: {topic}\n\nKey Learnings ({count} findings):\n{context}\n\nExisting Knowledge Base Overview:\n{wiki}\n\nRequirements:\n1. Sections: Abstract, Core Findings, Detailed Analysis, Conclusion\n2. Cite sources inline as [N] referencing the numbered learnings\n3. Suggest cross-references to existing wiki pages where relevant\n4. Write in the same language as the topic title\n5. Do not include reasoning or thinking process",
+        "You are a professional research analyst. Write a comprehensive, well-structured research report in Markdown.\n\nTopic: {topic}\n\nResearch Sources — cite these inline using [N] notation:\n{sources_block}\n\nKey Research Findings ({count} items):\n{context}\n\nExisting Knowledge Base:\n{wiki}\n\n## Writing Requirements:\n1. Write a complete report with sections: Abstract, Core Findings, Detailed Analysis, Conclusion\n2. EVERY factual claim MUST be supported by an inline citation [N] referencing one of the numbered sources above\n3. The final section MUST be \"## References\" containing properly formatted entries:\n   - For academic papers (URLs containing arxiv.org, doi.org, pubmed, scholar): use format: [N] Author(s) (Year). *Title*. Venue. URL\n   - For web articles: use format: [N] Title. *Site Name*. URL. Accessed {date}\n4. References must be clickable Markdown links where possible\n5. Write in the same language as the topic title (Chinese topic → Chinese report)\n6. Do NOT include reasoning or thinking process in output",
         topic = topic,
+        sources_block = sources_block,
         count = learnings.len(),
         context = context,
         wiki = wiki_excerpt,
+        date = today,
     );
 
     let mut synthesized = String::new();
