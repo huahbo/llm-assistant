@@ -246,8 +246,8 @@ export default function App() {
       id: "system",
       title: "系统",
       items: [
-        { id: "discovery", icon: "🔌", label: "MCP 市场" },
-        { id: "settings", icon: "⚙", label: "设置" },
+        { id: "discovery", icon: "🧩", label: "MCP 市场" },
+        { id: "settings", icon: "🛠️", label: "设置" },
       ],
     },
   ];
