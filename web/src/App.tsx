@@ -226,7 +226,7 @@ export default function App() {
       title: "核心",
       items: [
         { id: "chat", icon: "💬", label: "对话" },
-        { id: "agent", icon: "🤖", label: "Agent" },
+        { id: "agent", icon: "🦾", label: "Agent" },
         { id: "ask", icon: "🔍", label: "Ask" },
         { id: "wiki", icon: "📄", label: "Wiki" },
         { id: "lint", icon: "🧹", label: "Lint" },
