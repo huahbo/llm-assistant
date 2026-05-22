@@ -230,7 +230,7 @@ export default function App() {
         { id: "ask", icon: "🔍", label: "Ask" },
         { id: "wiki", icon: "📄", label: "Wiki" },
         { id: "lint", icon: "🧹", label: "Lint" },
-        { id: "graph", icon: "🕸", label: "图谱" },
+        { id: "graph", icon: "🌐", label: "图谱" },
         { id: "research", icon: "🔬", label: "研究" },
         { id: "inbox", icon: "📊", label: "概览" },
       ],
