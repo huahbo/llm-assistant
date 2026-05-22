@@ -1,6 +1,6 @@
 # LLM Wiki Desktop
 
-> v0.2.7 · Windows 优先的个人 AI 知识库桌面应用
+> v0.2.8 · Windows 优先的个人 AI 知识库桌面应用
 
 本地优先架构：Tauri v2 + React + TypeScript + SQLite + Markdown Vault，支持本地 AI（Ollama）与云端 OpenAI-compatible Provider，隐私友好。
 
@@ -17,12 +17,40 @@
 | **Lint** | 语义矛盾/陈旧/覆盖度检测，Wiki-link 级 broken/orphan 检测，可预览/应用修复补丁 |
 | **Graph** | 知识图谱可视化（Global/Local 模式）；Chat↔Graph 双向联动（节点高亮、右键跳转、Ask 预填充）；洞察层 |
 | **Deep Research** | LLM 驱动多轮联网研究 · Outline-First 报告架构（大纲审批 → 章节合成 → 拼装） · 学术 API（arXiv + Semantic Scholar） · 来源质量评分 · [N] 内联引用 + 学术/网页 References 双格式 · HTML 单文件导出 · 手动保存到知识库 |
-| **Agent Studio** | LLM 驱动 Wiki 草稿生成；Skill 模板；检索增强；审批后自动提炼全局记忆（AAAK-lite）；Shell 审计日志 |
+| **Agent** | LLM 驱动 Wiki 草稿生成；Skill 模板；检索增强；审批后自动提炼全局记忆（AAAK-lite）；Shell 审计日志 |
 | **Settings** | LLM Provider 配置；搜索配置（Tavily / SearXNG / arXiv / Semantic Scholar / Brave，可多选并行）；OCR Provider；Shell 策略配置；**MCP 服务器管理** |
 
 ---
 
-## 最近更新（H21–H26）
+## 最近更新（H21–H26 + UI 打磨）
+
+### v0.2.8（UI 交互打磨 — Wiki 标签栏 + 侧边栏视觉统一）
+
+#### Wiki 标签栏重设计
+
+- **折叠收纳**：默认收起，`# 标签 ▾` 按钮内联进搜索操作栏（与"搜索 Wiki"/"恢复最近"/"✦ AI 新建"同行），节省纵向空间
+- **Top-15 展示**：展开后默认只显示 Top-15 高频标签，超出部分点「还有 N 个 ▸」展开全部
+- **AND / OR 筛选开关**：选中 2 个及以上标签时，标签栏顶部出现 OR / AND 胶囊切换按钮；OR（默认）= 并集任意匹配，AND = 交集全部匹配
+- **多标签筛选 Bug 修复**：原 `.every()` AND 逻辑导致多标签选中后结果为空；修正为默认 `.some()` OR 逻辑
+- **`✦ AI 新建` 按钮升级**：从无样式裸文字升级为带 accent 轮廓的标准按钮（hover 渐变填充）
+
+#### 侧边栏图标与标签全面梳理
+
+| 模块 | 旧 | 新 | 说明 |
+|------|----|----|------|
+| Lint | 🔍 | 🧹 | 与 Ask 重复，改为扫帚（linting/清理） |
+| 概览 | ⊞ | 📊 | 纯 Unicode 字符改为 emoji，仪表盘语义 |
+| MCP 市场 | 🔌 | 🧩 | 拼图更贴合"插件扩展"语义；标签简化为 `MCP` |
+| 设置 | ⚙ | 🛠️ | 纯 Unicode 改为 emoji，配置工具感更强 |
+| 图谱 | 🕸 | 🌐 | 蜘蛛网色彩单调，改为地球网格（有色彩、有网络感） |
+| Agent Studio | 🧠 | 🛸 | 机器人太普通，飞碟独特且未来感强；标签简化为 `Agent` |
+
+#### 测试基线 v0.2.8
+
+- Rust 单测 **298** 通过 0 失败（无新增 Rust 变更，基线不变）
+- TypeScript typecheck 零错误
+
+---
 
 ### v0.2.7（H25 + H26 — Deep Research 全面升级）
 
@@ -81,7 +109,7 @@
 - `export_research_html`：HTML 单文件导出，CSS 内嵌可独立浏览
 - ResearchPanel UI：terminal 风格日志 + 状态色徽章 + 语义按钮色
 
-#### 测试基线 v0.2.7
+#### 测试基线 v0.2.7（升至 v0.2.8 后不变）
 
 - Rust 单测 **298** 通过 0 失败（新增 7 个 JSON 提取测试 + 5 个学术 API XML/JSON 解析测试 + 3 个 score_by_domain 测试）
 - TypeScript typecheck 零错误
@@ -370,7 +398,7 @@ llm-wiki/
 │       │   ├── chat/       # Chat UI（对话列表/消息流/工具卡片/审批）
 │       │   ├── wiki/       # Wiki 编辑/浏览
 │       │   ├── graph/      # 知识图谱可视化（含 Chat 双向联动）
-│       │   ├── agent/      # Agent Studio（运行/草稿/记忆/技能/审计）
+│       │   ├── agent/      # Agent（运行/草稿/记忆/技能/审计）
 │       │   ├── ask/        # Query 问答
 │       │   ├── lint/       # Lint 检测与修复
 │       │   ├── settings/   # 设置面板（LLM/搜索/OCR/Shell/MCP）

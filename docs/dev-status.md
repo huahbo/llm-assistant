@@ -12,7 +12,29 @@
 
 ---
 
-## 本轮快讯（2026-05-22，Claude Opus 4.7）— H26 全面收口 + 手动保存改造
+## 本轮快讯（2026-05-22，Claude Sonnet 4.6）— UI 打磨收口 + v0.2.8
+
+纯前端 UI 改善，无 Rust 变更，测试基线维持 298：
+
+**Wiki 标签栏重设计**
+- `# 标签 ▾` 按钮内联进搜索操作栏（commits `c331f82` / `a2de4f1`）
+- 默认折叠 / Top-15 展示 / "还有 N 个" 展开全部
+- AND / OR 筛选胶囊开关（commit `6753df9`），2+ 标签时显示
+- 多标签筛选 Bug 修复：`.every()` → `.some()`（commit `4af8056`）
+- `✦ AI 新建` 升级为 accent 轮廓按钮（commit `a2de4f1`）
+
+**侧边栏全面梳理**（commits `f658846` → `d5e4571`）
+- Lint 🔍→🧹 / 概览 ⊞→📊 / MCP 🔌→🧩 / 设置 ⚙→🛠️ / 图谱 🕸→🌐
+- Agent Studio 🧠→🛸，标签 "Agent Studio"→"Agent"；MCP 市场→MCP
+
+**版本号 0.2.7 → 0.2.8**，测试基线 **298**（不变），typecheck 零错误
+**tauri.conf.json** 同时从遗漏的 0.2.6 补齐至 0.2.8
+
+**当前状态**：用户暂停开发，等待下一轮继续
+
+---
+
+## 上轮快讯（2026-05-22，Claude Opus 4.7）— H26 全面收口 + 手动保存改造
 
 接续 Sonnet 4.6 的 H26-B/C/A/E 基础上，做了系统性质量打磨：
 
@@ -28,8 +50,6 @@
 - **跨模块同步 + UI 优化**（commits `3127599` / `86956e7` / `8e5a658`）：深度/广度从 SearchConfig 同步初始值；SearchConfigPanel 重排（搜索源左列跨两行，深度/广度右列）；搜索进度按 ✓/✗ 前缀决定是否折叠
 
 **版本号 0.2.6 → 0.2.7**，测试基线 291 → **298**，typecheck 零错误
-
-**下一轮接力**：P22 打包发布（`tauri build`）或 H27 自适应追踪搜索（独立立项）
 
 ---
 
@@ -56,7 +76,7 @@
 
 ---
 
-## 验证基线（2026-05-22）
+## 验证基线（2026-05-22，v0.2.8）
 
 ```powershell
 cd E:\llm-wiki\src-tauri; cargo test    # 298 通过 0 失败
@@ -104,15 +124,17 @@ cd E:\llm-wiki\web; npm run typecheck   # 零错误
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| P22 | 打包发布 | `npm run tauri:build`，生成 .msi/.exe 安装包 |
-| H10A | ToolRegistry trait 重构 | 可选优化 |
+| P22 | 打包发布 | `npm run tauri:build`，生成 .msi/.exe 安装包（用户有时间时再做） |
+| H10A | ToolRegistry trait 重构 | 可选优化，低优先级 |
 | H27 | 自适应追踪搜索 | 参考 local-deep-research LangGraph 策略，单独立项后再做 |
+
+> **注**：用户已暂停开发节奏，下次开发时从此处接续。
 
 ---
 
 ## 关键架构约束
 
-- **测试基线**：298 通过（2026-05-22，v0.2.7，commit 468a654）
+- **测试基线**：298 通过（2026-05-22，v0.2.8，commit d5e4571）
 - **LLM vs Embed 分离**：LLM 走 `get_llm_provider()`；Embed 走 `get_embed_provider()`（本地 Ollama）
 - **Tauri 异步命令**：带引用参数必须返回 `Result<T, String>`
 - **API Key 禁止入仓**
