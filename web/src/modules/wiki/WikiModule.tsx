@@ -1666,12 +1666,29 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
             </button>
             <button
               type="button"
-              className="wiki-new-btn"
+              className="dev-panel__button wiki-new-btn"
               onClick={handleOpenNewWikiPageModal}
               title="AI 辅助新建 Wiki 页面"
             >
-              + AI 新建
+              ✦ AI 新建
             </button>
+            {allWikiTags.length > 0 && (
+              <button
+                type="button"
+                className={`dev-panel__button wiki-tag-toggle-btn${wikiTagBarExpanded ? " wiki-tag-toggle-btn--open" : ""}${wikiActiveTags.size > 0 ? " wiki-tag-toggle-btn--active" : ""}`}
+                onClick={() => {
+                  if (wikiTagBarExpanded) setWikiTagShowAll(false);
+                  setWikiTagBarExpanded((v) => !v);
+                }}
+                title={`按标签筛选（共 ${allWikiTags.length} 个）`}
+              >
+                # 标签
+                {wikiActiveTags.size > 0 && (
+                  <span className="wiki-tag-toggle-btn__badge">{wikiActiveTags.size}</span>
+                )}
+                <span className="wiki-tag-toggle-btn__arrow">{wikiTagBarExpanded ? "▴" : "▾"}</span>
+              </button>
+            )}
           </div>
         </div>
         {showNewPageModal && (
@@ -1721,94 +1738,68 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
             </div>
           </div>
         )}
-        {allWikiTags.length > 0 && (
-          <div className="wiki-tag-section">
+        {allWikiTags.length > 0 && wikiTagBarExpanded && (
+          <div className="wiki-tag-bar">
+            {wikiActiveTags.size >= 2 && (
+              <div className="wiki-tag-filter-mode">
+                <span className="wiki-tag-filter-mode__label">多选：</span>
+                <div className="wiki-tag-filter-mode__pill">
+                  <button
+                    type="button"
+                    className={`wiki-tag-filter-mode__btn${wikiTagFilterMode === "or" ? " wiki-tag-filter-mode__btn--active" : ""}`}
+                    onClick={() => setWikiTagFilterMode("or")}
+                    title="OR — 包含任意选中标签"
+                  >
+                    OR
+                  </button>
+                  <button
+                    type="button"
+                    className={`wiki-tag-filter-mode__btn${wikiTagFilterMode === "and" ? " wiki-tag-filter-mode__btn--active" : ""}`}
+                    onClick={() => setWikiTagFilterMode("and")}
+                    title="AND — 同时包含所有选中标签"
+                  >
+                    AND
+                  </button>
+                </div>
+                <span className="wiki-tag-filter-mode__hint">
+                  {wikiTagFilterMode === "or" ? "任意匹配" : "全部匹配"}
+                </span>
+              </div>
+            )}
             <button
               type="button"
-              className="wiki-tag-section__toggle"
-              onClick={() => {
-                if (wikiTagBarExpanded) {
-                  setWikiTagShowAll(false);
-                }
-                setWikiTagBarExpanded((v) => !v);
-              }}
+              className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
+              onClick={handleClearWikiActiveTags}
             >
-              <span className="wiki-tag-section__toggle-label">
-                🏷 关键字
-                {wikiActiveTags.size > 0 && (
-                  <span className="wiki-tag-section__active-badge">
-                    {wikiActiveTags.size} 个已选
-                  </span>
-                )}
-              </span>
-              <span className="wiki-tag-section__toggle-meta">
-                {allWikiTags.length} 个&nbsp;{wikiTagBarExpanded ? "▴" : "▾"}
-              </span>
+              全部
             </button>
-            {wikiTagBarExpanded && (
-              <div className="wiki-tag-bar">
-                {wikiActiveTags.size >= 2 && (
-                  <div className="wiki-tag-filter-mode">
-                    <span className="wiki-tag-filter-mode__label">多选：</span>
-                    <div className="wiki-tag-filter-mode__pill">
-                      <button
-                        type="button"
-                        className={`wiki-tag-filter-mode__btn${wikiTagFilterMode === "or" ? " wiki-tag-filter-mode__btn--active" : ""}`}
-                        onClick={() => setWikiTagFilterMode("or")}
-                        title="OR — 包含任意选中标签"
-                      >
-                        OR
-                      </button>
-                      <button
-                        type="button"
-                        className={`wiki-tag-filter-mode__btn${wikiTagFilterMode === "and" ? " wiki-tag-filter-mode__btn--active" : ""}`}
-                        onClick={() => setWikiTagFilterMode("and")}
-                        title="AND — 同时包含所有选中标签"
-                      >
-                        AND
-                      </button>
-                    </div>
-                    <span className="wiki-tag-filter-mode__hint">
-                      {wikiTagFilterMode === "or" ? "任意匹配" : "全部匹配"}
-                    </span>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
-                  onClick={handleClearWikiActiveTags}
-                >
-                  全部
-                </button>
-                {visibleTags.map((tag) => (
-                  <button
-                    key={tag.name}
-                    type="button"
-                    className={`wiki-tag-chip ${wikiActiveTags.has(tag.name) ? "wiki-tag-chip--active" : ""}`}
-                    onClick={() => handleToggleWikiActiveTag(tag.name)}
-                  >
-                    {tag.name} <span className="wiki-tag-chip__count">({tag.count})</span>
-                  </button>
-                ))}
-                {!wikiTagShowAll && allWikiTags.length > TOP_TAG_COUNT && (
-                  <button
-                    type="button"
-                    className="wiki-tag-chip wiki-tag-chip--more"
-                    onClick={() => setWikiTagShowAll(true)}
-                  >
-                    还有 {allWikiTags.length - TOP_TAG_COUNT} 个 ▸
-                  </button>
-                )}
-                {wikiTagShowAll && allWikiTags.length > TOP_TAG_COUNT && (
-                  <button
-                    type="button"
-                    className="wiki-tag-chip wiki-tag-chip--more"
-                    onClick={() => setWikiTagShowAll(false)}
-                  >
-                    收起 ▴
-                  </button>
-                )}
-              </div>
+            {visibleTags.map((tag) => (
+              <button
+                key={tag.name}
+                type="button"
+                className={`wiki-tag-chip ${wikiActiveTags.has(tag.name) ? "wiki-tag-chip--active" : ""}`}
+                onClick={() => handleToggleWikiActiveTag(tag.name)}
+              >
+                {tag.name} <span className="wiki-tag-chip__count">({tag.count})</span>
+              </button>
+            ))}
+            {!wikiTagShowAll && allWikiTags.length > TOP_TAG_COUNT && (
+              <button
+                type="button"
+                className="wiki-tag-chip wiki-tag-chip--more"
+                onClick={() => setWikiTagShowAll(true)}
+              >
+                还有 {allWikiTags.length - TOP_TAG_COUNT} 个 ▸
+              </button>
+            )}
+            {wikiTagShowAll && allWikiTags.length > TOP_TAG_COUNT && (
+              <button
+                type="button"
+                className="wiki-tag-chip wiki-tag-chip--more"
+                onClick={() => setWikiTagShowAll(false)}
+              >
+                收起 ▴
+              </button>
             )}
           </div>
         )}

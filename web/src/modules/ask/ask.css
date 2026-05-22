@@ -972,6 +972,53 @@
   margin-top: 8px;
 }
 
+/* ✦ AI 新建 按钮 — 在 dev-panel__button 基础上覆盖为强调色轮廓样式 */
+.dev-panel__button.wiki-new-btn {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  font-weight: 700;
+}
+.dev-panel__button.wiki-new-btn:hover:not(:disabled) {
+  background: var(--accent-grad);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: var(--shadow-md);
+}
+
+/* # 标签 切换按钮 */
+.wiki-tag-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.wiki-tag-toggle-btn--active {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: color-mix(in srgb, var(--accent) 8%, transparent) !important;
+}
+.wiki-tag-toggle-btn--active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+}
+.wiki-tag-toggle-btn__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--accent);
+  color: #fff;
+  line-height: 1;
+}
+.wiki-tag-toggle-btn__arrow {
+  font-size: 10px;
+  opacity: 0.5;
+}
+
 /* Wiki 标签区折叠容器 */
 .wiki-tag-section {
   margin-bottom: 4px;
@@ -1028,6 +1075,8 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px 0 4px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
 }
 
 .wiki-tag-chip {
