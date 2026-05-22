@@ -232,7 +232,7 @@ export default function App() {
         { id: "lint", icon: "🧹", label: "Lint" },
         { id: "graph", icon: "🕸", label: "图谱" },
         { id: "research", icon: "🔬", label: "研究" },
-        { id: "inbox", icon: "⊞", label: "概览" },
+        { id: "inbox", icon: "📊", label: "概览" },
       ],
     },
     {
