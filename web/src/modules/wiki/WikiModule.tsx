@@ -140,6 +140,7 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
   const [wikiActiveTags, setWikiActiveTags] = useState<Set<string>>(new Set());
   const [wikiTagBarExpanded, setWikiTagBarExpanded] = useState(false);
   const [wikiTagShowAll, setWikiTagShowAll] = useState(false);
+  const [wikiTagFilterMode, setWikiTagFilterMode] = useState<"or" | "and">("or");
   const [wikiExpandedPaths, setWikiExpandedPaths] = useState<string[]>([]);
   const [wikiTreeCollapsedFolders, setWikiTreeCollapsedFolders] = useState<Set<string>>(
     new Set(),
@@ -245,13 +246,17 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
       : top;
   }, [allWikiTags, wikiTagShowAll, wikiActiveTags]);
 
+  const matchesActiveTags = (pageTags: string[]) => {
+    if (wikiActiveTags.size === 0) return true;
+    const tags = Array.from(wikiActiveTags);
+    return wikiTagFilterMode === "and"
+      ? tags.every((tag) => pageTags.includes(tag))
+      : tags.some((tag) => pageTags.includes(tag));
+  };
+
   const displayedWikiPages = wikiKeyword.trim()
     ? [...sortedWikiPages]
-        .filter((p) => {
-          if (wikiActiveTags.size === 0) return true;
-          const pageTags = p.tags ?? [];
-          return Array.from(wikiActiveTags).some((tag) => pageTags.includes(tag));
-        })
+        .filter((p) => matchesActiveTags(p.tags ?? []))
         .sort((a, b) => {
           const kw = wikiKeyword.toLowerCase();
           const aTitleMatch = a.title.toLowerCase().includes(kw) ? 1 : 0;
@@ -259,11 +264,7 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
           if (bTitleMatch !== aTitleMatch) return bTitleMatch - aTitleMatch;
           return (b.score ?? 0) - (a.score ?? 0);
         })
-    : sortedWikiPages.filter((p) => {
-        if (wikiActiveTags.size === 0) return true;
-        const pageTags = p.tags ?? [];
-        return Array.from(wikiActiveTags).some((tag) => pageTags.includes(tag));
-      });
+    : sortedWikiPages.filter((p) => matchesActiveTags(p.tags ?? []));
 
   const wikiTreeNodes = useMemo(
     () => buildWikiTreeNodes(displayedWikiPages),
@@ -1746,6 +1747,32 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
             </button>
             {wikiTagBarExpanded && (
               <div className="wiki-tag-bar">
+                {wikiActiveTags.size >= 2 && (
+                  <div className="wiki-tag-filter-mode">
+                    <span className="wiki-tag-filter-mode__label">多选：</span>
+                    <div className="wiki-tag-filter-mode__pill">
+                      <button
+                        type="button"
+                        className={`wiki-tag-filter-mode__btn${wikiTagFilterMode === "or" ? " wiki-tag-filter-mode__btn--active" : ""}`}
+                        onClick={() => setWikiTagFilterMode("or")}
+                        title="OR — 包含任意选中标签"
+                      >
+                        OR
+                      </button>
+                      <button
+                        type="button"
+                        className={`wiki-tag-filter-mode__btn${wikiTagFilterMode === "and" ? " wiki-tag-filter-mode__btn--active" : ""}`}
+                        onClick={() => setWikiTagFilterMode("and")}
+                        title="AND — 同时包含所有选中标签"
+                      >
+                        AND
+                      </button>
+                    </div>
+                    <span className="wiki-tag-filter-mode__hint">
+                      {wikiTagFilterMode === "or" ? "任意匹配" : "全部匹配"}
+                    </span>
+                  </div>
+                )}
                 <button
                   type="button"
                   className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
