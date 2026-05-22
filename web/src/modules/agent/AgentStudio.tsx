@@ -1638,7 +1638,7 @@ export default function AgentStudio({ onOpenWikiPage: _onOpenWikiPage, onDebugTo
   return (
     <>
       <div className="module-header">
-        <h1 className="module-header__title">Agent Studio</h1>
+        <h1 className="module-header__title">Agent</h1>
         <p className="module-header__sub">左侧对话驱动，右侧草稿预览与审批写盘</p>
       </div>
       <section className={`panel agent-studio agent-studio--b2${agentDebugPanelOpen ? " agent-studio--debug-open" : ""}`}>
