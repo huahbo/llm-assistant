@@ -250,7 +250,7 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
         .filter((p) => {
           if (wikiActiveTags.size === 0) return true;
           const pageTags = p.tags ?? [];
-          return Array.from(wikiActiveTags).every((tag) => pageTags.includes(tag));
+          return Array.from(wikiActiveTags).some((tag) => pageTags.includes(tag));
         })
         .sort((a, b) => {
           const kw = wikiKeyword.toLowerCase();
@@ -262,7 +262,7 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
     : sortedWikiPages.filter((p) => {
         if (wikiActiveTags.size === 0) return true;
         const pageTags = p.tags ?? [];
-        return Array.from(wikiActiveTags).every((tag) => pageTags.includes(tag));
+        return Array.from(wikiActiveTags).some((tag) => pageTags.includes(tag));
       });
 
   const wikiTreeNodes = useMemo(
