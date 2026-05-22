@@ -138,6 +138,8 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
     readWikiSortModeFromStorage(),
   );
   const [wikiActiveTags, setWikiActiveTags] = useState<Set<string>>(new Set());
+  const [wikiTagBarExpanded, setWikiTagBarExpanded] = useState(false);
+  const [wikiTagShowAll, setWikiTagShowAll] = useState(false);
   const [wikiExpandedPaths, setWikiExpandedPaths] = useState<string[]>([]);
   const [wikiTreeCollapsedFolders, setWikiTreeCollapsedFolders] = useState<Set<string>>(
     new Set(),
@@ -228,8 +230,20 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
     }
     return Array.from(tagCountMap.entries())
       .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
   }, [sortedWikiPages]);
+
+  const TOP_TAG_COUNT = 15;
+
+  const visibleTags = useMemo(() => {
+    if (wikiTagShowAll) return allWikiTags;
+    const top = allWikiTags.slice(0, TOP_TAG_COUNT);
+    const topNames = new Set(top.map((t) => t.name));
+    const extraActive = allWikiTags.slice(TOP_TAG_COUNT).filter((t) => wikiActiveTags.has(t.name));
+    return extraActive.length > 0
+      ? [...top, ...extraActive.filter((t) => !topNames.has(t.name))]
+      : top;
+  }, [allWikiTags, wikiTagShowAll, wikiActiveTags]);
 
   const displayedWikiPages = wikiKeyword.trim()
     ? [...sortedWikiPages]
@@ -1706,27 +1720,71 @@ const WikiModule = forwardRef<WikiModuleHandle, WikiModuleProps>(function WikiMo
             </div>
           </div>
         )}
-        {allWikiTags.length > 0 ? (
-          <div className="wiki-tag-bar">
+        {allWikiTags.length > 0 && (
+          <div className="wiki-tag-section">
             <button
               type="button"
-              className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
-              onClick={handleClearWikiActiveTags}
+              className="wiki-tag-section__toggle"
+              onClick={() => {
+                if (wikiTagBarExpanded) {
+                  setWikiTagShowAll(false);
+                }
+                setWikiTagBarExpanded((v) => !v);
+              }}
             >
-              全部
+              <span className="wiki-tag-section__toggle-label">
+                🏷 关键字
+                {wikiActiveTags.size > 0 && (
+                  <span className="wiki-tag-section__active-badge">
+                    {wikiActiveTags.size} 个已选
+                  </span>
+                )}
+              </span>
+              <span className="wiki-tag-section__toggle-meta">
+                {allWikiTags.length} 个&nbsp;{wikiTagBarExpanded ? "▴" : "▾"}
+              </span>
             </button>
-            {allWikiTags.map((tag) => (
-              <button
-                key={tag.name}
-                type="button"
-                className={`wiki-tag-chip ${wikiActiveTags.has(tag.name) ? "wiki-tag-chip--active" : ""}`}
-                onClick={() => handleToggleWikiActiveTag(tag.name)}
-              >
-                {tag.name} <span className="wiki-tag-chip__count">({tag.count})</span>
-              </button>
-            ))}
+            {wikiTagBarExpanded && (
+              <div className="wiki-tag-bar">
+                <button
+                  type="button"
+                  className={`wiki-tag-chip ${wikiActiveTags.size === 0 ? "wiki-tag-chip--active" : ""}`}
+                  onClick={handleClearWikiActiveTags}
+                >
+                  全部
+                </button>
+                {visibleTags.map((tag) => (
+                  <button
+                    key={tag.name}
+                    type="button"
+                    className={`wiki-tag-chip ${wikiActiveTags.has(tag.name) ? "wiki-tag-chip--active" : ""}`}
+                    onClick={() => handleToggleWikiActiveTag(tag.name)}
+                  >
+                    {tag.name} <span className="wiki-tag-chip__count">({tag.count})</span>
+                  </button>
+                ))}
+                {!wikiTagShowAll && allWikiTags.length > TOP_TAG_COUNT && (
+                  <button
+                    type="button"
+                    className="wiki-tag-chip wiki-tag-chip--more"
+                    onClick={() => setWikiTagShowAll(true)}
+                  >
+                    还有 {allWikiTags.length - TOP_TAG_COUNT} 个 ▸
+                  </button>
+                )}
+                {wikiTagShowAll && allWikiTags.length > TOP_TAG_COUNT && (
+                  <button
+                    type="button"
+                    className="wiki-tag-chip wiki-tag-chip--more"
+                    onClick={() => setWikiTagShowAll(false)}
+                  >
+                    收起 ▴
+                  </button>
+                )}
+              </div>
+            )}
           </div>
-        ) : null}
+        )}
         {displayedWikiPages.length ? (
           <div className="wiki-layout">
             <aside className="wiki-layout__tree">

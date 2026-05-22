@@ -972,6 +972,56 @@
   margin-top: 8px;
 }
 
+/* Wiki 标签区折叠容器 */
+.wiki-tag-section {
+  margin-bottom: 4px;
+}
+
+.wiki-tag-section__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 2px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  transition: color 0.15s;
+  user-select: none;
+}
+
+.wiki-tag-section__toggle:hover {
+  color: var(--text);
+}
+
+.wiki-tag-section__toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wiki-tag-section__active-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+}
+
+.wiki-tag-section__toggle-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.65;
+  letter-spacing: 0.2px;
+}
+
 /* Wiki 标签筛选栏 */
 .wiki-tag-bar {
   display: flex;
@@ -1014,6 +1064,19 @@
 
 .wiki-tag-chip--active .wiki-tag-chip__count {
   opacity: 0.85; /* 激活态时计数文字稍微亮一点 */
+}
+
+.wiki-tag-chip--more {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-style: normal;
+}
+
+.wiki-tag-chip--more:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
 }
 
 /* Wiki 文件树布局 */
